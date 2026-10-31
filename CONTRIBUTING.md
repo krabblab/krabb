@@ -115,7 +115,9 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
 ## Change Rules
 
 - Record user-visible release behavior in `CHANGELOG.md`; omit refactors,
-  dependency updates, tests, CI work, and planned features.
+  dependency updates, tests, CI work, and planned features. Windows-only CI or
+  test compatibility fixes that do not change user-visible behavior also need
+  no changelog entry.
 - Write one short line per entry, in plain English, naming the user value with
   accurate capitalization and minimal detail.
 - Before the first release, keep `Unreleased` under `Added` only. Afterward,

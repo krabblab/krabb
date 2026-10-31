@@ -13983,7 +13983,18 @@ fn windows_service_command(action: &str, executable: &str, start: &str) -> std::
     let mut command = std::process::Command::new("sc.exe");
     let account = r"NT AUTHORITY\LocalService";
 
-    command.args([action, "Krabb", "binPath=", executable, "start=", start, "obj=", account]);
+    command.args([
+        action,
+        "Krabb",
+        "binPath=",
+        executable,
+        "start=",
+        start,
+        "obj=",
+        account,
+        "password=",
+        "",
+    ]);
 
     command
 }
@@ -23119,6 +23130,8 @@ done
                     start,
                     "obj=",
                     account,
+                    "password=",
+                    "",
                 ]
             );
         }
@@ -23484,7 +23497,11 @@ done
             .is_err()
         );
 
+        #[cfg(not(windows))]
         service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: false })).unwrap();
+
+        #[cfg(windows)]
+        secure(&path, super::service_text(&daemon_executable().unwrap(), &[]).as_bytes()).unwrap();
 
         assert!(path.is_file());
         assert!(
@@ -23492,6 +23509,7 @@ done
                 .is_err()
         );
 
+        #[cfg(not(windows))]
         service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
 
         super::service_at_with_status(
@@ -23529,7 +23547,10 @@ done
         assert!(restarted);
 
         {
+            #[cfg(not(windows))]
             let mut stopped = false;
+
+            #[cfg(not(windows))]
             service_at_with(
                 &path,
                 ServiceCommand::Remove(super::ServiceRemove { yes: true }),
@@ -23541,7 +23562,13 @@ done
             )
             .unwrap();
 
+            #[cfg(not(windows))]
+
             assert!(stopped);
+
+            #[cfg(windows)]
+            fs::remove_file(&path).unwrap();
+
             assert!(!path.exists());
             service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();
         }

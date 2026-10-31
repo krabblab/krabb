@@ -5471,6 +5471,7 @@ for line in sys.stdin:
         std::fs::create_dir_all(&root).unwrap();
         let _owner = crate::daemon_lock(&root).unwrap();
         let catalog = root.join("data").join("sessions").join("index.json");
+        std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
         let mut store = Store::load(&catalog).unwrap();
         store.create("active", "model").unwrap();
         store

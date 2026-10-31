@@ -753,7 +753,14 @@ async fn capture(
     .await;
 
     #[cfg(windows)]
-    job.terminate();
+    if group {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            job.terminate();
+        });
+    } else {
+        job.terminate();
+    }
 
     match result {
         Ok(Ok(output)) => {
@@ -829,9 +836,6 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
         tokio::time::sleep(Duration::from_millis(100)).await;
         kill_group(group, Signal::KILL);
     }
-
-    #[cfg(windows)]
-    let _ = (process_id, group);
 
     let _ = child.kill().await;
     let _ = child.wait().await;

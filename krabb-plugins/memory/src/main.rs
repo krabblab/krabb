@@ -1832,11 +1832,10 @@ mod tests {
 
         assert_eq!(load_at(Some(&path)).unwrap_err().kind(), std::io::ErrorKind::FileTooLarge);
         assert!(path.is_file());
-        let lazy_root =
-            std::env::temp_dir().join(format!("krabb-memory-lazy-{}", std::process::id()));
+        let lazy_root = std::env::temp_dir().join(format!("kml-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&lazy_root);
-        let lazy_path = lazy_root.join("data").join("memories").join("index.json");
+        let lazy_path = lazy_root.join("a").join("b").join("index.json");
 
         assert!(!lazy_path.parent().unwrap().exists());
         persist_at(Some(&lazy_path), &state).unwrap();
