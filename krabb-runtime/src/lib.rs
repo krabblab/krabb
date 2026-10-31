@@ -19062,6 +19062,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::{MACOS_SERVICE_LABEL, service_path};
 
+    #[cfg(windows)]
+    use super::{daemon_executable, secure};
+
     use base64::Engine;
     use clap::{CommandFactory, Parser, error::ErrorKind};
     use krabb_core::types::{
