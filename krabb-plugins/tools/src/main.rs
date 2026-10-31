@@ -705,19 +705,10 @@ async fn capture(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    #[cfg(windows)]
-    let job = krabb_process::TerminalJob::new()?;
-
-    #[cfg(windows)]
-    command.creation_flags(krabb_process::CREATE_SUSPENDED);
-
     command.kill_on_drop(true);
 
     let mut child = spawn(&mut command).await?;
     let process_id = child.id();
-
-    #[cfg(windows)]
-    job.assign_and_resume(process_id.ok_or_else(|| invalid("Process has no ID."))?)?;
 
     #[cfg(unix)]
     let process_group = process_id.and_then(child_group);
@@ -756,7 +747,7 @@ async fn capture(
 
                 #[cfg(windows)]
                 if group {
-                    job.terminate();
+                    terminate_process_tree(process_id).await;
                 }
 
                 let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
@@ -771,7 +762,9 @@ async fn capture(
                         let status = status?;
 
                         #[cfg(windows)]
-                        job.terminate();
+                        if group {
+                            terminate_process_tree(process_id).await;
+                        }
 
                         (status, stderr.await?)
                     }
@@ -781,7 +774,9 @@ async fn capture(
                         let status = status.await?;
 
                         #[cfg(windows)]
-                        job.terminate();
+                        if group {
+                            terminate_process_tree(process_id).await;
+                        }
 
                         (status, stderr)
                     }
@@ -797,7 +792,9 @@ async fn capture(
                         let status = status?;
 
                         #[cfg(windows)]
-                        job.terminate();
+                        if group {
+                            terminate_process_tree(process_id).await;
+                        }
 
                         (status, stdout.await?)
                     }
@@ -807,7 +804,9 @@ async fn capture(
                         let status = status.await?;
 
                         #[cfg(windows)]
-                        job.terminate();
+                        if group {
+                            terminate_process_tree(process_id).await;
+                        }
 
                         (status, stdout)
                     }
@@ -818,9 +817,6 @@ async fn capture(
         }
     })
     .await;
-
-    #[cfg(windows)]
-    job.terminate();
 
     match result {
         Ok(Ok(output)) => {
@@ -897,8 +893,28 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
         kill_group(group, Signal::KILL);
     }
 
+    #[cfg(windows)]
+    if group {
+        terminate_process_tree(process_id).await;
+    }
+
     let _ = child.kill().await;
     let _ = child.wait().await;
+}
+
+#[cfg(windows)]
+async fn terminate_process_tree(process_id: Option<u32>) {
+    let Some(process_id) = process_id else {
+        return;
+    };
+
+    let _ = Command::new("taskkill")
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
 }
 
 #[cfg(unix)]
