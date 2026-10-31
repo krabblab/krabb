@@ -13981,7 +13981,7 @@ fn windows_service_access(path: &Path, writable: bool) -> std::process::Command 
 #[cfg(any(target_os = "windows", test))]
 fn windows_service_command(action: &str, executable: &str, start: &str) -> std::process::Command {
     let mut command = std::process::Command::new("sc.exe");
-    let account = if action == "create" { "LocalSystem" } else { r"NT SERVICE\Krabb" };
+    let account = r"NT AUTHORITY\LocalService";
 
     command.args([
         action,
@@ -23109,10 +23109,11 @@ done
     }
 
     #[test]
-    fn windows_service_bootstraps_before_switching_to_an_unprivileged_account() {
-        for (action, start, account) in
-            [("create", "disabled", "LocalSystem"), ("config", "auto", r"NT SERVICE\Krabb")]
-        {
+    fn windows_service_uses_an_unprivileged_account_from_creation() {
+        for (action, start, account) in [
+            ("create", "disabled", r"NT AUTHORITY\LocalService"),
+            ("config", "auto", r"NT AUTHORITY\LocalService"),
+        ] {
             let command =
                 super::windows_service_command(action, r#""C:\Krabb\daemon.exe" --service"#, start);
             let args = command.get_args().map(|arg| arg.to_str().unwrap()).collect::<Vec<_>>();

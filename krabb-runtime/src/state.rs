@@ -2351,14 +2351,17 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
     }
 
     let (client, deliveries) = if index.version == 1 {
-        let client = load_file(root.join("state/clients/runtime.json"), BYTE_LIMIT)?
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(std::io::Error::other))
-            .transpose()?
-            .unwrap_or_default();
-        let deliveries = load_file(root.join("state/deliveries/index.json"), BYTE_LIMIT)?
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(std::io::Error::other))
-            .transpose()?
-            .unwrap_or_default();
+        let client =
+            load_file(root.join("state").join("clients").join("runtime.json"), BYTE_LIMIT)?
+                .map(|bytes| serde_json::from_slice(&bytes).map_err(std::io::Error::other))
+                .transpose()?
+                .unwrap_or_default();
+
+        let deliveries =
+            load_file(root.join("state").join("deliveries").join("index.json"), BYTE_LIMIT)?
+                .map(|bytes| serde_json::from_slice(&bytes).map_err(std::io::Error::other))
+                .transpose()?
+                .unwrap_or_default();
         (client, deliveries)
     } else {
         let missing = || {
@@ -2380,7 +2383,7 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
         .chain(deliveries.dead.into_iter().map(|key| (key, true)))
     {
         let record = load_file(
-            root.join("state/deliveries/records").join(format!("{key}.json")),
+            root.join("state").join("deliveries").join("records").join(format!("{key}.json")),
             BYTE_LIMIT,
         )?
         .ok_or_else(|| {
@@ -2441,7 +2444,7 @@ fn save_catalog(path: &Path, store: &Store) -> std::io::Result<()> {
     let deliveries = index.deliveries.expect("staged snapshot includes deliveries");
     let _ = cleanup_session_records(&root.join("records"), &index.sessions);
     let _ = cleanup_records(
-        &root.join("state/deliveries/records"),
+        &root.join("state").join("deliveries").join("records"),
         deliveries.outbox.into_iter().chain(deliveries.dead).collect(),
     );
 
@@ -2492,7 +2495,10 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
         let bytes = serde_json::to_vec(delivery).map_err(std::io::Error::other)?;
 
         let key = session_record_key(&bytes);
-        save_file(root.join("state/deliveries/records").join(format!("{key}.json")), bytes)?;
+        save_file(
+            root.join("state").join("deliveries").join("records").join(format!("{key}.json")),
+            bytes,
+        )?;
 
         if dead {
             delivery_index.dead.push(key);

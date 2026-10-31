@@ -791,6 +791,25 @@ fn record_ref(scope: &str, key: &str) -> String {
     format!("records/{}/{}.md", hex_digest(scope_hash.finalize()), hex_digest(key_hash.finalize()))
 }
 
+fn record_path(parent: &Path, record: &str) -> Option<PathBuf> {
+    let mut path = parent.to_path_buf();
+
+    for component in record.split('/') {
+        if component.is_empty()
+            || component == "."
+            || component == ".."
+            || component.contains('\\')
+            || component.contains(':')
+        {
+            return None;
+        }
+
+        path.push(component);
+    }
+
+    Some(path)
+}
+
 fn summary(value: &str) -> String {
     let mut summary = value.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -1369,7 +1388,9 @@ fn persist_at(path: Option<&std::path::Path>, state: &State) -> krabb_core::Resu
             entry.record.clone()
         };
 
-        let record_path = parent.join(record);
+        let record_path = record_path(parent, &record)
+            .ok_or_else(|| krabb_core::Error::Denied("Memory record path is invalid.".into()))?;
+
         let record_parent = record_path
             .parent()
             .ok_or_else(|| krabb_core::Error::Denied("Memory record path is invalid.".into()))?;
@@ -1417,8 +1438,10 @@ fn remove_orphan_records(path: Option<&Path>, before: &State, after: &State) {
             entry.record.clone()
         };
 
-        if !after_records.contains(&record) {
-            let _ = std::fs::remove_file(parent.join(record));
+        if !after_records.contains(&record)
+            && let Some(path) = record_path(parent, &record)
+        {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -1446,7 +1469,7 @@ mod tests {
     use super::{
         BYTE_LIMIT, CONFLICT_LIMIT, Entry, GLOBAL_INDEX_RESERVE, INDEX_LIMIT, LIMIT, State,
         VALUE_LIMIT, call, call_at, command_at, default_path, load, load_at, path, persist_at,
-        record_ref, storage,
+        record_path, record_ref, storage,
     };
 
     use krabb_core::types::Request;
@@ -1515,6 +1538,19 @@ mod tests {
     #[test]
     fn hex_digest_preserves_lowercase_byte_encoding() {
         assert_eq!(super::hex_digest([0x00, 0x0a, 0xab, 0xff]), "000aabff");
+    }
+
+    #[test]
+    fn memory_record_paths_use_portable_path_separators() {
+        let root = std::path::Path::new("memory");
+
+        assert_eq!(
+            record_path(root, "records/scope/key.md"),
+            Some(root.join("records").join("scope").join("key.md"))
+        );
+
+        assert!(record_path(root, "records/../index.json").is_none());
+        assert!(record_path(root, r"records\scope\key.md").is_none());
     }
 
     fn items() -> Arc<Mutex<State>> {

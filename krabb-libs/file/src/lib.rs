@@ -475,7 +475,9 @@ fn owner(path: &Path) -> io::Result<String> {
         },
     };
 
-    let wide = path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let wide =
+        path.as_os_str().encode_wide().map(windows_separator).chain(Some(0)).collect::<Vec<_>>();
+
     let mut descriptor = std::ptr::null_mut();
     let mut sid = std::ptr::null_mut();
     let result = unsafe {
@@ -591,7 +593,7 @@ fn protect(path: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
-    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let mut wide = path.as_os_str().encode_wide().map(windows_separator).collect::<Vec<_>>();
     wide.push(0);
     let result = unsafe {
         SetNamedSecurityInfoW(
@@ -614,6 +616,11 @@ fn protect(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn windows_separator(value: u16) -> u16 {
+    if value == b'/' as u16 { b'\\' as u16 } else { value }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -621,6 +628,13 @@ mod tests {
     };
 
     use std::fs;
+
+    #[cfg(windows)]
+    #[test]
+    fn win32_paths_use_native_separators() {
+        assert_eq!(super::windows_separator(b'/' as u16), b'\\' as u16);
+        assert_eq!(super::windows_separator(b'\\' as u16), b'\\' as u16);
+    }
 
     fn root(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("krabb-file-{name}-{}", std::process::id()));
