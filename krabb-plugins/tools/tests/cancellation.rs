@@ -68,6 +68,8 @@ async fn restart_stops_shell(name: &str, command: &str) {
     .await
     .unwrap();
 
+    let mut stderr = process.take_stderr().unwrap();
+
     {
         let call = process.call(Request::call(
             2,
@@ -83,7 +85,12 @@ async fn restart_stops_shell(name: &str, command: &str) {
         timeout(Duration::from_secs(5), async {
             loop {
                 tokio::select! {
-                    result = &mut call => panic!("shell ended before cancellation: {result:?}"),
+                    result = &mut call => {
+                        let messages = std::iter::from_fn(|| stderr.try_recv().ok())
+                            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                            .collect::<String>();
+                        panic!("shell ended before cancellation: {result:?}; plugin stderr: {messages}");
+                    },
 
                     _ = sleep(Duration::from_millis(10)) => {
                         if root.join("ready").is_file() {
@@ -143,13 +150,20 @@ async fn output_limit_cleanup_preserves_protocol_framing() {
     .await
     .unwrap();
 
+    let mut stderr = process.take_stderr().unwrap();
+
     let response = timeout(
         Duration::from_secs(30),
         process.call(Request::call(2, "shell", json!({"approve": true, "command": "output.cmd"}))),
     )
     .await
     .unwrap()
-    .unwrap();
+    .unwrap_or_else(|error| {
+        let messages = std::iter::from_fn(|| stderr.try_recv().ok())
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .collect::<String>();
+        panic!("shell call failed: {error}; plugin stderr: {messages}");
+    });
 
     assert!(response.error.unwrap().message.contains("output exceeds the size limit"));
 
