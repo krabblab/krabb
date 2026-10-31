@@ -13983,18 +13983,7 @@ fn windows_service_command(action: &str, executable: &str, start: &str) -> std::
     let mut command = std::process::Command::new("sc.exe");
     let account = r"NT AUTHORITY\LocalService";
 
-    command.args([
-        action,
-        "Krabb",
-        "binPath=",
-        executable,
-        "start=",
-        start,
-        "obj=",
-        account,
-        "password=",
-        "",
-    ]);
+    command.args([action, "Krabb", "binPath=", executable, "start=", start, "obj=", account]);
 
     command
 }
@@ -23130,8 +23119,6 @@ done
                     start,
                     "obj=",
                     account,
-                    "password=",
-                    "",
                 ]
             );
         }

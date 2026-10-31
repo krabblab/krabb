@@ -746,72 +746,9 @@ async fn capture(
         let stdout = limited(stdout);
         let stderr = limited(stderr);
         let status = child.wait();
-        tokio::pin!(stdout, stderr, status);
+        let (stdout, stderr, status) = tokio::try_join!(stdout, stderr, status)?;
 
-        tokio::select! {
-            status = &mut status => {
-                let status = status?;
-
-                #[cfg(windows)]
-                job.terminate();
-
-                let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
-
-                Ok(std::process::Output { status, stdout, stderr })
-            }
-
-            stdout = &mut stdout => {
-                let stdout = stdout?;
-                let (status, stderr) = tokio::select! {
-                    status = &mut status => {
-                        let status = status?;
-
-                        #[cfg(windows)]
-                        job.terminate();
-
-                        (status, stderr.await?)
-                    }
-
-                    stderr = &mut stderr => {
-                        let stderr = stderr?;
-                        let status = status.await?;
-
-                        #[cfg(windows)]
-                        job.terminate();
-
-                        (status, stderr)
-                    }
-                };
-
-                Ok(std::process::Output { status, stdout, stderr })
-            }
-
-            stderr = &mut stderr => {
-                let stderr = stderr?;
-                let (status, stdout) = tokio::select! {
-                    status = &mut status => {
-                        let status = status?;
-
-                        #[cfg(windows)]
-                        job.terminate();
-
-                        (status, stdout.await?)
-                    }
-
-                    stdout = &mut stdout => {
-                        let stdout = stdout?;
-                        let status = status.await?;
-
-                        #[cfg(windows)]
-                        job.terminate();
-
-                        (status, stdout)
-                    }
-                };
-
-                Ok(std::process::Output { status, stdout, stderr })
-            }
-        }
+        Ok::<_, std::io::Error>(std::process::Output { status, stdout, stderr })
     })
     .await;
 

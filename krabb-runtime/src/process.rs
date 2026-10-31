@@ -365,8 +365,7 @@ if sys.argv[1] == 'rm':
         os.kill(int(sys.argv[3]), signal.SIGKILL)
     except ProcessLookupError:
         pass
-    else:
-        pathlib.Path(__file__).with_name('stopped').touch()
+    pathlib.Path(__file__).with_name('stopped').touch()
 "#,
         )
         .unwrap();

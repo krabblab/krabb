@@ -1794,8 +1794,10 @@ mod tests {
 
     #[test]
     fn memory_persists_and_recovers_items() {
-        let path = std::env::temp_dir().join(format!("krabb-memory-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let root = std::env::temp_dir().join(format!("krabb-mem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("index.json");
         let mut state = State::default();
         state.items.insert(
             storage("global", "key"),
@@ -1852,7 +1854,7 @@ mod tests {
             );
         }
 
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(root);
 
         let _ = std::fs::remove_dir_all(lazy_root);
     }
