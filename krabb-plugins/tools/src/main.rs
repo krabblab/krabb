@@ -745,22 +745,82 @@ async fn capture(
     let result = timeout(COMMAND_LIMIT, async {
         let stdout = limited(stdout);
         let stderr = limited(stderr);
+        tokio::pin!(stdout, stderr);
         let status = child.wait();
-        let (stdout, stderr, status) = tokio::try_join!(stdout, stderr, status)?;
 
-        Ok::<_, std::io::Error>(std::process::Output { status, stdout, stderr })
+        tokio::pin!(status);
+
+        tokio::select! {
+            status = &mut status => {
+                let status = status?;
+
+                #[cfg(windows)]
+                if group {
+                    job.terminate();
+                }
+
+                let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
+
+                Ok(std::process::Output { status, stdout, stderr })
+            }
+
+            stdout = &mut stdout => {
+                let stdout = stdout?;
+                let (status, stderr) = tokio::select! {
+                    status = &mut status => {
+                        let status = status?;
+
+                        #[cfg(windows)]
+                        job.terminate();
+
+                        (status, stderr.await?)
+                    }
+
+                    stderr = &mut stderr => {
+                        let stderr = stderr?;
+                        let status = status.await?;
+
+                        #[cfg(windows)]
+                        job.terminate();
+
+                        (status, stderr)
+                    }
+                };
+
+                Ok(std::process::Output { status, stdout, stderr })
+            }
+
+            stderr = &mut stderr => {
+                let stderr = stderr?;
+                let (status, stdout) = tokio::select! {
+                    status = &mut status => {
+                        let status = status?;
+
+                        #[cfg(windows)]
+                        job.terminate();
+
+                        (status, stdout.await?)
+                    }
+
+                    stdout = &mut stdout => {
+                        let stdout = stdout?;
+                        let status = status.await?;
+
+                        #[cfg(windows)]
+                        job.terminate();
+
+                        (status, stdout)
+                    }
+                };
+
+                Ok(std::process::Output { status, stdout, stderr })
+            }
+        }
     })
     .await;
 
     #[cfg(windows)]
-    if group {
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            job.terminate();
-        });
-    } else {
-        job.terminate();
-    }
+    job.terminate();
 
     match result {
         Ok(Ok(output)) => {
