@@ -1798,7 +1798,7 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-memory-lazy-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&lazy_root);
-        let lazy_path = lazy_root.join("data/memories/index.json");
+        let lazy_path = lazy_root.join("data").join("memories").join("index.json");
 
         assert!(!lazy_path.parent().unwrap().exists());
         persist_at(Some(&lazy_path), &state).unwrap();

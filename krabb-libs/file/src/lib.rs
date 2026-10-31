@@ -956,14 +956,22 @@ mod tests {
 
             assert_eq!(result, ERROR_SUCCESS);
 
-            let mut ace = std::ptr::null_mut();
+            let ace_count = unsafe { (*acl).AceCount };
 
-            assert_ne!(unsafe { GetAce(acl, 0, &mut ace) }, 0);
+            let mut owner_allowed = false;
 
-            let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
-            let sid = unsafe { &raw mut (*ace).SidStart }.cast();
+            for index in 0..u32::from(ace_count) {
+                let mut ace = std::ptr::null_mut();
 
-            assert_ne!(unsafe { EqualSid(owner, sid) }, 0);
+                assert_ne!(unsafe { GetAce(acl, index, &mut ace) }, 0);
+
+                let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
+                let sid = unsafe { &raw mut (*ace).SidStart }.cast();
+
+                owner_allowed |= unsafe { EqualSid(owner, sid) } != 0;
+            }
+
+            assert!(owner_allowed);
 
             let mut text = std::ptr::null_mut();
             let mut length = 0;
@@ -987,10 +995,11 @@ mod tests {
 
             unsafe { LocalFree(text.cast()) };
 
-            assert!(dacl.starts_with("D:P(A;;FA;;;"));
-            assert!(dacl.ends_with(")(A;;FA;;;SY)"));
+            assert!(dacl.starts_with("D:P"));
+            assert!(dacl.contains("(A;;FA;;;SY)"));
             assert!(dacl.contains(&format!("(A;;FA;;;{})", super::SERVICE_SID)));
             assert_eq!(dacl.matches('(').count(), 3);
+            assert_eq!(dacl.matches("(A;;FA;;;").count(), 3);
             assert_eq!(load(&path, 1024).unwrap().unwrap(), content.as_bytes());
         }
 

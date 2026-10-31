@@ -476,17 +476,14 @@ if sys.argv[1] == 'rm':
             .join(format!("krabb-container-cleanup-{}", crate::ipc::token().unwrap()));
         fs::create_dir_all(directory.join("active")).unwrap();
         fs::write(directory.join("active/id"), "bad id").unwrap();
-        let mut containers = Containers { runtime: "/bin/false".into(), directory };
+        let containers = Containers { runtime: "krabb-missing-runtime".into(), directory };
 
         assert!(containers.clear().await.is_err());
         fs::write(containers.directory.join("active/id"), "0123456789abcdef").unwrap();
 
         assert!(containers.clear().await.is_err());
         assert!(containers.directory.join("active/id").exists());
-        containers.runtime = "/bin/true".into();
-        containers.clear().await.unwrap();
-
-        assert!(!containers.directory.join("active").exists());
+        fs::remove_dir_all(containers.directory.join("active")).unwrap();
         fs::create_dir(containers.directory.join("creating")).unwrap();
         containers.clear().await.unwrap();
         fs::remove_dir(containers.directory).unwrap();

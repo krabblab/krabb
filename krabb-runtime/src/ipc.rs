@@ -5469,7 +5469,7 @@ for line in sys.stdin:
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let _owner = crate::daemon_lock(&root).unwrap();
-        let catalog = root.join("data/sessions/index.json");
+        let catalog = root.join("data").join("sessions").join("index.json");
         let mut store = Store::load(&catalog).unwrap();
         store.create("active", "model").unwrap();
         store

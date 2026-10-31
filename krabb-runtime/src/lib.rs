@@ -13981,6 +13981,8 @@ fn windows_service_access(path: &Path, writable: bool) -> std::process::Command 
 #[cfg(any(target_os = "windows", test))]
 fn windows_service_command(action: &str, executable: &str, start: &str) -> std::process::Command {
     let mut command = std::process::Command::new("sc.exe");
+    let account = if action == "create" { "LocalSystem" } else { r"NT SERVICE\Krabb" };
+
     command.args([
         action,
         "Krabb",
@@ -13989,7 +13991,7 @@ fn windows_service_command(action: &str, executable: &str, start: &str) -> std::
         "start=",
         start,
         "obj=",
-        r"NT SERVICE\Krabb",
+        account,
         "password=",
         "",
     ]);
@@ -14001,12 +14003,18 @@ fn windows_service_command(action: &str, executable: &str, start: &str) -> std::
 fn windows_service_create(
     executable: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let output = command_output(&mut windows_service_command("create", executable, "auto"))?;
+    let output = command_output(&mut windows_service_command("create", executable, "disabled"))?;
 
     if !output.status.success() {
         return Err(
             format!("Could not install the service. {}", windows_command_detail(&output)).into()
         );
+    }
+
+    if let Err(error) = windows_service_configure(executable, "auto") {
+        let _ = command_output(std::process::Command::new("sc.exe").args(["delete", "Krabb"]));
+
+        return Err(error);
     }
 
     Ok(())
@@ -23101,13 +23109,12 @@ done
     }
 
     #[test]
-    fn windows_service_creation_and_reconfiguration_use_an_unprivileged_account() {
-        for action in ["create", "config"] {
-            let command = super::windows_service_command(
-                action,
-                r#""C:\Krabb\daemon.exe" --service"#,
-                "auto",
-            );
+    fn windows_service_bootstraps_before_switching_to_an_unprivileged_account() {
+        for (action, start, account) in
+            [("create", "disabled", "LocalSystem"), ("config", "auto", r"NT SERVICE\Krabb")]
+        {
+            let command =
+                super::windows_service_command(action, r#""C:\Krabb\daemon.exe" --service"#, start);
             let args = command.get_args().map(|arg| arg.to_str().unwrap()).collect::<Vec<_>>();
 
             assert_eq!(command.get_program(), "sc.exe");
@@ -23119,9 +23126,9 @@ done
                     "binPath=",
                     r#""C:\Krabb\daemon.exe" --service"#,
                     "start=",
-                    "auto",
+                    start,
                     "obj=",
-                    r"NT SERVICE\Krabb",
+                    account,
                     "password=",
                     "",
                 ]
@@ -23496,7 +23503,9 @@ done
             service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: false }))
                 .is_err()
         );
+
         service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
+
         super::service_at_with_status(
             &path,
             ServiceCommand::Status,
@@ -23531,21 +23540,23 @@ done
 
         assert!(restarted);
 
-        let mut stopped = false;
-        service_at_with(
-            &path,
-            ServiceCommand::Remove(super::ServiceRemove { yes: true }),
-            |_, action| {
-                assert_eq!(action, super::ServiceAction::Stop);
-                stopped = true;
-                Ok(())
-            },
-        )
-        .unwrap();
+        {
+            let mut stopped = false;
+            service_at_with(
+                &path,
+                ServiceCommand::Remove(super::ServiceRemove { yes: true }),
+                |_, action| {
+                    assert_eq!(action, super::ServiceAction::Stop);
+                    stopped = true;
+                    Ok(())
+                },
+            )
+            .unwrap();
 
-        assert!(stopped);
-        assert!(!path.exists());
-        service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();
+            assert!(stopped);
+            assert!(!path.exists());
+            service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();
+        }
     }
 
     #[test]

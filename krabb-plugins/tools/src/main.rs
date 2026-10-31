@@ -2596,7 +2596,7 @@ mod tests {
         let command = {
             fs::write(
                 root.join("background.cmd"),
-                "@echo off\r\necho ready > ready\r\nping -n 3 127.0.0.1 > nul\r\necho leaked > marker\r\n",
+                "@echo off\r\necho ready > ready\r\nping -n 20 127.0.0.1 > nul\r\necho leaked > marker\r\n",
             )
             .unwrap();
             fs::write(
