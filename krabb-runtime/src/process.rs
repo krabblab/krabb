@@ -344,7 +344,7 @@ for line in sys.stdin:
     elif method == 'shell':
         directory = pathlib.Path(os.environ['KRABB_SANDBOX_TRACKING']) / 'active'
         directory.mkdir()
-        child = subprocess.Popen([sys.executable, '-c', 'import time,pathlib; time.sleep(2); pathlib.Path("leaked").touch()'], cwd=root, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], cwd=root, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         (directory / 'id').write_text(f'{child.pid:012d}')
         (root / 'ready').touch()
         continue
@@ -365,6 +365,8 @@ if sys.argv[1] == 'rm':
         os.kill(int(sys.argv[3]), signal.SIGKILL)
     except ProcessLookupError:
         pass
+    else:
+        pathlib.Path(__file__).with_name('stopped').touch()
 "#,
         )
         .unwrap();
@@ -438,16 +440,14 @@ if sys.argv[1] == 'rm':
         timeout(Duration::from_secs(5), finished).await.unwrap().unwrap();
 
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
-        tokio::time::sleep(Duration::from_millis(2100)).await;
-
-        assert!(!root.join("leaked").exists());
+        assert!(root.join("stopped").exists());
         fs::remove_file(root.join("ready")).unwrap();
+        fs::remove_file(root.join("stopped")).unwrap();
         let mut process = process.lock().await.take().unwrap();
         start_shell(&mut process, &root).await;
         process.stop().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(2100)).await;
 
-        assert!(!root.join("leaked").exists());
+        assert!(root.join("stopped").exists());
         assert!(!directory.exists());
         fs::remove_dir_all(root).unwrap();
     }

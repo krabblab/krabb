@@ -9420,6 +9420,8 @@ fn worktree_command(root: &Path) -> std::process::Command {
         .env_remove("GIT_CONFIG")
         .env_remove("GIT_CONFIG_PARAMETERS")
         .env_remove("GIT_CONFIG_COUNT")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", null)
         .env("GIT_NO_LAZY_FETCH", "1")
         .args(["-c", &format!("core.hooksPath={null}")])
         .args(["-c", "core.fsmonitor=false", "-c", "submodule.recurse=false"])
