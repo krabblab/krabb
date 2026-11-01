@@ -126,6 +126,7 @@ mod tests {
     #[test]
     fn blocks_process_group_syscalls() {
         let mut command = Command::new("/bin/true");
+
         restrict_process_group(&mut command);
 
         // SAFETY: This callback only makes syscalls and reads errno after fork.

@@ -10,6 +10,7 @@ use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 use base64::Engine;
 #[cfg(target_os = "linux")]
 use krabb_core::jsonl;
+
 use krabb_core::{
     plugin::serve_events_concurrent,
     types::{Capability, Hello, Protocol, Request, Response, ToolSpec},
@@ -53,6 +54,7 @@ async fn main() -> std::process::ExitCode {
 async fn plugin_main() -> krabb_core::Result<()> {
     let state = Arc::new(Mutex::new(ComputerState::default()));
     let reaper_state = Arc::clone(&state);
+
     let reaper = tokio::spawn(async move {
         let mut interval = tokio::time::interval(SESSION_REAPER);
 
@@ -129,6 +131,7 @@ async fn handle(
 
     let arguments = &params["arguments"];
     let mut state = state.lock().await;
+
     expire_session(&mut state).await?;
 
     if method != "computer_open" && method != "computer_close" {
@@ -273,6 +276,7 @@ fn open_native(state: &mut ComputerState, owner: &str) -> krabb_core::Result<Val
     let dimensions = native::display_info()?;
     let session_id = session_id()?;
     let display = format!("{}x{}", dimensions["width"], dimensions["height"]);
+
     state.owner = Some(owner.into());
     state.session_id = Some(session_id.clone());
     state.last_used = Some(std::time::Instant::now());
@@ -352,6 +356,7 @@ async fn open_with_config(
 
     if !auth.success() {
         let _ = fs::remove_dir_all(&auth_dir);
+
         return Err(denied("Could not create X11 authorization."));
     }
 
@@ -363,6 +368,7 @@ async fn open_with_config(
     }
 
     let mut server_command = command(xvfb);
+
     server_command
         .env_clear()
         .env("DISPLAY", display)
@@ -405,6 +411,7 @@ async fn open_with_config(
 
     if !matches!(ready, Ok(Ok(()))) {
         stop_owned_process(server, server_group).await;
+
         let _ = fs::remove_dir_all(&auth_dir);
 
         return match ready {
@@ -429,6 +436,7 @@ async fn open_with_config(
     };
 
     let application_group = application.as_ref().and_then(Child::id);
+
     state.owner = Some(owner.into());
     state.session_id = Some(session_id.clone());
     state.last_used = Some(std::time::Instant::now());
@@ -876,6 +884,7 @@ async fn linux_screenshot(
     }
 
     let output_format = format!("{format}:-");
+
     let output = timeout(
         ACTION_TIME,
         desktop_command("import", display, authority)
@@ -1010,6 +1019,7 @@ fn desktop_application(
     home: &std::path::Path,
 ) -> Command {
     let mut command = Command::new(program);
+
     command
         .env_clear()
         .env("DISPLAY", display)
@@ -1054,6 +1064,7 @@ async fn stop_owned_process(mut child: Child, process_id: Option<u32>) {
     }
 
     let stopped = tokio::time::timeout(Duration::from_millis(200), child.wait()).await.is_ok();
+
     kill_owned_group(process_id);
 
     if !stopped {
@@ -1064,6 +1075,7 @@ async fn stop_owned_process(mut child: Child, process_id: Option<u32>) {
 
 fn session_id() -> krabb_core::Result<String> {
     let mut bytes = [0_u8; 24];
+
     getrandom::fill(&mut bytes)
         .map_err(|error| denied(format!("Session ID generation failed: {error}")))?;
 
@@ -1080,6 +1092,7 @@ fn startup_config() -> krabb_core::Result<Option<(std::ffi::OsString, Vec<std::f
     }
 
     let arguments = std::env::var("KRABB_COMPUTER_STARTUP_ARGS").unwrap_or_else(|_| "[]".into());
+
     let arguments = serde_json::from_str::<Vec<String>>(&arguments)
         .map_err(|_| denied("KRABB_COMPUTER_STARTUP_ARGS must be a JSON array of strings."))?;
 
@@ -1119,11 +1132,13 @@ fn desktop_command(program: &str, display: &str, authority: &std::path::Path) ->
 #[cfg(target_os = "linux")]
 fn auth_directory() -> krabb_core::Result<PathBuf> {
     let mut random = [0_u8; 16];
+
     getrandom::fill(&mut random)
         .map_err(|error| denied(format!("Could not create X11 session: {error}")))?;
     let name = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
 
     let directory = std::env::temp_dir().join(format!("krabb-computer-{name}"));
+
     fs::create_dir(&directory).map_err(krabb_core::Error::Io)?;
 
     #[cfg(unix)]
@@ -1283,6 +1298,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                     value["button"] = json!({"type":"string","enum":["left","middle","right"]});
                     value
                 },
+
                 &["session_id", "x", "y"],
             ),
         ),
@@ -1295,6 +1311,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                     value["button"] = json!({"type":"string","enum":["left","middle","right"]});
                     value
                 },
+
                 &["session_id", "x", "y"],
             ),
         ),
@@ -1309,6 +1326,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                     value["button"] = json!({"type":"string","enum":["left","middle","right"]});
                     value
                 },
+
                 &["session_id", "x", "y", "to_x", "to_y"],
             ),
         ),
@@ -1321,6 +1339,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                     value["amount"] = json!({"type":"integer","minimum":-20,"maximum":20});
                     value
                 },
+
                 &["session_id", "x", "y", "amount"],
             ),
         ),
@@ -1360,6 +1379,7 @@ mod tests {
 
     use krabb_core::types::Request;
     use serde_json::json;
+
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -1372,6 +1392,7 @@ mod tests {
 
     fn fake_commands() -> &'static PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(1);
+
         TEST_COMMAND_DIRECTORY.get_or_init(|| {
             let directory = std::env::temp_dir().join(format!(
                 "krabb-computer-commands-{}-{}",
@@ -1444,6 +1465,7 @@ mod tests {
     #[test]
     fn enforces_owner_for_a_claimed_display() {
         let mut state = ComputerState::default();
+
         state.owner = Some("owner-a".into());
         state.session_id = Some("session-a".into());
         state.display = Some(":99".into());
@@ -1460,6 +1482,7 @@ mod tests {
     #[tokio::test]
     async fn lists_tools_without_accessing_a_display() {
         let state = Mutex::new(ComputerState::default());
+
         let response = super::handle(&state, Request::call(1, "tools/list", json!({})))
             .await
             .unwrap()
@@ -1473,6 +1496,7 @@ mod tests {
         let _ = fake_commands();
         let mut initial = ComputerState::default();
         let application = TEST_COMMAND_DIRECTORY.get().unwrap().join("desktop-app");
+
         let opened = open_with_config(
             &mut initial,
             "owner-a",
@@ -1487,10 +1511,12 @@ mod tests {
         assert_eq!(opened["display"], ":99");
         assert!(opened["session_id"].as_str().is_some());
         assert!(initial.application.is_some());
+
         let authority = initial.auth_dir.as_ref().unwrap().join("Xauthority");
         let auth_dir = initial.auth_dir.clone().unwrap();
 
         assert!(authority.is_file());
+
         let state = Mutex::new(initial);
 
         let displays = invoke(&state, "owner-a", "computer_displays", json!({})).await.unwrap();
@@ -1538,11 +1564,14 @@ mod tests {
     async fn expires_idle_desktop_sessions_and_removes_their_processes_and_credentials() {
         let _ = fake_commands();
         let mut state = ComputerState::default();
+
         let opened =
             open_with_config(&mut state, "owner-a", "isolated", ":99", "Xvfb", None).await.unwrap();
 
         let auth_dir = state.auth_dir.clone().unwrap();
+
         state.last_used = Some(Instant::now() - SESSION_IDLE - Duration::from_secs(1));
+
         let state = Mutex::new(state);
 
         assert!(invoke(&state, "owner-a", "computer_displays", json!({})).await.is_err());
@@ -1554,6 +1583,7 @@ mod tests {
     #[tokio::test]
     async fn releases_held_input_after_an_action_is_canceled() {
         let calls = fake_commands().join("xdotool-calls.log");
+
         fs::write(&calls, "").unwrap();
         drop(InputRelease::new(":99", PathBuf::from("/tmp/authority")));
 

@@ -25,6 +25,10 @@ and daemon changes remain visible to one another. A busy lock is retried for up
 to five seconds before the operation reports an error. Access, size-limit, and I/O
 errors leave the index and active memories intact and fail the operation. Only
 invalid file contents are quarantined for corruption recovery.
+Updated values use separate Markdown revision paths until the index is published;
+failed publication preserves the records referenced by the committed index.
+Always use the record paths in the current index. Superseded records are removed
+after a successful update, and older record paths remain readable until then.
 Default path selection also takes the writer locks and recovers interrupted saves
 before checking either the current index or the legacy `KRABB_HOME/memory/index.json`.
 An interrupted replacement therefore keeps using the existing store.

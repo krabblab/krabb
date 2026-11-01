@@ -179,6 +179,8 @@ pub struct Store {
     pub seen: BTreeMap<String, u64>,
     #[serde(skip)]
     path: Option<PathBuf>,
+    #[serde(skip)]
+    pub(crate) media_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -278,6 +280,7 @@ impl Store {
             }
 
             let message_count = session.messages.len();
+
             compact_messages(&mut session.messages);
             changed |= session.messages.len() != message_count;
 
@@ -302,6 +305,7 @@ impl Store {
 
             if !tui_reservation && (session.status == "working" || session.inflight.is_some()) {
                 let roles = std::mem::take(&mut session.inflight_roles);
+
                 session.stream_delivery = None;
 
                 if let Some(message) = session.inflight.take()
@@ -387,19 +391,35 @@ impl Store {
         };
 
         if session_catalog(path) {
-            return save_catalog(path, self);
+            save_catalog(path, self)?;
+        } else {
+            let bytes = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+
+            if bytes.len() as u64 > BYTE_LIMIT {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    "Session state exceeds the size limit.",
+                ));
+            }
+
+            save_file(path, bytes)?;
         }
 
-        let bytes = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        let root = self.media_root.clone().or_else(|| {
+            session_catalog(path)
+                .then(|| path.parent()?.parent()?.parent().map(|home| home.join("media")))
+                .flatten()
+        });
 
-        if bytes.len() as u64 > BYTE_LIMIT {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::FileTooLarge,
-                "Session state exceeds the size limit.",
-            ));
+        if let Some(root) = root {
+            // Reclaim only after the new reference set is durable. Failure cannot undo a save.
+            if let Err(error) = super::media::reclaim(&root, self, self.deferred.values().flatten())
+            {
+                tracing::warn!(kind = ?error.kind(), "Retained media cleanup failed.");
+            }
         }
 
-        save_file(path, bytes)
+        Ok(())
     }
 
     pub fn create(
@@ -463,6 +483,7 @@ impl Store {
         }
 
         let now = now();
+
         self.change(|store| {
             store.sessions.insert(
                 id.clone(),
@@ -724,6 +745,7 @@ impl Store {
         let channel = channel.into();
         let chat = chat.into();
         let text = text.into();
+
         self.change(|store| {
             if !store.outbox.iter().any(|delivery| delivery.id == id) {
                 store.outbox.push(Delivery {
@@ -1102,6 +1124,7 @@ impl Store {
         let chat = chat.into();
         let text = text.into();
         let private = self.sessions.get(session).is_some_and(|session| session.private);
+
         let uncertain_delivery = self.outbox.iter().any(|delivery| {
             delivery.id == id
                 && matches!(delivery.status, DeliveryStatus::Sending | DeliveryStatus::Uncertain)
@@ -1194,6 +1217,7 @@ impl Store {
         let channel = channel.into();
         let chat = chat.into();
         let text = text.into();
+
         let Some(current) = self.sessions.get(session) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -1517,6 +1541,7 @@ impl Store {
         let now = now();
 
         let target = target.to_owned();
+
         self.change(|store| {
             let messages = source
                 .messages
@@ -1638,6 +1663,7 @@ impl Store {
         };
 
         let records = path.parent().expect("catalog has parent").join("records");
+
         remove_session_records(&records, id)
     }
 
@@ -1832,12 +1858,14 @@ impl Store {
         }
 
         let mut candidate = serde_json::to_value(&*self).map_err(std::io::Error::other)?;
+
         let deferred = candidate
             .get_mut("deferred")
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| std::io::Error::other("Session state has invalid deferred storage."))?;
 
         let events = deferred.entry(channel).or_insert_with(|| serde_json::json!([]));
+
         events
             .as_array_mut()
             .ok_or_else(|| std::io::Error::other("Session state has invalid deferred events."))?
@@ -1920,6 +1948,7 @@ impl Store {
         let deferred = self.deferred.clone();
         let deferred_acknowledged = self.deferred_acknowledged.clone();
         let path = self.path.clone();
+
         update(self);
 
         if let Err(error) = self.save() {
@@ -1998,6 +2027,7 @@ fn seen_key(channel: &str, id: &str) -> String {
     }
 
     let mut hash = Sha256::new();
+
     hash.update(key.as_bytes());
     format!("#oversized:{}", super::hex_digest(hash.finalize()))
 }
@@ -2016,6 +2046,7 @@ pub fn remove_worktree(root: &Path, id: &str) -> std::io::Result<()> {
 
     let root = std::fs::canonicalize(root)?;
     let path = root.join(".krabb/worktrees").join(id);
+
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -2039,6 +2070,7 @@ pub fn remove_worktree(root: &Path, id: &str) -> std::io::Result<()> {
     }
 
     let mut command = super::git_command();
+
     command
         .args(["-C", &root.display().to_string(), "worktree", "remove"])
         .arg(path)
@@ -2048,6 +2080,7 @@ pub fn remove_worktree(root: &Path, id: &str) -> std::io::Result<()> {
 
     let mut child = command.spawn()?;
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
+
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -2125,6 +2158,7 @@ pub fn rename_worktree(root: &Path, source: &str, target: &str) -> std::io::Resu
     }
 
     let mut command = super::git_command();
+
     command
         .args(["-C", &root.display().to_string(), "worktree", "move"])
         .arg(&old_path)
@@ -2135,6 +2169,7 @@ pub fn rename_worktree(root: &Path, source: &str, target: &str) -> std::io::Resu
 
     let mut child = command.spawn()?;
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
+
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -2202,6 +2237,7 @@ fn migrate_delivery_routes(
 
             Some(_) if require_match => {
                 delivery.status = DeliveryStatus::Uncertain;
+
                 delivery.last_error = Some(
                     "The legacy delivery route could not be matched to exactly one session; verify the channel before retrying.".into(),
                 );
@@ -2213,6 +2249,7 @@ fn migrate_delivery_routes(
 
             None if require_match => {
                 delivery.status = DeliveryStatus::Uncertain;
+
                 delivery.last_error = Some(
                     "The legacy delivery route could not be matched to exactly one session; verify the channel before retrying.".into(),
                 );
@@ -2325,6 +2362,7 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
         }
 
         let record_path = root.join("records").join(format!("{key}.json"));
+
         let record = load_file(&record_path, BYTE_LIMIT)?.ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Session record is missing.")
         })?;
@@ -2438,11 +2476,13 @@ fn migrate_schedule_sessions(
 
 fn save_catalog(path: &Path, store: &Store) -> std::io::Result<()> {
     let index = stage_catalog(path, store)?;
+
     save_json(path, &index)?;
 
     let root = path.parent().expect("catalog has parent");
     let deliveries = index.deliveries.expect("staged snapshot includes deliveries");
     let _ = cleanup_session_records(&root.join("records"), &index.sessions);
+
     let _ = cleanup_records(
         &root.join("state").join("deliveries").join("records"),
         deliveries.outbox.into_iter().chain(deliveries.dead).collect(),
@@ -2473,6 +2513,7 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
         }
 
         let key = session_record_key(&bytes);
+
         save_file(root.join("records").join(format!("{key}.json")), bytes)?;
         sessions.insert(id.clone(), key);
     }
@@ -2495,6 +2536,7 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
         let bytes = serde_json::to_vec(delivery).map_err(std::io::Error::other)?;
 
         let key = session_record_key(&bytes);
+
         save_file(
             root.join("state").join("deliveries").join("records").join(format!("{key}.json")),
             bytes,
@@ -2533,6 +2575,7 @@ fn cleanup_session_records(
         }
 
         let name = entry.file_name().to_string_lossy().into_owned();
+
         let Some(key) = name.strip_suffix(".json") else {
             continue;
         };
@@ -2577,6 +2620,7 @@ fn remove_session_records(directory: &Path, id: &str) -> std::io::Result<()> {
         }
 
         let name = entry.file_name().to_string_lossy().into_owned();
+
         let Some(key) = name.strip_suffix(".json") else {
             continue;
         };
@@ -2590,6 +2634,7 @@ fn remove_session_records(directory: &Path, id: &str) -> std::io::Result<()> {
         }
 
         let bytes = std::fs::read(entry.path())?;
+
         let Ok(session) = serde_json::from_slice::<Session>(&bytes) else {
             continue;
         };
@@ -2740,11 +2785,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("data/sessions/index.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.commit("telegram", "event", Some(9)).unwrap();
         store.reply("main", message(2, "main"), "reply", "telegram", "7", None, "answer").unwrap();
+
         let mut index = super::stage_catalog(&path, &store).unwrap();
         let state = path.parent().unwrap().join("state");
+
         super::save_json(&state.join("clients/runtime.json"), &index.clients.take().unwrap())
             .unwrap();
         super::save_json(&state.join("deliveries/index.json"), &index.deliveries.take().unwrap())
@@ -2757,6 +2805,7 @@ mod tests {
 
         assert_eq!(loaded.outbox.len(), 1);
         assert_eq!(loaded.offset("telegram"), 9);
+
         loaded.outbox.clear();
         loaded.save().unwrap();
         std::fs::write(state.join("clients/runtime.json"), b"invalid legacy file").unwrap();
@@ -2765,6 +2814,7 @@ mod tests {
 
         assert!(upgraded.outbox.is_empty());
         assert_eq!(upgraded.offset("telegram"), 9);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2785,6 +2835,7 @@ mod tests {
         store.phase("unsafe", "unsafe").unwrap();
         store.sessions.get_mut("cancelled").unwrap().status = "cancelled".into();
         store.save().unwrap();
+
         let recovered = Store::load(&path).unwrap();
 
         assert_eq!(recovered.sessions["safe"].queued.len(), 1);
@@ -2797,6 +2848,7 @@ mod tests {
         assert!(recovered.sessions["unsafe"].queued.is_empty());
         assert!(recovered.sessions["cancelled"].queued.is_empty());
         assert_eq!(Store::load(&path).unwrap().sessions["safe"].queued.len(), 1);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2806,9 +2858,11 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-schedule-state-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
 
         let mut store = Store::load(root.join("sessions.json")).unwrap();
+
         store.create("origin", "model").unwrap();
         store
             .append_notice(
@@ -2831,6 +2885,7 @@ mod tests {
         assert!(!store.outbox.last().unwrap().private);
 
         drop(store);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2839,10 +2894,12 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-replace-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
 
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "local").unwrap();
         store.append("main", message(1, "main")).unwrap();
         store.reserve("main", "owner".into()).unwrap();
@@ -2874,6 +2931,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "local").unwrap();
 
         for id in 0..=LIMIT {
@@ -2886,16 +2944,22 @@ mod tests {
 
         assert_eq!(loaded.sessions["main"].messages.len(), LIMIT);
         assert_eq!(loaded.sessions["main"].status, "idle");
+
         let mut store = loaded;
+
         store.set_status("main", "working").unwrap();
+
         let recovered = Store::load(path.clone()).unwrap();
 
         assert_eq!(recovered.sessions["main"].status, "interrupted");
         assert!(!std::fs::metadata(path).unwrap().permissions().readonly());
+
         let large = root.join("large.json");
+
         std::fs::write(&large, vec![b'x'; 32 * 1024 * 1024 + 1]).unwrap();
 
         assert!(Store::load(large).is_err());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2930,6 +2994,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-state-fork-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let mut store = Store::load(root.join("sessions.json")).unwrap();
+
         store.create("main", "local").unwrap();
         store.push("main", message(1, "main")).unwrap();
         store.fork("main", "copy").unwrap();
@@ -2937,6 +3002,7 @@ mod tests {
         assert_eq!(store.sessions["copy"].messages.len(), 1);
         assert!(valid("copy-2"));
         assert!(!valid("../escape"));
+
         store.remove("copy").unwrap();
 
         for id in 0..LIMIT - 1 {
@@ -2944,6 +3010,7 @@ mod tests {
         }
 
         assert!(store.fork("main", "copy").is_err());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2984,7 +3051,9 @@ mod tests {
         assert!(store.ensure("schedule-42", "local").is_err());
 
         store.create("user-session", "local").unwrap();
+
         let mut user_session = store.sessions.remove("user-session").unwrap();
+
         user_session.id = "schedule-42".into();
         store.sessions.insert(user_session.id.clone(), user_session);
         store.save().unwrap();
@@ -3014,6 +3083,7 @@ mod tests {
 
         let flat_path = root.join("sessions.json");
         let mut flat = Store::load(&flat_path).unwrap();
+
         flat.ensure_schedule("schedule-42", "local").unwrap();
         flat.save().unwrap();
 
@@ -3030,6 +3100,7 @@ mod tests {
 
         let catalog_path = root.join("data/sessions/index.json");
         let mut catalog = Store::load(&catalog_path).unwrap();
+
         catalog.ensure_schedule("schedule-43", "local").unwrap();
         catalog.save().unwrap();
 
@@ -3037,6 +3108,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&catalog_path).unwrap()).unwrap();
 
         let key = index["sessions"]["schedule-43"].as_str().unwrap().to_owned();
+
         let record_path =
             catalog_path.parent().unwrap().join("records").join(format!("{key}.json"));
 
@@ -3044,8 +3116,10 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
 
         record.as_object_mut().unwrap().remove("scheduled");
+
         let record = serde_json::to_vec(&record).unwrap();
         let migrated_key = super::session_record_key(&record);
+
         save_file(
             catalog_path.parent().unwrap().join("records").join(format!("{migrated_key}.json")),
             &record,
@@ -3069,6 +3143,7 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let mut store = Store::load(root.join("sessions.json")).unwrap();
+
         store.create("old", "local").unwrap();
         store.push("old", message(1, "old")).unwrap();
 
@@ -3080,6 +3155,7 @@ mod tests {
         assert!(store.rename_session("missing", "other").is_err());
         assert!(store.rename_session("new", "new").is_err());
         assert!(store.rename_session("new", "../escape").is_err());
+
         store.create("taken", "local").unwrap();
 
         assert!(store.rename_session("new", "taken").is_err());
@@ -3094,6 +3170,7 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let mut store = Store::load(root.join("sessions.json")).unwrap();
+
         store.create("telegram-123", "local").unwrap();
         store.route("telegram-123", "telegram", "123", None, true).unwrap();
 
@@ -3113,16 +3190,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("saved", "local").unwrap();
 
         store.archive_session("saved", true).unwrap();
 
         assert!(store.sessions["saved"].archived);
+
         let mut store = Store::load(&path).unwrap();
+
         store.archive_session("saved", false).unwrap();
 
         assert!(!store.sessions["saved"].archived);
         assert!(store.archive_session("missing", true).is_err());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3136,6 +3217,7 @@ mod tests {
 
         for id in 0..=LIMIT {
             let id = format!("session-{id}");
+
             sessions.insert(
                 id.clone(),
                 serde_json::json!({
@@ -3158,6 +3240,7 @@ mod tests {
         let store = Store::load(&path).unwrap();
 
         assert_eq!(store.sessions.len(), LIMIT);
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -3166,13 +3249,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-state-errors-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let malformed = root.join("broken.json");
+
         std::fs::write(&malformed, "not json").unwrap();
 
         assert!(Store::load(malformed).is_err());
 
         let invalid = root.join("invalid.json");
+
         std::fs::write(
             &invalid,
             r#"{"sessions":{"Bad":{"id":"Bad","model":"model","messages":[],"status":"idle","created":0,"updated":0}}}"#,
@@ -3186,6 +3273,7 @@ mod tests {
 
         assert!(store.create("Bad", "model").is_err());
         assert!(store.create("blank", "").is_err());
+
         store.ensure("main", "model").unwrap();
         store.ensure("main", "other").unwrap();
         store.set_model("main", "next").unwrap();
@@ -3193,12 +3281,15 @@ mod tests {
         assert_eq!(store.sessions["main"].model, "next");
         assert!(store.set_model("main", "").is_err());
         assert!(store.set_model("missing", "next").is_err());
+
         store.set_workspace("main", Some("/tmp")).unwrap();
 
         assert_eq!(store.sessions["main"].workspace.as_deref(), Some("/tmp"));
+
         store.fork("main", "workspace-copy").unwrap();
 
         assert_eq!(store.sessions["workspace-copy"].workspace.as_deref(), Some("/tmp"));
+
         store.set_workspace("main", None).unwrap();
 
         assert!(store.sessions["main"].workspace.is_none());
@@ -3209,20 +3300,25 @@ mod tests {
         assert!(store.set_status("missing", "working").is_err());
         assert!(store.fork("missing", "copy").is_err());
         assert!(store.fork("main", "bad_id").is_err());
+
         store.fork("main", "copy").unwrap();
 
         assert!(store.fork("main", "copy").is_err());
         assert!(store.cancel("missing").is_err());
         assert!(store.remove("missing").is_err());
+
         store.remove("copy").unwrap();
 
         assert!(!store.sessions.contains_key("copy"));
 
         let blocker = root.join("blocker");
+
         std::fs::write(&blocker, "file").unwrap();
+
         let mut failed = Store::load(blocker.join("sessions.json")).unwrap();
 
         assert!(failed.create("safe", "model").is_err());
+
         failed.sessions.insert(
             "safe".into(),
             Session {
@@ -3276,9 +3372,11 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
 
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -3289,6 +3387,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "codex/model").unwrap();
         store.set_context_usage("main", ContextUsage { used: 12345, limit: 128000 }).unwrap();
 
@@ -3302,6 +3401,7 @@ mod tests {
         loaded.set_model("main", "other/model").unwrap();
 
         assert_eq!(loaded.sessions["main"].context_usage, None);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3312,6 +3412,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store
             .reply("main", message(1, "main"), "delivery", "telegram", "7", None, "hello")
@@ -3323,17 +3424,22 @@ mod tests {
 
         assert_eq!(store.outbox[0].attempts, 0);
         assert_eq!(store.outbox.len(), 1);
+
         store.retry("delivery").unwrap();
 
         assert_eq!(store.outbox[0].attempts, 1);
+
         let loaded = Store::load(&path).unwrap();
 
         assert_eq!(loaded.outbox[0].text, "hello");
+
         let mut loaded = loaded;
+
         loaded.ack("missing").unwrap();
         loaded.ack("delivery").unwrap();
 
         assert!(loaded.outbox.is_empty());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3343,6 +3449,7 @@ mod tests {
             .join(format!("krabb-state-legacy-delivery-{}", std::process::id()));
 
         let path = root.join("sessions.json");
+
         let document = serde_json::json!({
             "sessions": {
                 "signal-group": {
@@ -3357,6 +3464,7 @@ mod tests {
                     "updated": 0
                 }
             },
+
             "outbox": [{
                 "id": "signal-event",
                 "channel": "signal",
@@ -3368,15 +3476,19 @@ mod tests {
         });
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
         let store = Store::load(&path).unwrap();
 
         assert!(!store.outbox[0].private);
+
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
 
         assert_eq!(saved["outbox"][0]["private"], false);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3386,6 +3498,7 @@ mod tests {
             .join(format!("krabb-state-unresolved-delivery-{}", std::process::id()));
 
         let path = root.join("sessions.json");
+
         let session = serde_json::json!({
             "id": "signal-group",
             "model": "model",
@@ -3408,7 +3521,9 @@ mod tests {
         });
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         std::fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({
@@ -3423,6 +3538,7 @@ mod tests {
 
         assert_eq!(store.outbox[0].status, DeliveryStatus::Uncertain);
         assert!(store.outbox[0].last_error.is_some());
+
         std::fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({
@@ -3440,6 +3556,7 @@ mod tests {
                         "updated": 0
                     }
                 },
+
                 "outbox": [delivery]
             }))
             .unwrap(),
@@ -3450,6 +3567,7 @@ mod tests {
 
         assert_eq!(store.outbox[0].status, DeliveryStatus::Uncertain);
         assert!(store.outbox[0].last_error.is_some());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3458,6 +3576,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-state-stream-{}", std::process::id()));
 
         let mut store = Store::load(root.join("sessions.json")).unwrap();
+
         store.create("main", "model").unwrap();
         store.begin("main", message(1, "main")).unwrap();
         store.start_stream("main", "telegram-1", "telegram", "7", None, "Working…").unwrap();
@@ -3477,6 +3596,7 @@ mod tests {
 
         assert_eq!(loaded.outbox[0].message_id.as_deref(), Some("9"));
         assert_eq!(loaded.outbox[0].status, DeliveryStatus::Pending);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3488,6 +3608,7 @@ mod tests {
 
             let path = root.join(relative);
             let mut store = Store::load(&path).unwrap();
+
             store.create("main", "model").unwrap();
             store.begin("main", message(1, "main")).unwrap();
             store.start_stream("main", "discord-1", "discord", "7", None, "Working…").unwrap();
@@ -3500,6 +3621,7 @@ mod tests {
             assert!(loaded.sessions["main"].stream_delivery.is_none());
             assert_eq!(loaded.outbox[0].status, DeliveryStatus::Uncertain);
             assert_eq!(loaded.outbox[0].message_id.as_deref(), Some("9"));
+
             let _ = std::fs::remove_dir_all(root);
         }
     }
@@ -3510,6 +3632,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store
             .reply("main", message(1, "main"), "delivery", "telegram", "7", None, "hello")
@@ -3519,6 +3642,7 @@ mod tests {
 
         assert_eq!(loaded.sessions["main"].messages.len(), 1);
         assert_eq!(loaded.outbox[0].text, "hello");
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3540,16 +3664,19 @@ mod tests {
             let _ = std::fs::remove_dir_all(&root);
             let path = root.join(relative);
             let mut store = Store::load(&path).unwrap();
+
             store.create("main", "model").unwrap();
             store
                 .reply("main", message(1, "main"), "delivery", "telegram", "7", None, "hello")
                 .unwrap();
 
             store.sending("delivery").unwrap();
+
             let recovered = Store::load(&path).unwrap();
 
             assert_eq!(recovered.outbox[0].status, DeliveryStatus::Uncertain);
             assert!(recovered.outbox[0].last_error.is_some());
+
             let _ = std::fs::remove_dir_all(root);
         }
     }
@@ -3560,6 +3687,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.queue("main", message(1, "main")).unwrap();
 
@@ -3568,6 +3696,7 @@ mod tests {
         assert!(store.take("main").unwrap().is_none());
         assert!(store.queue("missing", message(2, "missing")).is_err());
         assert!(store.take("missing").is_err());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3580,6 +3709,7 @@ mod tests {
 
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.set_status("main", "working").unwrap();
         store.queue("main", message(7, "main")).unwrap();
@@ -3597,6 +3727,7 @@ mod tests {
 
         assert!(recovered.deferred_event("telegram").is_none());
         assert_eq!(recovered.sessions["main"].queued[0].id, "7");
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3609,6 +3740,7 @@ mod tests {
 
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.reserve("main", "tui-owner".into()).unwrap();
         store.queue("main", message(7, "main")).unwrap();
@@ -3633,17 +3765,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.begin_with_roles("main", message(1, "main"), vec!["moderator".into()]).unwrap();
 
         assert_eq!(store.sessions["main"].messages[0].id, "1");
         assert!(store.remove("main").is_err());
+
         let recovered = Store::load(path).unwrap();
 
         assert_eq!(recovered.sessions["main"].status, "interrupted");
         assert_eq!(recovered.sessions["main"].queued[0].id, "1");
         assert_eq!(recovered.sessions["main"].queue_roles["1"], vec!["moderator"]);
         assert!(recovered.sessions["main"].inflight.is_none());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3655,6 +3790,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.reserve("main", "owner-token".into()).unwrap();
 
@@ -3662,6 +3798,7 @@ mod tests {
 
         assert_eq!(recovered.sessions["main"].status, "working");
         assert_eq!(recovered.sessions["main"].reservation_owner.as_deref(), Some("owner-token"));
+
         recovered.append_reserved("main", "owner-token", message(2, "main")).unwrap();
 
         assert_eq!(recovered.sessions["main"].messages[0].id, "2");
@@ -3672,6 +3809,7 @@ mod tests {
     #[test]
     fn marks_mutating_tui_turns_unsafe_under_the_reservation_lease() {
         let mut store = Store::default();
+
         store.create("main", "model").unwrap();
         store.reserve("main", "owner-token".into()).unwrap();
 
@@ -3688,15 +3826,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.begin("main", message(1, "main")).unwrap();
         store.phase("main", "unsafe").unwrap();
+
         let recovered = Store::load(path).unwrap();
         let session = &recovered.sessions["main"];
 
         assert!(session.queued.is_empty());
         assert!(session.inflight.is_none());
         assert_eq!(session.status, "interrupted");
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3707,15 +3848,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.begin("main", message(1, "main")).unwrap();
+
         let mut value = serde_json::to_value(&store).unwrap();
+
         value["sessions"]["main"].as_object_mut().unwrap().remove("phase");
         std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
         let recovered = Store::load(path).unwrap();
 
         assert!(recovered.sessions["main"].queued.is_empty());
         assert!(recovered.sessions["main"].inflight.is_none());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3727,6 +3873,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
 
         for id in 0..LIMIT {
@@ -3748,6 +3895,7 @@ mod tests {
         assert_eq!(session.queued.len(), LIMIT + 1);
         assert_eq!(session.queued.first().unwrap().id, "999");
         assert_eq!(session.queued.last().unwrap().id, "99");
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3760,31 +3908,38 @@ mod tests {
         let mut store = Store::load(&path).unwrap();
 
         assert!(store.begin("missing", message(1, "missing")).is_err());
+
         store.create("main", "model").unwrap();
         store.begin("main", message(1, "main")).unwrap();
 
         assert!(store.begin("main", message(2, "main")).is_err());
+
         store.queue_with_roles("main", message(2, "main"), vec!["moderator".into()]).unwrap();
 
         assert_eq!(store.sessions["main"].queue_roles["2"], vec!["moderator"]);
+
         store.cancel("main").unwrap();
 
         assert!(store.sessions["main"].inflight.is_some());
         assert!(store.sessions["main"].queued.is_empty());
         assert!(store.sessions["main"].queue_roles.is_empty());
+
         store.set_status("main", "working").unwrap();
 
         assert_eq!(store.sessions["main"].status, "cancelled");
         assert!(store.phase("main", "invalid").is_err());
+
         store.clear("main", "cancelled").unwrap();
 
         assert!(store.sessions["main"].queued.is_empty());
         assert!(store.sessions["main"].inflight.is_none());
         assert_eq!(store.sessions["main"].status, "cancelled");
+
         store.begin("main", message(2, "main")).unwrap();
         store.reply("main", message(3, "main"), "delivery", "telegram", "7", None, "done").unwrap();
 
         assert!(store.sessions["main"].inflight.is_none());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3796,15 +3951,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
         store.begin("main", message(1, "main")).unwrap();
         store.cancel("main").unwrap();
+
         let recovered = Store::load(path).unwrap();
         let session = &recovered.sessions["main"];
 
         assert_eq!(session.status, "interrupted");
         assert!(session.inflight.is_none());
         assert!(session.queued.is_empty());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3842,6 +4000,7 @@ mod tests {
         recovered.commit("telegram", "7", Some(8)).unwrap();
 
         assert_eq!(Store::load(&path).unwrap().deferred_event("telegram"), None);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3854,6 +4013,7 @@ mod tests {
 
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.defer_event("telegram", serde_json::json!({"id": "7"})).unwrap();
         store.commit_retained("telegram", "7", Some(8)).unwrap();
         store.mark_deferred_acknowledged("telegram", "7").unwrap();
@@ -3861,18 +4021,21 @@ mod tests {
         let mut recovered = Store::load(&path).unwrap();
 
         assert!(recovered.deferred_acknowledged("telegram", "7"));
+
         recovered.commit("telegram", "7", Some(8)).unwrap();
 
         let recovered = Store::load(&path).unwrap();
 
         assert!(!recovered.deferred_acknowledged("telegram", "7"));
         assert!(recovered.deferred_event("telegram").is_none());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn defers_events_only_when_the_serialized_state_fits_the_byte_limit() {
         let mut store = Store::default();
+
         let event = serde_json::json!({
             "id": "large",
             "payload": "x".repeat(super::BYTE_LIMIT as usize)
@@ -3892,20 +4055,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("sessions.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
 
         assert_eq!(store.offset("telegram"), 0);
+
         store.commit("telegram", "first", Some(4)).unwrap();
 
         assert_eq!(store.offset("telegram"), 4);
+
         store.commit("telegram", "older", Some(2)).unwrap();
 
         assert_eq!(store.offset("telegram"), 4);
+
         store.commit("telegram", "accepted", Some(5)).unwrap();
 
         assert!(store.known("telegram", "accepted"));
         assert_eq!(store.offset("telegram"), 5);
         assert!(store.known("telegram", "first"));
+
         store
             .reply("main", message(1, "main"), "delivery", "telegram", "7", None, "hello")
             .unwrap();
@@ -3913,10 +4081,12 @@ mod tests {
         store.retry("delivery").unwrap();
 
         assert_eq!(store.attempts("delivery"), Some(1));
+
         store.dead("delivery").unwrap();
 
         assert!(store.outbox.is_empty());
         assert_eq!(store.dead.len(), 1);
+
         store.dead("missing").unwrap();
 
         for id in 0..LIMIT {
@@ -3941,10 +4111,12 @@ mod tests {
 
         while store.sessions["main"].queued.len() < LIMIT {
             let id = store.sessions["main"].queued.len();
+
             store.queue("main", message(id, "main")).unwrap();
         }
 
         assert!(store.queue("main", message(10_001, "main")).is_err());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3954,6 +4126,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("data/sessions/index.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("private-session-name", "model").unwrap();
         store.append("private-session-name", message(1, "private-session-name")).unwrap();
         store.commit("telegram", "event", Some(9)).unwrap();
@@ -3994,7 +4167,9 @@ mod tests {
 
         let path = root.join("data/sessions/index.json");
         let mut store = Store::load(&path).unwrap();
+
         store.create("main", "model").unwrap();
+
         store.sessions.get_mut("main").unwrap().messages.push(Message {
             id: "oversized".into(),
             session: "main".into(),
@@ -4050,11 +4225,13 @@ mod tests {
         let mut store = Store::load(&path).unwrap();
 
         store.create("regular", "model").unwrap();
+
         let regular_bytes = serde_json::to_vec(&store.sessions["regular"]).unwrap();
         let regular_key = super::session_record_key(&regular_bytes);
         let regular_record = root.join(format!("data/sessions/records/{regular_key}.json"));
 
         assert!(regular_record.is_file());
+
         store.append("regular", message(1, "regular")).unwrap();
 
         assert!(!regular_record.exists());
@@ -4080,6 +4257,7 @@ mod tests {
         store.append("deep", message(2, "deep")).unwrap();
 
         assert!(!deep_record.exists());
+
         std::fs::write(&deep_record, deep_bytes).unwrap();
 
         let current_bytes = serde_json::to_vec(&store.sessions["deep"]).unwrap();
@@ -4087,6 +4265,7 @@ mod tests {
         let current_record = root.join(format!("data/sessions/records/{current_key}.json"));
 
         assert!(current_record.is_file());
+
         store.remove_deep("deep").unwrap();
 
         assert!(!deep_record.exists());
@@ -4100,6 +4279,7 @@ mod tests {
 
         let delivery_bytes = serde_json::to_vec(&store.outbox[0]).unwrap();
         let delivery_key = super::session_record_key(&delivery_bytes);
+
         let delivery_record =
             root.join(format!("data/sessions/state/deliveries/records/{delivery_key}.json"));
 
@@ -4123,10 +4303,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let legacy_path = root.join("sessions.json");
         let mut legacy = Store::load(&legacy_path).unwrap();
+
         legacy.create("shared", "daemon-model").unwrap();
         legacy.save().unwrap();
 
         let offline = root.join("data/plugins/tui/sessions.json");
+
         save_file(
             &offline,
             serde_json::to_vec(&serde_json::json!({
@@ -4135,6 +4317,7 @@ mod tests {
                         "id": "shared", "model": "offline-model", "status": "idle",
                         "messages": [], "created": 1, "updated": 1
                     },
+
                     "local-only": {
                         "id": "local-only", "model": "offline-model", "status": "idle",
                         "messages": [], "created": 1, "updated": 1

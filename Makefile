@@ -3,7 +3,8 @@ JOBS ?= 4
 COVERAGE_PROFILE ?= full
 comma := ,
 .DEFAULT_GOAL := all
-.PHONY: all help install hooks fmt spacing clippy check test coverage build release metrics ci revloop verify
+.PHONY: all help install hooks fmt spacing clippy check test coverage build release metrics ci \
+        revloop secloop testloop loops verify
 
 all: build
 	$(MAKE) install
@@ -23,7 +24,10 @@ help:
 	@printf '%s\n' '  release   Build optimized binaries'
 	@printf '%s\n' '  metrics   Report source and test counts'
 	@printf '%s\n' '  ci        Run local preflight, then the non-release CI pipeline with act'
-	@printf '%s\n' '  revloop   Run the bounded independent review loop'
+	@printf '%s\n' '  revloop   Run independent reviews until verified clean'
+	@printf '%s\n' '  secloop   Audit and remediate validated security weaknesses'
+	@printf '%s\n' '  testloop  Protect behavioral contracts and repair confirmed flaky tests'
+	@printf '%s\n' '  loops     Check loop scripts and run deterministic loop fixtures'
 	@printf '%s\n' '  verify    Run the complete local quality workflow'
 
 install:
@@ -50,6 +54,7 @@ test:
 	CARGO_BUILD_JOBS=$(JOBS) $(CARGO) test --workspace --no-fail-fast --locked
 
 coverage:
+	python3 -B -m unittest discover -s krabb-scripts/tests -p '*.py' -v
 	bash krabb-scripts/coverage.sh "$(COVERAGE_PROFILE)"
 
 build:
@@ -65,6 +70,16 @@ ci:
 	bash krabb-ci/ci.sh
 
 revloop:
-	bash krabb-scripts/revloop.sh $(subst $(comma), ,$(REVLOOP_ARGS))
+	bash krabb-loops/revloop.sh $(subst $(comma), ,$(REVLOOP_ARGS))
 
-verify: fmt clippy check test coverage build metrics
+secloop:
+	bash krabb-loops/secloop.sh $(subst $(comma), ,$(SECLOOP_ARGS))
+
+testloop:
+	bash krabb-loops/testloop.sh $(subst $(comma), ,$(TESTLOOP_ARGS))
+
+loops:
+	bash krabb-loops/lib/syntax.sh "$(CURDIR)"
+	python3 -B -m unittest discover -s krabb-loops/tests -p '*.py' -v
+
+verify: fmt loops clippy check test coverage build metrics

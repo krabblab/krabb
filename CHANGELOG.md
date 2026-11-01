@@ -15,3 +15,4 @@ Semantic Versioning.
 - Save memories and organize data across conversations.
 - Schedule agent tasks and send their results to chat channels.
 - Send images to supported models and transcribe voice locally.
+- Add loops for speeding up development and improving robustness.

@@ -14,3 +14,6 @@ krabb-file = { path = "../../../krabb-libs/file" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+krabb-test.workspace = true

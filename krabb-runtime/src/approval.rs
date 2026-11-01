@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn expires_pending_requests_and_bounds_tokens() {
+    fn bounds_tokens() {
         let mut gate = Gate::new().unwrap();
         let challenge = gate.issue(target()).unwrap();
         let (id, action, signature) = decode(&challenge.approve).unwrap();
@@ -341,12 +341,41 @@ mod tests {
         assert_eq!(id.len(), ID_BYTES * 2);
         assert_eq!(action, b'a');
         assert_eq!(signature.len(), 16);
-        let pending = gate.pending.get_mut(id).unwrap();
-        pending.expires = 1;
-
-        assert_eq!(gate.resolve_at(&challenge.approve, "telegram", "8", Some("4"), true, 2), None);
-        assert_eq!(gate.pending.len(), 1);
         assert!(decode("invalid").is_none());
+    }
+
+    #[test]
+    fn enforces_signed_token_expiry() {
+        for approved in [true, false] {
+            for (offset, accepted) in [(-1, true), (0, false), (1, false)] {
+                let mut gate = Gate::new().unwrap();
+                let mut challenge = gate.issue(target()).unwrap();
+                let token = if approved { &challenge.approve } else { &challenge.deny };
+
+                let (id, _, _) = decode(token).unwrap();
+                let expires = gate.pending[id].expires;
+                let now = expires.checked_add_signed(offset).unwrap();
+                let expected = accepted.then_some(approved);
+
+                assert_eq!(
+                    gate.resolve_at(token, "telegram", "8", Some("4"), true, now),
+                    expected,
+                    "approved={approved}, offset={offset}"
+                );
+
+                if accepted {
+                    assert_eq!(challenge.answer.try_recv(), Ok(approved));
+                    assert!(!gate.has_pending());
+                } else {
+                    assert_eq!(
+                        challenge.answer.try_recv(),
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                    );
+
+                    assert!(gate.has_pending());
+                }
+            }
+        }
     }
 
     #[test]

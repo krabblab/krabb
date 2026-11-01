@@ -13,11 +13,11 @@ use reqwest::header::{AUTHORIZATION, HeaderValue};
 use serde_json::{Value, json};
 #[cfg(not(test))]
 use std::sync::Arc;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
 use tokio::{
@@ -30,6 +30,7 @@ const BODY_LIMIT: usize = krabb_core::jsonl::MAX / 2;
 const TEXT_LIMIT: usize = 256 * 1024;
 const MEDIA_LIMIT: usize = 4 * 1024 * 1024;
 const ATTACHMENTS: usize = 256;
+const MEDIA_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
 const ATTACHMENT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const PENDING_DISPATCHES: usize = 256;
 const PENDING_DISPATCH_BYTES: usize = 16 * 1024 * 1024;
@@ -79,6 +80,7 @@ fn cursor_version() -> u8 {
 impl Default for GatewayState {
     fn default() -> Self {
         let (sequence, session_id) = load_cursor();
+
         Self {
             socket: None,
             interval: Duration::from_secs(45),
@@ -146,6 +148,7 @@ async fn call_state(
     };
 
     let token = credential()?;
+
     call_with_state(client, gateway, id, method, params, &token, "https://discord.com/api/v10")
         .await
 }
@@ -168,6 +171,7 @@ fn credential() -> krabb_core::Result<String> {
     };
 
     krabb_file::private(&path)?;
+
     let text = std::fs::read_to_string(path).map_err(|error| {
         krabb_core::Error::Denied(format!("Credentials could not be read: {error}."))
     })?;
@@ -486,11 +490,13 @@ async fn send_content(
 
             Content::File { uri, name, mime } => {
                 result = upload(client, channel, uri, name, "", token, base).await?;
+
                 let _ = mime;
             }
 
             Content::Audio { uri, mime } => {
                 result = upload(client, channel, uri, "audio", "", token, base).await?;
+
                 let _ = mime;
             }
 
@@ -526,6 +532,7 @@ async fn upload(
     base: &str,
 ) -> krabb_core::Result<Value> {
     let path = local_media(uri)?;
+
     let bytes = fs::read(&path).map_err(|error| {
         krabb_core::Error::Denied(format!("Discord attachment could not be read: {error}."))
     })?;
@@ -537,6 +544,7 @@ async fn upload(
     let filename = safe_name(name).unwrap_or_else(|| "attachment.bin".into());
     let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
     let payload = json!({"content": caption});
+
     let response = client
         .post(format!("{base}/channels/{channel}/messages"))
         .header(AUTHORIZATION, format!("Bot {token}"))
@@ -551,6 +559,7 @@ async fn upload(
 
     let status = response.status();
     let body = read(response).await?;
+
     let body = serde_json::from_str(&body)
         .map_err(|error| krabb_core::Error::Denied(format!("Discord response failed: {error}.")))?;
 
@@ -569,6 +578,7 @@ async fn media(
         .ok_or_else(|| krabb_core::Error::Denied("Discord media URI is invalid.".into()))?;
 
     let parts = reference.split('/').collect::<Vec<_>>();
+
     let (channel, message, id) = match parts.as_slice() {
         [id] if snowflake(id) => (None, None, (*id).to_owned()),
 
@@ -614,12 +624,24 @@ async fn media(
     let bytes = download(client, &attachment.url, token).await?;
 
     let root = media_root()?;
-    cleanup(&root);
-    fs::create_dir_all(&root).map_err(|error| {
+
+    cache_media(&root, &id, &attachment, bytes)
+}
+
+fn cache_media(
+    root: &Path,
+    id: &str,
+    attachment: &Attachment,
+    bytes: Vec<u8>,
+) -> krabb_core::Result<Value> {
+    reserve_media(root, bytes.len() as u64)?;
+
+    fs::create_dir_all(root).map_err(|error| {
         krabb_core::Error::Denied(format!("Discord media directory failed: {error}."))
     })?;
 
     let destination = root.join(format!("{id}.bin"));
+
     krabb_file::save(&destination, bytes).map_err(|error| {
         krabb_core::Error::Denied(format!("Discord media storage failed: {error}."))
     })?;
@@ -672,7 +694,9 @@ async fn refresh_attachment(
     }
 
     let mut attachments = BTreeMap::new();
+
     remember_attachments(&value, &mut attachments);
+
     let attachment = attachments
         .remove(id)
         .ok_or_else(|| krabb_core::Error::Denied("Discord attachment is unavailable.".into()))?;
@@ -689,6 +713,7 @@ fn local_media(uri: &str) -> krabb_core::Result<PathBuf> {
         .ok_or_else(|| krabb_core::Error::Denied("Discord attachment URI is invalid.".into()))?;
 
     let root = media_root()?;
+
     let root = fs::canonicalize(root)
         .map_err(|_| krabb_core::Error::Denied("Discord media root is unavailable.".into()))?;
 
@@ -712,20 +737,14 @@ fn media_root() -> krabb_core::Result<PathBuf> {
         .ok_or_else(|| krabb_core::Error::Denied("KRABB_MEDIA or KRABB_HOME is required.".into()))
 }
 
-fn cleanup(root: &Path) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-
-    let cutoff = SystemTime::now().checked_sub(ATTACHMENT_TTL).unwrap_or(SystemTime::UNIX_EPOCH);
-
-    for entry in entries.flatten().take(ATTACHMENTS) {
-        if entry.file_type().is_ok_and(|value| value.is_file())
-            && entry.metadata().and_then(|value| value.modified()).is_ok_and(|value| value < cutoff)
-        {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
+fn reserve_media(root: &Path, incoming: u64) -> krabb_core::Result<()> {
+    krabb_file::trim(
+        root,
+        MEDIA_CACHE_LIMIT.saturating_sub(incoming),
+        ATTACHMENTS - 1,
+        ATTACHMENT_TTL,
+    )
+    .map_err(|_| krabb_core::Error::Denied("Discord media cache is unavailable.".into()))
 }
 
 fn discord_media_url(value: &str) -> bool {
@@ -840,6 +859,7 @@ fn edit_requests(
         .ok_or_else(|| krabb_core::Error::Denied("edit.text is required.".into()))?;
 
     let mut requests = vec![edit_request(base, channel, message_id, &first)];
+
     requests.extend(parts.map(|part| {
         (
             reqwest::Method::POST,
@@ -874,6 +894,7 @@ async fn message(
 
     let status = response.status();
     let body = read(response).await?;
+
     let body: Value = serde_json::from_str(&body)
         .map_err(|error| krabb_core::Error::Denied(format!("Discord response failed: {error}.")))?;
 
@@ -914,6 +935,7 @@ async fn gateway(
             })?;
 
         state.interval = Duration::from_millis(heartbeat(&hello)?);
+
         let payload = state.session_id.as_deref().map_or_else(
             || json!({
                 "op": 2,
@@ -944,13 +966,18 @@ async fn gateway(
     let mut pending_event = state.pending_event.clone();
     let mut closed = false;
     let mut interactions = state.interactions.clone();
+
     interactions.retain(|_, value| value.expires > Instant::now());
+
     let mut attachments = state.attachments.clone();
+
     attachments.retain(|_, value| value.expires > Instant::now());
+
     let mut queued_dispatches = std::mem::take(&mut state.queued_dispatches);
     let socket = state.socket.as_mut().expect("gateway socket is initialized");
     let mut events = Vec::new();
     let deadline = Duration::from_secs(seconds.clamp(1, 30));
+
     let result = timeout(deadline, async {
         loop {
             tokio::select! {
@@ -1119,6 +1146,7 @@ fn queued_dispatch(
     let mut sequence = state.sequence;
     let mut session_id = state.session_id.clone();
     let mut pending_sequence = None;
+
     let Action::Event(Some(event)) = prepare_gateway_value(
         &value,
         &mut sequence,
@@ -1161,6 +1189,7 @@ async fn acknowledge(
 
     if state.pending_from_queue {
         let mut queued_dispatches = state.queued_dispatches.clone();
+
         queued_dispatches.pop_front();
         save_dispatches(&queued_dispatches)?;
         state.queued_dispatches = queued_dispatches;
@@ -1308,6 +1337,7 @@ fn save_cursor_at(
     session_id: Option<&str>,
 ) -> krabb_core::Result<()> {
     let value = Cursor { version: 1, sequence, session_id: session_id.map(str::to_owned) };
+
     save_file(path, serde_json::to_vec(&value)?).map_err(|error| {
         krabb_core::Error::Denied(format!("Discord cursor could not be stored: {error}."))
     })
@@ -1398,6 +1428,7 @@ fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
             let uri = format!("discord://attachment/{channel}/{message_id}/{id}");
             let mime = attachment["content_type"].as_str();
             let voice = attachment["flags"].as_u64().is_some_and(|flags| flags & (1 << 13) != 0);
+
             let kind = if voice || mime.is_some_and(|value| value.starts_with("audio/")) {
                 "audio"
             } else if mime.is_some_and(|value| value.starts_with("image/")) {
@@ -1465,6 +1496,7 @@ fn remember_attachments(value: &Value, attachments: &mut BTreeMap<String, Attach
 
         let mime = value["content_type"].as_str().map(str::to_owned);
         let size = value["size"].as_u64().and_then(|value| usize::try_from(value).ok());
+
         attachments.insert(id.into(), Attachment { url: url.into(), name, mime, size, expires });
     }
 
@@ -1509,6 +1541,7 @@ fn normalize_interaction(value: &Value) -> Option<Value> {
     let sender = value["member"]["user"]["id"].as_str().or_else(|| value["user"]["id"].as_str())?;
 
     let roles = value["member"]["roles"].as_array().cloned().unwrap_or_default();
+
     Some(json!({
         "id": id,
         "kind": "callback",
@@ -1565,18 +1598,28 @@ fn response_body(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_cache_reserves_bytes_and_files_preserving_pinned_images() {
+        krabb_test::cache::check(super::reserve_media);
+    }
+
+    mod logging;
+
+    mod recovery;
+
     use super::{
         Action, BODY_LIMIT, GatewayState, Operation, acknowledge, action, approval_request, call,
-        call_with, chunks, cleanup, collect, custom_id, discord_media_url, edit_request,
-        edit_requests, gateway_url, heartbeat, intents, load_cursor_at, load_dispatches_at,
-        local_media, media_root, normalize, normalize_interaction, operation,
-        prepare_gateway_value, queued_dispatch, remember_attachments, response_body, safe_name,
-        save_cursor_at, save_dispatches_at, snowflake, stage_event,
+        call_with, chunks, collect, custom_id, discord_media_url, edit_request, edit_requests,
+        gateway_url, heartbeat, intents, load_cursor_at, load_dispatches_at, local_media,
+        media_root, normalize, normalize_interaction, operation, prepare_gateway_value,
+        queued_dispatch, remember_attachments, response_body, safe_name, save_cursor_at,
+        save_dispatches_at, snowflake, stage_event,
     };
 
     use futures_util::{SinkExt, StreamExt};
     use krabb_core::types::Request;
     use serde_json::json;
+
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -1609,9 +1652,11 @@ mod tests {
             json!({"id":"1","channel_id":"2","content":"hello","author":{"id":"3","bot":false}});
 
         assert_eq!(normalize(&message).unwrap()["chat"], "2");
+
         let attachment = json!({"id":"1","channel_id":"2","content":"","attachments":[{"id":"4","url":"https://cdn.discordapp.com/a.png","content_type":"image/png","filename":"a.png"}],"author":{"id":"3","bot":false}});
 
         assert_eq!(normalize(&attachment).unwrap()["content"][0]["kind"], "image");
+
         assert_eq!(
             normalize(&attachment).unwrap()["content"][0]["uri"],
             "discord://attachment/2/1/4"
@@ -1625,13 +1670,16 @@ mod tests {
         assert_eq!(normalized["thread"], "thread");
         assert_eq!(normalized["topic"], "thread");
         assert_eq!(normalized["content"][0]["kind"], "file");
+
         let voice = json!({"id":"6","channel_id":"2","content":"","attachments":[{"id":"7","url":"https://cdn.discordapp.com/a.ogg","content_type":"audio/ogg","filename":"a.ogg"}],"author":{"id":"3","bot":false}});
 
         assert_eq!(normalize(&voice).unwrap()["content"][0]["kind"], "audio");
+
         let thread = json!({"id":"3","channel_id":"thread","channel_type":11,"content":"inside","guild_id":"9","author":{"id":"3","bot":false}});
 
         assert_eq!(normalize(&thread).unwrap()["thread"], "thread");
         assert!(normalize(&json!({"channel_id":"2","content":"hi"})).is_none());
+
         assert!(
             normalize(&json!({"id":"1","channel_id":"2","content":"hello","author":{"bot":true}}))
                 .is_none()
@@ -1639,6 +1687,7 @@ mod tests {
 
         assert!(normalize(&json!({"id":"1","channel_id":"2","content":""})).is_none());
         assert_eq!(intents(), 37_377);
+
         assert_eq!(
             gateway_url("https://discord.com/api/v10"),
             "wss://gateway.discord.gg/?v=10&encoding=json"
@@ -1714,6 +1763,7 @@ mod tests {
         ));
 
         assert!(matches!(operation("poll", &json!({})).unwrap(), Some(Operation::Poll(25))));
+
         assert!(matches!(
             operation("ack", &json!({"sequence": 7})).unwrap(),
             Some(Operation::Ack(7))
@@ -1723,12 +1773,14 @@ mod tests {
         assert!(operation("send", &json!({"channel": "1"})).is_err());
         assert!(operation("edit", &json!({"channel": "x", "message": "2", "text": "hi"})).is_err());
         assert!(operation("edit", &json!({"channel": "1", "message": "2", "text": ""})).is_err());
+
         assert!(
             operation("edit", &json!({"channel": "1", "message": "2", "text": "x".repeat(2_001)}))
                 .is_ok()
         );
 
         assert!(operation("ack", &json!({})).is_err());
+
         assert!(operation(
             "approval",
             &json!({"channel": "1", "text": "Approve?", "approve": "x".repeat(101), "deny": "deny"})
@@ -1770,6 +1822,7 @@ mod tests {
         assert_eq!(event["data"], "approve-token");
         assert_eq!(event["callback_token"], "interaction-secret");
         assert!(normalize_interaction(&json!({"type": 2})).is_none());
+
         assert!(
             normalize_interaction(&json!({
                 "type": 3,
@@ -1812,15 +1865,19 @@ mod tests {
         ));
 
         assert_eq!(load_cursor_at(&path), (None, None));
+
         std::fs::write(&path, "{}").unwrap();
 
         assert_eq!(load_cursor_at(&path), (None, None));
+
         save_cursor_at(&path, Some(7), Some("session")).unwrap();
 
         assert_eq!(load_cursor_at(&path), (Some(7), Some("session".into())));
+
         std::fs::write(&path, "not json").unwrap();
 
         assert_eq!(load_cursor_at(&path), (None, None));
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -1835,6 +1892,7 @@ mod tests {
         let dispatches = [json!({"op": 0, "t": "MESSAGE_CREATE", "s": 7})].into();
 
         assert!(load_dispatches_at(&path).is_empty());
+
         save_dispatches_at(&path, &dispatches).unwrap();
 
         assert_eq!(load_dispatches_at(&path), dispatches);
@@ -1929,6 +1987,7 @@ mod tests {
 
         assert_eq!(sequence, Some(1));
         assert_eq!(session_id.as_deref(), Some("session"));
+
         let message = json!({
             "op": 0,
             "t": "MESSAGE_CREATE",
@@ -1952,12 +2011,15 @@ mod tests {
             Message::Text(json!({"op":10,"d":{"heartbeat_interval":45000}}).to_string().into());
 
         assert_eq!(heartbeat(&message).unwrap(), 45000);
+
         let bad = Message::Text(json!({"op":0,"d":{}}).to_string().into());
 
         assert!(heartbeat(&bad).is_err());
+
         let zero = Message::Text(json!({"op":10,"d":{"heartbeat_interval":0}}).to_string().into());
 
         assert!(heartbeat(&zero).is_err());
+
         let invalid = Message::Text("not json".into());
 
         assert!(heartbeat(&invalid).is_err());
@@ -1966,6 +2028,7 @@ mod tests {
     #[test]
     fn covers_gateway_helpers_and_control_actions() {
         assert_eq!(super::cursor_version(), 1);
+
         assert_eq!(
             gateway_url("https://discord.com/api/v10"),
             "wss://gateway.discord.gg/?v=10&encoding=json"
@@ -2048,6 +2111,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket: WebSocketStream<_> = accept_async(stream).await.unwrap();
@@ -2074,12 +2138,14 @@ mod tests {
         });
 
         let state = AsyncMutex::new(GatewayState::default());
+
         let events =
             super::gateway(&state, "token", 2, &format!("http://{address}")).await.unwrap();
 
         assert_eq!(events["events"][0]["text"], "hello");
         assert_eq!(events["events"][0]["gateway_sequence"], 1);
         assert_eq!(acknowledge(&state, 1).await.unwrap()["acknowledged"], true);
+
         server.await.unwrap();
     }
 
@@ -2090,6 +2156,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket: WebSocketStream<_> = accept_async(stream).await.unwrap();
@@ -2158,6 +2225,7 @@ mod tests {
         let queued = super::gateway(&state, "token", 2, &base).await.unwrap();
 
         assert_eq!(queued["events"][0]["text"], "pending");
+
         {
             let state = state.lock().await;
 
@@ -2172,6 +2240,7 @@ mod tests {
 
         assert_eq!(queued["events"][0]["text"], "queued");
         assert_eq!(queued["events"][0]["gateway_sequence"], 9);
+
         server.await.unwrap();
     }
 
@@ -2182,6 +2251,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket: WebSocketStream<_> = accept_async(stream).await.unwrap();
@@ -2237,6 +2307,7 @@ mod tests {
         assert_eq!(state.pending_sequence, Some(7));
         assert_eq!(state.queued_dispatches.len(), super::PENDING_DISPATCHES);
         assert_eq!(state.interactions["11"].token, "interaction-token");
+
         drop(state);
         server.await.unwrap();
     }
@@ -2248,6 +2319,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket: WebSocketStream<_> = accept_async(stream).await.unwrap();
@@ -2295,6 +2367,7 @@ mod tests {
         assert_eq!(state.pending_sequence, Some(7));
         assert_eq!(state.queued_dispatches.len(), super::PENDING_DISPATCHES);
         assert!(state.socket.is_none());
+
         drop(state);
         server.await.unwrap();
     }
@@ -2306,6 +2379,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -2323,6 +2397,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let base = format!("http://{address}");
+
         let sent = call_with(
             &client,
             1,
@@ -2336,6 +2411,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(sent.result.unwrap()["ok"], true);
+
         let edited = call_with(
             &client,
             2,
@@ -2349,6 +2425,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(edited.result.unwrap()["edited"]["ok"], true);
+
         let approval = call_with(
             &client,
             3,
@@ -2362,6 +2439,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(approval.result.unwrap()["ok"], true);
+
         server.await.unwrap();
     }
 
@@ -2372,6 +2450,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
@@ -2417,6 +2496,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(value["acknowledged"], true);
+
         assert!(
             super::callback(
                 &reqwest::Client::new(),
@@ -2440,6 +2520,7 @@ mod tests {
 
         let address = listener.local_addr().unwrap();
         let image = b"\x89PNG\r\n\x1a\n\xff\x00";
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
@@ -2465,7 +2546,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(bytes, image);
+
         server.await.unwrap();
+    }
+
+    #[test]
+    fn incoming_attachments_respect_cache_budgets() {
+        let image = b"\x89PNG\r\n\x1a\n\xff\x00";
+        let bytes = image.to_vec();
+
+        for case in ["bytes", "files", "protected-bytes", "protected-files"] {
+            let fixture = krabb_test::cache::WriteFixture::new(case);
+
+            let attachment = super::Attachment {
+                url: "https://cdn.discordapp.com/image.png".into(),
+                name: "image.png".into(),
+                mime: Some("image/png".into()),
+                size: Some(bytes.len()),
+                expires: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            };
+
+            let result = super::cache_media(&fixture.root, "4", &attachment, bytes.clone());
+
+            fixture.verify(result, "4.bin", image);
+        }
     }
 
     #[tokio::test]
@@ -2478,12 +2582,14 @@ mod tests {
         );
 
         let image = b"\x89PNG\r\n\x1a\n\xff\x00";
+
         let bytes =
             collect(stream::iter(vec![Ok::<_, std::io::Error>(&image[..5]), Ok(&image[5..])]))
                 .await
                 .unwrap();
 
         assert_eq!(bytes, image);
+
         assert!(
             collect(stream::iter(vec![Ok::<_, std::io::Error>(vec![b'x'; BODY_LIMIT + 1])]))
                 .await
@@ -2503,6 +2609,7 @@ mod tests {
     fn validates_media_metadata_and_identifiers() {
         assert!(super::parse_content(&json!({})).unwrap().is_empty());
         assert!(super::parse_content(&json!([{"kind": "unknown"}])).is_err());
+
         let too_many = (0..9).map(|_| json!({"kind": "text", "text": "x"})).collect::<Vec<_>>();
 
         assert!(super::parse_content(&json!(too_many)).is_err());
@@ -2521,7 +2628,9 @@ mod tests {
         assert!(!custom_id("not valid"));
 
         let mut attachments = std::collections::BTreeMap::new();
+
         remember_attachments(&json!({}), &mut attachments);
+
         remember_attachments(
             &json!({
                 "attachments": [
@@ -2549,7 +2658,8 @@ mod tests {
         remember_attachments(&json!({"attachments": many}), &mut attachments);
 
         assert_eq!(attachments.len(), 256);
-        cleanup(std::path::Path::new("/path/that/does/not/exist"));
+
+        super::reserve_media(std::path::Path::new("/path/that/does/not/exist"), 0).unwrap();
 
         let content = json!([{"kind":"text","text":"hello"}]);
 
@@ -2560,6 +2670,7 @@ mod tests {
 
         assert!(operation("media", &json!({"uri":"discord://attachment/1"})).is_ok());
         assert!(operation("media", &json!({})).is_err());
+
         assert!(
             operation("send", &json!({"channel":"1", "content": [{"kind":"unknown"}]})).is_err()
         );
@@ -2581,6 +2692,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut reader = BufReader::new(stream);
@@ -2632,6 +2744,7 @@ mod tests {
         });
 
         let gateway = super::AsyncMutex::new(GatewayState::default());
+
         let attachment = super::refresh_attachment(
             &reqwest::Client::new(),
             &gateway,
@@ -2646,6 +2759,7 @@ mod tests {
 
         assert_eq!(attachment.url, "https://cdn.discordapp.com/a.png");
         assert_eq!(gateway.lock().await.attachments["4"].name, "a.png");
+
         server.await.unwrap();
     }
 
@@ -2671,6 +2785,7 @@ mod tests {
         std::fs::write(&path, json!({"version": 2, "sequence": 4}).to_string()).unwrap();
 
         assert_eq!(load_cursor_at(&path), (None, None));
+
         let _ = std::fs::remove_file(path);
     }
 }

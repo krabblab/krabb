@@ -49,7 +49,7 @@ jobs:
         if: inputs.local != 'true'
         run: |
           apt-get update
-          apt-get install --no-install-recommends -y ripgrep
+          apt-get install --no-install-recommends -y ripgrep python3
 
       - name: Install Rust Components
         run: rustup component add rustfmt clippy
@@ -65,8 +65,8 @@ jobs:
       - name: Check Documentation
         run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
 
-      - name: Check Shell Scripts
-        run: bash -n krabb-scripts/*.sh install.sh
+      - name: Check Shell Scripts and Engineering Loops
+        run: make loops
 
       - name: Report Metrics
         run: bash krabb-scripts/metrics.sh
@@ -211,8 +211,8 @@ jobs:
       - name: Build Browser Plugin
         run: cargo build --locked -p krabb-plugin-browser
 
-      - name: Test Browser Routes
-        run: node --test krabb-plugins/browser/tests/routes.mjs
+      - name: Test Browser Routes and Tabs
+        run: node --test krabb-plugins/browser/tests/routes.mjs krabb-plugins/browser/tests/tabs.mjs
 
       - name: Run Browser Integration
         run: node krabb-plugins/browser/tests/integration.mjs

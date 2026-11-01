@@ -32,6 +32,7 @@ packages=(
     krabb-plugin-computer
     krabb-plugin-tui
     krabb-plugin-whisper
+    krabb-test
 )
 
 platform_packages=(
@@ -85,8 +86,18 @@ for package in "${packages[@]}"; do
         threshold=$runtime_threshold
     fi
 
-    if "$cargo_command" llvm-cov --no-fail-fast --fail-under-lines "$threshold" \
-        --locked -p "$package"; then
+    package_args=(-p "$package")
+    if [[ "$package" == krabb-test ]]; then
+        # Fixtures are exercised by consumers; each consumer has its own production gate above.
+        for consumer in krabb-plugin-openai krabb-plugin-telegram krabb-plugin-discord; do
+            package_args+=(-p "$consumer" --exclude-from-report "$consumer")
+        done
+    fi
+
+    # Other workspace executables can retain outdated coverage maps for this package.
+    if "$cargo_command" llvm-cov clean --workspace --locked && \
+        "$cargo_command" llvm-cov --no-fail-fast --fail-under-lines "$threshold" \
+        --locked "${package_args[@]}"; then
         continue
     else
         status=$?

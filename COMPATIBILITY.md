@@ -76,6 +76,10 @@ The plugin rows group capability checks rather than crate test counts. Use
 `make verify` and the CI run for automated test results; update this table when
 a functional fixture or real integration check passes.
 
+Local regressions (2026-11-01) cover provider stream completion and tool arguments
+across transport boundaries, plus memory rollback, reopen, and retry after failed saves.
+These fixtures do not establish live-provider or cross-platform functional status.
+
 ## Recording Results
 
 Replace `[ ]` with `[x]` after that component passes a functional test on the
@@ -129,3 +133,8 @@ locks; its replacement regression test requires Windows execution.
 Git inspection and Git-backed patches now require shell authorization and
 the configured tool approval policy. The filter-execution regression test
 checks that blocked operations cannot invoke a repository clean filter.
+
+Local lifecycle fixtures cover concurrent handler limits and cleanup, durable channel
+inboxes, acknowledgement, and attachment retention. Browser CI covers routes and tabs,
+including closure during title inspection and propagation of unrelated errors.
+Live-service and cross-platform deployment verification remain separate checks.

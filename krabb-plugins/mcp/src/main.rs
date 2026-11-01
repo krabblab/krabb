@@ -11,6 +11,7 @@ use krabb_core::{
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{Value, json};
+
 use tokio::{
     io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufReader},
     process::Command,
@@ -175,6 +176,7 @@ async fn stdio(params: &Value) -> krabb_core::Result<Value> {
         Err(error) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
+
             Err(error)
         }
     }
@@ -431,6 +433,9 @@ fn denied(message: impl Into<String>) -> krabb_core::Error {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    mod lifecycle;
+
     use super::{BODY_LIMIT, call, collect, denied, hello, http, safe_url, stdio};
     use krabb_core::types::{Capability, Request};
     use reqwest::Client;
@@ -570,6 +575,7 @@ case "$line" in *'"method":"notifications/initialized"'*) ;; *) exit 1;; esac
 
         assert!(http(&client, &json!({})).await.is_err());
         assert!(http(&client, &json!({"url":"file:///tmp/mcp","request":{}})).await.is_err());
+
         assert!(
             http(&client, &json!({"url":"http://127.0.0.1.evil.test","request":{}})).await.is_err()
         );
@@ -605,6 +611,7 @@ case "$line" in *'"method":"notifications/initialized"'*) ;; *) exit 1;; esac
         .unwrap();
 
         assert_eq!(response.result.unwrap()["result"]["tools"][0]["name"], "fixture_tool");
+
         let requests = server.await.unwrap();
 
         assert_eq!(requests[0].1["method"], "tools/list");
@@ -618,6 +625,7 @@ case "$line" in *'"method":"notifications/initialized"'*) ;; *) exit 1;; esac
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+
         let server = tokio::spawn(async move {
             let mut requests = Vec::new();
 
@@ -689,21 +697,26 @@ case "$line" in *'"method":"notifications/initialized"'*) ;; *) exit 1;; esac
         .await;
 
         let client = Client::new();
+
         let mut params = json!({"url":url, "token":"fixture-token",
             "request":{"jsonrpc":"2.0", "id":1, "method":"initialize"}});
 
         let initialized = http(&client, &params).await.unwrap();
 
         assert_eq!(initialized["session_id"], "fixture-session");
+
         params["session_id"] = initialized["session_id"].clone();
         params["protocol_version"] = initialized["result"]["protocolVersion"].clone();
         params["request"] = json!({"jsonrpc":"2.0", "method":"notifications/initialized"});
 
         assert!(http(&client, &params).await.unwrap().is_null());
+
         params["request"] = json!({"jsonrpc":"2.0", "id":2, "method":"tools/list"});
+
         let response = http(&client, &params).await.unwrap();
 
         assert_eq!(response["result"]["tools"], json!([]));
+
         let requests = server.await.unwrap();
 
         for (index, (headers, _)) in requests.iter().enumerate() {
@@ -764,6 +777,7 @@ case "$line" in *'"method":"notifications/initialized"'*) ;; *) exit 1;; esac
 
         let bytes = text.as_bytes().iter().map(|byte| Ok::<_, std::io::Error>(vec![*byte]));
         let stream = stream::iter(bytes).chain(stream::pending());
+
         let value =
             tokio::time::timeout(std::time::Duration::from_secs(1), events(stream, &json!(7)))
                 .await
@@ -800,6 +814,7 @@ case "$line" in *'"method":"notifications/initialized"'*) ;; *) exit 1;; esac
         );
 
         assert!(collect(stream::iter(vec![Ok::<_, std::io::Error>(vec![0xff])])).await.is_err());
+
         assert!(
             collect(stream::iter(vec![Ok::<_, std::io::Error>(vec![b'x'; BODY_LIMIT + 1])]))
                 .await

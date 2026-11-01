@@ -32,8 +32,11 @@ krabb schedule add --cron '0 9 * * *' --timezone Europe/Rome \
 ```
 
 `--every` can be combined with `--after` or `--at` to set the first run.
-Cron schedules require an IANA timezone. Tasks created by an explicit user
-request activate immediately; a second approval is not required.
+Cron schedules require an IANA timezone. Explicit `krabb schedule add` commands
+activate immediately. Model-generated proposals follow the configured approval
+policy: `prompt` requires approval before creating the task, `off` rejects it,
+and `auto` authorizes it. Approval covers the instruction, timing, captured
+workspace and tool permissions, and outbound message destination.
 
 ## Execution And Safety
 
@@ -70,6 +73,16 @@ Use `krabb schedule help` for command syntax. The CLI and TUI support listing,
 history, run, retry, pause, resume, and remove operations. `run` starts a task
 now without shifting a recurring task's next scheduled time. Removing a
 running task requests cancellation; completed side effects cannot be undone.
+
+Remote conversations can pause, cancel, resume, run, or retry only their own
+tasks. The host supplies the captured channel, chat, thread, and session identity;
+model arguments cannot override it. Approval does not grant ownership of another
+conversation's task. Tasks without a captured owner require local administration.
+
+Update the scheduler with the host to enable scoped remote controls. Older plugins reject
+these requests; the host never falls back to an unrestricted mutation. Authenticated local
+CLI/TUI clients can administer all schedules.
+
 Pausing a running task lets its current run finish, then keeps the schedule
 paused so no later occurrences start. The schedule list shows when this pause
 is pending.

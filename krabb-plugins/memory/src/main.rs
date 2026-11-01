@@ -180,6 +180,7 @@ fn lock(path: &Path) -> std::io::Result<std::fs::File> {
     let file = options.open(&lock)?;
 
     krabb_file::private(&lock)?;
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
 
     loop {
@@ -315,7 +316,7 @@ fn call_inner_at(
                     scope: scope.into(),
                     created,
                     updated: at,
-                    record: record_ref(scope, key),
+                    record: record_revision(scope, key, value),
                 },
             );
 
@@ -646,6 +647,7 @@ fn list_memories(
         });
 
         let mut session_keys = BTreeSet::new();
+
         entries.retain(|entry| entry.scope == "global" || session_keys.insert(entry.key.clone()));
     }
 
@@ -664,6 +666,7 @@ fn list_memories(
 
     let start = (page - 1) * LIST_PAGE_SIZE;
     let end = (start + LIST_PAGE_SIZE).min(total);
+
     let items = entries[start..end]
         .iter()
         .map(|entry| {
@@ -742,6 +745,7 @@ fn load_at(path: Option<&std::path::Path>) -> std::io::Result<Arc<Mutex<State>>>
     if state.items.len() > LIMIT {
         let excess = state.items.len() - LIMIT;
         let mut values = state.items.into_iter().collect::<Vec<_>>();
+
         values.sort_by_key(|(_, entry)| entry.updated);
         state.items = values.into_iter().skip(excess).collect();
     }
@@ -764,6 +768,7 @@ fn path() -> std::io::Result<Option<PathBuf>> {
 fn default_path(root: PathBuf) -> std::io::Result<PathBuf> {
     let current = root.join("data").join("memories").join("index.json");
     let _current = lock(&current)?;
+
     krabb_file::recover(&current)?;
 
     if current.is_file() {
@@ -772,6 +777,7 @@ fn default_path(root: PathBuf) -> std::io::Result<PathBuf> {
 
     let legacy = root.join("memory").join("index.json");
     let _legacy = lock(&legacy)?;
+
     krabb_file::recover(&legacy)?;
 
     Ok(if legacy.is_file() { legacy } else { current })
@@ -785,10 +791,20 @@ fn record_ref(scope: &str, key: &str) -> String {
     let mut scope_hash = Sha256::new();
 
     scope_hash.update(scope.as_bytes());
+
     let mut key_hash = Sha256::new();
+
     key_hash.update(key.as_bytes());
 
     format!("records/{}/{}.md", hex_digest(scope_hash.finalize()), hex_digest(key_hash.finalize()))
+}
+
+fn record_revision(scope: &str, key: &str, value: &str) -> String {
+    let record = record_ref(scope, key);
+    let revision = hex_digest(Sha256::digest(value.as_bytes()));
+
+    // Publish new contents separately so the committed index keeps its original record on failure.
+    format!("{}-{revision}.md", record.trim_end_matches(".md"))
 }
 
 fn record_path(parent: &Path, record: &str) -> Option<PathBuf> {
@@ -1152,6 +1168,7 @@ fn memories_conflict(
     let shared_words = left_words.intersection(right_words).count();
 
     let polarity_differs = left_negated != right_negated;
+
     polarity_differs && shared_words >= 2
 }
 
@@ -1252,6 +1269,7 @@ fn command_text(command: &str, result: &serde_json::Value) -> String {
             }
 
             let scope = conflicts[0]["scope"].as_str().unwrap_or("selected scope");
+
             let heading = if conflicts.len() == 1 {
                 format!("Found 1 possible memory conflict in {scope}:")
             } else {
@@ -1407,6 +1425,7 @@ fn persist_at(path: Option<&std::path::Path>, state: &State) -> krabb_core::Resu
         let title = entry.key.replace(['\n', '\r'], " ");
 
         let contents = format!("# {title}\n\n{}\n", entry.value);
+
         save_file(&record_path, contents.as_bytes())?;
     }
 
@@ -1419,6 +1438,7 @@ fn remove_orphan_records(path: Option<&Path>, before: &State, after: &State) {
     };
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
     let after_records = after
         .items
         .values()
@@ -1466,6 +1486,8 @@ fn nonce() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    mod persistence;
+
     use super::{
         BYTE_LIMIT, CONFLICT_LIMIT, Entry, GLOBAL_INDEX_RESERVE, INDEX_LIMIT, LIMIT, State,
         VALUE_LIMIT, call, call_at, command_at, default_path, load, load_at, path, persist_at,
@@ -1484,6 +1506,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let index = root.join("index.json");
         let lock = super::lock(&index).unwrap();
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1506,6 +1529,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(status.result.unwrap()["records"], 2);
+
         command_at(&second, 3, &json!({"args":["forget", "first"]}), Some(&index)).unwrap();
         command_at(&first, 4, &json!({"args":["remember", "third", "value"]}), Some(&index))
             .unwrap();
@@ -1516,10 +1540,12 @@ mod tests {
         assert!(!state.items.contains_key(&storage("global", "first")));
         assert!(state.items.contains_key(&storage("global", "second")));
         assert!(state.items.contains_key(&storage("global", "third")));
+
         drop(state);
 
         let guard = super::lock(&index).unwrap();
         let path = index.clone();
+
         let waiting = std::thread::spawn(move || {
             command_at(&items(), 5, &json!({"args":["remember", "fourth", "value"]}), Some(&path))
                 .unwrap();
@@ -1528,10 +1554,12 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(30));
 
         assert!(!waiting.is_finished());
+
         drop(guard);
         waiting.join().unwrap();
 
         assert_eq!(load_at(Some(&index)).unwrap().lock().unwrap().items.len(), 3);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1560,6 +1588,7 @@ mod tests {
     #[test]
     fn memory_can_remember_list_and_forget() {
         let items = items();
+
         let put = call(
             &items,
             Request::call(1, "remember", json!({"key": "name", "value": "Ada", "approved": true})),
@@ -1710,6 +1739,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(response["total"], 2);
+
         assert!(
             response["items"]
                 .as_array()
@@ -1782,10 +1812,12 @@ mod tests {
         assert!(call(&items, Request::call(1, "remember", json!({"value": "Ada"}))).is_err());
         assert!(call(&items, Request::call(2, "forget", json!({}))).is_err());
         assert!(call(&items, Request::call(3, "unknown", json!({}))).unwrap().is_none());
+
         let note =
             Request::Note { jsonrpc: "2.0".into(), method: "list".into(), params: json!({}) };
 
         assert!(call(&items, note).unwrap().is_none());
+
         let forgotten =
             call(&items, Request::call(4, "forget", json!({"key": "missing"}))).unwrap().unwrap();
 
@@ -1796,9 +1828,12 @@ mod tests {
     fn memory_persists_and_recovers_items() {
         let root = std::env::temp_dir().join(format!("m{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let path = root.join("index.json");
         let mut state = State::default();
+
         state.items.insert(
             storage("global", "key"),
             Entry {
@@ -1828,16 +1863,19 @@ mod tests {
         std::fs::write(&path, "broken").unwrap();
 
         assert!(load_at(Some(&path)).unwrap().lock().unwrap().items.is_empty());
+
         std::fs::File::create(&path).unwrap().set_len(BYTE_LIMIT as u64 + 1).unwrap();
 
         assert_eq!(load_at(Some(&path)).unwrap_err().kind(), std::io::ErrorKind::FileTooLarge);
         assert!(path.is_file());
+
         let lazy_root = std::env::temp_dir().join(format!("kml-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&lazy_root);
         let lazy_path = lazy_root.join("index.json");
 
         assert!(!lazy_path.parent().unwrap().exists());
+
         persist_at(Some(&lazy_path), &state).unwrap();
 
         assert!(lazy_path.is_file());
@@ -1863,7 +1901,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-memory-index-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let index = root.join("index.json");
         let state = items();
 
@@ -1895,6 +1935,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(telegram_index["items"].as_array().unwrap().len(), 2);
+
         let entries = telegram_index["items"].as_array().unwrap();
         let global = entries.iter().find(|entry| entry["key"] == "general").unwrap();
         let preference = entries.iter().find(|entry| entry["key"] == "preference").unwrap();
@@ -1931,6 +1972,7 @@ mod tests {
         .unwrap();
 
         assert!(!record.exists());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1939,14 +1981,18 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kmm-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let index = root.join("index.json");
         let old_record = "memory-records/legacy.md";
         let old_path = root.join(old_record);
+
         std::fs::create_dir_all(old_path.parent().unwrap()).unwrap();
         std::fs::write(&old_path, "# favorite\n\nold value\n").unwrap();
 
         let state = items();
+
         state.lock().unwrap().items.insert(
             storage("global", "favorite"),
             Entry {
@@ -1973,7 +2019,9 @@ mod tests {
         .unwrap();
 
         assert!(!old_path.exists());
-        let current_path = root.join(record_ref("global", "favorite"));
+
+        let current_path =
+            root.join(&state.lock().unwrap().items[&storage("global", "favorite")].record);
 
         assert!(std::fs::read_to_string(&current_path).unwrap().contains("new value"));
 
@@ -2068,6 +2116,7 @@ mod tests {
 
         let entries = result["items"].as_array().unwrap();
         let global_count = entries.iter().filter(|entry| entry["scope"] == "global").count();
+
         let conversation_count =
             entries.iter().filter(|entry| entry["scope"] == "telegram:dm:42").count();
 
@@ -2090,7 +2139,9 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-memory-learning-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let index = root.join("index.json");
         let state = load_at(Some(&index)).unwrap();
 
@@ -2115,12 +2166,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(load_at(Some(&index)).unwrap().lock().unwrap().learning, "autonomous");
+
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn memory_cli_command_returns_human_or_json_output() {
         let state = items();
+
         let human = command_at(&state, 1, &json!({"args": ["remember", "name", "Ada"]}), None)
             .unwrap()
             .unwrap();
@@ -2324,12 +2377,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-memory-path-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let legacy = root.join("memory/index.json");
+
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         std::fs::write(&legacy, "{}").unwrap();
 
         assert_eq!(default_path(root.clone()).unwrap(), legacy);
 
         let current = root.join("data/memories/index.json");
+
         std::fs::create_dir_all(current.parent().unwrap()).unwrap();
         std::fs::write(&current, "{}").unwrap();
 
@@ -2352,8 +2407,10 @@ mod tests {
             let backup = parent.join(".index.json.backup-test");
             let temporary = parent.join(".index.json.tmp-test");
             let journal = parent.join(".index.json.txn-test");
+
             std::fs::write(&backup, r#"{"key":"old"}"#).unwrap();
             std::fs::write(&temporary, r#"{"key":"saved"}"#).unwrap();
+
             std::fs::write(
                 &journal,
                 json!({
@@ -2375,6 +2432,7 @@ mod tests {
             assert!(!index.exists());
 
             drop(guard);
+
             let selected =
                 receiver.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
 
@@ -2382,6 +2440,7 @@ mod tests {
 
             assert_eq!(selected, index);
             assert!(!journal.exists());
+
             assert_eq!(
                 load_at(Some(&selected)).unwrap().lock().unwrap().items[&storage("global", "key")]
                     .value,
@@ -2398,6 +2457,7 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-memory-path-error-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("data"), "blocked").unwrap();
 
@@ -2475,6 +2535,7 @@ mod tests {
 
         assert!(load().unwrap().lock().unwrap().items.is_empty());
         assert!(load_at(None).unwrap().lock().unwrap().items.is_empty());
+
         persist_at(None, &State::default()).unwrap();
     }
 
@@ -2538,6 +2599,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(remembered.result.unwrap()["scope"], "room");
+
         assert_eq!(
             call(&items, Request::call(5, "list", json!({"scope": "other"})))
                 .unwrap()
@@ -2584,6 +2646,7 @@ mod tests {
 
         assert_eq!(state.items.len(), LIMIT);
         assert_eq!(state.audit.len(), LIMIT);
+
         drop(state);
 
         let path =
@@ -2626,12 +2689,14 @@ mod tests {
 
         assert_eq!(loaded.items.len(), LIMIT);
         assert_eq!(loaded.audit.len(), LIMIT);
+
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn bounds_forget_audit_history() {
         let items = items();
+
         {
             let mut state = items.lock().unwrap();
 
@@ -2670,10 +2735,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-memory-forget-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let blocker = root.join("blocker");
+
         std::fs::write(&blocker, "file").unwrap();
+
         let state = items();
+
         call(
             &state,
             Request::call(1, "remember", json!({"key": "x", "value": "y", "mode": "auto"})),
@@ -2690,6 +2760,7 @@ mod tests {
         );
 
         assert!(state.lock().unwrap().items.contains_key(&storage("global", "x")));
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2699,9 +2770,13 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-memory-blocker-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let blocker = root.join("blocker");
+
         std::fs::write(&blocker, "file").unwrap();
+
         let state = items();
 
         assert!(
@@ -2714,6 +2789,7 @@ mod tests {
         );
 
         assert!(state.lock().unwrap().items.is_empty());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2726,6 +2802,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let path = root.join("index.json");
         let state = items();
+
         call_at(
             &state,
             Request::call(
@@ -2738,6 +2815,7 @@ mod tests {
         .unwrap();
 
         let original = std::fs::read(&path).unwrap();
+
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         assert_eq!(load_at(Some(&path)).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
@@ -2760,6 +2838,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
         assert_eq!(load_at(Some(&path)).unwrap().lock().unwrap().items.len(), 1);
+
         std::fs::remove_dir_all(root).unwrap();
     }
 }

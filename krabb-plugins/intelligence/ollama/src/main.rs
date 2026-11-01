@@ -63,6 +63,7 @@ async fn generate(
     }
 
     let input: ModelRequest = serde_json::from_value(params)?;
+
     let host =
         std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
 
@@ -106,6 +107,7 @@ async fn request(
     }
 
     let messages = messages(&input)?;
+
     let response = post
         .json(&json!({"model": input.model, "messages": messages, "tools": tools(&input), "stream": stream}))
         .send()
@@ -218,6 +220,7 @@ where
                         &mut input_tokens,
                         &mut output_tokens,
                     )? {
+                        buffered.clear();
                         break 'stream;
                     }
 
@@ -613,6 +616,8 @@ fn response(id: u64, result: serde_json::Value) -> krabb_core::Result<Option<Res
 
 #[cfg(test)]
 mod tests {
+    mod streaming;
+
     use super::{
         BODY_LIMIT, Emitter, collect, credential, generate, generate_at, generate_request,
         image_data, keyring, live_stream, messages, response_body, stream_body, tools,

@@ -7,14 +7,13 @@ use krabb_core::{
 
 use futures_util::{Stream, StreamExt};
 use serde_json::json;
-use std::{
-    path::PathBuf,
-    time::{Duration, SystemTime},
-};
+use std::{path::PathBuf, time::Duration};
 
 const BODY_LIMIT: usize = krabb_core::jsonl::MAX / 2;
 const ID_LIMIT: usize = 256;
 const TEXT_LIMIT: usize = 256 * 1024;
+const MEDIA_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
+const MEDIA_CACHE_FILES: usize = 256;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -55,6 +54,7 @@ async fn call(client: &reqwest::Client, request: Request) -> krabb_core::Result<
     };
 
     let token = credential()?;
+
     call_with(client, id, method, params, &token, &format!("https://api.telegram.org/bot{token}"))
         .await
 }
@@ -77,6 +77,7 @@ fn credential() -> krabb_core::Result<String> {
     };
 
     krabb_file::private(&path)?;
+
     let text = std::fs::read_to_string(path).map_err(|error| {
         krabb_core::Error::Denied(format!("Credentials could not be read: {error}."))
     })?;
@@ -418,12 +419,14 @@ async fn media_at(
         .ok_or_else(|| krabb_core::Error::Denied("Telegram media URI is invalid.".into()))?;
 
     let file = send(client, &format!("{base}/getFile"), json!({"file_id": file_id})).await?;
+
     let path = file["file_path"]
         .as_str()
         .filter(|value| !value.is_empty() && value.len() <= 1024 && !value.contains(".."))
         .ok_or_else(|| krabb_core::Error::Denied("Telegram media path is invalid.".into()))?;
 
     let api = base.split_once("/bot").map_or(base, |(value, _)| value);
+
     let response = client
         .get(format!("{api}/file/bot{token}/{path}"))
         .send()
@@ -437,13 +440,15 @@ async fn media_at(
         return Err(krabb_core::Error::Denied("Telegram media download failed.".into()));
     }
 
-    cleanup(root);
+    reserve_media(root, bytes.len() as u64)?;
+
     std::fs::create_dir_all(root).map_err(|error| {
         krabb_core::Error::Denied(format!("Telegram media directory failed: {error}."))
     })?;
 
     let name = format!("{file_id}.bin");
     let destination = root.join(name);
+
     krabb_file::save(&destination, bytes).map_err(|error| {
         krabb_core::Error::Denied(format!("Telegram media storage failed: {error}."))
     })?;
@@ -468,33 +473,14 @@ fn media_root() -> krabb_core::Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
-fn cleanup(root: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-
-    let now = SystemTime::now();
-
-    for entry in entries.flatten().take(256) {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-
-        if !file_type.is_file() {
-            continue;
-        }
-
-        let stale = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > Duration::from_secs(24 * 60 * 60));
-
-        if stale {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
+fn reserve_media(root: &std::path::Path, incoming: u64) -> krabb_core::Result<()> {
+    krabb_file::trim(
+        root,
+        MEDIA_CACHE_LIMIT.saturating_sub(incoming),
+        MEDIA_CACHE_FILES - 1,
+        Duration::from_secs(24 * 60 * 60),
+    )
+    .map_err(|_| krabb_core::Error::Denied("Telegram media cache is unavailable.".into()))
 }
 
 async fn send(
@@ -511,6 +497,7 @@ async fn send(
 
     let status = response.status();
     let body = read(response).await?;
+
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| krabb_core::Error::Denied("Telegram response failed.".into()))?;
 
@@ -573,6 +560,7 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
         let message = callback.get("message")?;
         let chat = message["chat"]["id"].as_i64()?;
         let kind = message["chat"]["type"].as_str().unwrap_or("unknown");
+
         return Some(json!({
             "id": update["update_id"],
             "kind": "callback",
@@ -622,6 +610,7 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
     let text = message["text"].as_str().or_else(|| message["caption"].as_str());
 
     let role = &message["from"]["role"];
+
     let roles = role
         .as_array()
         .cloned()
@@ -643,18 +632,56 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
+    use krabb_test::logging;
+
+    #[test]
+    fn media_cache_reserves_bytes_and_files_preserving_pinned_images() {
+        krabb_test::cache::check(super::reserve_media);
+    }
+
     use super::{
-        BODY_LIMIT, Operation, approval_request, call, call_with, cleanup, client, collect,
-        credential, keyring, media_at, media_root, normalize, operation, response_body, send,
-        valid_file_id,
+        BODY_LIMIT, Operation, approval_request, call, call_with, client, collect, credential,
+        keyring, media_at, media_root, normalize, operation, response_body, send, valid_file_id,
     };
 
     use krabb_core::types::Request;
     use serde_json::json;
+
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    async fn logged_request(base: String, key: String) -> Result<(), String> {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        call_with(&client, 1, "info".into(), json!({}), &key, &format!("{base}/bot{key}"))
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    #[tokio::test]
+    async fn provider_logging_connection_failure() {
+        logging::check(
+            "tests::provider_logging_connection_failure",
+            &["connect"],
+            "{}",
+            logged_request,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn provider_logging_http_responses() {
+        logging::check(
+            "tests::provider_logging_http_responses",
+            &["success", "rejected", "disconnect"],
+            r#"{"ok":true,"result":{"id":1}}"#,
+            logged_request,
+        )
+        .await;
+    }
 
     #[test]
     fn normalizes_messages_and_skips_other_updates() {
@@ -669,6 +696,7 @@ mod tests {
         assert_eq!(result["events"][0]["content"][0]["kind"], "text");
         assert_eq!(result["events"][0]["roles"], json!(["admin"]));
         assert!(result["events"][0]["role"].is_null());
+
         let unsupported = normalize(json!([{
             "update_id": 8,
             "message": {"chat": {"id": 8, "type": "private"}, "sticker": {"file_id": "sticker"}}
@@ -676,12 +704,14 @@ mod tests {
 
         assert_eq!(unsupported["events"][0]["id"], 8);
         assert!(unsupported["events"][0]["content"].as_array().unwrap().is_empty());
+
         let media = normalize(
             json!([{"update_id": 5, "message": {"chat": {"id": 8, "type": "private"}, "document": {"file_id": "file", "file_name": "note.txt", "mime_type": "text/plain"}}}]),
         );
 
         assert_eq!(media["events"][0]["private"], true);
         assert_eq!(media["events"][0]["content"][0]["kind"], "file");
+
         let photo = normalize(
             json!([{"update_id": 6, "message": {"chat": {"id": 8, "type": "group"}, "text": "hello", "caption": "look", "photo": [{"file_id": "image"}]}}]),
         );
@@ -690,16 +720,19 @@ mod tests {
         assert_eq!(photo["events"][0]["content"][0]["kind"], "text");
         assert_eq!(photo["events"][0]["content"][1]["kind"], "image");
         assert_eq!(photo["events"][0]["content"].as_array().unwrap().len(), 2);
+
         let caption = normalize(
             json!([{"update_id": 9, "message": {"chat": {"id": 8, "type": "group"}, "caption": "@krabb", "photo": [{"file_id": "image"}]}}]),
         );
 
         assert_eq!(caption["events"][0]["text"], "@krabb");
+
         let topic = normalize(
             json!([{"update_id": 7, "message": {"chat": {"id": 8, "type": "supergroup"}, "message_thread_id": 4, "from": {"id": 9}, "text": "topic"}}]),
         );
 
         assert_eq!(topic["events"][0]["topic"], 4);
+
         let callback = normalize(json!([{
             "update_id": 10,
             "callback_query": {
@@ -719,6 +752,7 @@ mod tests {
         assert_eq!(callback["events"][0]["sender"], 9);
         assert_eq!(callback["events"][0]["chat"], 8);
         assert_eq!(callback["events"][0]["thread"], 4);
+
         assert_eq!(
             callback["events"][0]["data"],
             "a0123456789abcdef.0123456789abcdef0123456789abcdef"
@@ -730,6 +764,7 @@ mod tests {
 
         assert_eq!(voice["events"][0]["content"][0]["kind"], "audio");
         assert_eq!(normalize(json!({}))["events"].as_array().unwrap().len(), 0);
+
         assert_eq!(
             normalize(json!([{"message": {"chat": {"id": "wrong"}}}, {"message": {}}]))["events"]
                 .as_array()
@@ -776,17 +811,23 @@ mod tests {
     async fn downloads_media_into_private_cache() {
         let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
             Ok(listener) => listener,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("media-write fixture unavailable: loopback bind denied: {error}");
+                return;
+            }
+
             Err(error) => panic!("listener failed: {error}"),
         };
 
         let port = listener.local_addr().unwrap().port();
+
         let server = tokio::spawn(async move {
-            for index in 0..2 {
+            for index in 0..8 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = [0_u8; 4096];
                 let _ = stream.read(&mut request).await.unwrap();
-                let body = if index == 0 {
+                let body = if index % 2 == 0 {
                     br#"{"ok":true,"result":{"file_path":"photos/p.bin"}}"#.to_vec()
                 } else {
                     b"\xff\xd8\x00\xfe".to_vec()
@@ -801,27 +842,30 @@ mod tests {
             }
         });
 
-        let root =
-            std::env::temp_dir().join(format!("krabb-telegram-media-{}", std::process::id()));
-
-        let _ = std::fs::remove_dir_all(&root);
-        let client =
-            reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
 
         let base = format!("http://127.0.0.1:{port}/botTOKEN");
-        let value =
-            media_at(&client, "telegram://file/abc_1", "TOKEN", &base, &root).await.unwrap();
 
-        let path = value["uri"].as_str().unwrap().strip_prefix("file://").unwrap();
+        for case in ["bytes", "files", "protected-bytes", "protected-files"] {
+            let fixture = krabb_test::cache::WriteFixture::new(case);
 
-        assert_eq!(std::fs::read(path).unwrap(), b"\xff\xd8\x00\xfe");
+            let result =
+                media_at(&client, "telegram://file/abc_1", "TOKEN", &base, &fixture.root).await;
+
+            fixture.verify(result, "abc_1.bin", b"\xff\xd8\x00\xfe");
+        }
+
         server.await.unwrap();
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn rejects_invalid_media_and_downloads() {
         let client = reqwest::Client::new();
+
         let root = std::env::temp_dir()
             .join(format!("krabb-telegram-media-invalid-{}", std::process::id()));
 
@@ -838,6 +882,7 @@ mod tests {
         };
 
         let port = listener.local_addr().unwrap().port();
+
         let server = tokio::spawn(async move {
             for body in [
                 br#"{"ok":true,"result":{"file_path":"../outside"}}"#.to_vec(),
@@ -859,7 +904,9 @@ mod tests {
 
         assert!(media_at(&client, "telegram://file/abc", "TOKEN", &base, &root).await.is_err());
         assert!(media_at(&client, "telegram://file/abc", "TOKEN", &base, &root).await.is_err());
+
         server.await.unwrap();
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -869,11 +916,13 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-telegram-cleanup-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(root.join("nested")).unwrap();
         std::fs::write(root.join("fresh"), "ok").unwrap();
-        cleanup(&root);
+        super::reserve_media(&root, 0).unwrap();
 
         assert!(root.join("fresh").exists());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -898,6 +947,7 @@ mod tests {
     #[test]
     fn prepares_channel_operations() {
         assert!(matches!(operation("info", &json!({})).unwrap(), Some(Operation::Info)));
+
         assert!(matches!(
             operation("poll", &json!({"offset": 3})).unwrap(),
             Some(Operation::Poll(3))
@@ -922,6 +972,7 @@ mod tests {
 
         assert!(operation("send", &json!({})).is_err());
         assert!(operation("send", &json!({"chat": 8})).is_err());
+
         assert!(matches!(
             operation(
                 "approval",
@@ -951,6 +1002,7 @@ mod tests {
         assert!(operation("callback", &json!({})).is_err());
         assert!(operation("edit", &json!({"chat": 8, "message": 12, "text": ""})).is_err());
         assert!(operation("edit", &json!({"chat": 8, "message": 0, "text": "hello"})).is_err());
+
         assert!(
             operation("edit", &json!({"chat": 8, "message": 12, "text": "x".repeat(4_097)}))
                 .is_ok()
@@ -977,6 +1029,7 @@ mod tests {
         assert_eq!(requests[1].1["text"], "x");
         assert_eq!(requests[1].1["message_thread_id"], 4);
         assert!(super::edit_requests("https://telegram.test/bot", 8, 12, "", None).is_err());
+
         assert!(
             super::edit_requests(
                 "https://telegram.test/bot",
@@ -1007,6 +1060,7 @@ mod tests {
         assert_eq!(body["reply_markup"]["inline_keyboard"][0][0]["text"], "Approve");
         assert_eq!(body["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "allow-token");
         assert_eq!(body["reply_markup"]["inline_keyboard"][0][1]["callback_data"], "deny-token");
+
         assert!(
             approval_request(
                 "https://telegram.test/bot",
@@ -1100,10 +1154,12 @@ mod tests {
         );
 
         assert!(send(&client, "http://127.0.0.1:1", json!({})).await.is_err());
+
         let note =
             Request::Note { jsonrpc: "2.0".into(), method: "poll".into(), params: json!({}) };
 
         assert!(call(&client, note).await.unwrap().is_none());
+
         let request = Request::Call {
             jsonrpc: "2.0".into(),
             id: 2,
@@ -1123,6 +1179,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             for _ in 0..5 {
                 let (mut stream, _) = listener.accept().await.unwrap();

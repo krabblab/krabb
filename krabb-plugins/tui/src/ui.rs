@@ -59,6 +59,7 @@ const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TYPEWRITER_BACKLOG: usize = 96;
 const TYPEWRITER_BURST: usize = 2;
 const TYPEWRITER_CATCHUP_BURST: usize = 12;
+
 const STATUSLINE_ITEMS: [(&str, &str); 6] = [
     ("Title", "title"),
     ("Model", "model"),
@@ -283,6 +284,7 @@ impl ScrollState {
     fn set_extent(&mut self, content_rows: usize, viewport_rows: usize) {
         self.content_rows = content_rows;
         self.viewport_rows = viewport_rows;
+
         let max_offset = self.max_offset();
 
         if self.follow_end {
@@ -1093,6 +1095,7 @@ fn interrupt_generation(
 
     if !app.interrupt_requested {
         let _ = interrupt_tx.send(());
+
         app.interrupt_requested = true;
         app.status = "Interrupting generation".into();
     }
@@ -5248,6 +5251,7 @@ mod tests {
                 workspace: false,
                 status: false,
             },
+
             model_available: false,
             ..App::default()
         };

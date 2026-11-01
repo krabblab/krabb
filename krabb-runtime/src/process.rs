@@ -6,6 +6,7 @@ use std::{
 };
 
 use krabb_core::{Result, plugin::Process as CoreProcess};
+
 use tokio::{
     process::Command,
     sync::{Mutex, OwnedMutexGuard},
@@ -354,6 +355,7 @@ for line in sys.stdin:
         result = {'ok': True}
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
 "#).unwrap();
+
         fs::write(
             &runtime,
             r#"#!/usr/bin/env python3
@@ -385,8 +387,11 @@ if sys.argv[1] == 'rm':
         )
         .await
         .unwrap();
+
         let containers = process.containers.as_mut().unwrap();
+
         containers.runtime = runtime.display().to_string();
+
         let directory = containers.directory.clone();
 
         let process = std::sync::Arc::new(Mutex::new(Some(process)));
@@ -430,30 +435,38 @@ if sys.argv[1] == 'rm':
         }
 
         let finished = cleanup.finish();
+
         tokio::pin!(finished);
 
         assert!(timeout(Duration::from_millis(250), &mut finished).await.is_err());
         assert!(process.try_lock().is_err());
         assert!(directory.join("active/id").exists());
+
         fs::write(root.join("allow-removal"), "").unwrap();
         timeout(Duration::from_secs(5), finished).await.unwrap().unwrap();
 
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
         assert!(root.join("stopped").exists());
+
         fs::remove_file(root.join("ready")).unwrap();
         fs::remove_file(root.join("stopped")).unwrap();
+
         let mut process = process.lock().await.take().unwrap();
+
         start_shell(&mut process, &root).await;
         process.stop().await.unwrap();
 
         assert!(root.join("stopped").exists());
         assert!(!directory.exists());
+
         fs::remove_dir_all(root).unwrap();
     }
 
     async fn start_shell(process: &mut Process, root: &Path) {
         let response = process.call(Request::call(2, "shell", serde_json::json!({})));
+
         tokio::pin!(response);
+
         timeout(Duration::from_secs(5), async {
             loop {
                 tokio::select! {
@@ -473,15 +486,19 @@ if sys.argv[1] == 'rm':
     async fn cleanup_retains_failed_and_invalid_records_for_retry() {
         let directory = std::env::temp_dir()
             .join(format!("krabb-container-cleanup-{}", crate::ipc::token().unwrap()));
+
         fs::create_dir_all(directory.join("active")).unwrap();
         fs::write(directory.join("active/id"), "bad id").unwrap();
+
         let containers = Containers { runtime: "krabb-missing-runtime".into(), directory };
 
         assert!(containers.clear().await.is_err());
+
         fs::write(containers.directory.join("active/id"), "0123456789abcdef").unwrap();
 
         assert!(containers.clear().await.is_err());
         assert!(containers.directory.join("active/id").exists());
+
         fs::remove_dir_all(containers.directory.join("active")).unwrap();
         fs::create_dir(containers.directory.join("creating")).unwrap();
         containers.clear().await.unwrap();

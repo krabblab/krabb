@@ -13,7 +13,9 @@ pub struct Service {
 
 pub fn dispatch(name: &str, main: fn()) -> io::Result<()> {
     MAIN.set(main).map_err(|_| io::Error::other("Service dispatcher already started."))?;
+
     let mut name = wide(name)?;
+
     let table = [
         SERVICE_TABLE_ENTRYW { lpServiceName: name.as_mut_ptr(), lpServiceProc: Some(entry) },
         SERVICE_TABLE_ENTRYW::default(),
@@ -132,6 +134,7 @@ fn status(state: u32, exit: u32) -> SERVICE_STATUS {
         } else {
             0
         },
+
         dwWin32ExitCode: exit,
         dwServiceSpecificExitCode: 0,
         dwCheckPoint: u32::from(pending),

@@ -89,6 +89,7 @@ pub fn run<M: Model, T: Tool>(
             }
 
             text.push_str(&marker);
+
             let mut content = Vec::new();
 
             if !text.is_empty() {
@@ -126,6 +127,7 @@ pub fn run<M: Model, T: Tool>(
 
             // Model output never grants approval; hosts must apply policy before invoking tools.
             let result = tools.call(&name, &args, false)?;
+
             history.push(Message {
                 id: format!("tool-{step}-{}", history.len()),
                 session: history.first().map_or_else(|| "session".into(), |m| m.session.clone()),
@@ -185,6 +187,7 @@ mod tests {
             }
 
             self.count += 1;
+
             Ok(vec![Event::Tool {
                 name: "read".into(),
                 args: serde_json::json!({"path": "note"}),
@@ -206,6 +209,7 @@ mod tests {
             assert_eq!(name, "read");
             assert_eq!(args["path"], "note");
             assert!(!approved);
+
             Ok("content".into())
         }
     }

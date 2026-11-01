@@ -8,6 +8,7 @@ mod ui;
 
 #[cfg(test)]
 use krabb_core::plugin::Process;
+
 use krabb_core::{
     jsonl,
     plugin::serve_with,
@@ -22,6 +23,7 @@ use krabb_core::types::ToolSpec;
 use serde_json::Value;
 #[cfg(test)]
 use std::sync::Arc;
+
 use std::{
     future::Future,
     io::{BufRead, Read},
@@ -60,6 +62,7 @@ async fn main() -> std::process::ExitCode {
         let json = command_args.iter().any(|value| value == "--json");
         let debug = command_args.iter().any(|value| value == "--debug");
         let verbose = command_args.iter().any(|value| value == "--verbose");
+
         let verbosity = if debug {
             krabb_log::Verbosity::Debug
         } else if verbose {
@@ -223,6 +226,7 @@ fn parse_options(args: &[String]) -> krabb_core::Result<TuiOptions> {
 
     while index < args.len() {
         let name = args[index].as_str();
+
         index += 1;
 
         let value = match name {
@@ -278,6 +282,7 @@ async fn run_cli(args: &[String]) -> krabb_core::Result<()> {
 
     if let Some(prompt) = options.once.take() {
         let output = run_one_shot(options, prompt).await?;
+
         println!("{output}");
 
         return Ok(());
@@ -288,6 +293,7 @@ async fn run_cli(args: &[String]) -> krabb_core::Result<()> {
 
 async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result<String> {
     let model_override = options.model.clone();
+
     let plugin = options
         .plugin
         .or_else(|| std::env::var("KRABB_MODEL_PLUGIN").ok())
@@ -303,6 +309,7 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
     require_daemon(&home).await?;
 
     let temporary_session = options.session.is_none();
+
     let session = match options.session {
         Some(session) => selected_session_id(Some(session)),
         None => temporary_run_namespace()?,
@@ -337,6 +344,7 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
 
 async fn run_interactive(options: TuiOptions) -> krabb_core::Result<()> {
     let model_override = options.model.clone();
+
     let plugin = options
         .plugin
         .or_else(|| std::env::var("KRABB_MODEL_PLUGIN").ok())
@@ -355,6 +363,7 @@ async fn run_interactive(options: TuiOptions) -> krabb_core::Result<()> {
 
     let input = terminal("r")?;
     let output = terminal("w")?;
+
     run_at(input, output, home, plugin, model, model_override, session).await
 }
 
@@ -364,6 +373,7 @@ fn selected_session_id(session: Option<String>) -> String {
 
 fn temporary_run_namespace() -> krabb_core::Result<String> {
     let mut random = [0_u8; 8];
+
     getrandom::fill(&mut random).map_err(|error| {
         krabb_core::Error::Denied(format!("Could not create a temporary run namespace: {error}."))
     })?;
@@ -4394,7 +4404,7 @@ fn format_approvals(value: &Value) -> String {
             let target = &item["target"];
             let tool = target["tool"].as_str().unwrap_or("tool");
             let session = target["session"].as_str().unwrap_or("unknown session");
-            let args = preview(&target["args"].to_string(), 512);
+            let args = target["args"].to_string();
             Some(format!("{id}: {tool} for {session} — {args}"))
         })
         .collect::<Vec<_>>();
@@ -4404,13 +4414,6 @@ fn format_approvals(value: &Value) -> String {
     }
 
     format!("Pending approvals:\n{}\nUse /approve <id> or /deny <id>.\n> ", rows.join("\n"))
-}
-
-fn preview(value: &str, limit: usize) -> String {
-    let mut chars = value.chars();
-    let output = chars.by_ref().take(limit).collect::<String>();
-
-    if chars.next().is_some() { format!("{output}…") } else { output }
 }
 
 async fn approval_action<C, F>(home: &str, id: &str, approved: bool, host: C) -> String
@@ -5579,6 +5582,36 @@ mod tests {
     }
 
     #[test]
+    fn pending_and_live_schedule_approvals_preserve_complete_arguments() {
+        let args = json!({
+            "context": {"workspace": "fixture", "tools": true, "shell": false},
+            "instruction": format!("{} then write the report", "Read notes. ".repeat(50)),
+            "delay_seconds": 10
+        });
+
+        let serialized = args.to_string();
+
+        assert!(serialized.len() > 512);
+        assert!(serialized.len() <= 1_024);
+        let pending = super::format_approvals(&json!({"items": [{
+            "id": "fixture", "target": {"tool": "schedule_propose", "args": args}
+        }]}));
+        let live = super::format_approval_notice(
+            "fixture",
+            "schedule_propose",
+            &serialized,
+            None,
+            "Create a scheduled task.",
+        );
+
+        for display in [pending, live] {
+            assert!(display.contains(&serialized));
+            assert!(display.contains("/approve"));
+            assert!(display.contains("/deny"));
+        }
+    }
+
+    #[test]
     fn formats_pending_approvals() {
         let value = json!({
             "items": [{
@@ -5597,7 +5630,6 @@ mod tests {
         );
 
         assert_eq!(super::format_approvals(&json!({"items": []})), "Pending approvals: none.\n> ");
-        assert_eq!(super::preview(&"x".repeat(600), 512).chars().count(), 513);
     }
 
     #[test]
@@ -6708,16 +6740,20 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         fs::write(&codex, codex_script).unwrap();
         fs::write(&tools, tools_script).unwrap();
         fs::set_permissions(&codex, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).unwrap();
 
         let (mut input_tx, input_rx) = duplex(1024);
+
         input_tx.write_all(b"List the current directory\n/quit\n").await.unwrap();
         drop(input_tx);
+
         let (output_tx, mut output_rx) = duplex(16 * 1024);
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
 
         let engine = super::run_with(
@@ -6736,7 +6772,9 @@ done
         );
 
         tokio::time::timeout(std::time::Duration::from_secs(10), engine).await.unwrap().unwrap();
+
         let mut output = String::new();
+
         output_rx.read_to_string(&mut output).await.unwrap();
 
         assert_eq!(output.matches("Reply").count(), 1);
@@ -6751,9 +6789,13 @@ done
 
         let root = std::env::temp_dir().join(format!("krabb-tui-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let binary = root.join("plugins/codex/bin/krabb-plugin-codex");
+
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
+
         fs::write(
             &binary,
             r#"#!/bin/sh
@@ -6763,8 +6805,10 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         .unwrap();
 
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+
         let input_path = root.join("input");
         let output_path = root.join("output");
+
         fs::write(
             &input_path,
             format!(
@@ -6777,7 +6821,9 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         let input = tokio::fs::File::from_std(fs::File::open(&input_path).unwrap());
         let output = tokio::fs::File::from_std(fs::File::create(&output_path).unwrap());
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
+
         let run = super::run_with(
             input,
             output,
@@ -6794,6 +6840,7 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         );
 
         tokio::time::timeout(std::time::Duration::from_secs(10), run).await.unwrap().unwrap();
+
         let text = fs::read_to_string(&output_path).unwrap();
 
         assert_eq!(text.matches("Reply").count(), 1);
@@ -6803,12 +6850,14 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         assert!(text.contains("Approval accepted."));
         assert!(text.contains("Approval denied."));
         assert!(text.contains("There are not enough earlier turns to compact."));
+
         assert!(text.contains(
             "Plugins | 1–1 of 1 | page 1/1:\n└─ codex | vunknown\n   ├─ health: ready\n   ├─ capabilities: model\n   ├─ protocol: 0.0\n   ├─ commands: none\n   └─ permissions: none"
         ));
 
         assert!(text.contains("Created session two."));
         assert!(text.contains("Created session test-one."));
+
         assert!(text.contains(concat!(
             "Sessions | 1–1 of 1 | page 1/1:\n└─ saved | idle\n",
             "   ├─ model: provider/model\n   ├─ created: 2025-01-02\n",
@@ -6825,6 +6874,7 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         assert!(text.contains("Kept active session renamed"));
         assert!(text.contains("Kept active session renamed"));
         assert!(text.contains(&format!("Workspace changed to: {}", root.display())));
+
         assert!(
             text.contains(
                 "Schedules (1–1 of 1, page 1 of 1)\n└─ 7 | morning-check | pending\n   ├─ Next run: 1970-01-01 00:00:42 UTC\n   └─ Automatic retries are off"
@@ -6884,6 +6934,7 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
     async fn one_shot_does_not_print_session_ids_from_diagnostic_events() {
         let root =
             std::env::temp_dir().join(format!("krabb-tui-one-shot-error-{}", std::process::id()));
+
         let session = "tui-once-sensitive-session-id";
 
         let error = super::run_once(
@@ -6920,7 +6971,9 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         let _ = fs::remove_dir_all(&root);
 
         let binary = root.join("plugins/codex/bin/krabb-plugin-codex");
+
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
+
         fs::write(
             &binary,
             r#"#!/bin/sh
@@ -6960,10 +7013,13 @@ done
         .unwrap();
 
         let (mut input_tx, input_rx) = duplex(1024);
+
         input_tx.write_all(b"first\nsecond\n/quit\n").await.unwrap();
         drop(input_tx);
+
         let (output_tx, mut output_rx) = duplex(16 * 1024);
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
 
         let engine = super::run_with(
@@ -6984,6 +7040,7 @@ done
         tokio::time::timeout(std::time::Duration::from_secs(10), engine).await.unwrap().unwrap();
 
         let mut output = String::new();
+
         output_rx.read_to_string(&mut output).await.unwrap();
 
         assert_eq!(output.matches("Reply").count(), 2);
@@ -7011,7 +7068,9 @@ done
         let _ = fs::remove_dir_all(&root);
 
         let binary = root.join("plugins/codex/bin/krabb-plugin-codex");
+
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
+
         fs::write(
             &binary,
             r#"#!/bin/sh
@@ -7045,14 +7104,17 @@ done
         .unwrap();
 
         let (mut input_tx, input_rx) = duplex(1024);
+
         input_tx
             .write_all(b"/model help\n/model show\n/model list\n/model set gpt-test\n/quit\n")
             .await
             .unwrap();
 
         drop(input_tx);
+
         let (output_tx, mut output_rx) = duplex(16 * 1024);
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
 
         let engine = super::run_with(
@@ -7073,6 +7135,7 @@ done
         tokio::time::timeout(std::time::Duration::from_secs(10), engine).await.unwrap().unwrap();
 
         let mut output = String::new();
+
         output_rx.read_to_string(&mut output).await.unwrap();
 
         assert!(output.contains("Manage the selected model.\n\nCommands:"));
@@ -7093,7 +7156,9 @@ done
 
         let _ = fs::remove_dir_all(&root);
         let binary = root.join("plugins/codex/bin/krabb-plugin-codex");
+
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
+
         fs::write(
             &binary,
             r#"#!/bin/sh
@@ -7104,7 +7169,9 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
 
         let (mut input_tx, input_rx) = duplex(4096);
+
         input_tx.write_all(b"hello\n").await.unwrap();
+
         let (output_tx, mut output_rx) = duplex(16 * 1024);
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
         let (engine_event_tx, mut engine_event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -7149,6 +7216,7 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         }
 
         assert!(!String::from_utf8_lossy(&output).contains("late reply"));
+
         assert_eq!(
             engine_event_rx.recv().await,
             Some(super::EngineEvent::GenerationFinished { interrupted: true })
@@ -7176,14 +7244,18 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
     async fn runs_without_daemon_or_intelligence_plugin() {
         let root = std::env::temp_dir().join(format!("krabb-tui-offline-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let input = tokio::io::duplex(4096);
         let (mut input_writer, input_reader) = input;
         let (output_writer, mut output_reader) = tokio::io::duplex(16 * 1024);
 
         input_writer.write_all(b"/session list\n/quit\n").await.unwrap();
         drop(input_writer);
+
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
 
         let run = super::run_with(
@@ -7208,11 +7280,13 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         };
 
         let (result, text) = tokio::join!(run, output);
+
         result.unwrap();
 
         assert!(text.contains("No intelligence plugin is installed"));
         assert!(text.contains("└─ offline | active\n   ├─ model: unset\n   ├─ created:"));
         assert!(super::data::plugin_file(&root, "tui", "sessions.json").is_file());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -7221,13 +7295,18 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         let root = std::env::temp_dir().join(format!("krabb-tui-banner-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let (mut input_writer, input_reader) = tokio::io::duplex(1024);
+
         input_writer.write_all(b"/quit\n").await.unwrap();
         drop(input_writer);
+
         let (output_writer, mut output_reader) = tokio::io::duplex(1024);
         let (engine_event_tx, _engine_event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
 
         let engine = super::run_with(
@@ -7252,6 +7331,7 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         };
 
         let (result, output) = tokio::join!(engine, output);
+
         result.unwrap();
 
         assert!(!output.contains("terminal. Type /help"));
@@ -7264,7 +7344,9 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
     async fn requires_the_daemon_for_the_session_backend() {
         let root = std::env::temp_dir().join(format!("krabb-tui-backend-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let home = root.display().to_string();
         let error = super::require_daemon(&home).await.unwrap_err();
 
@@ -7289,7 +7371,9 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
     async fn applies_an_explicit_model_override_to_an_existing_session() {
         let root = std::env::temp_dir().join(format!("krabb-tui-model-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let home = root.display().to_string();
 
         super::local_aware(
@@ -7302,9 +7386,12 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
 
         let (mut input_writer, input_reader) = tokio::io::duplex(4096);
         let (output_writer, mut output_reader) = tokio::io::duplex(16 * 1024);
+
         input_writer.write_all(b"/quit\n").await.unwrap();
         drop(input_writer);
+
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
 
         let engine = super::run_with(
@@ -7329,11 +7416,13 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         };
 
         let (result, _) = tokio::join!(engine, output);
+
         result.unwrap();
 
         let saved = super::read_session(&home, "saved", super::local_aware).await.unwrap();
 
         assert_eq!(saved.model, "alternate-model");
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

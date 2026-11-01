@@ -23,6 +23,10 @@ use the sandboxed shell tool for Git operations and patches; the direct Git
 and patch tools reject execution on the host.
 Git runs in the active workspace, but repository-configured programs have
 shell permissions and may access paths outside that workspace.
+Direct Git operations and Git-backed patches use the same descendant containment as host
+shell commands: Linux blocks process-group and session changes, and Windows uses Job
+Objects. Descendants are stopped on completion, timeout, or plugin restart. Other platforms
+reject direct execution; use the sandboxed shell tool for Git and patches there.
 
 The read-only `fetch` tool retrieves bounded text from public HTTPS URLs. It
 blocks local and private network addresses, pins requests to validated DNS

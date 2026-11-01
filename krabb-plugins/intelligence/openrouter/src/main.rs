@@ -63,6 +63,7 @@ async fn generate(
 
     let input: ModelRequest = serde_json::from_value(params)?;
     let key = credential()?;
+
     let model = resolve_model(&input.model, || {
         std::env::var("KRABB_OPENROUTER_MODEL").map_err(|_| {
             krabb_core::Error::Denied("KRABB_OPENROUTER_MODEL is not configured.".into())
@@ -133,6 +134,7 @@ async fn complete(
 
     let status = response.status();
     let body = collect(response.bytes_stream()).await?;
+
     response_body(id, status, serde_json::from_slice(&body)?)
 }
 
@@ -302,7 +304,7 @@ where
     let mut bytes: usize = 0;
     let mut emitted = 0;
 
-    while let Some(chunk) = stream.next().await {
+    'stream: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             krabb_core::Error::Denied(format!("OpenRouter stream failed: {error}."))
         })?;
@@ -321,7 +323,8 @@ where
             let line = buffer.drain(..=end).collect::<Vec<_>>();
 
             if stream_line(&line, &mut text, &mut pending, &mut calls)? {
-                break;
+                buffer.clear();
+                break 'stream;
             }
 
             if pending.len() >= 128 {
@@ -500,6 +503,8 @@ fn credential() -> krabb_core::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    mod streaming;
+
     use super::resolve_model;
     use super::{
         BODY_LIMIT, TOOL_CALLS, base_url, collect, credential, generate, headers, headers_with,

@@ -17,6 +17,7 @@ use krabb_core::{
 };
 
 use serde_json::{Value, json};
+
 use tokio::{
     io::{AsyncRead, AsyncReadExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -44,6 +45,7 @@ const CLIENTS: usize = 64;
 
 pub fn token() -> io::Result<String> {
     let mut bytes = [0_u8; 32];
+
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
@@ -221,6 +223,7 @@ async fn model_list(request: &IpcRequest, state: &State) -> IpcResponse {
                 IpcResponse::fail(request.id, -32000, "The model plugin returned no model list.")
             }
         },
+
         Err(error) => IpcResponse::fail(request.id, -32000, error.to_string()),
     }
 }
@@ -364,6 +367,7 @@ async fn session_answer(
     let mut call_id = request.id;
     let memory_scope = super::memory_scope("tui", id);
     let legacy_memory_scope = format!("provider:tui:{id}");
+
     super::append_memory_context_scopes(
         &state.plugins,
         &mut messages,
@@ -530,6 +534,7 @@ async fn session_compact(
     };
 
     let deadline = tokio::time::Instant::now() + super::TURN_LIMIT;
+
     let response = match compact_reserved(state, id, owner, &provider, request.id, false, deadline)
         .await
     {
@@ -633,6 +638,7 @@ async fn compact_reserved(
 
     let cleanup = super::process::Cleanup::default();
     let cancel = super::cancellation(&state.cancels, id);
+
     let summary = tokio::select! {
         _ = cancel.cancelled() => Err(io::Error::other("Compaction was cancelled.")),
         _ = state.stop.notified() => Err(io::Error::other("Compaction was interrupted.")),
@@ -646,6 +652,7 @@ async fn compact_reserved(
     };
 
     cleanup.finish().await.map_err(io::Error::other)?;
+
     let summary = summary?;
 
     let summary_message = Message {
@@ -657,10 +664,12 @@ async fn compact_reserved(
     };
 
     let mut compacted = Vec::with_capacity(recent.len() + 1);
+
     compacted.push(summary_message);
     compacted.extend_from_slice(recent);
 
     let mut sessions = state.sessions.lock().map_err(lock)?;
+
     sessions.set_compacted_context_reserved(id, owner, compacted.clone())?;
 
     Ok(CompactOutcome::Compacted(CompactResult { messages: compacted, removed: older.len() }))
@@ -680,6 +689,7 @@ fn model_context(session: &crate::state::Session) -> Vec<Message> {
     };
 
     let mut messages = context.clone();
+
     messages.extend_from_slice(&session.messages[index + 1..]);
     messages
 }
@@ -1050,6 +1060,7 @@ async fn run_terminal_command(
         child.stderr.take().ok_or_else(|| io::Error::other("Shell stderr was not captured."))?;
 
     let text = Arc::new(Mutex::new(String::new()));
+
     let mut stdout_task =
         tokio::spawn(stream_terminal_output(stdout, notices.clone(), Arc::clone(&text)));
 
@@ -2918,6 +2929,7 @@ for line in sys.stdin:
         for mode in ["timeout", "deadline", "cancel"] {
             let state = pending_tui_provider(mode).await;
             let compacting = Arc::clone(&state);
+
             let deadline = tokio::time::Instant::now()
                 + Duration::from_secs(if mode == "deadline" { 1 } else { 300 });
 
@@ -2942,6 +2954,7 @@ for line in sys.stdin:
             assert!(state.sessions.lock().unwrap().sessions["turn"].compacted_context.is_none());
 
             let provider = state.plugins.get("fixture").await.unwrap();
+
             let reply = tokio::time::timeout(
                 Duration::from_secs(5),
                 provider.call(krabb_core::types::Request::call(7, "generate", json!({}))),
@@ -2951,6 +2964,7 @@ for line in sys.stdin:
             .unwrap();
 
             assert_eq!(reply.result.unwrap()["text"], "fresh answer");
+
             provider.stop().await.unwrap();
             std::fs::remove_dir_all(&state.home).unwrap();
         }
@@ -2965,6 +2979,7 @@ for line in sys.stdin:
         let (server, _) = listener.accept().await.unwrap();
         let (_, mut output) = server.into_split();
         let answering = Arc::clone(&state);
+
         let task = tokio::spawn(async move {
             super::session_answer(
                 &IpcRequest::call(
@@ -2988,6 +3003,7 @@ for line in sys.stdin:
         wait_for_tui_request(&state, 2).await;
         advance_tui_time(81).await;
         tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+
         let response: IpcResponse =
             jsonl::read(&mut BufReader::new(client), FRAME).await.unwrap().unwrap();
 
@@ -3019,8 +3035,11 @@ for line in sys.stdin:
         let _client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
         let (_, mut output) = server.into_split();
+
         output.shutdown().await.unwrap();
+
         let cancel = crate::cancellation(&state.cancels, "turn");
+
         let request = IpcRequest::call(
             7,
             "secret",
@@ -3063,6 +3082,7 @@ for line in sys.stdin:
         .unwrap();
 
         assert_eq!(reply.result.unwrap()["text"], "fresh answer");
+
         provider.stop().await.unwrap();
         std::fs::remove_dir_all(&state.home).unwrap();
     }
@@ -3070,6 +3090,7 @@ for line in sys.stdin:
     #[tokio::test]
     async fn queued_uninstall_allows_reserved_history_but_blocks_new_work() {
         let state = Arc::new(state_at("reserved-history"));
+
         std::fs::create_dir_all(&state.home).unwrap();
 
         {
@@ -3081,6 +3102,7 @@ for line in sys.stdin:
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         std::fs::write(state.home.join("ipc.token"), "secret").unwrap();
+
         std::fs::write(
             state.home.join("ipc.port"),
             listener.local_addr().unwrap().port().to_string(),
@@ -3143,8 +3165,11 @@ for line in sys.stdin:
         use std::os::unix::fs::PermissionsExt;
 
         let state = state_at("session-compact");
+
         std::fs::create_dir_all(&state.home).unwrap();
+
         let session_path = test_store_path("session-compact");
+
         {
             let mut store = state.sessions.lock().unwrap();
             store.create("tui-work", "codex").unwrap();
@@ -3196,8 +3221,11 @@ done"##;
 
         std::fs::write(&binary, script).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+
         let process = krabb_core::plugin::Process::start(&binary).await.unwrap();
+
         state.plugins.insert(crate::Live::new(process)).await;
+
         let provider = state.plugins.get("codex").await.unwrap();
 
         let transcript = state.sessions.lock().unwrap().sessions["tui-work"].messages.clone();
@@ -3205,6 +3233,7 @@ done"##;
         let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
         let (_, mut output) = server.into_split();
+
         let request = IpcRequest::call(
             7,
             "secret",
@@ -3213,6 +3242,7 @@ done"##;
         );
 
         let compact = super::session_compact(&request, &state, &mut output);
+
         tokio::pin!(compact);
 
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -3247,6 +3277,7 @@ done"##;
 
         std::fs::write(state.home.join("continue"), "").unwrap();
         tokio::time::timeout(Duration::from_secs(5), compact).await.unwrap().unwrap();
+
         let response: IpcResponse =
             jsonl::read(&mut BufReader::new(client), FRAME).await.unwrap().unwrap();
 
@@ -3268,6 +3299,7 @@ done"##;
 
         assert_eq!(result.removed, 4);
         assert_eq!(result.messages.len(), 5);
+
         assert_eq!(
             result.messages[0].content[0].render(),
             "Earlier conversation summary:\nKeep the user goals and choices."
@@ -3325,6 +3357,7 @@ done"##;
 
         let _ = std::fs::remove_file(binary);
         let _ = std::fs::remove_file(session_path);
+
         std::fs::remove_dir_all(&state.home).unwrap();
     }
 
@@ -3356,6 +3389,7 @@ done"##;
             jsonl::read(&mut BufReader::new(client_input), FRAME).await.unwrap().unwrap();
 
         assert_eq!(response.id, 7);
+
         assert_eq!(
             response.result.unwrap(),
             json!({
@@ -3433,6 +3467,7 @@ done"##;
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, Role::User);
         assert_eq!(messages[1].role, Role::Assistant);
+
         assert_eq!(
             messages[1].content,
             vec![Content::Text { text: "The project files are here.".into() }]
@@ -3445,6 +3480,7 @@ done"##;
         use krabb_core::plugin::Process;
 
         let mut state = state_at("tui-workspace-tools");
+
         let workspace = std::env::temp_dir().join(format!(
             "krabb-ipc-tui-tools-{}-{}",
             std::process::id(),
@@ -3452,6 +3488,7 @@ done"##;
         ));
 
         let _ = std::fs::remove_dir_all(&workspace);
+
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&state.home).unwrap();
         state.root = workspace.clone();
@@ -3487,6 +3524,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let tool_script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
@@ -3507,13 +3545,16 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
         let tool = Process::start_with("sh", ["-c", tool_script]).await.unwrap();
+
         state.plugins.insert(crate::Live::new(provider)).await;
         state.plugins.insert(crate::Live::new(tool)).await;
 
         let session = "tui-tools-smoke";
         let owner = "tui-tools-owner";
+
         {
             let mut sessions = state.sessions.lock().unwrap();
             sessions.create(session, "fixture").unwrap();
@@ -3534,10 +3575,12 @@ done
         }
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
         let address = listener.local_addr().unwrap();
         let client = TcpStream::connect(address).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
         let (_, mut output) = server.into_split();
+
         let request = IpcRequest::call(
             7,
             "secret",
@@ -3558,9 +3601,11 @@ done
         }
 
         let response = final_response.expect("TUI turn should return a final response");
+
         assert_eq!(response.result.unwrap()["text"], "The fixture note was read.");
 
         let messages = state.sessions.lock().unwrap().sessions[session].messages.clone();
+
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[2].role, Role::Tool);
         assert_eq!(messages[2].content[0].render(), "fixture note contents");
@@ -3579,7 +3624,9 @@ done
     async fn tui_cancellation_retires_model_responses_before_reusing_request_ids() {
         let state = state_at("tui-model-cancel");
         let _ = std::fs::remove_dir_all(&state.home);
+
         std::fs::create_dir_all(&state.home).unwrap();
+
         let script = r#"
 import json, pathlib, sys, time
 started = pathlib.Path(sys.argv[1]) / 'started'
@@ -3618,6 +3665,7 @@ for line in sys.stdin:
         let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
         let (_, mut output) = server.into_split();
+
         let request = IpcRequest::call(
             1,
             "secret",
@@ -3669,6 +3717,7 @@ for line in sys.stdin:
                 let (response, result) = tokio::join!(cancel_request(&cancel, &state), answer);
 
                 assert_eq!(response.result.unwrap()["status"], "cancelled");
+
                 result.unwrap();
             } else {
                 tokio::time::timeout(Duration::from_secs(5), answer).await.unwrap().unwrap();
@@ -3676,6 +3725,7 @@ for line in sys.stdin:
         }
 
         let messages = state.sessions.lock().unwrap().sessions["model-cancel"].messages.clone();
+
         let replies = messages
             .iter()
             .filter(|message| message.role == Role::Assistant)
@@ -3694,6 +3744,7 @@ for line in sys.stdin:
     async fn tui_cancellation_stops_an_approved_host_shell_before_acknowledging() {
         let mut state = state_at("tui-shell-cancel");
         let _ = std::fs::remove_dir_all(&state.home);
+
         std::fs::create_dir_all(&state.home).unwrap();
         state.root = state.home.clone();
         state.config.approval = "prompt".into();
@@ -3746,6 +3797,7 @@ for line in sys.stdin:
         }
 
         let browser = state.plugins.get("browser").await.unwrap();
+
         let identity = browser
             .call(krabb_core::types::Request::call(80, "identity", json!({})))
             .await
@@ -3778,6 +3830,7 @@ for line in sys.stdin:
         let (_, mut output) = server.into_split();
         let state = Arc::new(state);
         let answering = Arc::clone(&state);
+
         let turn = tokio::spawn(async move {
             let request = IpcRequest::call(
                 7,
@@ -3865,6 +3918,7 @@ for line in sys.stdin:
 
         assert!(!state.sessions.lock().unwrap().sessions["shell-cancel"].reservation_active);
         assert!(!state.home.join("result").exists());
+
         assert_eq!(
             browser
                 .call(krabb_core::types::Request::call(83, "identity", json!({})))
@@ -3890,13 +3944,16 @@ for line in sys.stdin:
 
         let state = state_at("capability-call");
         let binary = PathBuf::from(format!("/tmp/krabb-ipc-capability-{}", std::process::id()));
+
         let script = r#"#!/bin/sh
 
 while IFS= read -r line; do id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"scheduler","version":"0.1.0","capabilities":["scheduler"]}}' ;; *'"method":"list"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"items":[{"id":7,"text":"scheduled task"}]}}' ;; *'"method":"run"'*|*'"method":"retry"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"id":7,"status":"active"}}' ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#;
 
         std::fs::write(&binary, script).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+
         let process = krabb_core::plugin::Process::start(&binary).await.unwrap();
+
         state.plugins.insert(crate::Live::new(process)).await;
 
         let response = capability_call(
@@ -3966,6 +4023,7 @@ while IFS= read -r line; do id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][
         let state = state_at("sqlite-capability-call");
         let script = r#"while IFS= read -r line; do id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"sqlite","version":"0.1.0","capabilities":["store"]}}' ;; *put*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"ok":true}}' ;; *get*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"found":true,"value":"stored"}}' ;; *delete*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"deleted":true}}' ;; *data*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"items":[]}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#;
         let process = krabb_core::plugin::Process::start_with("sh", ["-c", script]).await.unwrap();
+
         state.plugins.insert(crate::Live::new(process)).await;
 
         for (id, method, expected) in [
@@ -4012,7 +4070,9 @@ while IFS= read -r line; do id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][
     #[tokio::test]
     async fn uninstall_settles_channel_turns_before_guarding_and_removing() {
         let state = Arc::new(state_at("uninstall-turn"));
+
         std::fs::create_dir_all(&state.home).unwrap();
+
         let script = r#"import json, pathlib, sys, time
 name, root = sys.argv[1], pathlib.Path(sys.argv[2])
 first = True
@@ -4054,8 +4114,10 @@ for line in sys.stdin:
 
         let plugin = state.home.join("plugins/telegram");
         let binary = plugin.join("bin").join(crate::plugin_name("telegram"));
+
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, "fixture").unwrap();
+
         let entry = crate::Entry {
             source: "test".into(),
             revision: "local".into(),
@@ -4078,6 +4140,7 @@ for line in sys.stdin:
         .unwrap();
 
         let bridge_state = Arc::clone(&state);
+
         let bridge = tokio::spawn(async move {
             crate::bridge(
                 &bridge_state.plugins,
@@ -4105,6 +4168,7 @@ for line in sys.stdin:
         assert!(state.sessions.lock().unwrap().outbox.is_empty());
 
         let removal_state = Arc::clone(&state);
+
         let removal = tokio::spawn(async move {
             super::uninstall(
                 &IpcRequest::call(1, "secret", "plugin.uninstall", json!({"id": "telegram"})),
@@ -4123,6 +4187,7 @@ for line in sys.stdin:
 
         assert!(!removal.is_finished());
         assert!(binary.exists());
+
         std::fs::write(state.home.join("release"), "").unwrap();
 
         let response =
@@ -4170,7 +4235,9 @@ for line in sys.stdin:
         let plugin = state.home.join("plugins/tools");
         let binary = plugin.join("bin/krabb-plugin-tools");
         let _ = std::fs::remove_dir_all(&home);
+
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+
         std::fs::write(
             plugin.join("krabb-plugin.toml"),
             "id = 'tools'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['tool']\n",
@@ -4184,6 +4251,7 @@ for line in sys.stdin:
         .unwrap();
 
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+
         let entry = crate::Entry {
             source: "test".into(),
             revision: "local".into(),
@@ -4211,22 +4279,27 @@ for line in sys.stdin:
 
         assert!(response.error.is_none(), "{:?}", response.error);
         assert_eq!(response.result.unwrap()["loaded"], true);
+
         let loaded = state.plugins.get("tools").await.unwrap();
 
         assert_eq!(loaded.hello.id, "tools");
+
         let request = IpcRequest::call(2, "secret", "plugin.active", json!({}));
         let response = active(&request, &state).await;
 
         assert_eq!(response.result.unwrap()["items"], json!(["tools"]));
+
         let request = IpcRequest::call(2, "secret", "plugin.unload", json!({"id": "tools"}));
         let response = unload(&request, &state).await;
 
         assert_eq!(response.result.unwrap()["unloaded"], true);
         assert!(state.plugins.get("tools").await.is_none());
+
         let request = IpcRequest::call(3, "secret", "plugin.active", json!({}));
         let response = active(&request, &state).await;
 
         assert_eq!(response.result.unwrap()["items"], json!([]));
+
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -4240,6 +4313,7 @@ for line in sys.stdin:
         let plugin = state.home.join("plugins/codex");
         let binary = plugin.join("bin/krabb-plugin-codex");
         let _ = std::fs::remove_dir_all(&home);
+
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
 
         std::fs::write(
@@ -4282,6 +4356,7 @@ for line in sys.stdin:
 
         assert!(response.error.is_none(), "{:?}", response.error);
         assert_eq!(response.result.unwrap()["loaded"], true);
+
         let loaded = state.plugins.get("codex").await.unwrap();
 
         assert!(loaded.supports(super::Capability::Model));
@@ -4302,6 +4377,7 @@ for line in sys.stdin:
         assert_eq!(status["sessions"], 0);
         assert!(status["plugins"].is_array());
         assert_eq!(status["approval"], "off");
+
         let new =
             dispatch(&IpcRequest::call(1, "secret", "session.new", json!({"id": "one"})), &state)
                 .unwrap();
@@ -4394,6 +4470,7 @@ for line in sys.stdin:
 
         assert_eq!(terminal["messages"][0]["content"][0]["text"], "hello");
         assert_eq!(terminal["status"], "working");
+
         assert!(
             dispatch(
                 &IpcRequest::call(
@@ -4461,6 +4538,7 @@ for line in sys.stdin:
         );
 
         state.sessions.lock().unwrap().set_status("terminal", "idle").unwrap();
+
         let cleared = dispatch(
             &IpcRequest::call(27, "secret", "session.clear", json!({"id": "terminal"})),
             &state,
@@ -4478,10 +4556,12 @@ for line in sys.stdin:
         .unwrap();
 
         assert!(terminal["messages"].as_array().unwrap().is_empty());
+
         let list =
             dispatch(&IpcRequest::call(2, "secret", "session.list", json!({})), &state).unwrap();
 
         assert_eq!(list.result.unwrap()["items"][0]["id"], "one");
+
         let get =
             dispatch(&IpcRequest::call(3, "secret", "session.get", json!({"id": "one"})), &state)
                 .unwrap();
@@ -4525,6 +4605,7 @@ for line in sys.stdin:
         );
 
         state.sessions.lock().unwrap().set_status("one", "idle").unwrap();
+
         let cancelled = cancel_request(
             &IpcRequest::call(6, "secret", "session.cancel", json!({"id": "copy"})),
             &state,
@@ -4659,6 +4740,7 @@ for line in sys.stdin:
     #[test]
     fn daemon_reservations_end_on_drop_and_do_not_survive_reload() {
         let state = state_at("owned-reservation");
+
         {
             let mut sessions = state.sessions.lock().unwrap();
             sessions.create("terminal", "fixture").unwrap();
@@ -4699,12 +4781,14 @@ for line in sys.stdin:
         drop(reservation);
 
         let mut sessions = state.sessions.lock().unwrap();
+
         sessions.recover_reservations().unwrap();
 
         assert!(!sessions.sessions["terminal"].reservation_active);
         assert!(sessions.phase("terminal", "unsafe").is_err());
 
         sessions.reserve("terminal", "other".into()).unwrap();
+
         let _ = std::fs::remove_file(test_store_path("owned-reservation"));
     }
 
@@ -4833,6 +4917,7 @@ for line in sys.stdin:
     #[test]
     fn archives_and_restores_sessions_through_ipc() {
         let state = state_at("session-archive");
+
         state.sessions.lock().unwrap().create("saved", "model").unwrap();
 
         let renamed = dispatch(
@@ -4909,9 +4994,11 @@ for line in sys.stdin:
         let root = std::env::temp_dir().join(format!("krabb-ipc-plugins-{}", std::process::id()));
         let plugin_root = root.join("plugins");
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&plugin_root).unwrap();
         std::fs::create_dir(plugin_root.join("codex")).unwrap();
         std::fs::create_dir(plugin_root.join("telegram-1")).unwrap();
+
         std::fs::write(
             plugin_root.join("codex/krabb-plugin.toml"),
             "id = 'codex'\nversion = '1.2.3'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['model', 'vision']\npermissions = ['network']\n[[commands]]\nname = 'codex'\ndescription = 'Run Codex.'\ninteractive = true\n",
@@ -4948,6 +5035,7 @@ for line in sys.stdin:
     fn dispatches_delivery_controls_with_confirmation() {
         let state = state_at("delivery");
         let mut store = state.sessions.lock().unwrap();
+
         store.create("one", "model").unwrap();
         store
             .reply(
@@ -4974,6 +5062,7 @@ for line in sys.stdin:
             dispatch(&IpcRequest::call(1, "secret", "delivery.list", json!({})), &state).unwrap();
 
         assert_eq!(list.result.unwrap()["items"][0]["status"], "uncertain");
+
         assert!(
             dispatch(
                 &IpcRequest::call(2, "secret", "delivery.retry", json!({"id": "delivery"})),
@@ -5011,6 +5100,7 @@ for line in sys.stdin:
         let root = std::env::temp_dir().join(format!("krabb-ipc-workspace-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
         dispatch(&IpcRequest::call(1, "secret", "session.new", json!({"id": "one"})), &state)
             .unwrap();
@@ -5068,12 +5158,14 @@ for line in sys.stdin:
         .unwrap();
 
         assert!(reset["workspace"].is_null());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn cancellation_waits_for_turn_acknowledgement() {
         let state = Arc::new(state());
+
         #[cfg(unix)]
         let browser = {
             let script = r#"
@@ -5095,7 +5187,9 @@ for line in sys.stdin:
                 .unwrap();
 
             state.plugins.insert(crate::Live::new(process)).await;
+
             let browser = state.plugins.get("browser").await.unwrap();
+
             let identity = browser
                 .call(krabb_core::types::Request::call(80, "identity", json!({})))
                 .await
@@ -5103,6 +5197,7 @@ for line in sys.stdin:
                 .result;
 
             state.sessions.lock().unwrap().create("idle", "model").unwrap();
+
             let idle = cancel_request(
                 &IpcRequest::call(81, "secret", "session.cancel", json!({"id": "idle"})),
                 &state,
@@ -5110,6 +5205,7 @@ for line in sys.stdin:
             .await;
 
             assert!(idle.error.is_none());
+
             assert_eq!(
                 browser
                     .call(krabb_core::types::Request::call(82, "identity", json!({})))
@@ -5141,6 +5237,7 @@ for line in sys.stdin:
 
         let request = IpcRequest::call(1, "secret", "session.cancel", json!({"id": "active"}));
         let cancel_state = Arc::clone(&state);
+
         let cancel_request =
             tokio::spawn(async move { cancel_request(&request, &cancel_state).await });
 
@@ -5159,7 +5256,9 @@ for line in sys.stdin:
         tokio::time::timeout(Duration::from_secs(1), token.cancelled()).await.unwrap();
 
         assert!(!cancel_request.is_finished());
+
         token.acknowledge();
+
         let response = cancel_request.await.unwrap();
 
         assert_eq!(response.result.unwrap()["status"], "cancelled");
@@ -5217,6 +5316,7 @@ for line in sys.stdin:
     #[tokio::test]
     async fn validates_approval_resolution_requests() {
         let state = state_at("approval-invalid");
+
         let missing_id = approval_resolve(
             &IpcRequest::call(1, "secret", "approval.resolve", json!({"approved": true})),
             &state,
@@ -5250,6 +5350,7 @@ for line in sys.stdin:
     #[test]
     fn bounds_session_list_payloads() {
         let state = state_at("-large");
+
         {
             let mut sessions = state.sessions.lock().unwrap();
             sessions.create("large", "model").unwrap();
@@ -5272,6 +5373,7 @@ for line in sys.stdin:
 
         assert!(encoded.len().saturating_add(1) <= FRAME);
         assert_eq!(response.result.unwrap()["items"][0]["messages"], 100);
+
         let detail =
             dispatch(&IpcRequest::call(2, "secret", "session.get", json!({"id": "large"})), &state)
                 .unwrap();
@@ -5283,7 +5385,9 @@ for line in sys.stdin:
     fn reports_pending_worktree_cleanup() {
         let root = std::env::temp_dir().join(format!("krabb-ipc-cleanup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(root.join(".krabb/worktrees/copy")).unwrap();
+
         let state = State {
             token: "secret".into(),
             sessions: Arc::new(Mutex::new(Store::load(root.join("sessions.json")).unwrap())),
@@ -5303,6 +5407,7 @@ for line in sys.stdin:
         };
 
         state.sessions.lock().unwrap().create("copy", "model").unwrap();
+
         let response = dispatch(
             &IpcRequest::call(1, "secret", "session.delete", json!({"id": "copy"})),
             &state,
@@ -5314,6 +5419,7 @@ for line in sys.stdin:
         assert_eq!(result["worktree"]["status"], "pending");
         assert!(result["worktree"]["error"].as_str().is_some());
         assert!(!state.sessions.lock().unwrap().sessions.contains_key("copy"));
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5362,6 +5468,7 @@ for line in sys.stdin:
     #[test]
     fn purges_requested_session_and_delivery_state_atomically() {
         let state = state_at("state-purge");
+
         {
             let mut store = state.sessions.lock().unwrap();
             store.create("saved", "test-model").unwrap();
@@ -5413,6 +5520,7 @@ for line in sys.stdin:
         .unwrap_err();
 
         assert_eq!(active_session.kind(), std::io::ErrorKind::WouldBlock);
+
         {
             let mut store = state.sessions.lock().unwrap();
 
@@ -5450,6 +5558,7 @@ for line in sys.stdin:
         let _ = std::fs::remove_dir_all(&root);
 
         assert!(super::call(&root, "status", json!({})).await.is_err());
+
         assert_eq!(
             super::to_io(krabb_core::Error::Denied("no".into())).kind(),
             std::io::ErrorKind::InvalidData
@@ -5466,12 +5575,17 @@ for line in sys.stdin:
     async fn uninstall_guards_use_live_state_without_recovering_the_catalog() {
         let mut state = state_at("uninstall-guard");
         let root = state.home.clone();
+
         state.home = root.clone();
+
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let _owner = crate::daemon_lock(&root).unwrap();
         let catalog = root.join("index.json");
         let mut store = Store::load(&catalog).unwrap();
+
         store.create("active", "model").unwrap();
         store
             .begin(
@@ -5487,7 +5601,9 @@ for line in sys.stdin:
             .unwrap();
 
         state.sessions = Arc::new(Mutex::new(store));
+
         let before = std::fs::read(&catalog).unwrap();
+
         let entry = crate::Entry {
             source: "test".into(),
             revision: "local".into(),
@@ -5510,6 +5626,7 @@ for line in sys.stdin:
         .unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
         std::fs::write(root.join("ipc.token"), "secret").unwrap();
         std::fs::write(root.join("ipc.port"), listener.local_addr().unwrap().port().to_string())
             .unwrap();
@@ -5522,13 +5639,16 @@ for line in sys.stdin:
         assert!(error.to_string().contains("sessions exist"));
         assert_eq!(std::fs::read(&catalog).unwrap(), before);
         assert!(state.sessions.lock().unwrap().sessions["active"].inflight.is_some());
+
         assert!(
             crate::remove_at(crate::PluginRemove { id: "model".into(), yes: true }, &root).is_err()
         );
 
         assert_eq!(std::fs::read(&catalog).unwrap(), before);
+
         state.sessions.lock().unwrap().clear("active", "idle").unwrap();
         state.sessions.lock().unwrap().remove("active").unwrap();
+
         let before = std::fs::read(&catalog).unwrap();
 
         let result = crate::uninstall_plugin_at(&root, "model", false).await.unwrap();
@@ -5536,9 +5656,11 @@ for line in sys.stdin:
         assert_eq!(result["status"], "uninstalled");
         assert_eq!(std::fs::read(&catalog).unwrap(), before);
         assert!(!crate::load_lock_at(&root).unwrap().plugins.contains_key("model"));
+
         state.stop.signal();
         task.await.unwrap().unwrap();
         drop(_owner);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5546,7 +5668,9 @@ for line in sys.stdin:
     async fn serves_authenticated_and_rejects_unknown_clients() {
         let root = std::env::temp_dir().join(format!("krabb-ipc-serve-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
             Ok(listener) => listener,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
@@ -5554,8 +5678,10 @@ for line in sys.stdin:
         };
 
         let port = listener.local_addr().unwrap().port();
+
         std::fs::write(root.join("ipc.token"), "secret").unwrap();
         std::fs::write(root.join("ipc.port"), port.to_string()).unwrap();
+
         let state = Arc::new(State {
             token: "secret".into(),
             sessions: Arc::new(Mutex::new(Store::load(root.join("sessions.json")).unwrap())),
@@ -5583,7 +5709,9 @@ for line in sys.stdin:
 
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let (read, mut write) = stream.into_split();
+
         jsonl::write(&mut write, &IpcRequest::call(2, "wrong", "status", json!({}))).await.unwrap();
+
         let mut read = BufReader::new(read);
         let response: IpcResponse = jsonl::read(&mut read, FRAME).await.unwrap().unwrap();
 
@@ -5591,6 +5719,7 @@ for line in sys.stdin:
 
         state.stop.signal();
         task.await.unwrap().unwrap();
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -130,6 +130,9 @@ jobs:
         name: Run Workspace Tests
         run: cargo test --workspace --no-fail-fast --locked --target "${{ matrix.target }}"
 
+      - name: Test Installer Integrity
+        run: python -B krabb-scripts/tests/installers.py
+
       - name: Check Unix Installer Inputs
         if: runner.os != 'Windows'
         shell: bash

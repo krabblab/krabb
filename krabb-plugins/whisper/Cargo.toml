@@ -11,3 +11,6 @@ krabb-log.workspace = true
 krabb-core = { path = "../../krabb-core" }
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

@@ -33,3 +33,6 @@ format. The Codex adapter sends inline image inputs through the app-server
 `turn/start` protocol and negotiates the experimental API needed for workspace
 roots. Use a vision-capable selected model; Krabb does not pin the Codex CLI
 release.
+
+Krabb disables inherited MCP servers before each model thread so tools remain subject
+to host approval. Unsupported configuration responses stop the request before execution.

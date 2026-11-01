@@ -52,6 +52,9 @@ operations and plugin guides for detailed schedule and memory behavior.
 
 ## Tools And Safety
 
+Live approvals and `/approvals` display complete tool arguments. The host rejects
+prompt-mode requests that exceed its review limits before issuing a challenge.
+
 TUI model tools are disabled by default. Enable them in `config.toml`:
 
 ```toml

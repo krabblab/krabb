@@ -42,6 +42,9 @@ model steps. OpenAI, OpenRouter, Anthropic, Ollama, and the Codex API-key adapte
 coalesce text by size or a short timer and send at most 256 text notifications
 per request. The final reply retains all generated text within
 the response size limit, including text received after notifications stop.
+Codex API-key and Ollama streams complete at their terminal marker without waiting
+for transport closure. Trailing data cannot change the completed reply or invalidate
+it, including when it shares a transport chunk with the marker.
 OpenRouter uses `KRABB_OPENROUTER_MODEL` for new daemon sessions when `KRABB_MODEL`
 is absent, as well as for empty or `default` model requests. Explicit models take precedence.
 

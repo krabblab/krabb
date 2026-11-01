@@ -2,12 +2,14 @@
 
 #[cfg(not(test))]
 use krabb_core::plugin::serve_with;
+
 use krabb_core::{
     policy::Policy,
     types::{Capability, Hello, Protocol, Request, Response},
 };
 
 use serde_json::json;
+
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{Child, Command},
@@ -29,6 +31,7 @@ async fn main() -> std::process::ExitCode {
 async fn plugin_main() -> krabb_core::Result<()> {
     let root = media_root();
     let policy = Policy { root, ..Policy::default() };
+
     serve_with(hello(), move |request| {
         let policy = policy.clone();
         async move { call(&policy, request).await }
@@ -73,12 +76,15 @@ async fn call_at(
         .ok_or_else(|| krabb_core::Error::Denied("transcribe.path is required.".into()))?;
 
     let path = policy.path(path)?;
+
     let command = command
         .filter(|command| !command.trim().is_empty())
         .ok_or_else(|| krabb_core::Error::Denied("A Whisper command is not configured.".into()))?;
 
     let mut process = Command::new(command);
+
     process.arg(path);
+
     let output = capture(process)
         .await
         .map_err(|error| krabb_core::Error::Denied(format!("Whisper failed: {error}.")))?;
@@ -132,6 +138,7 @@ async fn capture(mut command: Command) -> std::io::Result<std::process::Output> 
         .stderr(std::process::Stdio::piped());
 
     let mut child = command.spawn()?;
+
     let stdout = child.stdout.take().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Process has no stdout.")
     })?;
@@ -159,6 +166,7 @@ async fn capture(mut command: Command) -> std::io::Result<std::process::Output> 
 
         Err(_) => {
             stop(&mut child).await;
+
             Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "Process exceeded the execution time limit.",
@@ -207,6 +215,9 @@ fn hello() -> Hello {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    mod lifecycle;
+
     use super::{call, call_at, hello};
 
     use krabb_core::{policy::Policy, types::Request};
@@ -226,6 +237,7 @@ mod tests {
 
         assert!(call(&policy, Request::call(1, "unknown", json!({}))).await.unwrap().is_none());
         assert!(call(&policy, Request::call(2, "transcribe", json!({}))).await.is_err());
+
         assert!(
             call_at(&policy, Request::call(3, "transcribe", json!({"path": "voice"})), None)
                 .await
@@ -235,11 +247,13 @@ mod tests {
 
     fn write_transcriber(path: &std::path::Path, output: &str, error: &str, status: i32) {
         let source = path.with_extension("rs");
+
         let source_code = format!(
             "fn main() {{ print!({output:?}); eprint!({error:?}); std::process::exit({status}); }}"
         );
 
         std::fs::write(&source, source_code).unwrap();
+
         let result = std::process::Command::new("rustc")
             .args(["--edition", "2024"])
             .arg(&source)
@@ -261,13 +275,18 @@ mod tests {
     async fn runs_a_local_transcriber() {
         let root = std::env::temp_dir().join(format!("krabb-whisper-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("voice"), b"audio").unwrap();
+
         let extension = if cfg!(windows) { "exe" } else { "" };
 
         let script = root.join(format!("transcriber.{extension}"));
+
         write_transcriber(&script, "hello from whisper\n", "", 0);
+
         let policy = Policy { root: Some(root.clone()), ..Policy::default() };
+
         let reply = call_at(
             &policy,
             Request::call(1, "transcribe", json!({"path": "voice"})),
@@ -280,6 +299,7 @@ mod tests {
         assert_eq!(reply.result.unwrap()["text"], "hello from whisper");
 
         let empty = root.join(format!("empty.{extension}"));
+
         write_transcriber(&empty, "", "", 0);
 
         assert!(
@@ -293,6 +313,7 @@ mod tests {
         );
 
         let failed = root.join(format!("failed.{extension}"));
+
         write_transcriber(&failed, "", "nope\n", 1);
 
         assert!(
