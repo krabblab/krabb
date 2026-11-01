@@ -5465,13 +5465,12 @@ for line in sys.stdin:
     #[tokio::test]
     async fn uninstall_guards_use_live_state_without_recovering_the_catalog() {
         let mut state = state_at("uninstall-guard");
-        let root = std::env::temp_dir().join(format!("ug{}", std::process::id()));
+        let root = state.home.clone();
         state.home = root.clone();
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let _owner = crate::daemon_lock(&root).unwrap();
-        let catalog = root.join("data").join("sessions").join("index.json");
-        std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
+        let catalog = root.join("index.json");
         let mut store = Store::load(&catalog).unwrap();
         store.create("active", "model").unwrap();
         store

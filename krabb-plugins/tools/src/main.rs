@@ -514,7 +514,7 @@ async fn shell_with(
     {
         let mut process = Command::new("cmd");
         process.args(["/C", command]).current_dir(root);
-        capture(process, None, true).await
+        Box::pin(capture(process, None, true)).await
     }
 
     #[cfg(target_os = "linux")]

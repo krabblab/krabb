@@ -23508,8 +23508,14 @@ done
 
         assert!(path.is_file());
         assert!(
-            service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: false }))
-                .is_err()
+            super::service_at_with_status(
+                &path,
+                ServiceCommand::Install(super::ServiceInstall { force: false }),
+                |_, _| panic!("an existing definition must not reach the service manager"),
+                || panic!("an existing definition must not query the service manager"),
+                false,
+            )
+            .is_err()
         );
 
         #[cfg(not(windows))]
