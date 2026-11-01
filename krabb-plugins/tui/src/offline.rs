@@ -1,6 +1,7 @@
 use krabb_core::{Error, Result, types::Message};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
@@ -55,6 +56,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
 
             if !store.sessions.contains_key(id) {
                 let model = required_text(&params, "model")?;
+
                 store.create(id, model)?;
                 save(&path, &store)?;
             }
@@ -137,6 +139,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
             validate_id(id)?;
 
             let model = required_text(&params, "model")?;
+
             store.create(id, model)?;
             save(&path, &store)?;
 
@@ -167,6 +170,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
 
             if session.messages.len() > krabb_core::session::MESSAGE_HISTORY_LIMIT {
                 let excess = session.messages.len() - krabb_core::session::MESSAGE_HISTORY_LIMIT;
+
                 session.messages.drain(..excess);
             }
 
@@ -211,7 +215,9 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
 
         "session.rename" => {
             validate_id(id)?;
+
             let target = required_text(&params, "target")?;
+
             validate_id(target)?;
 
             if id == target {
@@ -262,6 +268,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
         "session.model" => {
             let model = required_text(&params, "model")?;
             let session = store.session_mut(id)?;
+
             session.model = model.to_owned();
             session.updated = now();
             save(&path, &store)?;
@@ -287,6 +294,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
             };
 
             let session = store.session_mut(id)?;
+
             session.workspace = workspace.clone();
             session.updated = now();
             save(&path, &store)?;
@@ -436,6 +444,7 @@ impl Store {
         }
 
         let created = now();
+
         self.sessions.insert(
             id.to_owned(),
             Session {
@@ -468,6 +477,7 @@ impl Store {
 mod tests {
     use super::{control, load, save};
     use serde_json::json;
+
     use std::{
         fs,
         sync::atomic::{AtomicU64, Ordering},
@@ -518,6 +528,7 @@ mod tests {
 
         assert_eq!(session["backend"], "local");
         assert_eq!(session["messages"].as_array().unwrap().len(), 100);
+
         let path = super::super::data::plugin_file(&root, "tui", "sessions.json");
 
         assert!(path.is_file());
@@ -578,6 +589,7 @@ mod tests {
         let sessions = control(&home, "session.list", json!({})).await.unwrap();
 
         assert_eq!(sessions["items"].as_array().unwrap().len(), 32);
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -599,6 +611,7 @@ mod tests {
 
         let path = super::super::data::plugin_file(&root, "tui", "sessions.json");
         let mut store = load(&path).unwrap();
+
         store.sessions.get_mut("main").unwrap().reservation_until = Some(0);
         save(&path, &store).unwrap();
 
@@ -618,6 +631,7 @@ mod tests {
         );
 
         assert!(control(&home, "session.reserve", json!({"id": "main"})).await.is_err());
+
         let message = json!({
             "id": "main-user-1",
             "session": "main",
@@ -659,6 +673,7 @@ mod tests {
         );
 
         assert!(control(&home, "session.get", json!({"id": "missing"})).await.is_err());
+
         assert!(
             control(&home, "session.append", json!({"id": "main", "message": {}})).await.is_err()
         );
@@ -694,6 +709,7 @@ mod tests {
         let sessions = control(&home, "session.list", json!({})).await.unwrap();
 
         assert_eq!(sessions["items"][0]["model"], "next");
+
         control(&home, "session.clear", json!({"id": "main"})).await.unwrap();
 
         let session = control(&home, "session.get", json!({"id": "main"})).await.unwrap();
@@ -713,6 +729,7 @@ mod tests {
         let home = root.to_string_lossy().into_owned();
 
         control(&home, "session.new", json!({"id": "before", "model": "test"})).await.unwrap();
+
         control(
             &home,
             "session.append",
@@ -764,6 +781,7 @@ mod tests {
         control(&home, "session.delete", json!({"id": "after"})).await.unwrap();
 
         assert!(control(&home, "session.get", json!({"id": "after"})).await.is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -773,6 +791,7 @@ mod tests {
         let home = root.to_string_lossy().into_owned();
 
         control(&home, "session.new", json!({"id": "main", "model": "test"})).await.unwrap();
+
         control(
             &home,
             "session.append",
@@ -792,6 +811,7 @@ mod tests {
         control(&home, "session.reserve", json!({"id": "main"})).await.unwrap();
 
         assert!(control(&home, "session.clear", json!({"id": "main"})).await.is_err());
+
         assert!(
             control(&home, "session.rename", json!({"id": "main", "target": "renamed"}))
                 .await
@@ -819,6 +839,7 @@ mod tests {
 
         let path = super::super::data::plugin_file(&root, "tui", "sessions.json");
         let mut store = load(&path).unwrap();
+
         store.sessions.get_mut("main").unwrap().reservation_until = Some(0);
         save(&path, &store).unwrap();
 
@@ -828,8 +849,10 @@ mod tests {
 
         control(&home, "session.new", json!({"id": "legacy", "model": "test"})).await.unwrap();
         control(&home, "session.reserve", json!({"id": "legacy"})).await.unwrap();
+
         let mut store = load(&path).unwrap();
         let legacy = store.sessions.get_mut("legacy").unwrap();
+
         legacy.reservation_until = None;
         legacy.updated = 0;
         save(&path, &store).unwrap();
@@ -842,7 +865,9 @@ mod tests {
     #[tokio::test]
     async fn ignores_legacy_session_data_and_uses_plugin_data_directory() {
         let root = home();
+
         fs::create_dir_all(&root).unwrap();
+
         krabb_file::save(
             root.join("tui-sessions.json"),
             serde_json::to_vec(&json!({
@@ -865,6 +890,7 @@ mod tests {
         let sessions = control(&home, "session.list", json!({})).await.unwrap();
 
         assert!(sessions["items"].as_array().unwrap().is_empty());
+
         control(&home, "session.ensure", json!({"id": "current", "model": "test"})).await.unwrap();
 
         assert!(super::super::data::plugin_file(&root, "tui", "sessions.json").is_file());

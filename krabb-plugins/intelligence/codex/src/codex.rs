@@ -7,6 +7,7 @@ use krabb_core::{
 };
 
 use serde_json::{Value, json};
+
 use tokio::{
     io::BufReader,
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -63,6 +64,7 @@ async fn command_with(
     }
 
     let mut server = Server::start_with(binary, home).await?;
+
     server.initialize().await?;
 
     match command {
@@ -156,6 +158,7 @@ async fn login(
     let kind = if device { "chatgptDeviceCode" } else { "chatgpt" };
 
     let result = server.call("account/login/start", json!({"type": kind})).await?;
+
     let login_id = result["loginId"]
         .as_str()
         .ok_or_else(|| denied("Codex did not return a login identifier."))?;
@@ -283,6 +286,9 @@ async fn generate_on(
     let root = root.to_string_lossy().into_owned();
     let instructions = instructions(&input.messages)?;
     let tool_guidance = tool_guidance(&input.tools);
+    let config = server.call("config/read", json!({"includeLayers": false, "cwd": root})).await?;
+    let mcp_servers = disabled_mcp(&config)?;
+
     let thread = server
         .call(
             "thread/start",
@@ -305,7 +311,7 @@ async fn generate_on(
                         "view_image": false
                     },
 
-                    "mcp_servers": {}
+                    "mcp_servers": mcp_servers
                 }
             }),
         )
@@ -316,6 +322,7 @@ async fn generate_on(
         .ok_or_else(|| denied("Codex did not return a thread identifier."))?;
 
     let input_items = prompt(&input.messages)?;
+
     let started = server
         .call(
             "turn/start",
@@ -417,6 +424,7 @@ fn prompt(messages: &[Message]) -> krabb_core::Result<Vec<Value>> {
 
                 Content::Image { uri, alt } => {
                     let url = codex_image_url(uri)?;
+
                     output.push(json!({"type": "image", "url": url}));
 
                     if let Some(alt) = alt {
@@ -509,6 +517,30 @@ fn tool_call_key(name: &str, args: &Value) -> krabb_core::Result<String> {
         .map_err(|_| denied("Codex tool arguments could not be fingerprinted."))
 }
 
+fn disabled_mcp(response: &Value) -> krabb_core::Result<Value> {
+    let config = response["config"]
+        .as_object()
+        .ok_or_else(|| denied("Codex did not return its effective configuration."))?;
+
+    let mut disabled = serde_json::Map::new();
+
+    if let Some(servers) = config.get("mcp_servers").filter(|value| !value.is_null()) {
+        let servers = servers
+            .as_object()
+            .ok_or_else(|| denied("Codex returned an unsupported MCP configuration."))?;
+
+        for (name, server) in servers {
+            if !server.is_object() {
+                return Err(denied("Codex returned an unsupported MCP server configuration."));
+            }
+
+            disabled.insert(name.clone(), json!({"enabled": false}));
+        }
+    }
+
+    Ok(Value::Object(disabled))
+}
+
 fn tool_call_failed(
     failed: &BTreeSet<String>,
     name: &str,
@@ -522,6 +554,7 @@ impl Server {
         check_version(&binary, home.as_deref()).await?;
 
         let mut command = Command::new(&binary);
+
         command
             .args(["app-server", "--stdio"])
             .stdin(Stdio::piped())
@@ -574,6 +607,7 @@ impl Server {
                     "name": "krabb",
                     "version": env!("CARGO_PKG_VERSION")
                 },
+
                 "capabilities": {
                     "experimentalApi": true
                 }
@@ -586,11 +620,14 @@ impl Server {
 
     async fn call(&mut self, method: &str, params: Value) -> krabb_core::Result<Value> {
         let id = self.next;
+
         self.next =
             self.next.checked_add(1).ok_or_else(|| denied("Codex request IDs exhausted."))?;
 
         let request = json!({"id": id, "method": method, "params": params});
+
         jsonl::write(&mut self.output, &request).await?;
+
         timeout(RPC_TIMEOUT, async {
             let mut notices = 0_usize;
 
@@ -680,6 +717,7 @@ impl Server {
         let mut notices = 0_usize;
         let mut stream_events = 0_usize;
         let mut ticker = tokio::time::interval(interval);
+
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         ticker.tick().await;
 
@@ -839,6 +877,7 @@ fn tool_reply(id: Value, response: Response) -> krabb_core::Result<Value> {
         items.push(json!({"type": "inputText", "text": error.message}));
     } else {
         let value = response.result.unwrap_or(Value::Null);
+
         items
             .push(json!({"type": "inputText", "text": value["text"].as_str().unwrap_or_default()}));
 
@@ -943,6 +982,7 @@ async fn check_version(
     home: Option<&std::path::Path>,
 ) -> krabb_core::Result<()> {
     let mut command = Command::new(binary);
+
     command
         .arg("--version")
         .stdin(Stdio::null())
@@ -1088,6 +1128,7 @@ mod tests {
         use krabb_core::types::Response;
 
         let uri = "data:image/png;base64,aW1hZ2U=";
+
         let reply = super::tool_reply(
             json!(7),
             Response::ok(
@@ -1105,6 +1146,7 @@ mod tests {
 
         assert_eq!(reply["id"], 7);
         assert_eq!(reply["result"]["success"], true);
+
         assert_eq!(
             reply["result"]["contentItems"],
             json!([
@@ -1153,6 +1195,7 @@ mod tests {
         assert_eq!(usage, Some(krabb_core::types::ContextUsage { used: 12345, limit: 128000 }));
 
         assert_eq!(context_usage(&json!({"tokenUsage": {"last": {"totalTokens": 3}}})), None);
+
         assert_eq!(
             context_usage(&json!({
                 "tokenUsage": {
@@ -1193,6 +1236,7 @@ mod tests {
         }));
 
         assert_eq!(message, "Codex app-server error: session expired please retry");
+
         assert_eq!(
             super::app_server_error(&json!({"method": "error"})),
             "Codex app-server reported an error."
@@ -1213,6 +1257,7 @@ mod tests {
 
         let staging = path.with_extension("staging");
         let mut file = OpenOptions::new().create_new(true).write(true).open(&staging)?;
+
         file.write_all(script.as_bytes())?;
         file.sync_all()?;
         drop(file);
@@ -1232,6 +1277,7 @@ mod tests {
 
         assert_eq!(value[0]["name"], "read");
         assert_eq!(value[0]["inputSchema"]["type"], "object");
+
         assert!(
             dynamic_tools(&[
                 tools[0].clone(),
@@ -1280,11 +1326,45 @@ mod tests {
     }
 
     #[test]
+    fn disables_each_inherited_mcp_server_without_copying_its_configuration() {
+        assert_eq!(super::disabled_mcp(&json!({"config": {}})).unwrap(), json!({}));
+
+        assert_eq!(
+            super::disabled_mcp(&json!({"config": {"mcp_servers": null}})).unwrap(),
+            json!({})
+        );
+
+        assert_eq!(
+            super::disabled_mcp(&json!({"config": {"mcp_servers": {
+                "stdio": {"command": "fixture"},
+                "remote": {"url": "https://example.invalid", "enabled": true},
+                "disabled": {"enabled": false}
+            }}}))
+            .unwrap(),
+            json!({
+                "stdio": {"enabled": false}, "remote": {"enabled": false},
+                "disabled": {"enabled": false}
+            })
+        );
+
+        for response in [
+            json!({}),
+            json!({"config": null}),
+            json!({"config": {"mcp_servers": []}}),
+            json!({"config": {"mcp_servers": {"invalid": true}}}),
+        ] {
+            assert!(super::disabled_mcp(&response).is_err());
+        }
+    }
+
+    #[test]
     fn detects_repeated_failed_tool_calls_by_name_and_arguments() {
         let args = json!({"path": "outside.txt", "text": "data"});
+
         let mut failed = std::collections::BTreeSet::new();
 
         assert!(!tool_call_failed(&failed, "write", &args).unwrap());
+
         failed.insert(tool_call_key("write", &args).unwrap());
 
         assert!(tool_call_failed(&failed, "write", &args).unwrap());
@@ -1418,6 +1498,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
         let path =
             std::env::temp_dir().join(format!("krabb-codex-models-{}-{nonce}", std::process::id()));
 
@@ -1441,23 +1522,29 @@ done
 "#;
 
         write_binary(&path, script).unwrap();
+
         let mut server = Server::start_with(path.as_os_str().to_owned(), None).await.unwrap();
+
         server.initialize().await.unwrap();
 
         let listing = super::models_list(&mut server).await.unwrap();
+
         assert!(listing.contains("gpt-test - Test model (default)"));
 
         let error = server.call("thread/start", json!({})).await.unwrap_err().to_string();
+
         assert!(error.contains("thread/start"));
         assert!(error.contains("Invalid model: gpt-unknown"));
 
         drop(server);
+
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn requires_tool_names_and_arguments_from_the_active_turn() {
         let allowed = ["read".to_owned()].into_iter().collect();
+
         let request = json!({
             "params": {
                 "threadId": "thread-1",
@@ -1470,6 +1557,7 @@ done
         assert_eq!(tool_denial(&request, "thread-1", "turn-1", &allowed), None);
 
         let mut other = request.clone();
+
         other["params"]["tool"] = "shell".into();
 
         assert_eq!(
@@ -1478,11 +1566,13 @@ done
         );
 
         let mut mismatched = request.clone();
+
         mismatched["params"]["turnId"] = "turn-2".into();
 
         assert!(tool_denial(&mismatched, "thread-1", "turn-1", &allowed).is_some());
 
         let mut invalid = request;
+
         invalid["params"]["arguments"] = json!("README.md");
 
         assert!(tool_denial(&invalid, "thread-1", "turn-1", &allowed).is_some());
@@ -1570,7 +1660,9 @@ done
         write_binary(&path, script).unwrap();
 
         let mut server = Server::start_with(path.as_os_str().to_owned(), None).await.unwrap();
+
         server.initialize().await.unwrap();
+
         let thread =
             server.call("thread/start", json!({"cwd": ".", "ephemeral": true})).await.unwrap();
 
@@ -1579,6 +1671,7 @@ done
 
         let (output, mut events) = mpsc::channel(256);
         let mut emitter = crate::Emitter::new(output);
+
         let text = server
             .turn_with_interval(
                 thread["thread"]["id"].as_str().unwrap(),
@@ -1606,8 +1699,73 @@ done
         assert!(event_count <= super::STREAM_EVENTS);
         assert!(streamed.len() < expected.len());
         assert!(expected.starts_with(&streamed));
+
         drop(server);
+
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_unknown_mcp_configuration_before_starting_a_thread() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
+        let root =
+            std::env::temp_dir().join(format!("krabb-codex-mcp-{}-{nonce}", std::process::id()));
+
+        std::fs::create_dir(&root).unwrap();
+
+        let binary = root.join("codex");
+
+        let script = r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+    printf '%s\n' 'codex-cli 99.0.0'
+    exit 0
+fi
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    if [ -z "$id" ]; then continue; fi
+    case "$line" in
+        *initialize*) printf '{"id":%s,"result":{}}\n' "$id" ;;
+        *account/read*) printf '{"id":%s,"result":{"account":{"type":"chatgpt"}}}\n' "$id" ;;
+        *config/read*) printf '{"id":%s,"result":%s}\n' "$id" "$(cat "$0.config")" ;;
+        *thread/start*|*turn/start*) printf 'started' > "$0.started"; exit 1 ;;
+    esac
+done
+"#;
+
+        write_binary(&binary, script).unwrap();
+
+        for config in [json!({}), json!({"config": {"mcp_servers": []}})] {
+            std::fs::write(root.join("codex.config"), config.to_string()).unwrap();
+
+            let (output, _events) = mpsc::channel(8);
+            let mut session = super::Session::new(binary.as_os_str().to_owned(), None);
+
+            let result = session
+                .generate(
+                    1,
+                    ModelRequest {
+                        model: "fixture".into(),
+                        workspace: Some(root.display().to_string()),
+                        messages: vec![],
+                        stream: false,
+                        tools: vec![],
+                    },
+                    crate::Emitter::new(output),
+                )
+                .await;
+
+            let error = result.unwrap_err().to_string();
+
+            assert!(error.contains("configuration"), "{error}");
+            assert!(!root.join("codex.started").exists());
+            assert!(session.server.is_none());
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
@@ -1616,6 +1774,7 @@ done
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
         let binary = std::env::temp_dir()
             .join(format!("krabb-codex-generate-{}-{nonce}", std::process::id()));
 
@@ -1637,6 +1796,7 @@ while IFS= read -r line; do
         *\"method\":\"initialize\"*) printf 'x\n' >> "$0.initialized"; printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
 
         *account/read*) printf '{"jsonrpc":"2.0","id":%s,"result":{"account":{"type":"chatgpt"}}}\n' "$id" ;;
+        *config/read*) printf '{"id":%s,"result":{"config":{"mcp_servers":{"sentinel":{"command":"unused"},"other.server":{"url":"https://example.invalid"}}}}}\n' "$id" ;;
         *thread/start*) printf 'x\n' >> "$0.threads"; printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"thread-1"}}}\n' "$id" ;;
         *turn/start*)
             printf '{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
@@ -1646,6 +1806,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         std::fs::create_dir(&root).unwrap();
         write_binary(&binary, script).unwrap();
 
@@ -1674,6 +1835,7 @@ done
                             schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
                         }],
                     },
+
                     crate::Emitter::new(output.clone()),
                 )
                 .await
@@ -1681,6 +1843,7 @@ done
                 .unwrap();
 
             assert_eq!(response.id, id);
+
             let reply: krabb_core::types::ModelReply =
                 serde_json::from_value(response.result.unwrap()).unwrap();
 
@@ -1719,7 +1882,30 @@ done
                 )
         );
 
+        let requests = std::fs::read_to_string(format!("{}.requests", binary.display())).unwrap();
+
+        let requests: Vec<serde_json::Value> =
+            requests.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+
+        for thread in requests.iter().filter(|request| request["method"] == "thread/start") {
+            assert_eq!(
+                thread["params"]["config"]["mcp_servers"],
+                json!({
+                    "sentinel": {"enabled": false}, "other.server": {"enabled": false}
+                })
+            );
+
+            assert_eq!(thread["params"]["dynamicTools"][0]["name"], "read");
+        }
+
+        let reads: Vec<_> =
+            requests.iter().filter(|request| request["method"] == "config/read").collect();
+
+        assert_eq!(reads.len(), 2);
+        assert!(reads.iter().all(|request| request["params"]["cwd"] == root.display().to_string()));
+
         assert_eq!(events.try_recv().unwrap()["params"]["event"]["text"], "Hello");
+
         let _ = std::fs::remove_file(format!("{}.initialized", binary.display()));
         let _ = std::fs::remove_file(format!("{}.versions", binary.display()));
         let _ = std::fs::remove_file(format!("{}.threads", binary.display()));
@@ -1734,6 +1920,7 @@ done
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
         let path =
             std::env::temp_dir().join(format!("krabb-codex-login-{}-{nonce}", std::process::id()));
 
@@ -1755,10 +1942,12 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         write_binary(&path, script).unwrap();
 
         let (output, mut events) = mpsc::channel(8);
         let mut emitter = crate::Emitter::new(output);
+
         let result = command_with(
             &json!({"name": "codex", "args": ["login", "--device"]}),
             &mut emitter,
@@ -1769,9 +1958,11 @@ done
         .unwrap();
 
         assert_eq!(result, "Codex sign-in completed.");
+
         let event = events.try_recv().unwrap();
 
         assert!(event["params"]["event"]["text"].as_str().unwrap().contains("ABCD-EFGH"));
+
         let _ = std::fs::remove_file(path);
     }
 }

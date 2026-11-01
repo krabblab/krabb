@@ -21,6 +21,7 @@ use std::os::unix::fs::PermissionsExt;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
+
 use krabb_core::types::{
     Capability, CommandSpec, Content, Event, Hello, Message, ModelReply, ModelRequest, Protocol,
     Request, Response, Role, ToolContent, ToolResult, ToolSpec,
@@ -30,6 +31,7 @@ use krabb_file::{append_jsonl as append_jsonl_file, save as save_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
 use tokio::{
     net::TcpListener,
     sync::{Mutex as AsyncMutex, Notify, RwLock, watch},
@@ -40,6 +42,7 @@ use tracing::{debug, error, info, warn};
 pub(crate) mod approval;
 pub(crate) mod ipc;
 pub(crate) mod logging;
+mod media;
 mod process;
 pub(crate) mod state;
 pub(crate) mod terminal;
@@ -48,6 +51,7 @@ use process::Process;
 const NAME: &str = "krabb";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const RUNTIME_COMMAND_OWNER: &str = "__runtime.";
+
 const BANNER: &str = concat!(
     "\n",
     "██╗  ██╗██████╗  █████╗ ██████╗ ██████╗ \n",
@@ -79,6 +83,10 @@ const SCHEDULE_HISTORY_PAGE_SIZE: usize = 5;
 const SCHEDULE_HISTORY_LINE_LIMIT: usize = 64 * 1024;
 
 const TOOL_CALLS: usize = 16;
+// Bound complete approval displays, including captured schedule context and channel text.
+const APPROVAL_ARGUMENT_LIMIT: usize = 512;
+const APPROVAL_SCHEDULE_LIMIT: usize = 1_024;
+const APPROVAL_TEXT_LIMIT: usize = 2_000;
 const TURN_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
 const TOKEN_LIMIT: u64 = 128_000;
 const ARCHIVE_LIMIT: u64 = 64 * 1024 * 1024;
@@ -868,6 +876,7 @@ enum Command {
         #[arg(value_enum, help = "Shell to generate completions for.")]
         shell: CompletionShell,
     },
+
     #[command(about = "Manage installed plugins.")]
     Plugin {
         #[command(subcommand)]
@@ -2222,6 +2231,7 @@ fn export_krabfile_at_mode(
     let config = load_config_at(root)?;
 
     let lock = load_lock_at(root)?;
+
     let mut plugins = lock
         .plugins
         .into_iter()
@@ -2235,8 +2245,10 @@ fn export_krabfile_at_mode(
         .collect::<Vec<_>>();
 
     plugins.sort_by(|left, right| left.id.cmp(&right.id));
+
     let file = Krabfile { version: KRABFILE_VERSION.into(), config, plugins };
     let text = toml::to_string_pretty(&file)?;
+
     secure(&path, text.as_bytes())?;
 
     if json {
@@ -2271,6 +2283,7 @@ fn validate_krabfile(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = args.path.unwrap_or_else(default_krabfile_path);
     let file = read_krabfile(&path)?;
+
     validate_krabfile_spec(&file, &path)?;
 
     if json {
@@ -2308,6 +2321,7 @@ fn import_krabfile_at_mode(
     let path = args.path.unwrap_or_else(default_krabfile_path);
 
     let file = read_krabfile(&path)?;
+
     validate_krabfile_spec(&file, &path)?;
 
     let destination = root.join("config.toml");
@@ -2325,6 +2339,7 @@ fn import_krabfile_at_mode(
 
     init_at(root)?;
     secure(&destination, toml::to_string_pretty(&file.config)?.as_bytes())?;
+
     let spinner = if !json && !file.plugins.is_empty() {
         terminal::Spinner::start("Importing configuration and plugins...")
     } else {
@@ -2455,12 +2470,14 @@ fn krabfile_output_path(
 async fn ask_at(ask: Ask, root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let provider = model_plugin_at(root, &ask.provider)?;
     let text = generate_at(Ask { provider, ..ask }, root, "cli").await?;
+
     println!("{text}");
     Ok(())
 }
 
 fn model_plugin_at(root: &Path, requested: &str) -> Result<String, PluginError> {
     let lock = load_lock_at(root)?;
+
     let available = lock
         .plugins
         .iter()
@@ -3257,6 +3274,7 @@ fn parse_schedule_add(
                     "group" => false,
                     _ => return Err("Message kind must be private or group.".into()),
                 },
+
                 "thread": message_thread,
             });
 
@@ -4689,7 +4707,9 @@ async fn restart_daemon(root: &Path) -> Result<bool, PluginError> {
 }
 
 fn sessions_at(root: &Path) -> Result<state::Store, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(state::Store::load(root.join("data/sessions/index.json"))?)
+    let mut store = state::Store::load(root.join("data/sessions/index.json"))?;
+    store.media_root = Some(media_root_at(root));
+    Ok(store)
 }
 
 #[cfg(test)]
@@ -5071,7 +5091,7 @@ async fn serve_inner(
 
     updates(root, &config.update)?;
 
-    let loaded = state::Store::load(root.join("data/sessions/index.json"))?;
+    let loaded = sessions_at(root)?;
     let workspace = workspace_root_at(root);
     reclaim_worktrees(&workspace, &loaded);
     let sessions = Arc::new(Mutex::new(loaded));
@@ -6315,6 +6335,15 @@ async fn execute_scheduled_task(
     let text = match (reply, tool_failure) {
         (Ok(_), Some(error)) => scheduled_tool_failure(&error, may_have_mutated),
 
+        (Ok(reply), None)
+            if may_have_mutated && reply.text.trim_start().starts_with("RETRYABLE:") =>
+        {
+            format!(
+                "PAUSED: A mutating action may already have completed; review it before retrying. {}",
+                scheduled_visible_text(&reply.text)
+            )
+        }
+
         (Ok(reply), None) => reply.text,
 
         (Err(_), _) if cancellation.requested() => {
@@ -6338,8 +6367,9 @@ async fn execute_scheduled_task(
     };
 
     let mut store = sessions.lock().map_err(|_| "Session lock is poisoned.")?;
-    store.clear(&session, "idle")?;
+    // Keep mutation evidence until the reply is durable, including on save rollback.
     store.append(&session, assistant)?;
+    store.clear(&session, "idle")?;
 
     Ok(text)
 }
@@ -6389,12 +6419,14 @@ fn schedule_history_tail(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut file = std::fs::File::open(path)?;
     let length = file.metadata()?.len();
     let start = length.saturating_sub(SCHEDULE_HISTORY_LIMIT);
+
     file.seek(SeekFrom::Start(start))?;
 
     let mut reader = BufReader::new(file);
 
     if start > 0 {
         let mut previous = [0_u8; 1];
+
         reader.get_mut().seek(SeekFrom::Start(start - 1))?;
         reader.get_mut().read_exact(&mut previous)?;
         reader.get_mut().seek(SeekFrom::Start(start))?;
@@ -6431,6 +6463,7 @@ fn schedule_history_tail(path: &Path) -> std::io::Result<Vec<u8>> {
     }
 
     let mut tail = Vec::new();
+
     reader.read_to_end(&mut tail)?;
 
     Ok(tail)
@@ -6502,6 +6535,7 @@ fn scheduler_log(home_root: &Path, task: &Value, status: &str, text: &str, finis
             "name": name,
             "timezone": task["zone"]
         },
+
         "run": {
             "id": task["run_id"].as_u64(),
             "status": status,
@@ -6518,15 +6552,18 @@ fn scheduler_log(home_root: &Path, task: &Value, status: &str, text: &str, finis
                 .flatten(),
             "retry_at": finish["retry_at"].as_u64()
         },
+
         "agent": {
             "provider": context["provider"],
             "model": context["model"],
             "workspace": context["workspace"]
         },
+
         "result": clip(redact_diagnostic(text), 4_000)
     });
 
     let mut content = entry.to_string();
+
     content.push('\n');
 
     match append_jsonl_file(&path, content.as_bytes()) {
@@ -6586,6 +6623,7 @@ fn report_scheduled_result(
 
     let heading = scheduled_result_heading(status);
     let text = format!("{heading} (schedule {task_id}):\n{}", clip(text.to_owned(), 3_000));
+
     let mut store = match sessions.lock() {
         Ok(store) => store,
         Err(_) => return ScheduleReportOutcome::Retry,
@@ -6759,6 +6797,7 @@ fn recover_plugins(root: &Path) -> std::io::Result<()> {
 
     let lock = load_lock_at(root).map_err(std::io::Error::other)?;
     let plugins = root.join("plugins");
+
     let Ok(entries) = std::fs::read_dir(&plugins) else {
         return Ok(());
     };
@@ -6860,12 +6899,16 @@ async fn launch(
     let manifest = read_manifest_checked(manifest_path.parent().unwrap_or(Path::new(".")))?;
 
     let mut expected_capabilities = manifest.capabilities.clone();
+
     expected_capabilities.sort();
+
     let mut expected_commands = manifest.commands.clone();
+
     expected_commands.sort_by(|left, right| left.name.cmp(&right.name));
 
     if !force {
         let lock = load_lock_at(root)?;
+
         let entry = lock
             .plugins
             .get(expected)
@@ -6874,6 +6917,7 @@ async fn launch(
         verify_plugin_binary(expected, entry, &manifest_path, &path)?;
 
         let mut locked_capabilities = entry.capabilities.clone();
+
         locked_capabilities.sort();
 
         if expected_capabilities != locked_capabilities {
@@ -6883,6 +6927,7 @@ async fn launch(
         }
 
         let mut locked_commands = entry.commands.clone();
+
         locked_commands.sort_by(|left, right| left.name.cmp(&right.name));
 
         if expected_commands != locked_commands {
@@ -6912,7 +6957,9 @@ async fn launch(
         .collect::<Vec<_>>();
 
     actual_capabilities.sort();
+
     let mut actual_commands = process.hello.commands.clone();
+
     actual_commands.sort_by(|left, right| left.name.cmp(&right.name));
 
     if process.hello.id != expected
@@ -7165,6 +7212,7 @@ fn env_for(manifest: &Manifest, config: &Config, root: &Path) -> Vec<(String, St
         "KRABB_ACP_COMMAND",
         "KRABB_ACP_ARGS",
         "KRABB_A2A_AGENT_CARD",
+        "KRABB_A2A_RPC_ORIGIN",
         "KRABB_AG_UI_LISTEN",
         "KRABB_AG_UI_ORIGINS",
         "KRABB_OPENROUTER_MODEL",
@@ -7585,6 +7633,7 @@ async fn bridge_with_media(
     approvals: Arc<AsyncMutex<approval::Gate>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut offset = sessions.lock().map_err(|_| "Session lock is poisoned.")?.offset(channel_id);
+    sessions.lock().map_err(|_| "Session lock is poisoned.")?.media_root = Some(media_root.clone());
     let mut call = 10_u64;
     let mut channel_failures = 0_u32;
     let mut provider_failures = 0_u32;
@@ -7981,12 +8030,6 @@ async fn bridge_with_media(
             }
 
             let content = resolve_media(channel_id, &channel, content(&event), &mut call).await;
-            let content = if provider.supports(Capability::Vision) {
-                pin_media(content, &media_root)
-            } else {
-                content
-            };
-
             let content = expand_media_files(channel_id, content, &media_root);
             let content =
                 transcribe_media(plugins, channel_id, content, &media_root, &mut call).await;
@@ -8024,7 +8067,7 @@ async fn bridge_with_media(
                 continue;
             }
 
-            let message = Message {
+            let mut message = Message {
                 id: event_key.clone(),
                 session: session_name.clone(),
                 role: Role::User,
@@ -8043,7 +8086,7 @@ async fn bridge_with_media(
                 .filter_map(event_id)
                 .collect::<Vec<_>>();
 
-            let retry_message = message.clone();
+            let mut retry_message = message.clone();
             let event_id = message.id.clone();
             let (workspace, prepared, commit, defer) = {
                 let mut store = sessions.lock().map_err(|_| "Session lock is poisoned.")?;
@@ -8101,6 +8144,14 @@ async fn bridge_with_media(
                     error!(session = %session_name, error = %diagnostic(sentence(error.to_string())), "Message routing failed.");
                     break;
                 } else {
+                    if provider.supports(Capability::Vision)
+                        && media::admitted(&store, &message, queued_event)
+                    {
+                        message.content =
+                            media::pin(std::mem::take(&mut message.content), &media_root);
+                        retry_message = message.clone();
+                    }
+
                     let existing = store.sessions.get(&session_name).is_some_and(|session| {
                         session.messages.iter().any(|item| item.id == message.id)
                     });
@@ -8889,52 +8940,6 @@ fn media_uri(uri: &str, channel_id: &str) -> bool {
         "slack" => uri.starts_with("slack://file/"),
         _ => false,
     }
-}
-
-fn pin_media(content: Vec<Content>, media_root: &Path) -> Vec<Content> {
-    let pinned = media_root.join("pinned");
-    let pinned_root = std::fs::canonicalize(&pinned).ok();
-    let mut output = Vec::with_capacity(content.len());
-
-    for item in content {
-        let Content::Image { uri, alt } = &item else {
-            output.push(item);
-            continue;
-        };
-
-        let Some(source) = media_file(uri, media_root) else {
-            output.push(item);
-            continue;
-        };
-
-        if pinned_root.as_ref().is_some_and(|root| source.starts_with(root)) {
-            output.push(item);
-            continue;
-        }
-
-        let Some((_, bytes)) = read_image(&source, IMAGE_LIMIT) else {
-            output.push(item);
-            continue;
-        };
-
-        let mut digest = Sha256::new();
-        digest.update(uri.as_bytes());
-        digest.update(&bytes);
-        let destination = pinned.join(format!("{}.bin", hex_digest(digest.finalize())));
-
-        if std::fs::create_dir_all(&pinned).is_ok()
-            && krabb_file::save(&destination, &bytes).is_ok()
-        {
-            output.push(Content::Image {
-                uri: format!("file://{}", destination.display()),
-                alt: alt.clone(),
-            });
-        } else {
-            output.push(item);
-        }
-    }
-
-    output
 }
 
 fn safe_text_file(name: &str, mime: Option<&str>) -> bool {
@@ -10553,6 +10558,7 @@ fn memory_tools() -> Vec<ToolSpec> {
                     "key": {"type": "string"},
                     "value": {"type": "string"},
                 },
+
                 "required": ["key", "value"],
                 "additionalProperties": false,
             }),
@@ -10586,10 +10592,12 @@ fn data_tools() -> Vec<ToolSpec> {
                             "type": {"type": "string", "enum": ["text", "integer", "real", "boolean", "json"]},
                             "required": {"type": "boolean"}
                         },
+
                         "required": ["name", "type"],
                         "additionalProperties": false
                     }
                 },
+
                 "column": {
                     "type": "object",
                     "properties": {
@@ -10597,9 +10605,11 @@ fn data_tools() -> Vec<ToolSpec> {
                         "type": {"type": "string", "enum": ["text", "integer", "real", "boolean", "json"]},
                         "required": {"type": "boolean"}
                     },
+
                     "required": ["name", "type"],
                     "additionalProperties": false
                 },
+
                 "column_name": {"type": "string"},
                 "record": {"type": "object", "description": "Record fields; values must match the table columns."},
                 "filter": {"type": "object", "description": "Exact field/value matches; omit to list records."},
@@ -10607,6 +10617,7 @@ fn data_tools() -> Vec<ToolSpec> {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                 "after_id": {"type": "integer", "minimum": 1, "description": "Use next_after from the previous query page."}
             },
+
             "required": ["operation"],
             "additionalProperties": false
         }),
@@ -10630,7 +10641,7 @@ fn scheduler_tools(
     [
         (
             "schedule_propose",
-            format!("Schedule an agent task after the user has clearly requested it. {availability} The scheduler assigns a unique funny name that the user can use in commands. If the user requests a message to the local TUI, authorize channel tui and use the exact session ID from the captured origin; for the default TUI session use tui-default. Set message_destination only for a destination the user explicitly authorized. If a requested external channel is unavailable, explain the missing requirement before creating the schedule. Choose a first run using delay_seconds, run_at RFC 3339 timestamp with offset, or cron; include a timezone for cron unless one is configured. For a fixed interval, set repeat_seconds and optionally delay_seconds for the first run; without delay_seconds, the first run is after one interval. The schedule is active as soon as this tool succeeds; do not request separate approval. missed selects what to do with occurrences due while the daemon was offline: skip, coalesce, or replay. retries is optional, from zero to five, with bounded exponential backoff. For recurring tasks, on_failure continue skips the failed occurrence after retries and keeps the next run; pause is the default."),
+            format!("Schedule an agent task after the user has clearly requested it. {availability} The scheduler assigns a unique funny name that the user can use in commands. If the user requests a message to the local TUI, authorize channel tui and use the exact session ID from the captured origin; for the default TUI session use tui-default. Set message_destination only for a destination the user explicitly authorized. If a requested external channel is unavailable, explain the missing requirement before creating the schedule. Choose a first run using delay_seconds, run_at RFC 3339 timestamp with offset, or cron; include a timezone for cron unless one is configured. For a fixed interval, set repeat_seconds and optionally delay_seconds for the first run; without delay_seconds, the first run is after one interval. The host applies the configured approval policy before activation. The approval covers unattended execution with the captured capabilities and destination. missed selects what to do with occurrences due while the daemon was offline: skip, coalesce, or replay. retries is optional, from zero to five, with bounded exponential backoff. For recurring tasks, on_failure continue skips the failed occurrence after retries and keeps the next run; pause is the default."),
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -10643,9 +10654,11 @@ fn scheduler_tools(
                             "private": {"type": "boolean"},
                             "thread": {"type": "string"}
                         },
+
                         "required": ["channel", "chat", "private"],
                         "additionalProperties": false
                     },
+
                     "delay_seconds": {"type": "integer", "minimum": 5},
                     "run_at": {"type": "string", "format": "date-time"},
                     "cron": {"type": "string"},
@@ -10655,6 +10668,7 @@ fn scheduler_tools(
                     "retries": {"type": "integer", "minimum": 0, "maximum": 5},
                     "on_failure": {"type": "string", "enum": ["pause", "continue"]}
                 },
+
                 "required": ["instruction"],
                 "additionalProperties": false
             }),
@@ -10772,6 +10786,7 @@ async fn scheduled_message_tools(
                 "thread": {"const": destination.thread},
                 "text": {"type": "string"}
             },
+
             "required": ["channel", "chat", "private", "thread", "text"],
             "additionalProperties": false
         }),
@@ -11932,9 +11947,15 @@ async fn tool_with_registry(
             _ => return Err("Unknown schedule action.".into()),
         };
 
+        let (request_method, params) = if let Some(caller) = args.get("caller") {
+            ("control", serde_json::json!({"action": method, "id": args["id"], "caller": caller}))
+        } else {
+            (method, params)
+        };
+
         let response = match registry
             .cleanup
-            .call(Arc::clone(&plugin.process), Request::call(id, method, params))
+            .call(Arc::clone(&plugin.process), Request::call(id, request_method, params))
             .await
         {
             Ok(response) => response,
@@ -12439,70 +12460,45 @@ async fn execute_tool_with_registry(
         return Err("Scheduling is not authorized for this sender.".into());
     }
 
-    let approval_mode = if name == "schedule_propose" { ApprovalMode::Auto } else { approval_mode };
+    if name == "schedule_list" && !schedule_listing_allowed(channel) {
+        return Err("Schedule listing is available only to local administrators.".into());
+    }
 
-    let changes = mutating(name, &args);
-    let approve = match (changes, approval_mode) {
-        (false, _) => false,
+    if matches!(
+        name,
+        "schedule_cancel"
+            | "schedule_pause"
+            | "schedule_resume"
+            | "schedule_run"
+            | "schedule_retry"
+    ) {
+        args = serde_json::json!({"id": args["id"]});
 
-        (true, ApprovalMode::Off) => {
-            return Err("Approval policy blocks mutating tools.".into());
+        if !schedule_listing_allowed(channel) {
+            args["caller"] = serde_json::json!({
+                "channel": channel, "chat": chat, "thread": thread, "session": session
+            });
         }
-
-        (true, ApprovalMode::Auto) => true,
-
-        (true, ApprovalMode::Prompt) => {
-            let target = approval::Target {
-                channel: channel.into(),
-                chat: chat.into(),
-                thread: thread.map(str::to_owned),
-                session: session.into(),
-                tool: name.into(),
-                args: args.clone(),
-            };
-
-            let challenge = approvals.lock().await.issue(target)?;
-            let text = approval_text(name, &args);
-
-            if notices
-                .send(StreamNotice::Approval {
-                    chat: chat.into(),
-                    thread: thread.map(str::to_owned),
-                    tool: name.into(),
-                    arguments: clip(args.to_string(), 512),
-                    command: args["command"].as_str().map(|command| clip(command.into(), 1_000)),
-                    text,
-                    approve: challenge.approve.clone(),
-                    deny: challenge.deny,
-                    deadline,
-                })
-                .await
-                .is_err()
-            {
-                approvals.lock().await.cancel(&challenge.approve);
-                return Err("The channel approval handler is unavailable.".into());
-            }
-
-            match challenge.answer.await {
-                Ok(true) => true,
-
-                Ok(false) => {
-                    return Ok(ToolResult::text("The request was denied. No changes were made."));
-                }
-
-                Err(_) => return Err("The approval request is no longer available.".into()),
-            }
-        }
-    };
-
-    if changes && approve {
-        sessions.lock().map_err(|_| "Session lock is poisoned.")?.phase(session, "unsafe")?;
     }
 
     if name == "schedule_propose"
         && let serde_json::Value::Object(values) = &mut args
     {
-        values.remove("name");
+        values.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "instruction"
+                    | "message_destination"
+                    | "delay_seconds"
+                    | "run_at"
+                    | "cron"
+                    | "repeat_seconds"
+                    | "timezone"
+                    | "missed"
+                    | "retries"
+                    | "on_failure"
+            )
+        });
 
         let instruction = values
             .get("instruction")
@@ -12547,11 +12543,81 @@ async fn execute_tool_with_registry(
                     "session": session,
                     "private": private
                 },
+
                 "message_destination": message_destination,
                 "tools": schedule_tools_enabled,
                 "shell": shell_enabled
             }),
         );
+    }
+
+    let changes = mutating(name, &args);
+    let approve = match (changes, approval_mode) {
+        (false, _) => false,
+
+        (true, ApprovalMode::Off) => {
+            return Err("Approval policy blocks mutating tools.".into());
+        }
+
+        (true, ApprovalMode::Auto) => true,
+
+        (true, ApprovalMode::Prompt) => {
+            let arguments = approval_arguments(name, &args)?;
+
+            let text = approval_text(name, &args);
+
+            if text.len() > APPROVAL_TEXT_LIMIT {
+                return Err(concat!(
+                    "The request exceeds the approval display limit. ",
+                    "Shorten it so it can be reviewed in full."
+                )
+                .into());
+            }
+
+            let target = approval::Target {
+                channel: channel.into(),
+                chat: chat.into(),
+                thread: thread.map(str::to_owned),
+                session: session.into(),
+                tool: name.into(),
+                args: args.clone(),
+            };
+
+            let challenge = approvals.lock().await.issue(target)?;
+
+            if notices
+                .send(StreamNotice::Approval {
+                    chat: chat.into(),
+                    thread: thread.map(str::to_owned),
+                    tool: name.into(),
+                    arguments,
+                    command: args["command"].as_str().map(str::to_owned),
+                    text,
+                    approve: challenge.approve.clone(),
+                    deny: challenge.deny,
+                    deadline,
+                })
+                .await
+                .is_err()
+            {
+                approvals.lock().await.cancel(&challenge.approve);
+                return Err("The channel approval handler is unavailable.".into());
+            }
+
+            match challenge.answer.await {
+                Ok(true) => true,
+
+                Ok(false) => {
+                    return Ok(ToolResult::text("The request was denied. No changes were made."));
+                }
+
+                Err(_) => return Err("The approval request is no longer available.".into()),
+            }
+        }
+    };
+
+    if changes && approve {
+        sessions.lock().map_err(|_| "Session lock is poisoned.")?.phase(session, "unsafe")?;
     }
 
     if name == "message_send" {
@@ -12706,35 +12772,26 @@ fn scheduled_message(args: &serde_json::Value) -> Result<ScheduledMessage, &'sta
 fn approval_text(name: &str, args: &serde_json::Value) -> String {
     let details = match name {
         "schedule_propose" => {
-            let destination = args.get("message_destination").map_or_else(
-                || "no outbound message destination".into(),
-                |value| {
-                    format!(
-                        "outbound messages to channel {}, chat {}, private {}, thread {}",
-                        value["channel"].as_str().unwrap_or("invalid"),
-                        value["chat"].as_str().unwrap_or("invalid"),
-                        value["private"].as_bool().unwrap_or(false),
-                        value["thread"].as_str().unwrap_or("none"),
-                    )
-                },
-            );
-            let timing = serde_json::json!({
-                "delay_seconds": args.get("delay_seconds"),
-                "run_at": args.get("run_at"),
-                "cron": args.get("cron"),
-                "timezone": args.get("timezone"),
-                "repeat_seconds": args.get("repeat_seconds"),
-                "missed": args.get("missed"),
-                "retries": args.get("retries"),
-                "on_failure": args.get("on_failure"),
-            });
-
-            let timing = clip(timing.to_string(), 400);
-            let instruction =
-                clip(args["instruction"].as_str().unwrap_or("invalid").to_owned(), 600);
-
+            let destination = args["context"]
+                .get("message_destination")
+                .filter(|value| !value.is_null())
+                .map_or_else(
+                    || "no outbound message destination".into(),
+                    |value| {
+                        format!(
+                            "outbound messages to channel {}, chat {}, private {}, thread {}",
+                            value["channel"].as_str().unwrap_or("invalid"),
+                            value["chat"].as_str().unwrap_or("invalid"),
+                            value["private"].as_bool().unwrap_or(false),
+                            value["thread"].as_str().unwrap_or("none"),
+                        )
+                    },
+                );
             format!(
-                "create a scheduled task with instruction {instruction:?}, timing {timing}, and {destination}"
+                "create a scheduled task with {destination}; unattended workspace tools: {}, shell: {}, workspace: {}",
+                args["context"]["tools"] == true,
+                args["context"]["shell"] == true,
+                args["context"]["workspace"],
             )
         }
 
@@ -12751,18 +12808,18 @@ fn approval_text(name: &str, args: &serde_json::Value) -> String {
             )
         }
 
-        "shell" => format!(
-            "run this shell command: {}",
-            clip(args["command"].as_str().unwrap_or("unknown").into(), 1_000)
-        ),
+        "shell" => {
+            format!("run this shell command: {}", args["command"].as_str().unwrap_or("unknown"))
+        }
+
         "git" => format!(
             "run this Git operation, which may execute repository-configured programs: {}",
-            clip(args["args"].to_string(), 1_000)
+            args["args"]
         ),
         _ => format!("run the {name} tool"),
     };
 
-    format!("Krabb requests approval to {details}.")
+    format!("Krabb requests approval to {details}.\nArguments: {args}")
 }
 
 fn approval_params(
@@ -13186,11 +13243,13 @@ fn doctor_at(
                     "directory_present": plugins_directory_present,
                     "installed": lock.plugins.keys().collect::<Vec<_>>(),
                 },
+
                 "workspace": {
                     "directory_present": workspace_directory_present,
                     "krab_instructions_present": krab_instructions_present,
                     "klaw_instructions_present": klaw_instructions_present,
                 },
+
                 "protocol": {
                     "major": Protocol::CURRENT.major,
                     "minor": Protocol::CURRENT.minor,
@@ -13289,6 +13348,7 @@ const SERVICE_VARIABLES: &[&str] = &[
     "KRABB_ACP_COMMAND",
     "KRABB_ACP_ARGS",
     "KRABB_A2A_AGENT_CARD",
+    "KRABB_A2A_RPC_ORIGIN",
     "KRABB_AG_UI_LISTEN",
     "KRABB_AG_UI_ORIGINS",
     "KRABB_OPENROUTER_MODEL",
@@ -13344,6 +13404,7 @@ fn service_environment(
     path: &Path,
 ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error + Send + Sync>> {
     let environment = std::env::vars().collect::<BTreeMap<_, _>>();
+
     service_environment_from(path, home(), &environment)
 }
 
@@ -13357,6 +13418,7 @@ fn service_environment_from(
     for name in SERVICE_VARIABLES {
         if let Some(value) = environment.get(*name) {
             let value = PathBuf::from(value);
+
             let value = if matches!(
                 *name,
                 "KRABB_ROOT"
@@ -13483,6 +13545,7 @@ fn service_path_value(path: PathBuf) -> std::io::Result<String> {
 
 fn service_credentials_path(path: &Path) -> PathBuf {
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("krabb.service");
+
     path.with_file_name(format!("{name}.credentials.json"))
 }
 
@@ -13959,6 +14022,7 @@ fn windows_service_access(path: &Path, writable: bool) -> std::process::Command 
     let mut command = std::process::Command::new("icacls.exe");
 
     let directory = writable || path.is_dir();
+
     let permissions = if writable {
         r"NT SERVICE\Krabb:(OI)(CI)M"
     } else if directory {
@@ -15798,41 +15862,10 @@ async fn agent_request(
         }
 
         "host/tool" => {
-            let mut tools = tools.lock().await;
-            let Some(tool_process) = tools.as_mut() else {
-                return Ok(Response::fail(id, -32000, "The tools plugin is not installed."));
-            };
-
-            let workspace = selected_workspace(&params, &workspace)?;
-            let Some(name) = params["name"].as_str() else {
-                return Ok(Response::fail(id, -32602, "A tool name is required."));
-            };
-
-            let mut args = params["args"].clone();
-            let approved = if mutating(name, &args) {
-                match approval_mode {
-                    ApprovalMode::Off => false,
-                    ApprovalMode::Auto => true,
-                    ApprovalMode::Prompt => prompt_code_approval(name, &args, json),
-                }
-            } else {
-                false
-            };
-
-            if mutating(name, &args) && !approved {
-                return Ok(Response::fail(id, -32000, "Krabb approval blocked the tool."));
-            }
-
-            let Some(values) = args.as_object_mut() else {
-                return Ok(Response::fail(id, -32602, "Tool arguments must be an object."));
-            };
-
-            values.insert("approve".into(), serde_json::Value::Bool(approved));
-            values.insert(
-                "workspace".into(),
-                serde_json::Value::String(workspace.display().to_string()),
-            );
-            tool_process.call(Request::call(id, name, args)).await
+            agent_tool_request(id, &params, &tools, &workspace, approval_mode, |question| {
+                confirm_action(false, json, question).unwrap_or(false)
+            })
+            .await
         }
 
         _ => Ok(Response::fail(id, -32601, "Agent host method not found.")),
@@ -15874,16 +15907,85 @@ fn selected_workspace(
     Ok(workspace)
 }
 
-fn prompt_code_approval(name: &str, args: &serde_json::Value, json: bool) -> bool {
-    confirm_action(
-        false,
-        json,
-        &format!(
-            "Krabb requests approval to run {name} with {}. Approve?",
-            clip(args.to_string(), 400)
-        ),
-    )
-    .unwrap_or(false)
+fn approval_arguments(name: &str, args: &serde_json::Value) -> Result<String, PluginError> {
+    let arguments = args.to_string();
+
+    let limit =
+        if name == "schedule_propose" { APPROVAL_SCHEDULE_LIMIT } else { APPROVAL_ARGUMENT_LIMIT };
+
+    if arguments.len() > limit {
+        return Err(format!(
+            "Tool arguments exceed the approval display limit of {limit} JSON bytes. \
+             Shorten the request so it can be reviewed in full."
+        )
+        .into());
+    }
+
+    Ok(arguments)
+}
+
+async fn agent_tool_request(
+    id: u64,
+    params: &serde_json::Value,
+    tools: &AsyncMutex<Option<Process>>,
+    workspace: &Path,
+    approval_mode: ApprovalMode,
+    confirm: impl FnOnce(&str) -> bool,
+) -> krabb_core::Result<Response> {
+    let mut tools = tools.lock().await;
+
+    let Some(tool_process) = tools.as_mut() else {
+        return Ok(Response::fail(id, -32000, "The tools plugin is not installed."));
+    };
+
+    let workspace = selected_workspace(params, workspace)?;
+
+    let Some(name) = params["name"].as_str() else {
+        return Ok(Response::fail(id, -32602, "A tool name is required."));
+    };
+
+    let mut args = params["args"].clone();
+
+    let Some(values) = args.as_object_mut() else {
+        return Ok(Response::fail(id, -32602, "Tool arguments must be an object."));
+    };
+
+    values.remove("approve");
+    values.insert("workspace".into(), serde_json::Value::String(workspace.display().to_string()));
+
+    let changes = mutating(name, &args);
+
+    let approved = match (changes, approval_mode) {
+        (false, _) | (true, ApprovalMode::Off) => false,
+        (true, ApprovalMode::Auto) => true,
+
+        (true, ApprovalMode::Prompt) => {
+            let arguments = match approval_arguments(name, &args) {
+                Ok(arguments) => arguments,
+                Err(error) => return Ok(Response::fail(id, -32000, error.to_string())),
+            };
+
+            let question =
+                format!("Krabb requests approval to run {name:?} with {arguments}. Approve?");
+
+            if question.len() > APPROVAL_TEXT_LIMIT {
+                return Ok(Response::fail(
+                    id,
+                    -32000,
+                    "The request exceeds the approval display limit.",
+                ));
+            }
+
+            confirm(&question)
+        }
+    };
+
+    if changes && !approved {
+        return Ok(Response::fail(id, -32000, "Krabb approval blocked the tool."));
+    }
+
+    args.as_object_mut().unwrap().insert("approve".into(), serde_json::Value::Bool(approved));
+    tool_process.call(Request::call(id, name, args)).await
 }
 
 fn confirm_action(yes: bool, json: bool, question: &str) -> Result<bool, PluginError> {
@@ -15900,9 +16002,11 @@ fn confirm_action(yes: bool, json: bool, question: &str) -> Result<bool, PluginE
     }
 
     eprint!("{question} [y/N] ");
+
     std::io::stderr().flush()?;
 
     let mut answer = String::new();
+
     std::io::stdin().read_line(&mut answer)?;
 
     Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
@@ -15926,7 +16030,9 @@ async fn plugin(
         PluginCommand::Install(install) => {
             let (linked, mut sources) = plugin_sources(install)?;
             let working_dir = std::env::current_dir()?;
+
             ensure_linkable_sources(linked, &sources, &working_dir)?;
+
             let root = home();
 
             let replacements = sources
@@ -15951,6 +16057,7 @@ async fn plugin(
             }
 
             let mut installed = Vec::new();
+
             let mut errors = Vec::new();
             let mut activation_errors = Vec::new();
             let mut waiting_for_credentials = false;
@@ -15962,8 +16069,10 @@ async fn plugin(
 
             for source in sources {
                 let id = source.id.clone();
+
                 let existing_version =
                     read_manifest(&root.join("plugins").join(&id)).map(|manifest| manifest.version);
+
                 let mut credentials_deferred = false;
 
                 match link(source, linked) {
@@ -16007,6 +16116,7 @@ async fn plugin(
                             "activation": state,
                             "waiting_for_credentials": credentials_deferred
                         }));
+
                         installed.push(serde_json::json!({
                             "id": manifest.id,
                             "version": manifest.version,
@@ -16018,6 +16128,7 @@ async fn plugin(
                     Err(error) => {
                         warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "Plugin installation failed.");
                         errors.push(serde_json::json!({"id": id, "error": error.to_string()}));
+
                         outcomes.push(serde_json::json!({
                             "id": id,
                             "version": existing_version,
@@ -16032,6 +16143,7 @@ async fn plugin(
             if json {
                 let failed = errors.len();
                 let total = installed.len() + failed;
+
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
@@ -16069,6 +16181,7 @@ async fn plugin(
 
         PluginCommand::Remove(name) => {
             let ids = plugin_uninstall_ids(name.ids)?;
+
             let prompt = if ids.len() == 1 {
                 format!("Uninstall plugin {}?", ids[0])
             } else {
@@ -16081,6 +16194,7 @@ async fn plugin(
             }
 
             let root = home();
+
             let spinner = if ids.len() > 1 && !json {
                 terminal::Spinner::start("Uninstalling plugins...")
             } else {
@@ -16098,12 +16212,14 @@ async fn plugin(
                             .as_str()
                             .map(|version| format!("@v{version}"))
                             .unwrap_or_default();
+
                         display_rows.push(format!("{id}{version} successfully uninstalled"));
                         outcomes.push(outcome);
                     }
 
                     Err(error) => {
                         warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "Plugin uninstallation failed.");
+
                         let version = load_lock_at(&root)
                             .ok()
                             .and_then(|lock| {
@@ -16111,7 +16227,9 @@ async fn plugin(
                             })
                             .map(|version| format!("@v{version}"))
                             .unwrap_or_default();
+
                         display_rows.push(format!("{id}{version} uninstallation failed"));
+
                         errors.push(serde_json::json!({
                             "id": id,
                             "error": sentence(error.to_string())
@@ -16132,6 +16250,7 @@ async fn plugin(
                     }
 
                     let outcome = &outcomes[0];
+
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
@@ -16329,6 +16448,7 @@ async fn uninstall_plugin_at(
     let lock = load_lock_at(home_root)?;
     let version = lock.plugins.get(id).map(|entry| entry.version.clone());
     let (purge_sessions, purge_deliveries) = last_plugin_state(&lock, id, home_root);
+
     let purged = if force && (purge_sessions || purge_deliveries) {
         Some(purge_offline_state(home_root, purge_sessions, purge_deliveries)?)
     } else {
@@ -16351,6 +16471,7 @@ fn check_plugin_state(
     state: &Value,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (model, channel) = last_plugin_state(lock, id, root);
+
     let sessions = state["sessions"].as_bool().ok_or("Invalid plugin state guard response.")?;
     let deliveries = state["deliveries"].as_bool().ok_or("Invalid plugin state guard response.")?;
 
@@ -16409,6 +16530,7 @@ fn plugin_uninstall_output(outcome: &Value) -> String {
 
     if !details.is_empty() {
         output.push('\n');
+
         output.push_str(&format_tree_list(&details));
     }
 
@@ -16417,6 +16539,7 @@ fn plugin_uninstall_output(outcome: &Value) -> String {
 
 fn plugin_uninstall_batch_output(rows: &[String], total: usize) -> String {
     let successful = rows.iter().filter(|row| row.ends_with("successfully uninstalled")).count();
+
     let heading = if successful == total {
         format!("Uninstalled {successful} {}.", if successful == 1 { "plugin" } else { "plugins" })
     } else {
@@ -16450,6 +16573,7 @@ fn plugin_activation_is_deferred(error: &str) -> bool {
 
 fn plugin_update_error(rows: &[serde_json::Value]) -> String {
     let failures = rows.iter().filter(|row| row["status"] == "failed").collect::<Vec<_>>();
+
     let count = failures.len();
     let noun = if count == 1 { "plugin" } else { "plugins" };
 
@@ -16458,6 +16582,7 @@ fn plugin_update_error(rows: &[serde_json::Value]) -> String {
     for failure in failures {
         let id = failure["id"].as_str().unwrap_or("unknown");
         let detail = sentence(failure["error"].as_str().unwrap_or("Unknown error."));
+
         message.push_str(&format!("\n\nThe {id} plugin could not be updated. {detail}"));
     }
 
@@ -16473,6 +16598,7 @@ fn plugin_update_output(rows: &[serde_json::Value]) -> String {
 
     let updated = rows.iter().filter(|row| row["status"] == "updated").count();
     let failed = rows.iter().filter(|row| row["status"] == "failed").count();
+
     let heading = if failed == 0 && updated == 0 {
         "All plugins are up to date.".to_owned()
     } else if failed == 0 {
@@ -16497,6 +16623,7 @@ fn plugin_update_output(rows: &[serde_json::Value]) -> String {
             format_tree_entry(&format!("{label} {result}"), &[], index + 1 == rows.len())
         })
         .collect::<Vec<_>>();
+
     let mut output = heading;
 
     if !entries.is_empty() {
@@ -16592,6 +16719,7 @@ async fn update_plugins_at(
 
     let unload_root = root.to_path_buf();
     let activate_root = root.to_path_buf();
+
     update_live(
         root,
         json,
@@ -16638,6 +16766,7 @@ where
 
             Ok(None) => {
                 let restore = restore_plugins(&unloaded, &mut activate).await;
+
                 return Err(format!(
                     "The daemon became unavailable before {id} could be unloaded.{}",
                     restore
@@ -16647,6 +16776,7 @@ where
 
             Err(error) => {
                 let restore = restore_plugins(&unloaded, &mut activate).await;
+
                 return Err(format!(
                     "Could not unload {id} before updating plugins: {}.{}",
                     sentence(error.to_string()),
@@ -16725,11 +16855,22 @@ fn update_at_with_previews(
     previews: &BTreeMap<String, UpdateCandidate>,
     preview_only: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    update_with_commit(home_root, json, previews, preview_only, save_lock_at)
+}
+
+fn update_with_commit(
+    home_root: &Path,
+    json: bool,
+    previews: &BTreeMap<String, UpdateCandidate>,
+    preview_only: bool,
+    mut commit: impl FnMut(&Path, &Lock) -> Result<(), PluginError>,
+) -> Result<(), PluginError> {
     let _lock = lock_at(home_root, ".plugins.lock")?;
     let mut lock = load_lock_at(home_root)?;
     let mut rows = Vec::new();
     let mut failed = false;
     let ids = lock.plugins.keys().cloned().collect::<Vec<_>>();
+
     let spinner =
         if json || ids.is_empty() { None } else { terminal::Spinner::start("Updating plugins...") };
 
@@ -16788,12 +16929,12 @@ fn update_at_with_previews(
                     entry.commands = manifest.commands.clone();
                 }
 
-                if let Err(error) = save_lock_at(home_root, &lock) {
+                if let Err(error) = commit(home_root, &lock) {
                     if let Some(entry) = lock.plugins.get_mut(&id) {
                         *entry = previous.clone();
                     }
 
-                    let restored_lock = save_lock_at(home_root, &previous_lock);
+                    let restored_lock = commit(home_root, &previous_lock);
                     let restored_plugin = rollback_update(&update);
                     let detail = if let Err(restore) = restored_lock {
                         format!(" Rollback failed: {}.", sentence(restore.to_string()))
@@ -16832,6 +16973,7 @@ fn update_at_with_previews(
 
             Err(error) => {
                 failed = true;
+
                 warn!(
                     plugin = %id,
                     error = %diagnostic(sentence(error.to_string())),
@@ -16906,6 +17048,7 @@ fn preview_updates_at_inner(
     std::fs::write(preview_root.join("preview.json"), b"{}")?;
 
     let mut errors = Vec::new();
+
     let spinner = if display && !json && !lock.plugins.is_empty() {
         terminal::Spinner::start("Checking for plugin updates...")
     } else {
@@ -16935,6 +17078,7 @@ fn preview_updates_at_inner(
                     "id": id,
                     "error": sentence(error.to_string())
                 }));
+
                 continue;
             }
 
@@ -16962,6 +17106,7 @@ fn preview_updates_at_inner(
                 } else {
                     "updates_available"
                 },
+
                 "items": updates,
                 "errors": errors,
                 "apply_command": "krabb plugin update --yes",
@@ -17065,6 +17210,7 @@ fn load_update_preview_snapshot_at(
     home_root: &Path,
 ) -> Result<UpdatePreviewSnapshot, Box<dyn std::error::Error + Send + Sync>> {
     let _lock = lock_at(home_root, ".plugins.lock")?;
+
     let preview_root = home_root.join(".plugin-update-preview");
 
     if !preview_root.join("preview.json").is_file() {
@@ -17075,6 +17221,7 @@ fn load_update_preview_snapshot_at(
 
     let lock = load_lock_at(home_root)?;
     let mut candidates = BTreeMap::new();
+
     let snapshot_root = (0..)
         .find_map(|attempt| {
             let path = home_root.join(format!(
@@ -17100,14 +17247,18 @@ fn load_update_preview_snapshot_at(
 
         let candidate = validate_update_candidate(home_root, id, entry, &candidate)?;
         let destination = snapshot.root.join(id);
+
         std::fs::create_dir_all(destination.join("bin"))?;
+
         std::fs::copy(
             candidate.source_path.join("krabb-plugin.toml"),
             destination.join("krabb-plugin.toml"),
         )?;
 
         let binary = destination.join("bin").join(plugin_name(id));
+
         copy_binary(&candidate.binary, &binary)?;
+
         let candidate = UpdateCandidate {
             manifest: candidate.manifest,
             hash: candidate.hash,
@@ -17168,8 +17319,10 @@ fn inspect_update(
 
     let pin = entry.pinned.then_some(entry.revision.as_str());
     let source = resolve(&entry.source, pin)?;
+
     let manifest = read_manifest(&source.path)
         .ok_or_else(|| format!("Manifest not found in {}.", source.path.display()))?;
+
     manifest.validate().map_err(|error| format!("Invalid plugin manifest: {error}"))?;
 
     if manifest.id != id {
@@ -17194,6 +17347,7 @@ fn inspect_update(
     validate_commands(home_root, id, &manifest.commands)?;
 
     let name = plugin_name(id);
+
     let Some(binary) = plugin_binary(&source.path, id, entry.default) else {
         return Err(format!("Binary {name} was not found; build the plugin first.").into());
     };
@@ -17217,10 +17371,12 @@ fn save_update_preview_at(
     candidate: &UpdateCandidate,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = home_root.join(".plugin-update-preview");
+
     let stage = root.join(format!(".{id}.stage-{}", now()));
     let destination = root.join(id);
 
     std::fs::create_dir_all(stage.join("bin"))?;
+
     std::fs::copy(
         candidate.source_path.join("krabb-plugin.toml"),
         stage.join("krabb-plugin.toml"),
@@ -17270,6 +17426,7 @@ fn load_update_preview_at(
     }
 
     let binary = root.join("bin").join(plugin_name(id));
+
     let manifest = read_manifest(&root)
         .ok_or_else(|| format!("Saved update preview for {id} has no manifest."))?;
 
@@ -17292,6 +17449,7 @@ fn validate_update_candidate(
     candidate: &UpdateCandidate,
 ) -> Result<UpdateCandidate, Box<dyn std::error::Error + Send + Sync>> {
     let manifest = &candidate.manifest;
+
     manifest.validate().map_err(|error| format!("Invalid plugin manifest: {error}"))?;
 
     if candidate.base_hash != entry.hash
@@ -17390,6 +17548,7 @@ fn update_one(
     validate_commands(home_root, id, &manifest.commands)?;
 
     let name = plugin_name(id);
+
     let linked_binary = if entry.linked {
         let source = resolved.as_ref().ok_or("Linked plugin source disappeared.")?;
 
@@ -17415,6 +17574,7 @@ fn update_one(
     };
 
     let linked = linked_binary.is_some();
+
     let binary = linked_binary
         .or_else(|| preview.map(|candidate| candidate.binary.clone()))
         .or_else(|| plugin_binary(source_path, id, entry.default));
@@ -17429,7 +17589,9 @@ fn update_one(
     let preview_hash = preview.map(|item| item.hash.as_str());
 
     let plugins = home_root.join("plugins");
+
     std::fs::create_dir_all(&plugins)?;
+
     let nonce = format!("{}-{}", std::process::id(), now());
     let stage = plugins.join(format!(".{id}.stage-{nonce}"));
     let backup = plugins.join(format!(".{id}.backup-{nonce}"));
@@ -17440,6 +17602,7 @@ fn update_one(
     }
 
     let had_destination = destination.exists();
+
     let result = (|| -> Result<(String, Update), Box<dyn std::error::Error + Send + Sync>> {
         std::fs::create_dir_all(stage.join("bin"))?;
         std::fs::copy(source_path.join("krabb-plugin.toml"), stage.join("krabb-plugin.toml"))?;
@@ -17492,6 +17655,7 @@ fn update_one(
     }
 
     let (hash, update) = result?;
+
     Ok((manifest, hash, source_revision, update))
 }
 
@@ -17522,6 +17686,7 @@ fn health(
     let root = root.to_path_buf();
     let expected = expected.to_owned();
     let config = config.clone();
+
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
@@ -17534,6 +17699,7 @@ fn health(
     })
     .join()
     .map_err(|_| "Plugin health check panicked.")??;
+
     Ok(())
 }
 
@@ -17615,6 +17781,7 @@ fn link_at(
     }
 
     let default_source = source.source.is_none();
+
     let origin = match source.source.clone() {
         Some(source) => source,
 
@@ -17665,10 +17832,13 @@ fn link_at(
     };
 
     let plugins = home_root.join("plugins");
+
     std::fs::create_dir_all(&plugins)?;
+
     let nonce = format!("{}-{}", std::process::id(), now());
     let stage = plugins.join(format!(".{}.stage-{nonce}", source.id));
     let backup = plugins.join(format!(".{}.backup-{nonce}", source.id));
+
     let result = (|| {
         std::fs::create_dir_all(stage.join("bin"))?;
         std::fs::copy(root_path.join("krabb-plugin.toml"), stage.join("krabb-plugin.toml"))?;
@@ -17788,7 +17958,9 @@ fn digest(
     binary: &Path,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut hash = Sha256::new();
+
     hash.update(std::fs::read(manifest)?);
+
     let mut file = std::fs::File::open(binary)?;
 
     if file.metadata()?.len() > ARCHIVE_EXPANDED {
@@ -17892,6 +18064,7 @@ fn resolve(
         };
 
         let temp = archive_temp()?;
+
         let archive_name = url
             .split('?')
             .next()
@@ -17900,6 +18073,7 @@ fn resolve(
             .unwrap_or("source.tar");
 
         let archive_path = temp.join(archive_name);
+
         let result = (|| {
             download(url, &archive_path)?;
             verify_archive(&archive_path, Some(expected))?;
@@ -17937,6 +18111,7 @@ fn resolve(
     }
 
     let staging = temp("krabb-source")?;
+
     let result = (|| {
         let repo = staging.join("repo");
         let output = command_output_limited(
@@ -18007,11 +18182,13 @@ fn resolve(
 
 fn archive(path: &Path) -> bool {
     let value = path.to_string_lossy().to_ascii_lowercase();
+
     archive_url(&value)
 }
 
 fn archive_url(value: &str) -> bool {
     let value = value.split('?').next().unwrap_or(value);
+
     value.ends_with(".tar")
         || value.ends_with(".tar.gz")
         || value.ends_with(".tgz")
@@ -18053,6 +18230,7 @@ fn embedded(value: &str) -> bool {
     };
 
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+
     let Some((user, _)) = authority.split_once('@') else {
         return false;
     };
@@ -18067,7 +18245,9 @@ fn archive_temp() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
 fn temp(prefix: &str) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     for _ in 0..8 {
         let mut bytes = [0_u8; 16];
+
         getrandom::fill(&mut bytes)?;
+
         let suffix = bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
         let path = std::env::temp_dir().join(format!("{prefix}-{}-{suffix}", std::process::id()));
 
@@ -18104,7 +18284,9 @@ fn verify_archive(
     };
 
     let mut hash = Sha256::new();
+
     hash.update(std::fs::read(path)?);
+
     let actual = hex_digest(hash.finalize());
 
     if actual != expected.to_ascii_lowercase() {
@@ -18120,7 +18302,9 @@ fn unpack(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     validate_archive(archive_path)?;
     archive_bounds(archive_path)?;
+
     let name = archive_path.to_string_lossy().to_ascii_lowercase();
+
     let (program, args): (&str, Vec<String>) = if name.ends_with(".zip") && cfg!(windows) {
         (
             "tar",
@@ -18177,6 +18361,7 @@ fn unpack(
 
 fn archive_bounds(path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let name = path.to_string_lossy().to_ascii_lowercase();
+
     let (program, args): (&str, Vec<String>) = if name.ends_with(".zip") && cfg!(windows) {
         ("tar", vec!["-tvf".into(), path.display().to_string()])
     } else if name.ends_with(".zip") {
@@ -18251,6 +18436,7 @@ fn tar_date(value: &str) -> bool {
 
 fn validate_archive(path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let name = path.to_string_lossy().to_ascii_lowercase();
+
     let (program, args): (&str, Vec<String>) = if name.ends_with(".zip") && cfg!(windows) {
         ("tar", vec!["-tf".into(), path.display().to_string()])
     } else if name.ends_with(".zip") {
@@ -18324,6 +18510,7 @@ fn safe_archive(root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sy
     let root = std::fs::canonicalize(root)?;
     let mut files = 0_usize;
     let mut bytes = 0_u64;
+
     safe_archive_at(&root, &mut files, &mut bytes)
 }
 
@@ -18387,6 +18574,7 @@ fn download(url: &str, destination: &Path) -> Result<(), Box<dyn std::error::Err
     let connect = DOWNLOAD_CONNECT.to_string();
     let time = DOWNLOAD_TIME.to_string();
     let root = destination.parent().ok_or("Archive destination has no staging directory.")?;
+
     let output = match command_output_limited(
         std::process::Command::new("curl")
             .args([
@@ -18424,6 +18612,7 @@ fn download(url: &str, destination: &Path) -> Result<(), Box<dyn std::error::Err
 
     if std::fs::metadata(destination)?.len() > ARCHIVE_LIMIT {
         let _ = std::fs::remove_file(destination);
+
         return Err("Archive download exceeded the size limit.".into());
     }
 
@@ -18458,7 +18647,9 @@ fn remove_at(
     home_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _offline = offline_lock(home_root)?;
+
     let id = name.id.clone();
+
     remove_guarded(name, home_root, |lock| ensure_no_orphaned_plugin_state(lock, &id, home_root))
 }
 
@@ -18498,6 +18689,7 @@ fn remove_guarded(
 
     if let Err(error) = save_lock_at(home_root, &lock) {
         let restored_lock = save_lock_at(home_root, &previous_lock);
+
         let restored_plugin =
             if had_destination { std::fs::rename(&backup, &dest) } else { Ok(()) };
 
@@ -18541,6 +18733,7 @@ fn ensure_no_orphaned_plugin_state(
     }
 
     let store = sessions_at(home_root)?;
+
     check_plugin_state(
         lock,
         id,
@@ -18587,6 +18780,7 @@ fn load_config_text(root: &Path) -> Result<Option<String>, PluginError> {
     }
 
     let _lock = metadata_lock(root)?;
+
     load_metadata(&root.join("config.toml"), LOCK_LIMIT)?
         .map(String::from_utf8)
         .transpose()
@@ -18606,6 +18800,7 @@ fn load_lock_at(root: &Path) -> Result<Lock, Box<dyn std::error::Error + Send + 
     }
 
     let _lock = metadata_lock(root)?;
+
     let Some(bytes) = load_metadata(&root.join("plugins.lock"), LOCK_LIMIT)? else {
         return Ok(Lock::default());
     };
@@ -18615,6 +18810,7 @@ fn load_lock_at(root: &Path) -> Result<Lock, Box<dyn std::error::Error + Send + 
 
 fn save_lock_at(root: &Path, lock: &Lock) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     std::fs::create_dir_all(root)?;
+
     let bytes = serde_json::to_vec_pretty(lock)?;
 
     if bytes.len() as u64 > LOCK_LIMIT {
@@ -18628,6 +18824,7 @@ fn save_lock_at(root: &Path, lock: &Lock) -> Result<(), Box<dyn std::error::Erro
 
 fn secure(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> std::io::Result<()> {
     let path = path.as_ref();
+
     let _lock = if matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some("config.toml" | "plugins.lock")
@@ -18666,8 +18863,10 @@ fn list_at(
             }
 
             let id = entry.file_name().to_string_lossy().into_owned();
+
             let manifest = read_manifest_checked(&path)
                 .map_err(|error| format!("Plugin {id} is invalid: {error}."))?;
+
             let health =
                 if path.join("bin").join(plugin_name(&id)).is_file() { "ready" } else { "missing" };
 
@@ -18713,9 +18912,11 @@ fn format_plugin_list(items: &[Value], page: usize) -> Result<String, String> {
     }
 
     let mut items = items.iter().collect::<Vec<_>>();
+
     items.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
 
     let (start, end, pages) = page_bounds(page, items.len(), "plugins")?;
+
     let mut output =
         format!("Plugins ({}–{} of {}, page {page} of {pages})", start + 1, end, items.len());
 
@@ -18725,12 +18926,14 @@ fn format_plugin_list(items: &[Value], page: usize) -> Result<String, String> {
         let health = item["health"].as_str().unwrap_or("unknown");
         let capabilities = string_list(&item["capabilities"]);
         let permissions = string_list(&item["permissions"]);
+
         let commands = item["commands"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|command| command["name"].as_str())
             .collect::<Vec<_>>();
+
         let protocol = format!(
             "{}.{}",
             item["protocol"]["major"].as_u64().unwrap_or_default(),
@@ -18764,6 +18967,7 @@ fn format_plugin_list(items: &[Value], page: usize) -> Result<String, String> {
             commands,
             permissions,
         ];
+
         let separator = if index == 0 { "\n" } else { "\n\n" };
 
         output.push_str(&format!(
@@ -18785,6 +18989,7 @@ fn format_session_list(value: &Value, page: usize) -> Result<String, String> {
     }
 
     let mut items = items.iter().filter(|item| item["id"].as_str().is_some()).collect::<Vec<_>>();
+
     items.sort_by(|left, right| {
         session_list_priority(left)
             .cmp(&session_list_priority(right))
@@ -18859,6 +19064,7 @@ fn format_delivery_list(value: &Value, page: usize) -> Result<String, String> {
 
     let total = items.len();
     let (start, end, pages) = page_bounds(page, total, "deliveries")?;
+
     let mut output =
         format!("Deliveries ({}–{} of {total}, page {page} of {pages})", start + 1, end);
 
@@ -18948,6 +19154,7 @@ fn format_tree_list(entries: &[String]) -> String {
 
 fn format_date(timestamp: u64) -> Option<String> {
     const SECONDS_PER_DAY: u64 = 86_400;
+
     const DAYS_BEFORE_UNIX_EPOCH: i64 = 719_468;
     const DAYS_PER_ERA: i64 = 146_097;
 
@@ -18986,6 +19193,7 @@ fn read_manifest_checked(
     root: &Path,
 ) -> Result<Manifest, Box<dyn std::error::Error + Send + Sync>> {
     let path = root.join("krabb-plugin.toml");
+
     let bytes = read_bounded(&path, MANIFEST_LIMIT).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             format!("manifest not found at {}", path.display())
@@ -19026,6 +19234,7 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
     }
 
     let mut bytes = Vec::new();
+
     std::fs::File::open(path)?.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
 
     if bytes.len() as u64 > limit {
@@ -19040,6 +19249,20 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    mod krabfile;
+
+    #[cfg(unix)]
+    mod commits;
+
+    #[cfg(unix)]
+    mod updates;
+
+    #[cfg(unix)]
+    mod schedules;
+
+    #[cfg(unix)]
+    mod approvals;
+
     use super::{
         ARCHIVE_LIMIT, BANNER, Cancellation, Cli, Command, CommandSpec, CompletionShell, Config,
         DeliveryCli, DeliveryCommand, DoctorArgs, Fork, Id, InitArgs, KRABFILE_VERSION,
@@ -19067,11 +19290,13 @@ mod tests {
 
     use base64::Engine;
     use clap::{CommandFactory, Parser, error::ErrorKind};
+
     use krabb_core::types::{
         Capability, Content, Event, Message, ModelReply, Protocol, Request, Role,
     };
 
     use sha2::Digest;
+
     use std::{
         collections::BTreeMap,
         fs,
@@ -19085,10 +19310,15 @@ mod tests {
         assert_eq!(super::hex_digest([0x00, 0x0a, 0xab, 0xff]), "000aabff");
     }
 
-    fn test_root(label: &str) -> PathBuf {
+    pub(super) fn test_root(label: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nonce =
             SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_nanos());
-        std::env::temp_dir().join(format!("krabb-{label}-{}-{nonce}", std::process::id()))
+
+        std::env::temp_dir()
+            .join(format!("krabb-{label}-{}-{nonce}-{sequence}", std::process::id()))
     }
 
     fn approval_finished(sessions: &Arc<Mutex<super::state::Store>>) -> bool {
@@ -19118,7 +19348,7 @@ mod tests {
         plugins
     }
 
-    async fn stop_registry(plugins: &Plugins) {
+    pub(super) async fn stop_registry(plugins: &Plugins) {
         for (_, plugin) in plugins.all().await {
             plugin.stop().await.unwrap();
         }
@@ -19295,10 +19525,12 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let provider = Process::start_with("sh", ["-c", script]).await.unwrap();
         let model = Arc::new(tokio::sync::Mutex::new(Some(provider)));
         let tools = Arc::new(tokio::sync::Mutex::new(None));
         let workspace = test_root("model-stream");
+
         fs::create_dir_all(&workspace).unwrap();
 
         let response = super::agent_request(
@@ -19339,8 +19571,11 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let root = test_root("model-stream-handoff");
+
         fs::create_dir_all(&root).unwrap();
+
         let executed = root.join("executed");
 
         for declared in [true, false] {
@@ -19351,7 +19586,9 @@ done
             )
             .await
             .unwrap();
+
             let model = Arc::new(tokio::sync::Mutex::new(Some(provider)));
+
             let tools = if declared {
                 serde_json::json!([{"name":"pick","schema":{"type":"object"}}])
             } else {
@@ -19375,6 +19612,7 @@ done
 
                 assert_eq!(reply.text, "Choose a color.");
                 assert_eq!(reply.stop, "tool_calls");
+
                 assert_eq!(
                     reply.events.last().unwrap(),
                     &Event::Tool {
@@ -19400,8 +19638,11 @@ done
     #[tokio::test]
     async fn cancelled_agent_model_stream_restarts_the_provider_process() {
         let root = test_root("model-stream-cancel");
+
         fs::create_dir_all(&root).unwrap();
+
         let marker = root.join("starts");
+
         let script = r#"
 echo started >> "$KRABB_TEST_STARTS"
 while IFS= read -r line; do
@@ -19413,6 +19654,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let provider = Process::start_with_env(
             "sh",
             ["-c", script],
@@ -19420,8 +19662,10 @@ done
         )
         .await
         .unwrap();
+
         let model = Arc::new(tokio::sync::Mutex::new(Some(provider)));
         let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+
         let stream = tokio::spawn(super::agent_request(
             Request::call(43, "host/model_stream", serde_json::json!({})),
             model.clone(),
@@ -19435,6 +19679,7 @@ done
         assert!(
             tokio::time::timeout(Duration::from_secs(2), received.recv()).await.unwrap().is_some()
         );
+
         stream.abort();
 
         assert!(stream.await.unwrap_err().is_cancelled());
@@ -19470,6 +19715,7 @@ done
         assert!(message.private);
         assert_eq!(message.thread.as_deref(), Some("topic-1"));
         assert_eq!(message.text, "Backup finished.");
+
         let destination = super::AuthorizedDestination {
             channel: "telegram".into(),
             chat: "12345".into(),
@@ -19478,6 +19724,7 @@ done
         };
 
         assert!(super::matches_authorized_destination(&message, &destination));
+
         assert!(!super::matches_authorized_destination(
             &message,
             &super::AuthorizedDestination { chat: "elsewhere".into(), ..destination.clone() }
@@ -19527,6 +19774,7 @@ done
     #[tokio::test]
     async fn scheduled_message_queues_through_an_installed_channel() {
         let root = test_root("scheduled-message");
+
         let script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
@@ -19536,8 +19784,10 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let process = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = registry([process]).await;
+
         let destination = super::AuthorizedDestination {
             channel: "telegram".into(),
             chat: "12345".into(),
@@ -19573,7 +19823,9 @@ done
         }
 
         let (notices, _received) = tokio::sync::mpsc::channel(1);
+
         let mut failed_tool = None;
+
         let result = super::execute_tool(
             &plugins,
             8,
@@ -19609,7 +19861,9 @@ done
         .unwrap();
 
         assert_eq!(result, "Message queued for delivery through telegram.");
+
         let mut failed_tool = None;
+
         super::execute_tool(
             &plugins,
             8,
@@ -19656,12 +19910,14 @@ done
         }
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn scheduled_message_delivers_to_an_authorized_local_tui_session() {
         let root = test_root("scheduled-tui-message");
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
         {
@@ -19697,6 +19953,7 @@ done
 
         let mut failed_tool = None;
         let send_started = super::unix_timestamp_millis();
+
         let result = super::execute_tool(
             &Plugins::default(),
             1,
@@ -19730,15 +19987,19 @@ done
         )
         .await
         .unwrap();
+
         let send_finished = super::unix_timestamp_millis();
 
         assert_eq!(result, "Message added to TUI session tui-default.");
+
         let message =
             sessions.lock().unwrap().sessions["tui-default"].messages.last().cloned().unwrap();
 
         assert_eq!(message.role, Role::Assistant);
+
         let (timestamp, key) =
             message.id.strip_prefix("schedule-notice-at-").unwrap().split_once('-').unwrap();
+
         let timestamp = timestamp.parse::<u128>().unwrap();
 
         assert!((send_started..=send_finished).contains(&timestamp));
@@ -19753,6 +20014,7 @@ done
     #[tokio::test]
     async fn scheduled_agent_uses_the_authorized_default_tui_message_tool() {
         let root = test_root("scheduled-agent-tui-message");
+
         let provider_script = r#"
 count=0
 while IFS= read -r line; do
@@ -19786,9 +20048,11 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
         let plugins = registry([provider]).await;
         let provider = plugins.get("codex").await.unwrap();
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
         {
@@ -19821,6 +20085,7 @@ done
 
         let stop = Stop::new();
         let (notices, mut received) = tokio::sync::mpsc::channel(8);
+
         let drain = tokio::spawn(async move {
             let mut text = String::new();
 
@@ -19835,6 +20100,7 @@ done
 
         let mut call = 1;
         let mut failed_tool = None;
+
         let reply = answer(
             &provider,
             &plugins,
@@ -19870,11 +20136,13 @@ done
         )
         .await
         .unwrap();
+
         let delivered = drain.await.unwrap();
 
         assert_eq!(delivered, "Checking…DONE: Ping sent to the TUI.");
 
         assert_eq!(reply.text, "DONE: Ping sent to the TUI.");
+
         let message = {
             let store = sessions.lock().unwrap();
             store.sessions["tui-default"].messages.last().unwrap().clone()
@@ -19884,6 +20152,7 @@ done
         assert_eq!(message.content, vec![Content::Text { text: "Ping!".into() }]);
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -19892,7 +20161,9 @@ done
     async fn bridge_delivers_outbox_messages_through_other_loaded_channels() {
         let root = test_root("scheduled-channel-delivery");
         let marker = root.join("discord-delivered");
+
         fs::create_dir_all(&root).unwrap();
+
         let primary_script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
@@ -19903,6 +20174,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let other_script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
@@ -19913,7 +20185,9 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let other_script = other_script.replace("__MARKER__", &marker.display().to_string());
+
         let provider_script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
@@ -19923,17 +20197,21 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let primary = Process::start_with("sh", ["-c", primary_script]).await.unwrap();
         let other = Process::start_with("sh", ["-c", &other_script]).await.unwrap();
         let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
         let plugins = registry([primary, other, provider]).await;
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         sessions
             .lock()
             .unwrap()
             .queue_delivery("delivery-1", "discord", "room-9", false, None, "Backup complete.")
             .unwrap();
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
         let sessions_for_signal = Arc::clone(&sessions);
@@ -19971,12 +20249,14 @@ done
         .await
         .unwrap()
         .unwrap();
+
         notifier.await.unwrap();
 
         assert!(marker.is_file());
         assert!(sessions.lock().unwrap().outbox.is_empty());
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -20005,8 +20285,10 @@ done
         let script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol\":{\"major\":0,\"minor\":1},\"id\":\"memory\",\"version\":\"0.1.0\",\"capabilities\":[\"memory\"]}}' ;; *provider:telegram:dm:42*) printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"learning\":\"autonomous\",\"items\":[{\"key\":\"preference\",\"summary\":\"likes concise replies\",\"scope\":\"provider:telegram:dm:42\",\"updated\":2}]}}' ;; *provider:tui:default*) printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"learning\":\"guided\",\"items\":[{\"key\":\"legacy\",\"summary\":\"saved before the upgrade\",\"updated\":1}]}}' ;; *default*) printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"learning\":\"guided\",\"items\":[{\"key\":\"current\",\"summary\":\"saved after the upgrade\",\"scope\":\"default\",\"updated\":3}]}}' ;; *index*) printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"learning\":\"guided\",\"items\":[]}}' ;; *shutdown*) printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{\"ok\":true}}'; exit 0 ;; esac; done"#
             .replace("\\\\n", "\\n")
             .replace("\\\"", "\"");
+
         let process = Process::start_with("sh", ["-c", &script]).await.unwrap();
         let plugins = registry([process]).await;
+
         let mut messages = vec![Message {
             id: "user".into(),
             session: "telegram-42".into(),
@@ -20014,6 +20296,7 @@ done
             sender: None,
             content: vec![Content::Text { text: "hello".into() }],
         }];
+
         let mut call = 4;
 
         tokio::time::timeout(
@@ -20025,6 +20308,7 @@ done
 
         assert_eq!(call, 5);
         assert_eq!(messages.len(), 2);
+
         let Content::Text { text } = &messages[1].content[0] else {
             panic!("memory context should be text");
         };
@@ -20058,6 +20342,7 @@ done
         .unwrap();
 
         assert_eq!(tui_messages.len(), 2);
+
         let Content::Text { text } = &tui_messages[1].content[0] else {
             panic!("TUI memory context should be text");
         };
@@ -20078,6 +20363,7 @@ done
                 "status": "configured",
                 "plugins": ["codex", "gemini"]
             },
+
             "messaging": {
                 "status": "configured",
                 "plugins": ["telegram", "discord"]
@@ -20104,6 +20390,7 @@ done
     #[test]
     fn status_health_treats_messaging_as_optional_and_explains_unhealthy_state() {
         assert_eq!(super::status_health(true, true, false, false, false), ("healthy", vec![]));
+
         assert_eq!(
             super::status_health(true, true, true, false, true),
             (
@@ -20209,6 +20496,7 @@ done
         );
 
         assert!(error.starts_with("Failed to install 1 of 3 plugins."));
+
         assert!(
             error
                 .contains("For details about the failed installation, check the application logs:")
@@ -20349,6 +20637,7 @@ done
     fn advisory_lock_releases_after_drop() {
         let root = test_root("lock");
         let first = daemon_lock(&root).unwrap();
+
         drop(first);
 
         assert!(daemon_lock(&root).is_ok());
@@ -20358,7 +20647,9 @@ done
     #[test]
     fn aborts_process_when_staging_exceeds_limit() {
         let root = test_root("staging-limit");
+
         fs::create_dir_all(&root).unwrap();
+
         let output = command_output_limited(
             std::process::Command::new("sh").args([
                 "-c",
@@ -20371,12 +20662,14 @@ done
         );
 
         assert_eq!(output.unwrap_err().kind(), std::io::ErrorKind::FileTooLarge);
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn offline_lock_ignores_stale_ipc_files() {
         let root = test_root("offline-lock");
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("ipc.token"), "stale").unwrap();
         fs::write(root.join("ipc.port"), "1").unwrap();
@@ -20384,6 +20677,7 @@ done
         let lock = super::offline_lock(&root).unwrap();
 
         drop(lock);
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -20413,6 +20707,7 @@ done
     fn krabfile_validation_reports_the_first_error() {
         let mut file =
             Krabfile { version: "0.2".into(), config: Config::default(), plugins: vec![] };
+
         assert_eq!(file.validate().unwrap_err(), "unsupported version 0.2 (expected 0.1)");
 
         file.version = KRABFILE_VERSION.into();
@@ -20421,6 +20716,7 @@ done
         assert!(file.validate().unwrap_err().starts_with("configuration:"));
 
         file.config = Config::default();
+
         file.plugins.push(KrabbPlugin {
             id: "Bad ID".into(),
             source: "local".into(),
@@ -20487,6 +20783,7 @@ done
         }
 
         assert!(!super::native_command("custom"));
+
         assert!(super::valid("memory-2"));
         assert!(!super::valid("Memory"));
         assert!(!super::valid(""));
@@ -20499,6 +20796,7 @@ done
 
         assert_eq!(super::ApprovalMode::Off, super::ApprovalMode::Off);
         assert!(super::plugin_name("memory").contains("memory"));
+
         assert_eq!(
             super::command_label(&Command::Init(InitArgs { force: false, yes: false })),
             "init"
@@ -20507,6 +20805,7 @@ done
         assert_eq!(super::command_label(&Command::Doctor(DoctorArgs { fix: false })), "doctor");
         assert_eq!(super::command_label(&Command::Status(Output { json: false })), "status");
         assert_eq!(super::command_label(&Command::Version(Output { json: false })), "version");
+
         assert_eq!(
             super::command_label(&Command::Completion { shell: CompletionShell::Bash }),
             "completion"
@@ -20558,6 +20857,7 @@ done
         );
 
         assert_eq!(super::read_output(std::io::Cursor::new(b"output")).unwrap(), b"output");
+
         assert!(
             super::read_output(std::io::Cursor::new(vec![b'x'; super::COMMAND_OUTPUT + 1]))
                 .is_err()
@@ -20565,10 +20865,12 @@ done
 
         let root = test_root("helpers");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(root.join("nested")).unwrap();
         fs::write(root.join("file"), b"123").unwrap();
 
         assert_eq!(super::staging_size(&root).unwrap(), 3);
+
         assert_eq!(
             super::staging_size(&root.join("missing")).unwrap_err().kind(),
             std::io::ErrorKind::NotFound
@@ -20578,6 +20880,7 @@ done
         assert!(super::read_bounded(&root.join("file"), 2).is_err());
         assert!(super::read_bounded(&root.join("missing"), 3).is_err());
         assert!(super::read_bounded(&root, 3).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -20608,11 +20911,13 @@ done
         let schedule: Config =
             toml::from_str("[scheduler]\ntimezone = \"Europe/Rome\"\nmissed = \"coalesce\"\n")
                 .unwrap();
+
         assert!(schedule.validate().is_ok());
 
         let invalid_schedule: Config =
             toml::from_str("[scheduler]\ntimezone = \"Mars/Olympus\"\nmissed = \"replay\"\n")
                 .unwrap();
+
         assert!(invalid_schedule.validate().is_err());
 
         let legacy: Config = toml::from_str("shell = true\n").unwrap();
@@ -20696,6 +21001,7 @@ done
         }));
 
         assert!(output.contains("A manual run is queued"));
+
         assert!(
             output.contains(
                 "Pause requested; the current run will finish before the schedule pauses"
@@ -20804,10 +21110,12 @@ done
     #[test]
     fn scheduled_turn_tracks_tool_errors_even_when_the_model_can_continue() {
         let failures = Arc::new(Mutex::new(Vec::new()));
+
         let failed = super::track_scheduled_tool_response(
             super::Response::fail(1, -32000, "The file operation failed."),
             Some(&failures),
         );
+
         let succeeded = super::track_scheduled_tool_response(
             super::Response::ok(2, serde_json::json!({"text": "Read completed."})),
             Some(&failures),
@@ -20847,6 +21155,7 @@ done
         let root = test_root("scheduled-report-recovery");
         let home = root.join("home");
         let acknowledgement = root.join("acknowledged");
+
         fs::create_dir_all(home.join("data/sessions")).unwrap();
         fs::create_dir_all(home.join("logs/schedules")).unwrap();
 
@@ -20861,11 +21170,14 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let script = script.replace("ACKNOWLEDGEMENT", &acknowledgement.display().to_string());
         let scheduler = Process::start_with("sh", ["-c", &script]).await.unwrap();
         let plugins = registry([scheduler]).await;
         let mut store = super::state::Store::load(home.join("data/sessions/index.json")).unwrap();
+
         store.create("origin", "model").unwrap();
+
         let sessions = Arc::new(Mutex::new(store));
         let stop = Stop::new();
         let mut call = 1;
@@ -20886,9 +21198,11 @@ done
 
         let missing_destination_log =
             fs::read_to_string(home.join("logs/schedules/schedule-8.jsonl")).unwrap();
+
         assert_eq!(missing_destination_log.lines().count(), 1);
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -20897,6 +21211,7 @@ done
     async fn skipped_schedule_falls_back_when_scheduler_has_no_reports_method() {
         let root = test_root("scheduled-legacy-skip");
         let home = root.join("home");
+
         fs::create_dir_all(home.join("data/sessions")).unwrap();
 
         let script = r#"
@@ -20909,13 +21224,17 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let scheduler = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = registry([scheduler]).await;
         let mut store = super::state::Store::load(home.join("data/sessions/index.json")).unwrap();
+
         store.create("origin", "model").unwrap();
+
         let sessions = Arc::new(Mutex::new(store));
         let stop = Stop::new();
         let mut call = 1;
+
         let task = serde_json::json!({
             "id": 17,
             "name": "legacy-task",
@@ -20940,17 +21259,22 @@ done
         assert!(history.contains("\"status\":\"skipped\""));
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn scheduled_tui_results_remain_non_system_in_later_turns() {
         let root = test_root("scheduled-tui-notice");
+
         fs::create_dir_all(&root).unwrap();
 
         let mut store = super::state::Store::load(root.join("sessions.json")).unwrap();
+
         store.create("origin", "model").unwrap();
+
         let sessions = Arc::new(Mutex::new(store));
+
         let task = serde_json::json!({
             "context": {
                 "origin": {
@@ -21010,12 +21334,14 @@ done
         );
 
         assert!(history.iter().any(|message| message.id == "schedule-notice-8-10"));
+
         let messages = turn_messages("origin", &root, history);
         let notice = messages.iter().find(|message| message.id.starts_with("schedule-notice-"));
 
         assert_eq!(notice.unwrap().role, Role::Assistant);
 
         drop(sessions);
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -21036,6 +21362,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let tools_script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
@@ -21046,15 +21373,20 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
         let tools = Process::start_with("sh", ["-c", tools_script]).await.unwrap();
         let plugins = registry([provider, tools]).await;
         let provider = plugins.get("codex").await.unwrap();
         let root = test_root("scheduled-tool-error");
+
         fs::create_dir_all(&root).unwrap();
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         sessions.lock().unwrap().ensure_schedule("schedule-71", "test").unwrap();
+
         let stop = Stop::new();
         let mut call = 1;
         let mut failed_tool = None;
@@ -21100,6 +21432,7 @@ done
 
         assert_eq!(reply.text, "I could not read the file.");
         assert_eq!(tool_failures.lock().unwrap().as_slice(), ["The requested file is missing."]);
+
         assert!(
             super::scheduled_tool_failure(&tool_failures.lock().unwrap()[0], false)
                 .starts_with("RETRYABLE:")
@@ -21107,12 +21440,14 @@ done
 
         drain.abort();
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn schedule_add_parses_bounded_retries_and_missed_policy() {
         let root = test_root("schedule-add-options");
+
         fs::create_dir_all(&root).unwrap();
 
         let (params, instruction) = super::parse_schedule_add(
@@ -21248,6 +21583,7 @@ done
         }
 
         fs::write(root.join("config.toml"), "[clients.tui]\nshell = true\n").unwrap();
+
         let (without_shell, _) = super::parse_schedule_add(
             &["--after".into(), "300".into(), "run a workspace task".into()],
             &root,
@@ -21257,10 +21593,13 @@ done
         assert_eq!(without_shell["context"]["shell"], false);
 
         let shell_root = test_root("schedule-add-shell");
+
         let binary =
             shell_root.join("plugins/tools/bin").join(krabb_core::plugin::binary_name("tools"));
+
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(&binary, "test plugin binary").unwrap();
+
         fs::write(
             shell_root.join("plugins.lock"),
             serde_json::json!({
@@ -21286,6 +21625,7 @@ done
         );
 
         fs::write(shell_root.join("config.toml"), "[clients.tui]\nshell = true\n").unwrap();
+
         let (shell, _) = super::parse_schedule_add(
             &["--after".into(), "300".into(), "--shell".into(), "run a local backup".into()],
             &shell_root,
@@ -21330,6 +21670,7 @@ done
         assert_eq!(interval_start["repeat"], 300);
 
         let run_at = "2099-10-20T09:00:00+02:00".parse::<jiff::Timestamp>().unwrap();
+
         let (exact, _) = super::parse_schedule_add(
             &[
                 "--at".into(),
@@ -21404,7 +21745,9 @@ done
     #[test]
     fn schedule_add_accepts_named_human_durations_and_options_after_instruction() {
         let root = test_root("schedule-add-human-duration");
+
         fs::create_dir_all(&root).unwrap();
+
         let args = [
             "run a backup".into(),
             "--after".into(),
@@ -21418,6 +21761,7 @@ done
             "--name".into(),
             "Backup".into(),
         ];
+
         let (params, instruction) = super::parse_schedule_add(&args, &root).unwrap();
 
         assert_eq!(instruction, "run a backup");
@@ -21462,12 +21806,14 @@ done
         .unwrap();
 
         assert!(missing_provider.0["context"].get("provider").is_none());
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn captured_model_selection_is_stored_in_schedule_context() {
         let mut context = serde_json::json!({"workspace": "/workspace"});
+
         super::capture_model_selection(
             &mut context,
             Some("anthropic".into()),
@@ -21511,6 +21857,7 @@ done
         assert!(host_discovery.contains("folder, file, or binary"));
         assert!(host_discovery.contains("read-only discovery commands"));
         assert!(host_discovery.contains("search by name across other readable locations"));
+
         assert!(
             host_discovery.contains(
                 "unless the scheduled instruction explicitly requests that specific change"
@@ -21524,7 +21871,9 @@ done
     #[test]
     fn scheduled_turn_starts_with_only_the_current_instruction() {
         let root = test_root("scheduled-fresh-context");
+
         fs::create_dir_all(&root).unwrap();
+
         let instruction = Message {
             id: "schedule-user-current".into(),
             session: "schedule-7".into(),
@@ -21542,10 +21891,12 @@ done
             &serde_json::json!({"channel": "cli"}),
             false,
         );
+
         let user_messages =
             messages.iter().filter(|message| message.role == Role::User).collect::<Vec<_>>();
 
         assert_eq!(user_messages.len(), 1);
+
         assert!(user_messages[0].content.iter().any(
             |content| matches!(content, Content::Text { text } if text == "Recreate the deleted report.")
         ));
@@ -21574,11 +21925,13 @@ done
     fn schedule_logs_use_name_and_id_and_preserve_legacy_history() {
         let home = test_root("schedule-log-paths");
         let directory = home.join("logs/schedules");
+
         fs::create_dir_all(&directory).unwrap();
 
         assert_eq!(super::schedule_log_filename("mighty-raccoon", 42), "mighty-raccoon-42.jsonl");
 
         let legacy = directory.join("42.jsonl");
+
         fs::write(&legacy, "{\"status\":\"completed\"}\n").unwrap();
 
         assert_eq!(super::schedule_log_path(&home, 42).unwrap(), legacy);
@@ -21593,6 +21946,7 @@ done
                 "model": "gpt-6-luna",
                 "workspace": "/work/reports"
             },
+
             "attempt": 1,
             "scheduled_for": 1_800_000_000,
             "missed": "skip",
@@ -21610,6 +21964,7 @@ done
 
         for run_id in 1..=105 {
             let mut run = task.clone();
+
             run["run_id"] = serde_json::json!(run_id);
 
             super::scheduler_log(
@@ -21626,6 +21981,7 @@ done
         let lines = content.lines().collect::<Vec<_>>();
 
         assert_eq!(lines.len(), 106);
+
         let record: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
 
         assert_eq!(record["schema_version"], 1);
@@ -21639,6 +21995,7 @@ done
         assert_eq!(record["agent"]["model"], "gpt-6-luna");
 
         let mut duplicate = task.clone();
+
         duplicate["run_id"] = serde_json::json!(1);
         super::scheduler_log(&home, &duplicate, "completed", "done", Some(&finish));
 
@@ -21655,11 +22012,13 @@ done
     fn schedule_history_rotation_bounds_file_and_duplicate_scan() {
         let home = test_root("schedule-history-rotation");
         let directory = home.join("logs/schedules");
+
         fs::create_dir_all(&directory).unwrap();
 
         let path = directory.join("42.jsonl");
         let old_record = format!("{{\"payload\":\"{}\"}}\n", "x".repeat(200));
         let history = old_record.repeat(2_000);
+
         fs::write(&path, history).unwrap();
 
         let task = serde_json::json!({
@@ -21705,6 +22064,7 @@ done
                         "name": "mighty-raccoon",
                         "timezone": "Europe/Rome"
                     },
+
                     "run": {
                         "id": run_id,
                         "status": "completed",
@@ -21712,6 +22072,7 @@ done
                         "attempt": 1,
                         "retry_limit": 2
                     },
+
                     "agent": {
                         "provider": "codex",
                         "model": "gpt-6-luna",
@@ -21721,6 +22082,7 @@ done
                             "/work/reports"
                         }
                     },
+
                     "result": if run_id == 22 {
                         "result-22\ncontinued\t\u{1b}[31m—unsafe\u{1b}[0m".to_owned()
                     } else {
@@ -21729,12 +22091,15 @@ done
                 })
             })
             .collect::<Vec<_>>();
+
         let jsonl = records.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         let parsed = super::parse_schedule_history(&jsonl).unwrap();
         let home = test_root("schedule-history");
         let path = home.join("mighty-raccoon-42.jsonl");
+
         fs::create_dir_all(&home).unwrap();
         fs::write(&path, &jsonl).unwrap();
+
         let (recent, total) = super::read_schedule_history_page(&path, 1).unwrap();
         let output = super::format_schedule_history(&recent, total, &path, "42", 1, false);
 
@@ -21743,6 +22108,7 @@ done
         assert!(output.contains("├─ Run 22 | completed successfully"));
         assert!(output.contains("Result: result-22 continued [31m-unsafe[0m"));
         assert!(output.contains("Recorded: 2023-11-14 22:13:20 UTC"));
+
         assert!(output.contains(
             "Scheduled for: 2023-11-14 23:13:20 +01:00 (Europe/Rome; 2023-11-14 22:13:20 UTC)"
         ));
@@ -21826,6 +22192,7 @@ done
     #[test]
     fn schedule_history_handles_legacy_outcome_records() {
         let records = super::parse_schedule_history(r#"{"status":"completed"}"#).unwrap();
+
         let output = super::format_schedule_history(
             &records,
             records.len(),
@@ -21851,11 +22218,13 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let process = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = registry([process]).await;
         let (_, scheduler) = plugins.find(Capability::Scheduler).await.unwrap();
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
+
         let notifier = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             signal.signal();
@@ -21890,10 +22259,12 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let process = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = registry([process]).await;
         let stop = Stop::new();
         let mut call = 10;
+
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(4),
             super::retry_schedule_finish(
@@ -21910,6 +22281,7 @@ done
 
         assert_eq!(result.1.result.unwrap()["status"], "completed");
         assert_eq!(call, 12);
+
         stop_registry(&plugins).await;
     }
 
@@ -21925,13 +22297,16 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let first = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = registry([first]).await;
         let stopped = plugins.remove("scheduler").await.unwrap();
+
         stopped.stop().await.unwrap();
 
         let waiting_plugins = plugins.clone();
         let waiting_stop = super::Stop::new();
+
         let waiting = tokio::spawn(async move {
             super::wait_for_scheduler(&waiting_plugins, &waiting_stop).await
         });
@@ -21939,6 +22314,7 @@ done
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let restarted = Process::start_with("sh", ["-c", script]).await.unwrap();
+
         plugins.insert(super::Live::new(restarted)).await;
 
         let scheduler = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
@@ -21948,6 +22324,7 @@ done
             .unwrap();
 
         assert_eq!(scheduler.0, "scheduler");
+
         stop_registry(&plugins).await;
     }
 
@@ -21956,10 +22333,12 @@ done
     async fn scheduler_recovers_again_after_the_plugin_process_restarts_in_place() {
         let root = test_root("scheduler-plugin-recovery");
         let home = root.join("home");
+
         fs::create_dir_all(home.join("data/sessions")).unwrap();
         fs::create_dir_all(home.join("logs/schedules")).unwrap();
 
         let log = root.join("recoveries.log");
+
         let script = format!(
             r#"
 while IFS= read -r line; do
@@ -21975,17 +22354,21 @@ done
 "#,
             log.display()
         );
+
         let process = Process::start_with("sh", ["-c", script.as_str()]).await.unwrap();
         let plugins = registry([process]).await;
+
         let sessions = Arc::new(Mutex::new(
             super::state::Store::load(home.join("data/sessions/index.json")).unwrap(),
         ));
+
         let stop = Arc::new(Stop::new());
         let scheduler_plugins = plugins.clone();
         let scheduler_stop = Arc::clone(&stop);
         let scheduler_home = home.clone();
         let scheduler_root = root.clone();
         let scheduler_sessions = Arc::clone(&sessions);
+
         let run = tokio::spawn(async move {
             super::run_scheduler(
                 scheduler_plugins,
@@ -22005,6 +22388,7 @@ done
         let restarted_plugins = plugins.clone();
         let replacement_stop = Arc::clone(&stop);
         let replacement_log = log.clone();
+
         let restart = tokio::spawn(async move {
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 loop {
@@ -22045,6 +22429,7 @@ done
         assert_eq!(fs::read_to_string(log).unwrap().lines().count(), 2);
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -22053,10 +22438,12 @@ done
     async fn scheduler_retries_recovery_after_rpc_and_claim_errors() {
         let root = test_root("scheduler-recovery-rpc-errors");
         let home = root.join("home");
+
         fs::create_dir_all(home.join("data/sessions")).unwrap();
         fs::create_dir_all(home.join("logs/schedules")).unwrap();
 
         let log = root.join("scheduler.log");
+
         let script = format!(
             r#"
 recoveries=0
@@ -22089,16 +22476,20 @@ done
             log.display(),
             log.display()
         );
+
         let process = Process::start_with("sh", ["-c", script.as_str()]).await.unwrap();
         let plugins = registry([process]).await;
+
         let sessions = Arc::new(Mutex::new(
             super::state::Store::load(home.join("data/sessions/index.json")).unwrap(),
         ));
+
         let stop = Arc::new(Stop::new());
         let scheduler_plugins = plugins.clone();
         let scheduler_stop = Arc::clone(&stop);
         let scheduler_home = home.clone();
         let scheduler_root = root.clone();
+
         let run = tokio::spawn(async move {
             super::run_scheduler(
                 scheduler_plugins,
@@ -22126,6 +22517,7 @@ done
         })
         .await
         .expect("scheduler should recover after recovery and claim errors");
+
         stop.signal();
         run.await.unwrap();
 
@@ -22135,6 +22527,7 @@ done
         );
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -22177,7 +22570,9 @@ for line in sys.stdin:
 
         for mode in ["event", "host"] {
             let root = test_root(&format!("schedule-cancel-{mode}"));
+
             fs::create_dir_all(&root).unwrap();
+
             let plugins = Plugins::default();
 
             for role in ["fixture", "tools"] {
@@ -22187,13 +22582,16 @@ for line in sys.stdin:
                 )
                 .await
                 .unwrap();
+
                 plugins.insert(Live::new(process)).await;
             }
 
             let sessions = Arc::new(Mutex::new(
                 super::state::Store::load(root.join("sessions.json")).unwrap(),
             ));
+
             let cancellation = Arc::new(Cancellation::new());
+
             let task = serde_json::json!({
                 "text": "Run the command.",
                 "context": {"tools": true, "shell": true}
@@ -22202,6 +22600,7 @@ for line in sys.stdin:
             let stop = Stop::new();
             let config = super::Config::default();
             let mut call = 10;
+
             let result = super::execute_scheduled_task(
                 71,
                 &task,
@@ -22219,6 +22618,7 @@ for line in sys.stdin:
                 Some(1),
                 &mut call,
             );
+
             tokio::pin!(result);
 
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -22234,7 +22634,9 @@ for line in sys.stdin:
             })
             .await
             .unwrap();
+
             cancellation.request();
+
             let result = tokio::time::timeout(std::time::Duration::from_secs(5), result)
                 .await
                 .unwrap()
@@ -22242,9 +22644,11 @@ for line in sys.stdin:
 
             assert!(result.starts_with("CANCELLED:"), "{result}");
             assert!(sessions.lock().unwrap().sessions["schedule-71"].inflight.is_none());
+
             tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
 
             assert!(!root.join("leaked").exists(), "{mode} command survived cancellation");
+
             stop_registry(&plugins).await;
             fs::remove_dir_all(&root).unwrap();
         }
@@ -22263,6 +22667,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let process = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = registry([process]).await;
         let cancellation = Arc::new(Cancellation::new());
@@ -22279,6 +22684,7 @@ done
         tokio::time::timeout(std::time::Duration::from_secs(3), cancellation.cancelled())
             .await
             .unwrap();
+
         monitor.await.unwrap();
 
         stop_registry(&plugins).await;
@@ -22287,8 +22693,10 @@ done
     #[tokio::test]
     async fn scheduled_workspace_locks_serialize_shared_paths_only() {
         let root = test_root("scheduled-workspace-locks");
+
         fs::create_dir_all(root.join("shared")).unwrap();
         fs::create_dir_all(root.join("other")).unwrap();
+
         let locks = Arc::new(super::AsyncMutex::new(super::HashMap::new()));
         let first = super::lock_scheduled_workspace(&locks, root.join("shared")).await;
 
@@ -22310,12 +22718,14 @@ done
 
         drop(first);
         drop(other);
+
         let second = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             super::lock_scheduled_workspace(&locks, root.join("shared")),
         )
         .await
         .expect("the shared workspace should become available after release");
+
         drop(second);
 
         let _ = fs::remove_dir_all(root);
@@ -22326,6 +22736,7 @@ done
         let root = test_root("scheduled-captured-workspace");
         let configured = root.join("configured");
         let captured = root.join("repos/personal/krabb");
+
         fs::create_dir_all(&configured).unwrap();
         fs::create_dir_all(&captured).unwrap();
 
@@ -22336,6 +22747,7 @@ done
         .unwrap();
 
         assert_eq!(workspace, fs::canonicalize(&captured).unwrap());
+
         assert!(
             super::scheduled_workspace(
                 &serde_json::json!({"workspace": root.join("missing").display().to_string()}),
@@ -22388,6 +22800,7 @@ done
 "#
         .replace("SLOW_WORKSPACE", &slow_workspace.display().to_string())
         .replace("FAST_WORKSPACE", &fast_workspace.display().to_string());
+
         let scheduler = Process::start_with("sh", ["-c", scheduler_script.as_str()]).await.unwrap();
 
         let provider_script = r#"
@@ -22412,16 +22825,21 @@ done
 "#
         .replace("SLOW_STARTED", &slow_started.display().to_string())
         .replace("OVERLAP", &overlap.display().to_string());
+
         let provider = Process::start_with("sh", ["-c", provider_script.as_str()]).await.unwrap();
         let plugins = registry([scheduler, provider]).await;
+
         let sessions = Arc::new(Mutex::new(
             super::state::Store::load(home.join("data/sessions/index.json")).unwrap(),
         ));
+
         sessions.lock().unwrap().create("tui-default", "test").unwrap();
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
         let log_dir = home.join("logs/schedules");
         let overlap_for_signal = overlap.clone();
+
         let notifier = tokio::spawn(async move {
             let completed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {
@@ -22455,9 +22873,11 @@ done
             Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap())),
         )
         .await;
+
         notifier.await.unwrap();
 
         assert!(overlap.is_file(), "the fast task should start before the slow task finishes");
+
         assert!(
             fs::read_to_string(home.join("logs/schedules/slow-task-42.jsonl"))
                 .unwrap()
@@ -22471,6 +22891,7 @@ done
         );
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -22486,6 +22907,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let scheduler_script = r#"
 claimed=0
 while IFS= read -r line; do
@@ -22507,6 +22929,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let provider_script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
@@ -22517,25 +22940,33 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let root = test_root("scheduled-agent");
         let workspace = root.join("workspace");
         let home = root.join("home");
+
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(home.join("data/sessions")).unwrap();
         fs::create_dir_all(home.join("logs/schedules")).unwrap();
+
         let scheduler_script =
             scheduler_script.replace("WORKSPACE", &workspace.display().to_string());
+
         let scheduler = Process::start_with("sh", ["-c", &scheduler_script]).await.unwrap();
         let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
         let tool = Process::start_with("sh", ["-c", tool_script]).await.unwrap();
         let plugins = registry([scheduler, provider, tool]).await;
+
         let sessions = Arc::new(Mutex::new(
             super::state::Store::load(home.join("data/sessions/index.json")).unwrap(),
         ));
+
         sessions.lock().unwrap().create("tui-default", "test").unwrap();
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
         let observed_sessions = Arc::clone(&sessions);
+
         let notifier = tokio::spawn(async move {
             let completed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {
@@ -22579,11 +23010,13 @@ done
             Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap())),
         )
         .await;
+
         notifier.await.unwrap();
 
         let history = fs::read_to_string(home.join("logs/schedules/say-hello-42.jsonl")).unwrap();
 
         assert!(history.contains("Shell tool available."));
+
         assert!(sessions.lock().unwrap().sessions["schedule-42"].messages.iter().any(
             |message| message.content.iter().any(
                 |content| matches!(content, Content::Text { text } if text == "Shell tool available.")
@@ -22591,14 +23024,18 @@ done
         ));
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn config_set_preserves_comments_validates_and_saves_the_tui_alias() {
         let root = test_root("config-set");
+
         std::fs::create_dir_all(&root).unwrap();
+
         let config_path = root.join("config.toml");
+
         std::fs::write(&config_path, "# keep this note\n[clients.tui]\nshell = false\n").unwrap();
 
         super::config_command(
@@ -22634,6 +23071,7 @@ done
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), saved);
 
         std::fs::write(&config_path, "# legacy setting\nshell = true\n").unwrap();
+
         super::config_command(
             super::ConfigCommand::Set(super::ConfigSet {
                 assignment: "clients.tui.shell=false".into(),
@@ -22650,6 +23088,7 @@ done
 
         assert!(!migrated.starts_with("shell = true"));
         assert!(!config.tui_shell());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -22657,6 +23096,7 @@ done
     fn parses_native_config_get_and_set_commands() {
         assert!(Cli::try_parse_from(["krabb", "config", "get", "clients.tui.tools"]).is_ok());
         assert!(Cli::try_parse_from(["krabb", "config", "set", "clients.tui=true"]).is_ok());
+
         assert!(
             Cli::try_parse_from(["krabb", "config", "set", "approval=prompt", "--force"]).is_ok()
         );
@@ -22675,49 +23115,62 @@ done
         };
 
         assert!(manifest.validate().is_ok());
+
         let mut invalid = manifest;
+
         invalid.id = "Tools".into();
 
         assert!(invalid.validate().is_err());
+
         invalid.id = "tools".into();
         invalid.version.clear();
 
         assert!(invalid.validate().is_err());
+
         invalid.version = "0.1.0".into();
         invalid.protocol = Protocol { major: 9, minor: 0 };
 
         assert!(invalid.validate().is_err());
+
         invalid.protocol = Protocol::CURRENT;
         invalid.capabilities = vec!["tool".into(), "tool".into()];
 
         assert!(invalid.validate().is_err());
+
         invalid.capabilities = vec!["unknown".into()];
 
         assert!(invalid.validate().is_err());
+
         invalid.id = "timer".into();
         invalid.capabilities = vec!["timer".into()];
 
         assert!(invalid.validate().is_ok());
+
         invalid.id = "other".into();
 
         assert!(invalid.validate().is_err());
+
         invalid.id = "tools".into();
         invalid.capabilities = vec!["tool".into()];
         invalid.permissions = vec!["unknown".into()];
 
         assert!(invalid.validate().is_err());
+
         invalid.permissions.clear();
         invalid.secrets = vec!["bad-name".into()];
 
         assert!(invalid.validate().is_err());
+
         invalid.secrets = vec!["OPENAI_API_KEY".into()];
 
         assert!(invalid.validate().is_err());
+
         invalid.secrets = vec!["KRABB_TOOLS_KEY".into(), "KRABB_TOOLS_KEY".into()];
 
         assert!(invalid.validate().is_err());
 
         let test_home = Path::new("/tmp/krabb-home");
+
         let values = env_for(
             &Manifest {
                 id: "tools".into(),
@@ -22741,6 +23194,7 @@ done
         );
 
         assert!(values.iter().any(|(key, value)| key == "KRABB_SHELL" && value == "off"));
+
         let expected_root = std::env::var_os("KRABB_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| test_home.join("workspace"));
@@ -22752,10 +23206,12 @@ done
         );
 
         let mut config = Config::default();
+
         config.channels.insert(
             "telegram".into(),
             super::ChannelConfig { tools: true, shell: true, ..super::ChannelConfig::default() },
         );
+
         let values = env_for(
             &Manifest {
                 id: "tools".into(),
@@ -22799,8 +23255,10 @@ done
     fn propagates_default_home_and_tools_root_with_database_override() {
         let mut values = vec![("KRABB_DB".into(), "/tmp/krabb.db".into())];
         let test_home = Path::new("/tmp/krabb-home");
+
         ensure_home(&mut values, test_home);
         ensure_root(&mut values, test_home);
+
         let home_text = test_home.display().to_string();
         let expected_root = test_home.join("workspace");
 
@@ -22813,6 +23271,7 @@ done
         );
 
         let mut configured = vec![("KRABB_ROOT".into(), "/work/project".into())];
+
         ensure_root(&mut configured, test_home);
 
         assert_eq!(configured, [("KRABB_ROOT".into(), "/work/project".into())]);
@@ -22820,9 +23279,12 @@ done
 
     fn interrupted_metadata(root: &Path, name: &str, previous: &[u8], next: &[u8], phase: &str) {
         fs::create_dir_all(root).unwrap();
+
         let _ = fs::remove_file(root.join(name));
+
         fs::write(root.join(format!(".{name}.backup-test")), previous).unwrap();
         fs::write(root.join(format!(".{name}.tmp-test")), next).unwrap();
+
         fs::write(
             root.join(format!(".{name}.txn-test")),
             serde_json::to_vec(&serde_json::json!({
@@ -22839,6 +23301,7 @@ done
     #[test]
     fn command_discovery_waits_for_metadata_recovery() {
         let root = test_root("command-metadata-contention");
+
         let registry = serde_json::to_vec(&serde_json::json!({
             "plugins": {
                 "echo": {
@@ -22855,10 +23318,13 @@ done
             }
         }))
         .unwrap();
+
         interrupted_metadata(&root, "plugins.lock", &registry, b"invalid", "prepared");
+
         let guard = super::metadata_lock(&root).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let reader_root = root.clone();
+
         let reader = std::thread::spawn(move || {
             sender.send(super::available_commands(&reader_root)).unwrap();
         });
@@ -22869,13 +23335,16 @@ done
         ));
 
         assert!(!root.join("plugins.lock").exists());
+
         drop(guard);
 
         let commands = receiver.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+
         reader.join().unwrap();
 
         assert_eq!(commands["echo"][0].0, "echo");
         assert!(!root.join(".plugins.lock.txn-test").exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -22889,9 +23358,11 @@ done
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(start.elapsed() >= timeout);
+
         drop(guard);
 
         assert!(super::metadata_lock(&root).is_ok());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -22900,16 +23371,19 @@ done
         let root = test_root("command-metadata-error");
 
         assert!(super::available_commands(&root).unwrap().is_empty());
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("plugins.lock"), b"invalid").unwrap();
 
         assert!(super::available_commands(&root).is_err());
         assert!(super::help_text_with_plugins(&root).is_err());
+
         fs::remove_file(root.join("plugins.lock")).unwrap();
         fs::remove_file(root.join(".metadata.lock")).unwrap();
         fs::create_dir(root.join(".metadata.lock")).unwrap();
 
         assert!(super::available_commands(&root).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -22932,13 +23406,16 @@ done
         interrupted_metadata(&root, "config.toml", previous, next, "prepared");
 
         assert_eq!(super::load_config_text(&root).unwrap().unwrap().as_bytes(), previous);
+
         interrupted_metadata(&root, "plugins.lock", b"{\"plugins\":{}}", b"invalid", "prepared");
 
         assert!(super::load_lock_at(&root).unwrap().plugins.is_empty());
         assert!(!root.join(".plugins.lock.txn-test").exists());
+
         interrupted_metadata(&root, "plugins.lock", b"invalid", b"{\"plugins\":{}}", "backed_up");
 
         assert!(super::load_lock_at(&root).unwrap().plugins.is_empty());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -22952,14 +23429,17 @@ done
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
+
         super::write_command_event(&event, true, &mut stdout, &mut stderr);
 
         assert!(stdout.is_empty());
         assert_eq!(stderr, b"streamed");
+
         super::write_command_event(&event, false, &mut stdout, &mut stderr);
 
         assert_eq!(stdout, b"streamed");
         assert_eq!(stderr, b"streamed");
+
         assert_eq!(
             super::command_event_text(&Request::Note {
                 jsonrpc: "2.0".into(),
@@ -22979,37 +23459,52 @@ done
     fn recovers_locks_and_plugin_staging() {
         let root = std::env::temp_dir().join(format!("krabb-lock-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(root.join("plugins")).unwrap();
+
         let lock = daemon_lock(&root).unwrap();
 
         assert!(daemon_lock(&root).is_err());
+
         drop(lock);
+
         let stale = root.join("stale.lock");
+
         fs::write(&stale, "not-a-pid").unwrap();
+
         let lock = super::lock_at(&root, "stale.lock").unwrap();
+
         drop(lock);
         fs::create_dir_all(root.join("plugins/.echo.backup-test")).unwrap();
         fs::create_dir_all(root.join("plugins/.echo.stage-test")).unwrap();
+
         let active = super::lock_at(&root, ".plugins.lock").unwrap();
         let error = recover_plugins(&root).unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(root.join("plugins/.echo.stage-test").exists());
+
         drop(active);
+
         let backup = root.join("plugins/.echo.backup-test");
+
         fs::create_dir_all(backup.join("bin")).unwrap();
         fs::write(backup.join("bin").join(super::plugin_name("echo")), "old binary").unwrap();
+
         fs::write(
             backup.join("krabb-plugin.toml"),
             "id = 'echo'\nversion = '0.1.0'\ncapabilities = []\n[protocol]\nmajor = 0\nminor = 1\n",
         )
         .unwrap();
+
         let hash = super::digest(
             &backup.join("krabb-plugin.toml"),
             &backup.join("bin").join(super::plugin_name("echo")),
         )
         .unwrap();
+
         let mut plugins = BTreeMap::new();
+
         plugins.insert(
             "echo".into(),
             super::Entry {
@@ -23027,6 +23522,7 @@ done
                 linked: false,
             },
         );
+
         interrupted_metadata(
             &root,
             "plugins.lock",
@@ -23034,15 +23530,19 @@ done
             b"uncommitted lock",
             "prepared",
         );
+
         recover_plugins(&root).unwrap();
 
         assert!(root.join("plugins/echo").is_dir());
         assert!(!root.join("plugins/.echo.stage-test").exists());
+
         fs::create_dir_all(root.join("plugins/.gone.backup-remove-test")).unwrap();
         recover_plugins(&root).unwrap();
 
         assert!(!root.join("plugins/.gone.backup-remove-test").exists());
+
         let destination = root.join("plugins/echo");
+
         fs::rename(&destination, &backup).unwrap();
         fs::create_dir_all(destination.join("bin")).unwrap();
         fs::copy(backup.join("krabb-plugin.toml"), destination.join("krabb-plugin.toml")).unwrap();
@@ -23061,11 +23561,13 @@ done
         recover_plugins(&root).unwrap();
 
         assert!(!backup.exists());
+
         fs::rename(&destination, &backup).unwrap();
         fs::write(backup.join("bin").join(super::plugin_name("echo")), "corrupt binary").unwrap();
 
         assert!(recover_plugins(&root).is_err());
         assert!(backup.exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -23076,16 +23578,20 @@ done
         let process = Process::start_with("sh", ["-c", script]).await.unwrap();
         let process = Live::new(process);
         let stop = Stop::new();
+
         stop.signal();
+
         let mut failures = 0;
 
         assert!(!recover(&process, &mut failures, "test", &stop).await.unwrap());
+
         process.stop().await.unwrap();
     }
 
     #[tokio::test]
     async fn shutdown_signal_remains_visible_to_later_waiters() {
         let stop = Stop::new();
+
         stop.signal();
         tokio::time::timeout(std::time::Duration::from_secs(1), stop.notified()).await.unwrap();
     }
@@ -23097,17 +23603,21 @@ done
         assert!(!super::mentions("Hi there", "krabb"));
         assert!(super::same_id(&serde_json::json!(7), "7"));
         assert!(!super::same_id(&serde_json::Value::Null, "7"));
+
         let cancels = Arc::new(Mutex::new(BTreeMap::new()));
         let first = super::cancellation(&cancels, "session");
         let second = super::cancellation(&cancels, "session");
 
         assert!(Arc::ptr_eq(&first, &second));
+
         assert_eq!(
             send_params("matrix", "delivery", "room", "hello", Some("topic")).unwrap(),
             serde_json::json!({"delivery": "delivery", "chat": "room", "text": "hello", "thread": "topic"})
         );
+
         let store = super::state::Store::default();
         let missing = std::env::temp_dir().join(format!("krabb-worktrees-{}", std::process::id()));
+
         reclaim_worktrees(&missing, &store);
     }
 
@@ -23143,11 +23653,13 @@ done
     #[test]
     fn windows_service_private_state_includes_external_memory_and_its_lock() {
         let parent = Path::new("external");
+
         let memory = parent.join("memory.json");
         let paths = super::windows_service_private("KRABB_MEMORY", &memory);
 
         assert_eq!(paths, [memory.clone(), parent.join("memory.lock")]);
         assert!(!paths.contains(&parent.to_path_buf()));
+
         assert_eq!(
             super::windows_service_private("KRABB_MEMORY", Path::new("memory")),
             [PathBuf::from("memory"), PathBuf::from("memory.lock")]
@@ -23181,6 +23693,7 @@ done
             std::fs::write(parent.join("store-wal"), "sidecar").unwrap();
 
             assert_eq!(super::windows_service_directory(name, &store), Some(parent.clone()));
+
             assert_eq!(
                 super::windows_service_directory(name, Path::new("store")),
                 Some(".".into())
@@ -23194,6 +23707,7 @@ done
         }
 
         assert!(super::windows_service_directory("KRABB_MODEL", &parent).is_none());
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -23204,6 +23718,7 @@ done
         let args = command.get_args().map(|arg| arg.to_str().unwrap()).collect::<Vec<_>>();
 
         assert_eq!(command.get_program(), "icacls.exe");
+
         assert_eq!(
             args,
             [path.to_str().unwrap(), "/grant", r"NT SERVICE\Krabb:(OI)(CI)M", "/T", "/L"]
@@ -23215,10 +23730,13 @@ done
         let root = test_root("service-browser-access");
         let modules = root.join("node_modules");
         let browsers = root.join("browsers");
+
         fs::create_dir_all(modules.join("playwright")).unwrap();
         fs::create_dir_all(modules.join("playwright-core")).unwrap();
         fs::create_dir_all(&browsers).unwrap();
+
         let node = root.join("node.exe");
+
         fs::write(&node, "fixture executable").unwrap();
 
         for (name, path, expected) in [
@@ -23247,7 +23765,9 @@ done
         }
 
         assert!(super::windows_service_dependency("KRABB_BROWSER_EGRESS_PROXY", &root).is_none());
+
         assert!(super::windows_service_dependency("KRABB_NODE", Path::new("node")).is_none());
+
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -23258,6 +23778,7 @@ done
         #[cfg(target_os = "linux")]
 
         assert_eq!(service_name(), "Krabb");
+
         #[cfg(target_os = "macos")]
         {
             assert_eq!(MACOS_SERVICE_LABEL, "it.airscript.krabb");
@@ -23267,12 +23788,14 @@ done
         #[cfg(target_os = "windows")]
 
         assert_eq!(service_name(), "Krabb");
+
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 
         assert_eq!(service_name(), "Krabb");
 
         assert!(text.contains("/tmp/krabb"));
         assert!(!text.contains("serve"));
+
         #[cfg(target_os = "linux")]
         {
             assert!(text.contains("Restart=always"));
@@ -23297,6 +23820,7 @@ done
             ("KRABB_ROOT".into(), "/tmp/krabb-root".into()),
             ("KRABB_CREDENTIALS".into(), "/tmp/krabb-credentials.json".into()),
         ];
+
         let text = service_text(std::path::Path::new("/tmp/krabb"), &environment);
 
         assert!(text.contains("KRABB_HOME"));
@@ -23315,6 +23839,7 @@ done
             "KRABB_BROWSER_EGRESS_PROXY".into(),
             "http://user%40example.test:encoded%25value@proxy.example:8080".into(),
         )];
+
         let text = service_text(std::path::Path::new("/tmp/krabb"), &environment);
 
         assert!(text.contains(concat!(
@@ -23326,10 +23851,15 @@ done
     #[test]
     fn service_environment_materializes_declared_credentials() {
         let root = test_root("service-env");
+
         fs::create_dir_all(&root).unwrap();
+
         let configured = root.join("credentials.json");
+
         super::secure(&configured, br#"{"KRABB_TELEGRAM_TOKEN":"old"}"#).unwrap();
+
         let mut environment = BTreeMap::new();
+
         environment.insert("KRABB_ROOT".into(), root.display().to_string());
         environment.insert("KRABB_MEMORY".into(), "memory.json".into());
         environment.insert("KRABB_TIMER".into(), "timer.json".into());
@@ -23338,6 +23868,7 @@ done
         environment.insert("KRABB_SANDBOX_IMAGE".into(), "local/tool:latest".into());
         environment.insert("KRABB_CREDENTIALS".into(), configured.display().to_string());
         environment.insert("KRABB_CODEX_KEY".into(), "secret".into());
+
         let service = root.join("krabb.service");
         let values = service_environment_from(&service, root.clone(), &environment).unwrap();
 
@@ -23369,8 +23900,10 @@ done
 
         let credentials: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&credential_path).unwrap()).unwrap();
+
         assert_eq!(credentials["KRABB_TELEGRAM_TOKEN"], "old");
         assert_eq!(credentials["KRABB_CODEX_KEY"], "secret");
+
         assert!(
             values.iter().any(|(name, value)| name == "KRABB_SANDBOX_RUNTIME" && value == "docker")
         );
@@ -23380,13 +23913,16 @@ done
                 .iter()
                 .any(|(name, value)| name == "KRABB_SANDBOX_IMAGE" && value == "local/tool:latest")
         );
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn services_preserve_explicit_browser_and_computer_settings() {
         let root = test_root("service-desktop");
+
         fs::create_dir_all(&root).unwrap();
+
         let environment = BTreeMap::from([
             ("KRABB_PLAYWRIGHT_MODULE".into(), "/opt/playwright/index.js".into()),
             ("KRABB_PLAYWRIGHT_BROWSERS_PATH".into(), "/opt/browsers".into()),
@@ -23400,6 +23936,7 @@ done
             ("KRABB_COMPUTER_STARTUP".into(), "/opt/desktop".into()),
             ("KRABB_COMPUTER_STARTUP_ARGS".into(), "[\"--session\"]".into()),
         ]);
+
         let service = root.join("krabb.service");
         let values = service_environment_from(&service, root.clone(), &environment).unwrap();
 
@@ -23410,6 +23947,7 @@ done
         let defaults = service_environment_from(&service, root.clone(), &BTreeMap::new()).unwrap();
 
         assert!(!defaults.iter().any(|(name, _)| name == "KRABB_COMPUTER_ALLOW_HOST_CONTROL"));
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -23437,8 +23975,11 @@ done
     #[test]
     fn service_environment_pins_codex_found_on_installing_path() {
         let root = test_root("service-codex-path");
+
         let bin = root.join("user-bin");
+
         fs::create_dir_all(&bin).unwrap();
+
         let executable = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
 
         fs::write(&executable, b"codex").unwrap();
@@ -23452,7 +23993,9 @@ done
         }
 
         let mut environment = BTreeMap::new();
+
         environment.insert("PATH".into(), bin.display().to_string());
+
         let home = root.join("state");
         let service = home.join("krabb.service");
         let values = service_environment_from(&service, home, &environment).unwrap();
@@ -23466,6 +24009,7 @@ done
 
         let dependency =
             super::windows_service_dependency("KRABB_CODEX_BINARY", Path::new(&expected)).unwrap();
+
         let command = super::windows_service_access(&dependency, false);
         let args = command.get_args().map(|arg| arg.to_str().unwrap()).collect::<Vec<_>>();
 
@@ -23507,6 +24051,7 @@ done
         fs::write(&path, super::service_text(&daemon_executable().unwrap(), &[])).unwrap();
 
         assert!(path.is_file());
+
         assert!(
             super::service_at_with_status(
                 &path,
@@ -23540,6 +24085,7 @@ done
         .unwrap();
 
         let mut restarted = false;
+
         super::service_at_with_status(
             &path,
             ServiceCommand::Restart,
@@ -23713,15 +24259,19 @@ done
     fn rejects_a_symlink_service_definition() {
         let root = std::env::temp_dir().join(format!("krabb-service-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let target = root.join("target");
         let path = root.join("service");
+
         std::os::unix::fs::symlink(&target, &path).unwrap();
 
         let error =
             service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: false }))
                 .unwrap_err()
                 .to_string();
+
         assert!(error.contains("symbolic link"));
         assert!(!target.exists());
 
@@ -23732,22 +24282,30 @@ done
     fn discovers_plugins_and_detects_source_changes() {
         let root = std::env::temp_dir().join(format!("krabb-discovery-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         init_at(&root).unwrap();
+
         let plugin = root.join("plugins/echo");
+
         fs::create_dir_all(plugin.join("bin")).unwrap();
+
         fs::write(
             plugin.join("krabb-plugin.toml"),
             "id = 'echo'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['model']\n",
         )
         .unwrap();
+
         let binary = plugin.join("bin").join(super::plugin_name("echo"));
+
         fs::write(&binary, "binary").unwrap();
 
         assert_eq!(installed_at(&root), vec!["echo"]);
         assert_eq!(binary_at("echo", &root), Some(binary.clone()));
         assert!(binary_at("../escape", &root).is_none());
+
         let default_source = root.join("repo/krabb-plugins/echo");
         let default_binary = root.join("repo/target/debug").join(super::plugin_name("echo"));
+
         fs::create_dir_all(&default_source).unwrap();
         fs::create_dir_all(default_binary.parent().unwrap()).unwrap();
         fs::write(&default_binary, "default binary").unwrap();
@@ -23758,11 +24316,13 @@ done
         let categorized_binary = root.join("repo/target/debug").join(super::plugin_name("codex"));
 
         fs::create_dir_all(&categorized_source).unwrap();
+
         fs::write(
             categorized_source.join("krabb-plugin.toml"),
             "id = 'codex'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\n",
         )
         .unwrap();
+
         fs::write(&categorized_binary, "categorized binary").unwrap();
 
         assert_eq!(
@@ -23791,6 +24351,7 @@ done
         };
 
         assert!(changed(&root, "echo", &entry).unwrap());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -23798,6 +24359,7 @@ done
     fn update_modes_are_explicit() {
         let root = std::env::temp_dir().join(format!("krabb-updates-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         assert!(super::updates(&root, "off").is_ok());
@@ -23805,6 +24367,7 @@ done
         assert!(super::updates(&root, "prompt").is_ok());
         assert!(super::updates(&root, "auto").is_ok());
         assert!(super::updates(&root, "invalid").is_err());
+
         assert!(
             super::changed(
                 &root,
@@ -23826,6 +24389,7 @@ done
             )
             .is_err()
         );
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -23854,10 +24418,14 @@ done
         assert!(super::native_command("memory"));
         assert!(super::native_command("tui"));
         assert!(super::native_command("data"));
+
         let root = test_root("commands");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let mut lock = super::Lock::default();
+
         lock.plugins.insert(
             "first".into(),
             super::Entry {
@@ -23880,12 +24448,15 @@ done
                 linked: false,
             },
         );
+
         super::save_lock_at(&root, &lock).unwrap();
+
         let help = super::help_text_with_plugins(&root).unwrap();
 
         assert!(help.contains("Plugin Commands:"));
         assert!(help.contains("login"));
         assert!(help.find("Plugin Commands:") < help.find("Options:"));
+
         assert!(
             super::validate_commands(
                 &root,
@@ -23963,6 +24534,7 @@ done
             )
             .is_err()
         );
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -23970,8 +24542,11 @@ done
     async fn conditional_native_commands_follow_installed_capabilities() {
         let root = test_root("ask-command");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(root.join("plugins/fake/bin")).unwrap();
+
         let mut lock = super::Lock::default();
+
         lock.plugins.insert(
             "fake".into(),
             super::Entry {
@@ -23993,6 +24568,7 @@ done
                 }],
             },
         );
+
         super::save_lock_at(&root, &lock).unwrap();
 
         assert!(!super::available_commands(&root).unwrap().contains_key("ask"));
@@ -24001,11 +24577,13 @@ done
         assert!(!super::available_commands(&root).unwrap().contains_key("data"));
 
         let help = super::help_text_with_plugins(&root).unwrap();
+
         let native = help
             .split("Commands:")
             .nth(1)
             .and_then(|section| section.split("Conditional Commands:").next())
             .unwrap();
+
         let conditional = help
             .split("Conditional Commands:")
             .nth(1)
@@ -24019,7 +24597,9 @@ done
         assert!(!native.lines().any(|line| line.trim_start().starts_with("schedule ")));
 
         let binary = root.join("plugins/fake/bin").join(super::plugin_name("fake"));
+
         fs::write(binary, b"plugin").unwrap();
+
         let mut commands = super::available_commands(&root).unwrap();
 
         assert!(!commands.contains_key("ask"));
@@ -24028,6 +24608,7 @@ done
         assert_eq!(super::model_plugin_at(&root, "fake").unwrap(), "fake");
 
         let session_args = ["list", "--json"].map(str::to_owned);
+
         super::session_command(&session_args, &root, false).await.unwrap();
 
         lock.plugins.insert(
@@ -24049,7 +24630,9 @@ done
         );
 
         super::save_lock_at(&root, &lock).unwrap();
+
         let binary = root.join("plugins/channel/bin").join(super::plugin_name("channel"));
+
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(binary, b"plugin").unwrap();
         commands = super::available_commands(&root).unwrap();
@@ -24057,9 +24640,11 @@ done
         assert_eq!(commands["delivery"][0].0, "__runtime.delivery");
 
         let delivery_args = ["list", "--json"].map(str::to_owned);
+
         super::delivery_command(&delivery_args, &root, false).await.unwrap();
 
         let help = super::help_text_with_plugins(&root).unwrap();
+
         let conditional = help
             .split("Conditional Commands:")
             .nth(1)
@@ -24092,28 +24677,34 @@ done
                 commands: Vec::new(),
             },
         );
+
         super::save_lock_at(&root, &lock).unwrap();
 
         assert!(!super::available_commands(&root).unwrap().contains_key("schedule"));
 
         let binary = root.join("plugins/scheduler/bin").join(super::plugin_name("scheduler"));
+
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(binary, b"plugin").unwrap();
 
         let help = super::help_text_with_plugins(&root).unwrap();
+
         let native = help
             .split("Commands:")
             .nth(1)
             .and_then(|section| section.split("Conditional Commands:").next())
             .unwrap();
+
         let conditional = help
             .split("Conditional Commands:")
             .nth(1)
             .and_then(|section| section.split("Plugin Commands:").next())
             .unwrap();
+
         let plugin = help.split("Plugin Commands:").nth(1).unwrap();
 
         assert!(!native.lines().any(|line| line.trim_start().starts_with("schedule ")));
+
         assert_eq!(
             conditional.lines().filter(|line| line.trim_start().starts_with("schedule ")).count(),
             1
@@ -24128,6 +24719,7 @@ done
     fn krabb_owned_plugin_commands_are_conditional_native_commands() {
         let root = test_root("first-party-commands");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         let entry = |id: &str, capability: &str, name: &str, interactive: bool| super::Entry {
@@ -24150,6 +24742,7 @@ done
         };
 
         let mut lock = super::Lock::default();
+
         lock.plugins.insert("memory".into(), entry("memory", "memory", "memory", false));
         lock.plugins.insert("tui".into(), entry("tui", "client", "tui", true));
         lock.plugins.insert("sqlite".into(), entry("sqlite", "store", "data", false));
@@ -24164,6 +24757,7 @@ done
 
         for id in ["memory", "tui", "sqlite"] {
             let binary = root.join("plugins").join(id).join("bin").join(super::plugin_name(id));
+
             fs::create_dir_all(binary.parent().unwrap()).unwrap();
             fs::write(binary, b"plugin").unwrap();
         }
@@ -24176,20 +24770,24 @@ done
         assert_eq!(commands["codex"][0].0, "codex");
 
         let help = super::help_text_with_plugins(&root).unwrap();
+
         let native = help
             .split("Commands:")
             .nth(1)
             .and_then(|section| section.split("Conditional Commands:").next())
             .unwrap();
+
         let conditional = help
             .split("Conditional Commands:")
             .nth(1)
             .and_then(|section| section.split("Plugin Commands:").next())
             .unwrap();
+
         let plugin = help.split("Plugin Commands:").nth(1).unwrap();
 
         for name in ["memory", "tui", "data"] {
             assert!(!native.lines().any(|line| line.trim_start().starts_with(&format!("{name} "))));
+
             assert!(
                 conditional.lines().any(|line| line.trim_start().starts_with(&format!("{name} ")))
             );
@@ -24198,6 +24796,7 @@ done
         }
 
         assert!(plugin.lines().any(|line| line.trim_start().starts_with("codex ")));
+
         assert!(
             super::validate_commands(
                 &root,
@@ -24231,6 +24830,7 @@ done
     async fn plugin_removal_preserves_state_owned_by_conditional_commands() {
         let root = test_root("plugin-removal-state");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         let entry = |capability: &str| super::Entry {
@@ -24250,10 +24850,12 @@ done
 
         let catalog = root.join("data/sessions/index.json");
         let mut store = super::state::Store::load(&catalog).unwrap();
+
         store.create("kept", "test").unwrap();
         store.save().unwrap();
 
         let mut lock = super::Lock::default();
+
         lock.plugins.insert("model-one".into(), entry("model"));
 
         assert_eq!(super::last_plugin_state(&lock, "model-one", &root), (true, false));
@@ -24266,7 +24868,9 @@ done
         );
 
         let second_model = "second";
+
         fs::create_dir_all(root.join("plugins").join(second_model).join("bin")).unwrap();
+
         fs::write(
             root.join("plugins")
                 .join(second_model)
@@ -24275,12 +24879,14 @@ done
             "plugin",
         )
         .unwrap();
+
         lock.plugins.insert(second_model.into(), entry("model"));
 
         assert_eq!(super::last_plugin_state(&lock, "model-one", &root), (false, false));
         assert!(super::ensure_no_orphaned_plugin_state(&lock, "model-one", &root).is_ok());
 
         let mut store = super::state::Store::load(&catalog).unwrap();
+
         store
             .reply(
                 "kept",
@@ -24298,12 +24904,14 @@ done
                 "pending",
             )
             .unwrap();
+
         store.save().unwrap();
 
         lock.plugins.clear();
         lock.plugins.insert("channel-one".into(), entry("channel"));
 
         assert_eq!(super::last_plugin_state(&lock, "channel-one", &root), (false, true));
+
         super::save_lock_at(&root, &lock).unwrap();
 
         let error =
@@ -24332,6 +24940,7 @@ done
             .filter(|line| !line.trim().is_empty())
             .map(|line| line.chars().count())
             .collect::<Vec<_>>();
+
         assert!(!widths.is_empty());
         assert!(widths.iter().all(|width| *width == widths[0]));
         assert!(BANNER.contains("██╗  ██╗"));
@@ -24344,6 +24953,7 @@ done
     fn cli_exposes_global_modes_and_aliases() {
         let cli =
             Cli::try_parse_from(["krabb", "--json", "--debug", "--verbose", "status"]).unwrap();
+
         assert!(cli.json);
         assert!(cli.debug);
         assert!(cli.verbose);
@@ -24509,6 +25119,7 @@ done
         assert!(codex_help.contains("login [--device]"));
         assert!(codex_help.contains("  models            List models"));
         assert!(!codex_help.contains("models list"));
+
         assert!(
             super::external_command_output(&serde_json::json!({"text": "Signed in."}), false)
                 .unwrap()
@@ -24528,6 +25139,7 @@ done
 
         assert_eq!(super::external_command_args("memory", &["--help".into()]), ["help"]);
         assert_eq!(super::external_command_args("data", &["--help".into()]), ["help"]);
+
         assert_eq!(
             super::external_command_args(
                 "data",
@@ -24604,10 +25216,12 @@ done
 
         let session =
             SessionCli::try_parse_from(["session", "delete", "main", "--yes", "--json"]).unwrap();
+
         assert!(session.json);
 
         let delivery =
             DeliveryCli::try_parse_from(["delivery", "retry", "item", "--yes", "--json"]).unwrap();
+
         assert!(delivery.json);
 
         let cli = Cli::try_parse_from(["krabb", "export", "--json"]).unwrap();
@@ -24628,12 +25242,15 @@ done
 
         let cli =
             Cli::try_parse_from(["krabb", "validate", "--path", "Krabfile", "--json"]).unwrap();
+
         assert!(cli.json);
+
         assert!(
             matches!(cli.command, Command::Validate(KrabfileValidate { path: Some(path) }) if path == Path::new("Krabfile"))
         );
 
         assert_eq!(default_krabfile_path(), Path::new("./Krabfile"));
+
         assert_eq!(
             krabfile_output_path(None, Some(PathBuf::from("."))).unwrap(),
             Path::new("./Krabfile")
@@ -24681,6 +25298,7 @@ done
         .unwrap();
 
         assert!(linked);
+
         assert_eq!(
             sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(),
             ["tui", "codex"]
@@ -24714,6 +25332,7 @@ done
     #[test]
     fn linked_plugin_install_requires_a_plugin_source_in_the_working_directory() {
         let root = test_root("linkable-plugin-source");
+
         let sources =
             [super::Source { id: "memory".into(), source: None, revision: None, yes: true }];
 
@@ -24726,6 +25345,7 @@ done
         );
 
         let plugin = root.join("krabb-plugins/memory");
+
         fs::create_dir_all(&plugin).unwrap();
         super::ensure_linkable_sources(true, &sources, &root).unwrap();
         super::ensure_linkable_sources(false, &sources, &root).unwrap();
@@ -24736,6 +25356,7 @@ done
             revision: None,
             yes: true,
         }];
+
         super::ensure_linkable_sources(true, &explicit, &root).unwrap();
 
         let _ = fs::remove_dir_all(root);
@@ -24811,6 +25432,7 @@ done
         assert!(super::schedule_help().contains("--message-channel"));
         assert!(super::schedule_help().contains("--message-thread"));
         assert!(super::schedule_help().contains("Options:"));
+
         assert!(
             super::schedule_help()
                 .contains("  approve <ID> [-y|--yes]   Approve a pending task without prompting")
@@ -24890,6 +25512,7 @@ done
 
         assert!(super::reset_home(&root).is_err());
         assert!(root.join("plugins/keep").exists());
+
         drop(active);
 
         super::init_at_with_force(&root, true).unwrap();
@@ -24900,6 +25523,7 @@ done
 
         assert!(!root.join("plugins/keep").exists());
         assert!(!root.join("sessions.json").exists());
+
         let personality = fs::read_to_string(root.join("workspace/KRAB.md")).unwrap();
         let behavior = fs::read_to_string(root.join("workspace/KLAW.md")).unwrap();
 
@@ -24923,6 +25547,7 @@ done
         let target = parent.join("target");
         let home = parent.join("home");
         let _ = fs::remove_dir_all(&parent);
+
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("keep"), "user data").unwrap();
         symlink(&target, &home).unwrap();
@@ -24993,6 +25618,7 @@ done
         assert!(Cli::try_parse_from(["krabb", "ask", "--provider", "local"]).is_err());
         assert!(Cli::try_parse_from(["krabb", "ask", "--provider", "local", "hello"]).is_err());
         assert!(Cli::try_parse_from(["krabb", "ask", "--plugin", "local", "hello"]).is_err());
+
         let help = Cli::command().find_subcommand("ask").unwrap().clone().render_help().to_string();
 
         assert!(help.contains("--provider <PROVIDER>"));
@@ -25019,13 +25645,16 @@ done
     fn manifest_reader_rejects_wrong_files() {
         let root = std::env::temp_dir().join(format!("krabb-manifest-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("krabb-plugin.toml"), "id = 'echo'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['model']\n").unwrap();
 
         assert_eq!(read_manifest(&root).unwrap().id, "echo");
+
         fs::write(root.join("krabb-plugin.toml"), "broken = true\n").unwrap();
 
         assert!(read_manifest(&root).is_none());
+
         let error = read_manifest_checked(&root).unwrap_err().to_string();
 
         assert!(error.contains("manifest parse failed at"));
@@ -25041,16 +25670,19 @@ done
 
         assert!(error.contains("manifest validation failed at"));
         assert!(error.contains("Plugin IDs must contain lowercase letters"));
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn plugin_list_rejects_invalid_visible_manifests() {
         let root = test_root("plugin-list-invalid");
+
         fs::create_dir_all(root.join("plugins/broken")).unwrap();
         fs::write(root.join("plugins/broken/krabb-plugin.toml"), "broken = true\n").unwrap();
 
         assert!(super::list_at(&root, 1, true).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -25123,8 +25755,10 @@ done
             .collect::<Vec<_>>();
 
         let mut items = items;
+
         items[0]["status"] = serde_json::json!("working");
         items[6]["archived"] = serde_json::json!(true);
+
         let value = serde_json::json!({"items": items});
 
         let first_page = super::format_session_list(&value, 1).unwrap();
@@ -25143,6 +25777,7 @@ done
         assert!(second_page.starts_with("Sessions (6–7 of 7, page 2 of 2)"));
         assert!(second_page.contains("session-06 | archived"));
         assert!(super::format_session_list(&value, 3).unwrap_err().contains("sessions"));
+
         assert_eq!(
             super::format_session_list(&serde_json::json!({"items": []}), 1).unwrap(),
             "No sessions."
@@ -25175,6 +25810,7 @@ done
         assert!(first_page.contains("\n\n├─ delivery-1 | pending"));
         assert!(!first_page.contains("delivery-5"));
         assert!(super::format_delivery_list(&value, 3).unwrap_err().contains("deliveries"));
+
         assert_eq!(
             super::format_delivery_list(&serde_json::json!({"items": []}), 1).unwrap(),
             "No pending deliveries."
@@ -25293,6 +25929,7 @@ done
     #[test]
     fn rejects_oversized_tool_arguments_before_model_context() {
         let args = serde_json::json!({"patch": "x".repeat(super::TOOL_ARGS_LIMIT)});
+
         let reply = ModelReply {
             text: String::new(),
             stop: "tool".into(),
@@ -25363,6 +26000,7 @@ done
     #[test]
     fn drops_accumulated_oversized_tool_arguments_from_bounded_content() {
         let args = serde_json::json!({"patch": "x".repeat(super::TOOL_ARGS_LIMIT)});
+
         let content = (0..super::CONTENT_LIMIT)
             .map(|_| Content::ToolCall {
                 name: "patch".into(),
@@ -25402,6 +26040,7 @@ done
         };
 
         assert_eq!(super::stream_event(note), Some(Event::Text { text: "part".into() }));
+
         assert!(
             super::stream_event(Request::Note {
                 jsonrpc: "2.0".into(),
@@ -25458,6 +26097,7 @@ done
                 content: vec![Content::Text { text: "x".repeat(256 * 1024) }],
             },
         ];
+
         messages.extend((0..40).map(|index| Message {
             id: index.to_string(),
             session: "test".into(),
@@ -25465,14 +26105,19 @@ done
             sender: None,
             content: vec![Content::Text { text: "x".repeat(256 * 1024) }],
         }));
+
         let request =
             super::model_request(1, "model", &messages, &[], None, Protocol::CURRENT).unwrap();
+
         let encoded = serde_json::to_vec(&request).unwrap();
 
         assert!(encoded.len() < krabb_core::jsonl::MAX);
+
         let retained =
             serde_json::to_value(request).unwrap()["params"]["messages"].as_array().unwrap().len();
+
         assert!(retained < messages.len());
+
         let request =
             super::model_request(1, "model", &messages, &[], None, Protocol::CURRENT).unwrap();
 
@@ -25480,6 +26125,7 @@ done
         let retained = value["params"]["messages"].as_array().unwrap();
 
         assert!(retained.iter().all(|message| message["role"] != "tool"));
+
         let current = Message {
             id: "current".into(),
             session: "test".into(),
@@ -25489,7 +26135,9 @@ done
         };
 
         let mut history = messages;
+
         history.push(current.clone());
+
         let request =
             super::model_request(1, "model", &history, &[], None, Protocol::CURRENT).unwrap();
 
@@ -25497,6 +26145,7 @@ done
         let retained = value["params"]["messages"].as_array().unwrap();
 
         assert!(retained.iter().any(|message| message["id"] == "current"));
+
         let current = Message {
             id: "current".into(),
             session: "test".into(),
@@ -25557,6 +26206,7 @@ done
         assert!(super::mutating("schedule_propose", &serde_json::json!({})));
         assert!(super::mutating("schedule_run", &serde_json::json!({"id": 1})));
         assert!(super::mutating("schedule_retry", &serde_json::json!({"id": 1})));
+
         assert!(super::mutating(
             "browser_navigate",
             &serde_json::json!({"url":"https://example.test"})
@@ -25565,6 +26215,7 @@ done
         assert!(super::mutating("browser_click", &serde_json::json!({"approve":true})));
         assert!(super::mutating("computer_type", &serde_json::json!({"text":"submit"})));
         assert!(super::mutating("git", &serde_json::json!({"args": ["worktree", "add", "path"]})));
+
         assert!(super::mutating(
             "git",
             &serde_json::json!({"args": ["worktree", "remove", "path"]})
@@ -25581,94 +26232,328 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn schedule_proposals_activate_without_interactive_approval() {
+    async fn schedule_controls_bind_trusted_callers_after_auto_and_prompt_approval() {
         let script = r#"
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
     case "$line" in
         *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"scheduler","version":"0.1.0","capabilities":["scheduler"]}}' ;;
-        *'"method":"add"'*'"activate":true'*'"repeat":300'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"id":1,"due":1790000000,"zone":"UTC","repeat":300,"retries":0,"status":"active"}}' ;;
+        *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"ok":true}}'; exit 0 ;;
+        *) printf '%s\n' "$line" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"error":{"code":-32601,"message":"method not found"}}' ;;
+    esac
+done
+"#;
+
+        let root = test_root("schedule-control-identity");
+
+        fs::create_dir_all(&root).unwrap();
+
+        let calls = root.join("calls.jsonl");
+
+        let scheduler =
+            Process::start_with("sh", ["-c", script, "scheduler", calls.to_str().unwrap()])
+                .await
+                .unwrap();
+
+        let plugins = registry([scheduler]).await;
+
+        for channel in ["telegram", "cli", "tui"] {
+            for mode in
+                [super::ApprovalMode::Off, super::ApprovalMode::Auto, super::ApprovalMode::Prompt]
+            {
+                for action in ["pause", "cancel", "resume", "run", "retry"] {
+                    fs::write(&calls, "").unwrap();
+                    let sessions = Arc::new(Mutex::new(
+                        super::state::Store::load(
+                            root.join(format!("sessions-{channel}-{mode:?}-{action}.json")),
+                        )
+                        .unwrap(),
+                    ));
+
+                    sessions.lock().unwrap().ensure("owner-session", "test").unwrap();
+                    sessions.lock().unwrap().reserve("owner-session", "turn".into()).unwrap();
+                    let approvals =
+                        Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap()));
+
+                    let (notices, mut events) = tokio::sync::mpsc::channel(1);
+                    let name = format!("schedule_{action}");
+                    let mut expected = serde_json::json!({"id": 1});
+
+                    if channel == "telegram" {
+                        expected["caller"] = serde_json::json!({
+                            "channel": channel, "chat": "owner-chat", "thread": "topic",
+                            "session": "owner-session"
+                        });
+                    }
+
+                    let mut failed_tool = None;
+                    let operation = super::execute_tool(
+                        &plugins,
+                        1,
+                        &name,
+                        serde_json::json!({
+                            "id": 1, "caller": {"channel": "cli"},
+                            "context": {"origin": {"chat": "foreign"}}, "action": "approve"
+                        }),
+                        "codex",
+                        "test",
+                        mode,
+                        approvals.clone(),
+                        channel,
+                        "owner-chat",
+                        Some("topic"),
+                        "owner-session",
+                        &sessions,
+                        None,
+                        false,
+                        true,
+                        false,
+                        notices,
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                        &mut failed_tool,
+                        None,
+                        None,
+                        0,
+                    );
+
+                    let review = async {
+                        if mode != super::ApprovalMode::Prompt {
+                            return;
+                        }
+
+                        assert!(matches!(
+                            events.recv().await.unwrap(),
+                            super::StreamNotice::Approval { .. }
+                        ));
+
+                        assert!(fs::read_to_string(&calls).unwrap().is_empty());
+                        let mut gate = approvals.lock().await;
+                        let pending = gate.list().unwrap();
+
+                        assert_eq!(pending[0].target.args, expected);
+                        assert_eq!(gate.resolve_local(&pending[0].id, true), Some(true));
+                    };
+
+                    let (result, ()) =
+                        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                            tokio::join!(operation, review)
+                        })
+                        .await
+                        .unwrap();
+
+                    let recorded = fs::read_to_string(&calls).unwrap();
+
+                    if mode == super::ApprovalMode::Off {
+                        assert!(result.unwrap_err().to_string().contains("blocks mutating tools"));
+                        assert!(recorded.is_empty());
+                        continue;
+                    }
+
+                    assert!(result.unwrap_err().to_string().contains("method not found"));
+                    let requests: Vec<serde_json::Value> =
+                        recorded.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+
+                    assert_eq!(requests.len(), 1, "Never fall back to unscoped control");
+                    let method = if action == "cancel" { "remove" } else { action };
+
+                    if channel == "telegram" {
+                        expected["action"] = serde_json::json!(method);
+
+                        assert_eq!(requests[0]["method"], "control");
+                    } else {
+                        assert_eq!(requests[0]["method"], method);
+                    }
+
+                    assert_eq!(requests[0]["params"], expected);
+                }
+            }
+        }
+
+        stop_registry(&plugins).await;
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn schedule_proposals_obey_approval_and_bind_execution_context() {
+        let script = r#"
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
+    case "$line" in
+        *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"scheduler","version":"0.1.0","capabilities":["scheduler"]}}' ;;
+        *'"method":"add"'*'"activate":true'*'"repeat":300'*) printf '%s\n' "$line" >> "$1"; printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"id":1,"due":1790000000,"zone":"UTC","repeat":300,"retries":0,"status":"active"}}' ;;
         *'"method":"add"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"error":{"code":-32000,"message":"Activation was missing."}}' ;;
         *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"ok":true}}'; exit 0 ;;
     esac
 done
 "#;
-        let root = test_root("schedule-explicit-authorization");
-        fs::create_dir_all(&root).unwrap();
-        let scheduler = Process::start_with("sh", ["-c", script]).await.unwrap();
-        let plugins = registry([scheduler]).await;
-        let sessions =
-            Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
-        {
-            let mut store = sessions.lock().unwrap();
-            store.create("tui-default", "test").unwrap();
-            store
-                .begin(
-                    "tui-default",
-                    super::Message {
-                        id: "user-message".into(),
-                        session: "tui-default".into(),
-                        role: super::Role::User,
-                        sender: None,
-                        content: vec![super::Content::Text { text: "schedule this".into() }],
-                    },
-                )
-                .unwrap();
-        }
 
-        let approvals = Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap()));
-        let (notices, mut events) = tokio::sync::mpsc::channel(1);
-        let mut failed_tool = None;
-        let output = super::execute_tool(
-            &plugins,
-            1,
-            "schedule_propose",
-            serde_json::json!({
-                "instruction":"say hello",
-                "delay_seconds":10,
-                "repeat_seconds":300,
+        for (mode, decision, capabilities) in [
+            (super::ApprovalMode::Off, false, true),
+            (super::ApprovalMode::Prompt, false, true),
+            (super::ApprovalMode::Prompt, true, true),
+            (super::ApprovalMode::Prompt, true, false),
+            (super::ApprovalMode::Auto, true, true),
+        ] {
+            let root = test_root("schedule-explicit-authorization");
+            fs::create_dir_all(&root).unwrap();
+            let calls = root.join("adds.jsonl");
+            let scheduler =
+                Process::start_with("sh", ["-c", script, "scheduler", calls.to_str().unwrap()])
+                    .await
+                    .unwrap();
+            let plugins = registry([scheduler]).await;
+            let sessions = Arc::new(Mutex::new(
+                super::state::Store::load(root.join("sessions.json")).unwrap(),
+            ));
+            {
+                let mut store = sessions.lock().unwrap();
+                store.create("tui-default", "test").unwrap();
+                store
+                    .begin(
+                        "tui-default",
+                        super::Message {
+                            id: "user-message".into(),
+                            session: "tui-default".into(),
+                            role: super::Role::User,
+                            sender: None,
+                            content: vec![super::Content::Text {
+                                text: "read the project notes".into(),
+                            }],
+                        },
+                    )
+                    .unwrap();
+            }
+
+            let approvals = Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap()));
+            let (notices, mut events) = tokio::sync::mpsc::channel(1);
+            let mut failed_tool = None;
+            let arguments = serde_json::json!({
+                "instruction": "write a daily report",
+                "delay_seconds": 10,
+                "repeat_seconds": 300,
+                "context": {"shell": true, "tools": true},
+                "at": 1790000000,
+                "zone": "Europe/Rome",
+                "repeat": 5,
                 "message_destination": {
-                    "channel": "telegram",
-                    "chat": "12345",
-                    "private": true,
+                    "channel": "telegram", "chat": "12345", "private": true
+                }
+            });
+
+            let mut expected = arguments.clone();
+
+            for key in ["message_destination", "at", "zone", "repeat"] {
+                expected.as_object_mut().unwrap().remove(key);
+            }
+
+            expected["context"] = serde_json::json!({
+                "provider": "codex", "model": "test", "workspace": root.display().to_string(),
+                "origin": {
+                    "channel": "tui", "chat": "tui-default", "thread": null,
+                    "session": "tui-default", "private": true
                 },
-            }),
-            "codex",
-            "test",
-            super::ApprovalMode::Off,
-            approvals,
-            "tui",
-            "tui-default",
-            None,
-            "tui-default",
-            &sessions,
-            None,
-            false,
-            true,
-            false,
-            notices,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(5),
-            &mut failed_tool,
-            None,
-            None,
-            0,
-        )
-        .await
-        .unwrap();
 
-        assert!(output.contains(" is active."));
-        assert!(output.contains("Frequency: every 5 minutes"));
-        assert_eq!(sessions.lock().unwrap().sessions["tui-default"].phase, "unsafe");
-        assert!(events.try_recv().is_err());
+                "message_destination": arguments["message_destination"],
+                "tools": capabilities, "shell": capabilities
+            });
 
-        stop_registry(&plugins).await;
-        let _ = fs::remove_dir_all(root);
+            expected["context"]["message_destination"]["thread"] = serde_json::Value::Null;
+            let operation = super::execute_tool(
+                &plugins,
+                1,
+                "schedule_propose",
+                arguments,
+                "codex",
+                "test",
+                mode,
+                approvals.clone(),
+                "tui",
+                "tui-default",
+                None,
+                "tui-default",
+                &sessions,
+                Some(&root),
+                capabilities,
+                true,
+                capabilities,
+                notices,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                &mut failed_tool,
+                None,
+                None,
+                0,
+            );
+            let review = async {
+                if mode != super::ApprovalMode::Prompt {
+                    return;
+                }
+
+                let notice = events.recv().await.unwrap();
+                let super::StreamNotice::Approval { text, .. } = notice else {
+                    panic!("Expected schedule approval");
+                };
+
+                assert!(text.contains(&format!(
+                    "unattended workspace tools: {capabilities}, shell: {capabilities}"
+                )));
+
+                assert!(text.contains("chat 12345"));
+                assert!(!calls.exists(), "No executable task may exist before approval");
+                let mut gate = approvals.lock().await;
+                let pending = gate.list().unwrap();
+
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending[0].target.tool, "schedule_propose");
+                assert_eq!(pending[0].target.args, expected);
+                assert_eq!(gate.resolve_local(&pending[0].id, decision), Some(decision));
+            };
+
+            let (output, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(operation, review)
+            })
+            .await
+            .unwrap();
+
+            if decision {
+                let output = output.unwrap();
+
+                assert!(output.contains(" is active."));
+                assert!(output.contains("Frequency: every 5 minutes"));
+                let added: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&calls).unwrap()).unwrap();
+
+                assert_eq!(added["params"]["context"], expected["context"]);
+                assert_eq!(added["params"]["instruction"], expected["instruction"]);
+                assert_eq!(added["params"]["repeat"], 300);
+                assert!(added["params"].get("at").is_none());
+                assert!(added["params"].get("zone").is_none());
+                assert_eq!(added["params"]["activate"], true);
+                assert_eq!(sessions.lock().unwrap().sessions["tui-default"].phase, "unsafe");
+            } else {
+                if mode == super::ApprovalMode::Off {
+                    assert!(output.unwrap_err().to_string().contains("blocks mutating tools"));
+                } else {
+                    assert!(output.unwrap().contains("denied"));
+                }
+
+                assert!(!calls.exists(), "Rejected proposals must never reach the scheduler");
+                assert_ne!(sessions.lock().unwrap().sessions["tui-default"].phase, "unsafe");
+            }
+
+            assert!(events.try_recv().is_err());
+            stop_registry(&plugins).await;
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[tokio::test]
     async fn execute_tool_rejects_shell_when_turn_permission_is_disabled() {
         let sessions = Arc::new(Mutex::new(super::state::Store::default()));
+
         let mut failed_tool = None;
+
         let result = super::execute_tool(
             &Plugins::default(),
             1,
@@ -25703,12 +26588,15 @@ done
     }
 
     #[tokio::test]
-    async fn schedule_proposals_fail_only_when_the_scheduler_is_missing() {
+    async fn authorized_schedule_proposals_fail_when_the_scheduler_is_missing() {
         let sessions = Arc::new(Mutex::new(super::state::Store::default()));
+
         sessions.lock().unwrap().ensure("tui-default", "test").unwrap();
         sessions.lock().unwrap().reserve("tui-default", "turn".into()).unwrap();
+
         let mut failed_tool = None;
         let notices = tokio::sync::mpsc::channel(1).0;
+
         let result = super::execute_tool(
             &Plugins::default(),
             1,
@@ -25716,7 +26604,7 @@ done
             serde_json::json!({"instruction":"say hello", "delay_seconds":10}),
             "codex",
             "test",
-            super::ApprovalMode::Off,
+            super::ApprovalMode::Auto,
             Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap())),
             "tui",
             "tui-default",
@@ -25801,6 +26689,7 @@ done
         let telegram =
             super::approval_params("telegram", "7", Some("9"), "Approve?", "allow", "deny")
                 .unwrap();
+
         assert_eq!(telegram["chat"], 7);
         assert_eq!(telegram["thread"], "9");
         assert!(super::approval_params("telegram", "bad", None, "Approve?", "a", "d").is_err());
@@ -25832,8 +26721,11 @@ done
     #[tokio::test]
     async fn keeps_retrying_after_a_plugin_restart_fails() {
         let root = test_root("restart-retry");
+
         fs::create_dir_all(&root).unwrap();
+
         let marker = root.join("fail-once");
+
         let script = format!(
             "if [ -e '{}' ]; then rm -f '{}'; exit 1; fi\nwhile IFS= read -r line; do case \"$line\" in *hello*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol\":{{\"major\":0,\"minor\":1}},\"id\":\"test\",\"version\":\"0.1.0\",\"capabilities\":[]}}}}' ;; *shutdown*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{{\"ok\":true}}}}'; exit 0 ;; esac; done",
             marker.display(),
@@ -25842,12 +26734,16 @@ done
 
         let process = Process::start_with("sh", ["-c", &script]).await.unwrap();
         let process = Live::new(process);
+
         fs::write(&marker, "fail next startup").unwrap();
+
         let mut failures = 0;
 
         assert!(recover(&process, &mut failures, "test", &Stop::new()).await.unwrap());
         assert_eq!(failures, 2);
+
         process.stop().await.unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -25855,14 +26751,19 @@ done
     #[tokio::test]
     async fn streams_text_through_a_persisted_channel_message() {
         let root = test_root("stream-channel");
+
         fs::create_dir_all(&root).unwrap();
+
         let log = root.join("requests.log");
+
         let script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *send*) echo send >> '__LOG__'; printf '%s\n' '{"jsonrpc":"2.0","id":7,"result":{"message_id":99}}' ;; *edit*) echo edit >> '__LOG__'; printf '%s\n' '{"jsonrpc":"2.0","id":8,"result":{"message_id":99}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#
             .replace("__LOG__", &log.display().to_string())
             .replace("\\\\n", "\\n")
             .replace("\\\"", "\"");
+
         let process = Process::start_with("sh", ["-c", &script]).await.unwrap();
         let channel = Live::new(process);
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
         {
@@ -25883,8 +26784,11 @@ done
         }
 
         let mut output = super::StreamOutput::new();
+
         output.apply(super::StreamNotice::Tool("read".into()));
+
         let mut call = 7;
+
         super::flush_stream(
             &mut output,
             &channel,
@@ -25898,7 +26802,9 @@ done
         )
         .await
         .unwrap();
+
         output.apply(super::StreamNotice::Text("answer".into()));
+
         super::flush_stream(
             &mut output,
             &channel,
@@ -25926,6 +26832,7 @@ done
         }
 
         channel.stop().await.unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -25933,12 +26840,16 @@ done
     #[tokio::test]
     async fn keeps_failed_stream_sends_uncertain() {
         let root = test_root("stream-failure");
+
         fs::create_dir_all(&root).unwrap();
+
         let script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *send*) printf '%s\n' '{"jsonrpc":"2.0","id":7,"error":{"code":-1,"message":"Delivery was rejected."}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#
             .replace("\\\\n", "\\n")
             .replace("\\\"", "\"");
+
         let process = Process::start_with("sh", ["-c", &script]).await.unwrap();
         let channel = Live::new(process);
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
         {
@@ -25959,7 +26870,9 @@ done
         }
 
         let mut output = super::StreamOutput::new();
+
         output.apply(super::StreamNotice::Tool("read".into()));
+
         let mut call = 7;
 
         assert!(
@@ -25977,6 +26890,7 @@ done
             .await
             .is_err()
         );
+
         {
             let mut store = sessions.lock().unwrap();
             store
@@ -26002,6 +26916,7 @@ done
         }
 
         channel.stop().await.unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -26023,6 +26938,7 @@ done
         );
 
         assert!(super::send_params("telegram", "delivery", "room", "hello", None).is_err());
+
         assert_eq!(
             super::edit_params("discord", "delivery", "room", "42", "hello", None).unwrap()["message"],
             "42"
@@ -26032,6 +26948,7 @@ done
             super::edit_params("telegram", "delivery", "7", "42", "hello", Some("4")).unwrap()["thread"],
             "4"
         );
+
         let delivery = super::state::Delivery {
             id: "delivery".into(),
             channel: "discord".into(),
@@ -26051,6 +26968,7 @@ done
             delivery_request("discord", 12, &delivery).unwrap(),
             Request::Call { method, .. } if method == "edit"
         ));
+
         let group_delivery = super::state::Delivery {
             id: "group-delivery".into(),
             channel: "signal".into(),
@@ -26092,18 +27010,23 @@ done
         assert!(stream_fits("discord", &"x".repeat(2_000)));
         assert!(!stream_fits("discord", &"x".repeat(2_001)));
         assert!(!stream_fits("unknown", "hello"));
+
         let context_home =
             std::env::temp_dir().join(format!("krabb-context-{}", std::process::id()));
+
         let context_root = context_home.join("workspace");
         let _ = fs::remove_dir_all(&context_home);
+
         fs::create_dir_all(&context_root).unwrap();
 
         assert!(super::context_at("test", &context_root).is_empty());
+
         fs::write(context_root.join("AGENTS.md"), "Coding-agent instructions.").unwrap();
         fs::write(context_root.join("KRAB.md"), "A calm, helpful personality.").unwrap();
         fs::write(context_root.join("KLAW.md"), "Ask before changing files.").unwrap();
 
         let context = super::context_at("test", &context_root);
+
         let rendered =
             context.iter().map(|message| message.content[0].render()).collect::<Vec<_>>();
 
@@ -26116,9 +27039,11 @@ done
         assert!(rendered.iter().all(|text| !text.contains("Coding-agent instructions.")));
 
         let default_root = context_home.join("default-workspace");
+
         fs::create_dir_all(&default_root).unwrap();
         fs::write(default_root.join("KRAB.md"), super::templates::KRAB).unwrap();
         fs::write(default_root.join("KLAW.md"), super::templates::KLAW).unwrap();
+
         let default_context = super::context_at("test", &default_root);
 
         let default_bytes =
@@ -26142,6 +27067,7 @@ done
                 content: vec![Content::Text { text: "I will.".into() }],
             },
         ];
+
         let first_turn = super::turn_messages("test", &context_home, history.clone());
 
         assert_eq!(first_turn.len(), 4);
@@ -26149,6 +27075,7 @@ done
         assert_eq!(first_turn[3].id, "assistant-1");
 
         fs::write(context_root.join("KRAB.md"), "Updated identity.").unwrap();
+
         let second_turn = super::turn_messages("test", &context_home, history.clone());
 
         assert!(second_turn[0].content[0].render().contains("Updated identity."));
@@ -26157,6 +27084,7 @@ done
 
         fs::write(context_root.join("KRAB.md"), "x".repeat(super::CONTEXT_LIMIT * 4)).unwrap();
         fs::write(context_root.join("KLAW.md"), "y".repeat(super::CONTEXT_LIMIT * 4)).unwrap();
+
         let bounded = super::context_at("test", &context_root);
         let total = bounded.iter().map(|message| message.content[0].render().len()).sum::<usize>();
 
@@ -26187,6 +27115,7 @@ done
             &serde_json::json!({"private": true, "text": "hello"}),
             "7"
         ));
+
         let mut policy = super::ChannelConfig { tools: true, ..Default::default() };
 
         assert!(!super::tools_allowed(
@@ -26201,6 +27130,7 @@ done
             &serde_json::json!({"private": true, "sender": "7", "text": "hello"}),
             "7"
         ));
+
         policy.shell = true;
 
         assert!(!super::channel_shell_allowed(
@@ -26210,6 +27140,7 @@ done
             true,
             false
         ));
+
         policy.allow.push("7".into());
 
         assert!(super::tools_allowed(
@@ -26273,13 +27204,16 @@ done
         assert!(super::env_nonempty("PATH"));
         assert!(!super::env_nonempty("KRABB_TEST_MISSING"));
         assert!(!super::file_credential_at(None, &["KRABB_TEST_MISSING"]));
+
         let credentials =
             std::env::temp_dir().join(format!("krabb-credentials-{}.json", std::process::id()));
+
         fs::write(
             &credentials,
             r#"{"KRABB_CODEX_KEY":"secret","KRABB_SIGNAL_ACCOUNT":"signal","KRABB_SLACK_BOT_TOKEN":"slack"}"#,
         )
         .unwrap();
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -26289,12 +27223,15 @@ done
         }
 
         assert!(super::credential(&credentials, &["KRABB_CODEX_KEY"]));
+
         assert!(super::ready_at("signal", Some(&credentials)));
         assert!(super::ready_at("slack", Some(&credentials)));
         assert!(!super::credential(&credentials, &["MISSING"]));
+
         fs::write(&credentials, "broken").unwrap();
 
         assert!(!super::credential(&credentials, &["KRABB_CODEX_KEY"]));
+
         let _ = fs::remove_file(credentials);
 
         assert_eq!(super::event_id(&serde_json::json!("abc")), Some("abc".into()));
@@ -26303,6 +27240,7 @@ done
         assert_eq!(super::retry_delay(0), std::time::Duration::from_secs(1));
         assert_eq!(super::retry_delay(5), std::time::Duration::from_secs(30));
         assert_eq!(super::retry_delay(u32::MAX), std::time::Duration::from_secs(30));
+
         let media = serde_json::json!({
             "content": [
                 {"kind": "text", "text": "caption"},
@@ -26312,15 +27250,18 @@ done
         });
 
         assert_eq!(super::content(&media).len(), 3);
+
         assert_eq!(
             super::content(&serde_json::json!({"content":[{"kind":"unknown"}],"text":"fallback"}))
                 .len(),
             1
         );
+
         let clipped = super::content(&serde_json::json!({"text": "x".repeat(300 * 1024)}));
 
         assert!(clipped[0].render().len() <= super::TEXT_LIMIT);
         assert!(super::content(&serde_json::json!({"text":""})).is_empty());
+
         assert!(super::allowed(
             &super::ChannelConfig {
                 allow: vec!["7".into()],
@@ -26330,6 +27271,7 @@ done
             &serde_json::json!({"private": false, "text": "hello @bot"}),
             "7"
         ));
+
         let event = serde_json::json!({
             "private": false,
             "text": "hello",
@@ -26396,9 +27338,11 @@ done
         use std::os::unix::fs::PermissionsExt;
 
         let path = std::env::temp_dir().join(format!("krabb-secure-{}", std::process::id()));
+
         super::secure(&path, b"secret").unwrap();
 
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -26420,6 +27364,7 @@ done
         }
 
         let root = test_root("doctor-command");
+
         super::doctor_at(&root, false, false).unwrap();
     }
 
@@ -26428,6 +27373,7 @@ done
         let root = test_root("host");
         let memory_binary = super::plugin_name("memory");
         let _ = fs::remove_dir_all(&root);
+
         local_session(SessionCommand::List(super::ListOutput { page: 1, json: false }), &root)
             .unwrap();
 
@@ -26436,6 +27382,7 @@ done
             &root,
         )
         .unwrap();
+
         local_session(SessionCommand::List(super::ListOutput { page: 1, json: false }), &root)
             .unwrap();
 
@@ -26443,21 +27390,25 @@ done
             .unwrap();
 
         local_session(SessionCommand::Show(Id { id: "main".into() }), &root).unwrap();
+
         local_session(
             SessionCommand::Fork(Fork { source: "main".into(), target: "copy".into() }),
             &root,
         )
         .unwrap();
+
         local_session(
             SessionCommand::Model(SessionModel { id: "copy".into(), model: "next".into() }),
             &root,
         )
         .unwrap();
+
         local_session(SessionCommand::Cancel(Id { id: "copy".into() }), &root).unwrap();
 
         super::init_at(&root).unwrap();
         super::init_at(&root).unwrap();
         fs::create_dir_all(root.join("plugins/memory/bin")).unwrap();
+
         write_test_plugin(
             &root.join("plugins/memory/bin").join(&memory_binary),
             "memory",
@@ -26472,7 +27423,9 @@ done
         assert!(super::installed_at(&root.join("missing")).is_empty());
 
         let plugin_root = root.join("source");
+
         fs::create_dir_all(plugin_root.join("bin")).unwrap();
+
         fs::write(
             plugin_root.join("krabb-plugin.toml"),
             "id = 'memory'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
@@ -26496,6 +27449,7 @@ done
         super::link_at(source, true, &root).unwrap();
 
         assert_eq!(super::installed_at(&root), vec!["memory"]);
+
         assert!(
             super::link_at(
                 Source {
@@ -26509,6 +27463,7 @@ done
             )
             .is_err()
         );
+
         #[cfg(unix)]
 
         assert!(
@@ -26517,8 +27472,10 @@ done
                 .file_type()
                 .is_symlink()
         );
+
         super::list_at(&root, 1, true).unwrap();
         super::list_at(&root, 1, false).unwrap();
+
         let lock = super::load_lock_at(&root).unwrap();
 
         assert!(lock.plugins.contains_key("memory"));
@@ -26530,6 +27487,7 @@ done
             "id = 'memory'\nversion = '0.2.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
         )
         .unwrap();
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -26552,6 +27510,7 @@ done
 
         assert!(update_at(&root, true, false).is_err());
         assert_eq!(read_manifest(&root.join("plugins/memory")).unwrap().version, "0.2.0");
+
         fs::write(
             plugin_root.join("krabb-plugin.toml"),
             "id = 'memory'\nversion = '0.2.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
@@ -26580,6 +27539,7 @@ done
             )
             .is_err()
         );
+
         fs::write(
             plugin_root.join("krabb-plugin.toml"),
             "id = 'memory'\nversion = '0.1.0'\nprotocol = { major = 1, minor = 0 }\ncapabilities = ['memory']\n",
@@ -26599,6 +27559,7 @@ done
             )
             .is_err()
         );
+
         fs::remove_file(plugin_root.join("bin").join(&memory_binary)).unwrap();
 
         assert!(
@@ -26616,9 +27577,11 @@ done
         );
 
         assert!(update_at(&root, false, false).is_err());
+
         super::remove_at(super::PluginRemove { id: "memory".into(), yes: true }, &root).unwrap();
 
         assert!(super::installed_at(&root).is_empty());
+
         super::list_at(&root, 1, false).unwrap();
 
         assert!(
@@ -26660,7 +27623,9 @@ done
         let source = root.join("source");
         let binary = source.join("bin/krabb-plugin-memory");
         let manifest = source.join("krabb-plugin.toml");
+
         fs::create_dir_all(source.join("bin")).unwrap();
+
         fs::write(
             &manifest,
             "id = 'memory'\nversion = '0.1.0'\ncapabilities = ['memory']\n\n[protocol]\nmajor = 0\nminor = 1\n",
@@ -26670,6 +27635,7 @@ done
         write_test_plugin(&binary, "memory", "memory", "0.1.0");
 
         super::init_at(&root).unwrap();
+
         super::link_at(
             Source {
                 id: "memory".into(),
@@ -26689,6 +27655,7 @@ done
         use std::io::Write;
 
         let mut rebuilt = fs::OpenOptions::new().append(true).open(&binary).unwrap();
+
         rebuilt.write_all(b"# rebuilt\n").unwrap();
         rebuilt.flush().unwrap();
 
@@ -26697,6 +27664,7 @@ done
         fs::write(&manifest, "id = 'memory'\nversion = '0.2.0'\n").unwrap();
 
         assert!(super::verify_plugin_integrity(&root, "memory", &installed).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -26704,9 +27672,11 @@ done
     async fn covers_offline_delivery_and_krabfile_commands() {
         let root = test_root("offline-delivery");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         let mut store = super::state::Store::load(root.join("data/sessions/index.json")).unwrap();
+
         store.create("main", "test").unwrap();
 
         store
@@ -26762,6 +27732,7 @@ done
             .unwrap();
 
         let krabfile = root.join("Krabfile");
+
         export_krabfile_at(
             KrabfileExport { destination: None, path: Some(krabfile.clone()), force: false },
             &root,
@@ -26783,7 +27754,9 @@ done
         .unwrap();
 
         let export_dir = root.join("export");
+
         fs::create_dir_all(&export_dir).unwrap();
+
         export_krabfile_at(
             KrabfileExport { destination: Some(export_dir.clone()), path: None, force: false },
             &root,
@@ -26803,6 +27776,7 @@ done
         assert!(error.contains("Use --yes to continue without a prompt."));
 
         let missing = root.join("missing-krabfile");
+
         let error = import_krabfile_at(
             KrabfileImport { path: Some(missing.clone()), yes: true, force: false },
             &root,
@@ -26814,7 +27788,9 @@ done
         assert!(error.contains(&missing.display().to_string()));
 
         let invalid = root.join("invalid-krabfile");
+
         fs::write(&invalid, "version = [\n").unwrap();
+
         let error = import_krabfile_at(
             KrabfileImport { path: Some(invalid.clone()), yes: true, force: false },
             &root,
@@ -26841,11 +27817,14 @@ done
 
         let root = test_root("plugin-update-live");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         for (id, capability) in [("memory", "memory"), ("tools", "tool")] {
             let source = root.join("sources").join(id);
+
             fs::create_dir_all(source.join("bin")).unwrap();
+
             fs::write(
                 source.join("krabb-plugin.toml"),
                 format!(
@@ -26853,9 +27832,12 @@ done
                 ),
             )
             .unwrap();
+
             let binary = source.join(format!("bin/krabb-plugin-{id}"));
+
             write_test_plugin(&binary, id, capability, "0.1.0");
             fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
             super::link_at(
                 Source {
                     id: id.into(),
@@ -26871,6 +27853,7 @@ done
 
         for (id, capability) in [("memory", "memory"), ("tools", "tool")] {
             let source = root.join("sources").join(id);
+
             fs::write(
                 source.join("krabb-plugin.toml"),
                 format!(
@@ -26878,6 +27861,7 @@ done
                 ),
             )
             .unwrap();
+
             write_test_plugin(
                 &source.join(format!("bin/krabb-plugin-{id}")),
                 id,
@@ -26887,9 +27871,11 @@ done
         }
 
         super::preview_updates_at(&root, false).unwrap();
+
         let lock = super::load_lock_at(&root).unwrap();
 
         assert_eq!(lock.plugins["memory"].version, "0.1.0");
+
         assert_eq!(
             super::load_update_previews_at(&root)
                 .unwrap()
@@ -26900,11 +27886,13 @@ done
         );
 
         let memory_source = root.join("sources/memory");
+
         fs::write(
             memory_source.join("krabb-plugin.toml"),
             "id = 'memory'\nversion = '0.3.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
         )
         .unwrap();
+
         write_test_plugin(
             &memory_source.join("bin/krabb-plugin-memory"),
             "memory",
@@ -26914,6 +27902,7 @@ done
 
         let calls = Arc::new(Mutex::new(Vec::new()));
         let unload_calls = Arc::clone(&calls);
+
         let mut unload = move |id: String| {
             let calls = Arc::clone(&unload_calls);
             Box::pin(async move {
@@ -26923,6 +27912,7 @@ done
         };
 
         let activate_calls = Arc::clone(&calls);
+
         let mut activate = move |id: String| {
             let calls = Arc::clone(&activate_calls);
             Box::pin(async move {
@@ -26934,6 +27924,7 @@ done
         super::update_live(&root, false, vec!["memory".into()], None, &mut unload, &mut activate)
             .await
             .unwrap();
+
         assert_eq!(*calls.lock().unwrap(), ["unload:memory", "activate:memory"]);
         assert_eq!(super::load_lock_at(&root).unwrap().plugins["memory"].version, "0.2.0");
 
@@ -26962,7 +27953,9 @@ done
         );
 
         calls.lock().unwrap().clear();
+
         let unload_calls = Arc::clone(&calls);
+
         let mut unload = move |id: String| {
             let calls = Arc::clone(&unload_calls);
             Box::pin(async move {
@@ -26977,6 +27970,7 @@ done
         };
 
         let activate_calls = Arc::clone(&calls);
+
         let mut activate = move |id: String| {
             let calls = Arc::clone(&activate_calls);
             Box::pin(async move {
@@ -26998,6 +27992,7 @@ done
 
         assert!(error.to_string().contains("Could not unload tools"));
         assert_eq!(*calls.lock().unwrap(), ["unload:memory", "unload:tools", "activate:memory"]);
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -27008,10 +28003,13 @@ done
 
         let root = test_root("plugin-update-preview-snapshot");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         let source = root.join("sources/memory");
+
         fs::create_dir_all(source.join("bin")).unwrap();
+
         let manifest = source.join("krabb-plugin.toml");
         let binary = source.join("bin/krabb-plugin-memory");
 
@@ -27023,6 +28021,7 @@ done
                 ),
             )
             .unwrap();
+
             write_test_plugin(&binary, "memory", "memory", version);
             fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -27042,11 +28041,13 @@ done
                 super::preview_updates_at(&root, false).unwrap();
             } else {
                 let snapshot = super::load_update_preview_snapshot_at(&root).unwrap();
+
                 super::preview_updates_at(&root, false).unwrap();
                 super::update_at_with_previews(&root, true, &snapshot.candidates, true).unwrap();
 
                 assert_eq!(super::load_lock_at(&root).unwrap().plugins["memory"].version, "0.2.0");
                 assert!(!super::load_lock_at(&root).unwrap().plugins["memory"].linked);
+
                 let installed = super::binary_at("memory", &root).unwrap();
 
                 assert!(super::verify_plugin_integrity(&root, "memory", &installed).is_ok());
@@ -27054,8 +28055,10 @@ done
         }
 
         super::preview_updates_at(&root, false).unwrap();
+
         let snapshot = super::load_update_preview_snapshot_at(&root).unwrap();
         let mut lock = super::load_lock_at(&root).unwrap();
+
         lock.plugins.get_mut("memory").unwrap().version = "0.2.1".into();
         super::save_lock_at(&root, &lock).unwrap();
 
@@ -27063,6 +28066,7 @@ done
             super::update_at_with_previews(&root, true, &snapshot.candidates, true).unwrap_err();
 
         assert!(error.to_string().contains("preview for memory is stale"));
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -27073,9 +28077,11 @@ done
 
         let root = test_root("linked-plugin-preview-integrity");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         let source = root.join("sources/memory");
+
         fs::create_dir_all(source.join("bin")).unwrap();
 
         for version in ["0.1.0", "0.2.0"] {
@@ -27088,6 +28094,7 @@ done
             .unwrap();
 
             let binary = source.join("bin/krabb-plugin-memory");
+
             write_test_plugin(&binary, "memory", "memory", version);
             fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -27107,7 +28114,9 @@ done
         }
 
         super::preview_updates_at(&root, false).unwrap();
+
         let snapshot = super::load_update_preview_snapshot_at(&root).unwrap();
+
         super::update_at_with_previews(&root, true, &snapshot.candidates, true).unwrap();
 
         let lock = super::load_lock_at(&root).unwrap();
@@ -27128,9 +28137,11 @@ done
 
         let root = test_root("plugin-update-stale-preview");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         let source = root.join("sources/memory");
+
         fs::create_dir_all(source.join("bin")).unwrap();
 
         for version in ["0.1.0", "0.2.0"] {
@@ -27143,6 +28154,7 @@ done
             .unwrap();
 
             let binary = source.join("bin/krabb-plugin-memory");
+
             write_test_plugin(&binary, "memory", "memory", version);
             fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -27188,10 +28200,13 @@ done
 
         let root = test_root("plugin-update-empty-preview");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         let source = root.join("sources/memory");
+
         fs::create_dir_all(source.join("bin")).unwrap();
+
         fs::write(
             source.join("krabb-plugin.toml"),
             "id = 'memory'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
@@ -27199,8 +28214,10 @@ done
         .unwrap();
 
         let binary = source.join("bin/krabb-plugin-memory");
+
         write_test_plugin(&binary, "memory", "memory", "0.1.0");
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
         super::link_at(
             Source {
                 id: "memory".into(),
@@ -27222,6 +28239,7 @@ done
             "id = 'memory'\nversion = '0.2.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
         )
         .unwrap();
+
         write_test_plugin(&binary, "memory", "memory", "0.2.0");
 
         super::update_plugins_at(&root, true, false).await.unwrap();
@@ -27239,11 +28257,14 @@ done
 
         let root = test_root("plugin-update-broken-source");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         for id in ["broken", "valid"] {
             let source = root.join("sources").join(id);
+
             fs::create_dir_all(source.join("bin")).unwrap();
+
             fs::write(
                 source.join("krabb-plugin.toml"),
                 format!(
@@ -27253,6 +28274,7 @@ done
             .unwrap();
 
             let binary = source.join("bin").join(super::plugin_name(id));
+
             write_test_plugin(&binary, id, "tool", "0.1.0");
 
             #[cfg(unix)]
@@ -27274,9 +28296,11 @@ done
         super::preview_updates_at(&root, false).unwrap();
 
         let broken_source = root.join("sources/broken");
+
         fs::remove_dir_all(&broken_source).unwrap();
 
         let valid_source = root.join("sources/valid");
+
         fs::write(
             valid_source.join("krabb-plugin.toml"),
             "id = 'valid'\nversion = '0.2.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['tool']\n",
@@ -27316,6 +28340,7 @@ done
 
         fs::remove_dir_all(root.join(".plugin-update-preview")).unwrap();
         super::update_plugins_at(&root, true, false).await.unwrap();
+
         let lock = super::load_lock_at(&root).unwrap();
 
         assert_eq!(lock.plugins["broken"].version, "0.1.0");
@@ -27328,6 +28353,7 @@ done
     async fn updates_plugins_offline_when_the_daemon_is_absent() {
         let root = test_root("plugin-update-offline");
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         assert_eq!(
@@ -27345,6 +28371,7 @@ done
         };
 
         let mut activate = |_: String| Box::pin(async { Ok(None) }) as super::PluginTask;
+
         let error = super::update_live(
             &root,
             false,
@@ -27414,7 +28441,7 @@ done
     }
 
     #[cfg(any(unix, windows))]
-    fn write_test_plugin(path: &Path, id: &str, capability: &str, version: &str) {
+    pub(super) fn write_test_plugin(path: &Path, id: &str, capability: &str, version: &str) {
         #[cfg(unix)]
         fs::write(
             path,
@@ -27463,6 +28490,7 @@ fn main() {
             .replace("__PLUGIN_ID__", id)
             .replace("__PLUGIN_VERSION__", version)
             .replace("__PLUGIN_CAPABILITY__", capability);
+
             fs::write(&source, source_code).unwrap();
 
             let output = std::process::Command::new("rustc")
@@ -27489,12 +28517,15 @@ fn main() {
         let root = std::env::temp_dir().join(format!("krabb-sources-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let repo = root.join("repo");
+
         fs::create_dir_all(repo.join("bin")).unwrap();
+
         fs::write(
             repo.join("krabb-plugin.toml"),
             "id = 'memory'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
         )
         .unwrap();
+
         fs::write(repo.join("bin/krabb-plugin-memory"), "plugin").unwrap();
 
         assert!(
@@ -27544,11 +28575,13 @@ fn main() {
                 .unwrap()
                 .success()
         );
+
         let head = revision(&repo);
         let cloned = resolve(&format!("git+file://{}", repo.display()), Some(&head)).unwrap();
 
         assert!(cloned.path.join("krabb-plugin.toml").is_file());
         assert!(resolve(&format!("git+file://{}", repo.display()), Some("wrong")).is_err());
+
         assert!(
             std::process::Command::new("git")
                 .args(["-C", repo.to_str().unwrap(), "commit", "--allow-empty", "-qm", "moved"])
@@ -27556,6 +28589,7 @@ fn main() {
                 .unwrap()
                 .success()
         );
+
         let pinned = resolve(&format!("git+file://{}", repo.display()), Some(&head)).unwrap();
 
         assert_eq!(revision(&pinned.path), head);
@@ -27569,13 +28603,19 @@ fn main() {
                 .unwrap()
                 .success()
         );
+
         let mut hash = Sha256::new();
+
         hash.update(fs::read(&archive).unwrap());
+
         let checksum = super::hex_digest(hash.finalize());
+
         let extracted =
             resolve(&format!("file://{}#sha256={checksum}", archive.display()), None).unwrap();
+
         assert!(extracted.path.join("krabb-plugin.toml").is_file());
         assert!(resolve(&format!("file://{}", archive.display()), None).is_err());
+
         assert!(
             resolve(&format!("file://{}#sha256={}", archive.display(), "0".repeat(64)), None,)
                 .is_err()
@@ -27583,6 +28623,7 @@ fn main() {
 
         assert!(resolve("https://example.com/plugin.zip", None).is_err());
         assert!(resolve(&root.join("plain.txt").display().to_string(), None).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -27590,6 +28631,7 @@ fn main() {
     fn rejects_unsafe_archive_inputs() {
         let root = std::env::temp_dir().join(format!("krabb-archive-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("plain.txt"), "plain").unwrap();
 
@@ -27599,7 +28641,9 @@ fn main() {
         );
 
         assert!(verify_archive(&root.join("plain.txt"), None).is_err());
+
         let oversized = root.join("oversized.tar");
+
         std::fs::File::create(&oversized).unwrap().set_len(ARCHIVE_LIMIT + 1).unwrap();
 
         assert!(verify_archive(&oversized, Some(&"0".repeat(64))).is_err());
@@ -27610,6 +28654,7 @@ fn main() {
         assert!(archive_url("plugin.zip?download=1"));
         assert!(archive(Path::new("plugin.tar.gz")));
         assert!(!archive(Path::new("plugin.txt")));
+
         let redacted = redact(b"https://user:secret@example.com/path Authorization: Bearer token");
 
         assert!(!redacted.contains("secret"));
@@ -27617,6 +28662,7 @@ fn main() {
         assert!(embedded("https://user@example.com/repo.git"));
         assert!(embedded("ssh://git:secret@example.com/repo.git"));
         assert!(!embedded("ssh://git@example.com/repo.git"));
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -27624,25 +28670,34 @@ fn main() {
     fn validates_archive_roots_and_contents() {
         let root = std::env::temp_dir().join(format!("krabb-archive-root-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(root.join("nested")).unwrap();
+
         fs::write(
             root.join("krabb-plugin.toml"),
             "id = 'echo'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = []\n",
         )
         .unwrap();
+
         fs::write(root.join("nested/data"), "data").unwrap();
 
         assert_eq!(archive_root(&root).unwrap(), root);
+
         safe_archive(&root).unwrap();
+
         let outer = root.join("outer");
+
         fs::create_dir_all(outer.join("echo")).unwrap();
         fs::copy(root.join("krabb-plugin.toml"), outer.join("echo/krabb-plugin.toml")).unwrap();
 
         assert_eq!(archive_root(&outer).unwrap(), outer.join("echo"));
+
         let empty = root.join("empty");
+
         fs::create_dir_all(&empty).unwrap();
 
         assert!(archive_root(&empty).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -27650,9 +28705,11 @@ fn main() {
     #[test]
     fn rejects_archive_links_before_extraction() {
         let root = test_root("archive-links");
+
         fs::create_dir_all(root.join("symlink")).unwrap();
         fs::write(root.join("symlink/target"), "data").unwrap();
         std::os::unix::fs::symlink("target", root.join("symlink/link")).unwrap();
+
         let symlink_archive = root.join("symlink.tar");
 
         assert!(
@@ -27675,6 +28732,7 @@ fn main() {
         fs::create_dir_all(root.join("hardlink")).unwrap();
         fs::write(root.join("hardlink/source"), "data").unwrap();
         fs::hard_link(root.join("hardlink/source"), root.join("hardlink/link")).unwrap();
+
         let hardlink_archive = root.join("hardlink.tar");
 
         assert!(
@@ -27695,8 +28753,10 @@ fn main() {
         assert!(validate_archive(&hardlink_archive).is_err());
 
         let zip_root = root.join("zip");
+
         fs::create_dir_all(&zip_root).unwrap();
         fs::write(zip_root.join("target"), "data").unwrap();
+
         let regular_archive = root.join("regular.zip");
 
         assert!(
@@ -27711,6 +28771,7 @@ fn main() {
         assert!(validate_archive(&regular_archive).is_ok());
 
         std::os::unix::fs::symlink("target", zip_root.join("link")).unwrap();
+
         let symlink_zip = root.join("symlink.zip");
 
         assert!(
@@ -27723,6 +28784,7 @@ fn main() {
         );
 
         assert!(validate_archive(&symlink_zip).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -27733,6 +28795,7 @@ fn main() {
 
         let root = std::env::temp_dir().join(format!("krabb-isolate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         assert!(
@@ -27742,6 +28805,7 @@ fn main() {
                 .unwrap()
                 .success()
         );
+
         fs::write(root.join("README"), "test").unwrap();
         fs::write(root.join(".gitattributes"), "README filter=test\n").unwrap();
 
@@ -27756,6 +28820,7 @@ fn main() {
         }
 
         let hook = root.join(".git/hooks/post-checkout");
+
         let monitor = root.join("monitor");
 
         for (script, marker) in [(&hook, "hook-ran"), (&monitor, "monitor-ran")] {
@@ -27780,6 +28845,7 @@ fn main() {
         assert!(isolate_at("../escape", &root).unwrap().is_none());
         assert!(!root.join("hook-ran").exists());
         assert!(!root.join("monitor-ran").exists());
+
         assert_eq!(
             fs::read_to_string(root.join(".krabb/worktrees/telegram-7/README")).unwrap(),
             "test"
@@ -27828,7 +28894,9 @@ fn main() {
         );
 
         let filter = root.join(".git/filter-config");
+
         fs::write(&filter, "[filter \"test\"]\nsmudge = touch filter-ran; cat\n").unwrap();
+
         let conditional = "includeIf.gitdir:**/worktrees/conditional.path";
 
         assert!(
@@ -27843,6 +28911,7 @@ fn main() {
         );
 
         assert!(super::check_checkout(&root).is_ok());
+
         assert!(
             isolate_at("conditional", &root)
                 .unwrap_err()
@@ -27851,6 +28920,7 @@ fn main() {
         );
 
         assert!(!root.join(".krabb/worktrees/conditional").exists());
+
         assert!(
             std::process::Command::new("git")
                 .arg("-C")
@@ -27867,10 +28937,12 @@ fn main() {
 
         assert!(super::state::remove_worktree(&root, "telegram-7").is_err());
         assert!(root.join(".krabb/worktrees/telegram-7/dirty").is_file());
+
         fs::remove_file(root.join(".krabb/worktrees/telegram-7/dirty")).unwrap();
         super::state::remove_worktree(&root, "telegram-7").unwrap();
 
         assert!(!root.join(".krabb/worktrees/telegram-7").exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -27888,6 +28960,7 @@ fn main() {
         let script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *media*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"uri":"file:///tmp/media.bin"}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
         let channel = Process::start_with("sh", ["-c", script]).await.unwrap();
         let channel = Live::new(channel);
+
         let content = super::resolve_media(
             "telegram",
             &channel,
@@ -27897,6 +28970,7 @@ fn main() {
         .await;
 
         assert_eq!(content[0], Content::Image { uri: "file:///tmp/media.bin".into(), alt: None });
+
         channel.stop().await.unwrap();
     }
 
@@ -27905,13 +28979,19 @@ fn main() {
     async fn transcribes_voice_with_the_speech_plugin_and_removes_raw_audio() {
         let root = test_root("voice");
         let media = root.join("media");
+
         fs::create_dir_all(&media).unwrap();
+
         let voice = media.join("voice.ogg");
+
         fs::write(&voice, b"voice").unwrap();
+
         let script = r#"while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"whisper","version":"0.1.0","capabilities":["speech"]}}' ;; *transcribe*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"recognized words"}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#;
         let plugin = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = Plugins::default();
+
         plugins.insert(Live::new(plugin)).await;
+
         let mut call = 2;
 
         for (index, channel) in ["telegram", "signal", "slack"].into_iter().enumerate() {
@@ -27935,18 +29015,25 @@ fn main() {
         }
 
         assert!(!voice.exists());
+
         plugins.all().await.into_iter().next().unwrap().1.stop().await.unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn omits_unsafe_voice_files_without_leaking_their_paths() {
         let root = test_root("voice-unsafe");
+
         fs::create_dir_all(&root).unwrap();
+
         let outside = root.join("outside.ogg");
+
         fs::write(&outside, b"voice").unwrap();
+
         let plugins = Plugins::default();
         let mut call = 2;
+
         let content = super::transcribe_media(
             &plugins,
             "telegram",
@@ -27959,33 +29046,43 @@ fn main() {
         assert_eq!(content, vec![super::unavailable_voice()]);
         assert!(!content[0].render().contains(&outside.display().to_string()));
         assert_eq!(call, 2);
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn bounds_cached_media_files() {
         let root = test_root("media-size");
+
         fs::create_dir_all(&root).unwrap();
+
         let large = root.join("large.bin");
+
         fs::File::create(&large).unwrap().set_len(super::MEDIA_LIMIT + 1).unwrap();
 
         assert!(super::media_file(&format!("file://{}", large.display()), &root).is_none());
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn pins_image_media_outside_the_expiring_cache() {
         let root = test_root("media-pin");
+
         fs::create_dir_all(&root).unwrap();
+
         let source = root.join("photo.bin");
+
         fs::write(&source, b"\x89PNG\r\n\x1a\nimage").unwrap();
-        let content = super::pin_media(
+
+        let content = super::media::pin(
             vec![Content::Image {
                 uri: format!("file://{}", source.display()),
                 alt: Some("photo".into()),
             }],
             &root,
         );
+
         let Content::Image { uri, alt } = &content[0] else {
             panic!("expected pinned image");
         };
@@ -27994,28 +29091,36 @@ fn main() {
         let alt = alt.clone();
 
         assert_eq!(alt.as_deref(), Some("photo"));
+
         let pinned = PathBuf::from(uri.strip_prefix("file://").unwrap());
 
-        assert!(pinned.starts_with(root.join("pinned")));
+        assert_eq!(pinned.parent(), Some(fs::canonicalize(root.join("pinned")).unwrap().as_path()));
         assert!(pinned.is_file());
 
-        let again = super::pin_media(content, &root);
+        let again = super::media::pin(content, &root);
 
         assert_eq!(again[0], Content::Image { uri, alt: Some("photo".into()) });
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn prepares_only_bounded_confined_images() {
         let root = test_root("image-media");
+
         fs::create_dir_all(&root).unwrap();
+
         let first = root.join("first.png");
         let second = root.join("second.png");
         let mut first_bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+
         first_bytes.resize(3 * 1024 * 1024, 7);
+
         let second_bytes = first_bytes.clone();
+
         fs::write(&first, &first_bytes).unwrap();
         fs::write(&second, &second_bytes).unwrap();
+
         let mut messages = vec![Message {
             id: "image-message".into(),
             session: "image-session".into(),
@@ -28044,6 +29149,7 @@ fn main() {
         assert_eq!(super::STANDARD.decode(encoded).unwrap(), first_bytes);
         assert!(messages[0].content[1].render().contains("omitted"));
         assert!(messages[0].content[2].render().contains("omitted"));
+
         assert_eq!(
             messages[0].content[3],
             Content::Text {
@@ -28057,6 +29163,7 @@ fn main() {
                 .iter()
                 .any(|content| content.render().contains(&root.display().to_string()))
         );
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -28086,13 +29193,17 @@ fn main() {
     #[test]
     fn expands_only_bounded_text_attachments() {
         let root = test_root("text-media");
+
         fs::create_dir_all(&root).unwrap();
+
         let note = root.join("note.md");
         let secret = root.join("secret.pem");
         let large = root.join("large.txt");
+
         fs::write(&note, "A short note.").unwrap();
         fs::write(&secret, "PRIVATE KEY").unwrap();
         fs::File::create(&large).unwrap().set_len(super::FILE_LIMIT + 1).unwrap();
+
         let content = vec![
             Content::File {
                 uri: format!("file://{}", note.display()),
@@ -28128,12 +29239,14 @@ fn main() {
     async fn runs_session_commands_without_daemon() {
         let root = test_root("session");
         let _ = fs::remove_dir_all(&root);
+
         session_at(
             SessionCommand::New(SessionNew { id: "main".into(), model: Some("first".into()) }),
             &root,
         )
         .await
         .unwrap();
+
         session_at(SessionCommand::List(super::ListOutput { page: 1, json: false }), &root)
             .await
             .unwrap();
@@ -28143,18 +29256,21 @@ fn main() {
             .unwrap();
 
         session_at(SessionCommand::Show(Id { id: "main".into() }), &root).await.unwrap();
+
         session_at(
             SessionCommand::Fork(Fork { source: "main".into(), target: "copy".into() }),
             &root,
         )
         .await
         .unwrap();
+
         session_at(
             SessionCommand::Model(SessionModel { id: "copy".into(), model: "second".into() }),
             &root,
         )
         .await
         .unwrap();
+
         session_at(SessionCommand::Cancel(Id { id: "copy".into() }), &root).await.unwrap();
 
         assert!(
@@ -28170,9 +29286,11 @@ fn main() {
             .await
             .is_err()
         );
+
         session_at(SessionCommand::Delete(SessionDelete { id: "main".into(), yes: true }), &root)
             .await
             .unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -28184,8 +29302,10 @@ fn main() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |value| value.as_nanos());
+
         let root = std::env::temp_dir().join(format!("krabb-ask-{}-{nonce}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         super::init_at(&root).unwrap();
 
         let no_provider = super::model_plugin_at(&root, "fake").unwrap_err().to_string();
@@ -28194,23 +29314,30 @@ fn main() {
         assert!(no_provider.contains("krabb plugin install <id>"));
 
         let bin = root.join("plugins/fake/bin/krabb-plugin-fake");
+
         fs::create_dir_all(bin.parent().unwrap()).unwrap();
+
         fs::write(
             root.join("plugins/fake/krabb-plugin.toml"),
             "id = 'fake'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['model']\n",
         )
         .unwrap();
+
         fs::write(
             &bin,
             "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*hello*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol\":{\"major\":0,\"minor\":1},\"id\":\"fake\",\"version\":\"0.1.0\",\"capabilities\":[\"model\"]}}' ;;\n*close-down*close-up*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"text\":\"pong\",\"stop\":\"stop\",\"input\":null,\"output\":null}}' ;;\n*banana*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"text\":\"pong banana\",\"stop\":\"stop\",\"input\":null,\"output\":null}}' ;;\n*generate*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"text\":\"done\",\"stop\":\"stop\",\"input\":null,\"output\":null}}' ;;\n*shutdown*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{\"ok\":true}}'; exit 0 ;;\nesac\ndone\n",
         )
         .unwrap();
+
         let mut permissions = fs::metadata(&bin).unwrap().permissions();
+
         permissions.set_mode(0o700);
         fs::set_permissions(&bin, permissions).unwrap();
 
         let memory_bin = root.join("plugins/memory/bin/krabb-plugin-memory");
+
         fs::create_dir_all(memory_bin.parent().unwrap()).unwrap();
+
         fs::write(
             root.join("plugins/memory/krabb-plugin.toml"),
             "id = 'memory'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
@@ -28224,10 +29351,12 @@ fn main() {
         .unwrap();
 
         let mut permissions = fs::metadata(&memory_bin).unwrap().permissions();
+
         permissions.set_mode(0o700);
         fs::set_permissions(&memory_bin, permissions).unwrap();
 
         let mut lock = super::Lock::default();
+
         lock.plugins.insert(
             "fake".into(),
             super::Entry {
@@ -28283,7 +29412,9 @@ fn main() {
         );
 
         fs::write(&memory_bin, "#!/bin/sh\nexit 1\n").unwrap();
+
         let mut lock = super::load_lock_at(&root).unwrap();
+
         lock.plugins.get_mut("memory").unwrap().hash =
             super::digest(&root.join("plugins/memory/krabb-plugin.toml"), &memory_bin).unwrap();
 
@@ -28305,6 +29436,7 @@ fn main() {
         );
 
         let mut lock = super::load_lock_at(&root).unwrap();
+
         lock.plugins.get_mut("fake").unwrap().capabilities = vec!["tool".into()];
         super::save_lock_at(&root, &lock).unwrap();
 
@@ -28349,6 +29481,7 @@ fn main() {
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
         let task = tokio::spawn(async move {
             super::serve_controlled(&task_root, signal, || {
                 assert!(task_root.join("ipc.port").is_file());
@@ -28370,6 +29503,7 @@ fn main() {
         }
 
         assert!(ready);
+
         ready_rx.await.unwrap();
         stop.signal();
 
@@ -28378,8 +29512,10 @@ fn main() {
             .unwrap()
             .unwrap()
             .unwrap();
+
         assert!(!root.join("ipc.port").exists());
         assert!(!root.join("ipc.token").exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -28390,30 +29526,38 @@ fn main() {
 
         let root = std::env::temp_dir().join(format!("krabb-start-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("ipc.token"), "stale").unwrap();
         fs::write(root.join("ipc.port"), "1").unwrap();
 
         for (id, capability) in [("channel", "channel"), ("model", "model"), ("tools", "tool")] {
             let bin = root.join(format!("plugins/{id}/bin/krabb-plugin-{id}"));
+
             fs::create_dir_all(bin.parent().unwrap()).unwrap();
+
             fs::write(
                 root.join(format!("plugins/{id}/krabb-plugin.toml")),
                 format!("id = '{id}'\nversion = '0.1.0'\nprotocol = {{ major = 0, minor = 1 }}\ncapabilities = ['{capability}']\n"),
             )
             .unwrap();
+
             let delay = if id == "tools" { "sleep 0.2; " } else { "" };
 
             let script = format!(
                 "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in *hello*) {delay}printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol\":{{\"major\":0,\"minor\":1}},\"id\":\"{id}\",\"version\":\"0.1.0\",\"capabilities\":[\"{capability}\"]}}}}' ;; *poll*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{{\"events\":[]}}}}' ;; *shutdown*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{{\"ok\":true}}}}'; exit 0 ;; esac; done\n"
             );
+
             fs::write(&bin, script).unwrap();
+
             let mut permissions = fs::metadata(&bin).unwrap().permissions();
+
             permissions.set_mode(0o700);
             fs::set_permissions(bin, permissions).unwrap();
         }
 
         let task_root = root.clone();
+
         let task = tokio::spawn(async move {
             super::serve_inner(
                 &task_root,
@@ -28463,6 +29607,7 @@ fn main() {
 
         if let Err(error) = shutdown {
             let result = task.await.unwrap();
+
             panic!("IPC shutdown failed: {error}; daemon: {result:?}");
         }
 
@@ -28471,6 +29616,7 @@ fn main() {
             .unwrap()
             .unwrap()
             .unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -28478,7 +29624,9 @@ fn main() {
     #[tokio::test]
     async fn channel_cancellation_preserves_unrelated_plugin_processes() {
         let root = test_root("channel-cancel");
+
         fs::create_dir_all(&root).unwrap();
+
         let script = r#"
 import json, os, pathlib, sys, time
 role, root = sys.argv[1:]
@@ -28506,6 +29654,7 @@ for line in sys.stdin:
         result = {'pid': os.getpid()}
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
 "#;
+
         let plugins = Plugins::default();
 
         for role in ["telegram", "fixture", "browser", "computer"] {
@@ -28513,6 +29662,7 @@ for line in sys.stdin:
                 Process::start_with("python3", ["-u", "-c", script, role, root.to_str().unwrap()])
                     .await
                     .unwrap();
+
             plugins.insert(Live::new(process)).await;
         }
 
@@ -28520,19 +29670,23 @@ for line in sys.stdin:
 
         for role in ["browser", "computer"] {
             let plugin = plugins.get(role).await.unwrap();
+
             let identity = plugin
                 .call(Request::call(90, "identity", serde_json::json!({})))
                 .await
                 .unwrap()
                 .result;
+
             identities.push((plugin, identity));
         }
 
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         let stop = Arc::new(Stop::new());
         let cancels = Arc::new(Mutex::new(BTreeMap::new()));
         let cancellation = super::cancellation(&cancels, "telegram-7");
+
         let bridge = super::bridge(
             &plugins,
             "telegram",
@@ -28544,6 +29698,7 @@ for line in sys.stdin:
             BTreeMap::new(),
             super::ApprovalMode::Off,
         );
+
         tokio::pin!(bridge);
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -28559,6 +29714,7 @@ for line in sys.stdin:
         })
         .await
         .unwrap();
+
         sessions.lock().unwrap().cancel("telegram-7").unwrap();
         cancellation.request();
 
@@ -28601,11 +29757,14 @@ for line in sys.stdin:
         let plugins = Plugins::default();
         let root = std::env::temp_dir().join(format!("krabb-bridge-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
         let completed_sessions = Arc::clone(&sessions);
+
         let notifier = tokio::spawn(async move {
             let completed = tokio::time::timeout(std::time::Duration::from_secs(8), async {
                 loop {
@@ -28634,6 +29793,7 @@ for line in sys.stdin:
         let active_plugins = plugins.clone();
         let active_sessions = Arc::clone(&sessions);
         let active_stop = Arc::clone(&stop);
+
         let bridge = tokio::spawn(async move {
             super::bridge(
                 &active_plugins,
@@ -28657,18 +29817,23 @@ for line in sys.stdin:
             .unwrap()
             .unwrap()
             .unwrap();
+
         notifier.await.unwrap();
+
         let messages = {
             let store = sessions.lock().unwrap();
             store.sessions.get("telegram-7").unwrap().messages.clone()
         };
 
         assert_eq!(messages.len(), 2);
+
         assert_eq!(
             messages[1].content[0],
             krabb_core::types::Content::Text { text: "world".into() }
         );
+
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -28684,6 +29849,7 @@ for line in sys.stdin:
         let plugins = registry([channel, provider]).await;
         let root = std::env::temp_dir().join(format!("krabb-queue-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
         {
@@ -28704,7 +29870,9 @@ for line in sys.stdin:
         }
 
         let stop = Arc::new(Stop::new());
+
         let signal = Arc::clone(&stop);
+
         let notifier = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             signal.signal();
@@ -28730,7 +29898,9 @@ for line in sys.stdin:
         )
         .await
         .unwrap();
+
         notifier.await.unwrap();
+
         {
             let store = sessions.lock().unwrap();
 
@@ -28739,6 +29909,7 @@ for line in sys.stdin:
         }
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -28757,11 +29928,14 @@ for line in sys.stdin:
         let plugins = registry([channel, provider, tool]).await;
         let root = std::env::temp_dir().join(format!("krabb-tool-turn-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
         let completed_sessions = Arc::clone(&sessions);
+
         let notifier = tokio::spawn(async move {
             let completed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
                 loop {
@@ -28803,7 +29977,9 @@ for line in sys.stdin:
         )
         .await
         .unwrap();
+
         notifier.await.unwrap();
+
         {
             let store = sessions.lock().unwrap();
 
@@ -28817,6 +29993,7 @@ for line in sys.stdin:
         }
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -28830,8 +30007,10 @@ for line in sys.stdin:
 
             let first =
                 serde_json::json!({"text":"", "stop":"tool", "events":vec![event.clone(); 8]});
+
             let second =
                 serde_json::json!({"text":"", "stop":"tool", "events":vec![event; requested - 8]});
+
             let provider_script = r#"
 count=0
 while IFS= read -r line; do
@@ -28879,18 +30058,22 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
 done
 "#;
+
             let provider = Process::start_with("sh", ["-c", &provider_script]).await.unwrap();
             let tools = Process::start_with("sh", ["-c", tools_script]).await.unwrap();
             let plugins = registry([provider, tools]).await;
             let provider = plugins.get("fixture").await.unwrap();
             let root = test_root("tool-call-limit");
+
             let sessions = Arc::new(Mutex::new(
                 super::state::Store::load(root.join("sessions.json")).unwrap(),
             ));
 
             sessions.lock().unwrap().create("local", "test").unwrap();
+
             let (notices, _receiver) = tokio::sync::mpsc::channel(32);
             let mut call = 1;
+
             let reply = answer(
                 &provider,
                 &plugins,
@@ -28951,7 +30134,9 @@ done
     async fn sends_inline_tool_screenshots_to_the_next_vision_request() {
         let root = std::env::temp_dir().join(format!("krabb-tool-image-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let marker = root.join("image-received");
         let provider_script = r#"count=0; while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"vision-fixture","version":"0.1.0","capabilities":["model","vision"]}}' ;; *generate*) request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); if [ "$count" = 0 ]; then count=1; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"browser_screenshot","args":{}}]}}'; else case "$line" in *'data:image/png;base64,iVBORw0KGgo='*) touch "__MARKER__" ;; esac; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"I saw the screenshot.","stop":"stop"}}'; fi ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
         let provider_script = provider_script.replace("__MARKER__", &marker.display().to_string());
@@ -28960,11 +30145,15 @@ done
         let browser = Process::start_with("sh", ["-c", tool_script]).await.unwrap();
         let provider = Live::new(provider);
         let plugins = registry([browser]).await;
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         sessions.lock().unwrap().create("local", "test").unwrap();
+
         let (notices, _receiver) = tokio::sync::mpsc::channel(8);
         let mut call = 1;
+
         let reply = super::answer(
             &provider,
             &plugins,
@@ -29003,6 +30192,7 @@ done
 
         assert_eq!(reply.text, "I saw the screenshot.");
         assert!(marker.exists(), "the next model request must contain the image data URL");
+
         let transcript = sessions.lock().unwrap().sessions["local"].messages.clone();
 
         assert!(transcript.iter().any(|message| {
@@ -29015,6 +30205,7 @@ done
         assert!(!serde_json::to_string(&transcript).unwrap().contains("data:image/png"));
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -29025,14 +30216,18 @@ done
         let marker = root.join("approved");
         let channel_script = r#"first=1; callback=0; approval=; while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *'"method":"poll"'*) if [ "$first" = 1 ]; then first=0; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[{"id":1,"chat":7,"private":true,"sender":8,"text":"write a note"}]}}'; elif [ -n "$approval" ] && [ "$callback" = 0 ]; then callback=1; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[{"kind":"callback","id":2,"chat":7,"private":true,"sender":9,"callback_id":"callback-1","data":"'"$approval"'"}]}}'; elif [ -n "$approval" ] && [ "$callback" = 1 ]; then callback=2; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[{"kind":"callback","id":3,"chat":7,"private":true,"sender":8,"callback_id":"callback-2","data":"'"$approval"'"}]}}'; else sleep 0.01; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[]}}'; fi ;; *'"method":"approval"'*) approval=$(printf '%s' "$line" | sed -n 's/.*"approve":"\([^"]*\)".*/\1/p'); printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"sent":true}}' ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"message_id":99,"id":"message-99","acknowledged":true}}' ;; esac; done"#;
         let provider_script = r#"count=0; while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}' ;; *'"method":"generate"'*) if [ "$count" = 0 ]; then count=1; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"write","args":{"path":"note.txt","text":"approved content","approve":false}}]}}'; else printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The note was written.","stop":"stop"}}'; fi ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#;
+
         let tool_script = r#"while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}' ;; *'"method":"write"'*) case "$line" in *'"approve":true'*) touch "__MARKER__"; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The file was written."}}' ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"error":{"code":-32000,"message":"Approval was missing."}}' ;; esac ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#
             .replace("__MARKER__", &marker.display().to_string());
+
         let channel = Process::start_with("sh", ["-c", channel_script]).await.unwrap();
         let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
         let tool = Process::start_with("sh", ["-c", &tool_script]).await.unwrap();
         let plugins = registry([channel, provider, tool]).await;
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
         let marker_for_signal = marker.clone();
@@ -29083,6 +30278,7 @@ done
         notifier.await.unwrap();
 
         assert!(marker.is_file());
+
         {
             let store = sessions.lock().unwrap();
 
@@ -29095,6 +30291,7 @@ done
         }
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -29114,11 +30311,13 @@ for line in sys.stdin:
         break
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
 "#;
+
         let plugin = Process::start_with("python3", ["-u", "-c", script]).await.unwrap();
         let plugins = registry([plugin]).await;
         let plugin = plugins.get("browser").await.unwrap();
         let busy = plugin.process.lock().await;
         let discovery = super::tool_registry(&plugins, true, false);
+
         tokio::pin!(discovery);
 
         assert!(
@@ -29128,12 +30327,14 @@ for line in sys.stdin:
         );
 
         drop(busy);
+
         let discovered = tokio::time::timeout(std::time::Duration::from_secs(2), discovery)
             .await
             .unwrap()
             .unwrap();
 
         assert_eq!(discovered.owners["browser_open"], "browser");
+
         stop_registry(&plugins).await;
     }
 
@@ -29141,7 +30342,9 @@ for line in sys.stdin:
     #[tokio::test]
     async fn cancelled_browser_calls_retire_before_queued_id_reuse() {
         let root = test_root("browser-call-cleanup");
+
         fs::create_dir_all(&root).unwrap();
+
         let script = r#"
 import json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])
@@ -29166,16 +30369,20 @@ for line in sys.stdin:
         continue
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
 "#;
+
         let plugin = Process::start_with("python3", ["-u", "-c", script, root.to_str().unwrap()])
             .await
             .unwrap();
+
         let plugins = registry([plugin]).await;
+
         let registry = super::ToolRegistry {
             owners: BTreeMap::from([("browser_open".into(), "browser".into())]),
             ..Default::default()
         };
 
         let mut failed = None;
+
         let mut first = Box::pin(super::tool_with_registry(
             &plugins,
             &registry,
@@ -29206,6 +30413,7 @@ for line in sys.stdin:
 
         let mut queued_failure = None;
         let queued_registry = registry.clone();
+
         let queued = super::tool_with_registry(
             &plugins,
             &queued_registry,
@@ -29219,6 +30427,7 @@ for line in sys.stdin:
             "turn-b",
             &mut queued_failure,
         );
+
         tokio::pin!(queued);
 
         assert!(
@@ -29226,7 +30435,9 @@ for line in sys.stdin:
         );
 
         drop(first);
+
         let finished = registry.cleanup.finish();
+
         tokio::pin!(finished);
 
         assert!(
@@ -29236,16 +30447,19 @@ for line in sys.stdin:
         );
 
         assert!(plugins.get("browser").await.unwrap().process.try_lock().is_err());
+
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(20), &mut queued).await.is_err()
         );
 
         fs::write(root.join("release"), "").unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(3), finished).await.unwrap().unwrap();
+
         let result =
             tokio::time::timeout(std::time::Duration::from_secs(3), queued).await.unwrap().unwrap();
 
         assert_eq!(super::tool_result_text(&result), "second");
+
         stop_registry(&plugins).await;
         fs::remove_dir_all(root).unwrap();
     }
@@ -29256,6 +30470,7 @@ for line in sys.stdin:
         let sessions = Arc::new(Mutex::new(super::state::Store::default()));
         let (notices, mut events) = tokio::sync::mpsc::channel(1);
         let gate = Arc::clone(&approvals);
+
         let execution = tokio::spawn(async move {
             let mut failed_tool = None;
             super::execute_tool(
@@ -29296,6 +30511,7 @@ for line in sys.stdin:
         };
 
         assert_eq!(approvals.lock().await.resolve(&deny, "telegram", "7", None, true), Some(false));
+
         assert_eq!(
             execution.await.unwrap().unwrap(),
             "The request was denied. No changes were made."
@@ -29328,11 +30544,14 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let channel = Live::new(Process::start_with("sh", ["-c", script]).await.unwrap());
         let sessions = Arc::new(Mutex::new(super::state::Store::default()));
         let approvals = Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap()));
+
         let policy =
             super::ChannelConfig { allow: vec!["7".into()], tools: true, ..Default::default() };
+
         let mut offset = 0;
         let mut call = 10;
 
@@ -29497,7 +30716,9 @@ done
         assert_eq!(offset, 102);
 
         let mut replayed_callback = discord_callback;
+
         replayed_callback["gateway_sequence"] = serde_json::json!(44);
+
         let call_before_replay = call;
 
         super::handle_callback(
@@ -29518,6 +30739,7 @@ done
         assert_eq!(call, call_before_replay + 1);
         assert_eq!(offset, 102);
         assert_eq!(sessions.lock().unwrap().offset("telegram"), 102);
+
         channel.stop().await.unwrap();
     }
 
@@ -29542,8 +30764,10 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let channel = Live::new(Process::start_with("sh", ["-c", script]).await.unwrap());
         let mut store = super::state::Store::default();
+
         store.ensure("telegram-7", "test").unwrap();
         store.set_status("telegram-7", "working").unwrap();
 
@@ -29566,6 +30790,7 @@ done
         let policy = super::ChannelConfig { allow: vec!["7".into()], ..Default::default() };
         let mut offset = 0;
         let mut call = 10;
+
         let processed = super::queue_during_turn(
             &channel,
             "telegram",
@@ -29588,6 +30813,7 @@ done
         assert!(processed);
         assert_eq!(offset, 2);
         assert_eq!(call, 11);
+
         {
             let store = sessions.lock().unwrap();
 
@@ -29622,6 +30848,7 @@ done
 
         for index in 0..(super::state::LIMIT - 1) {
             let event = serde_json::json!({"id": format!("deferred-{index}")});
+
             sessions.lock().unwrap().defer_event("telegram", event).unwrap();
         }
 
@@ -29682,8 +30909,10 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let channel = Live::new(Process::start_with("sh", ["-c", script]).await.unwrap());
         let mut store = super::state::Store::default();
+
         store.ensure("telegram-7", "test").unwrap();
         store.set_status("telegram-7", "working").unwrap();
 
@@ -29708,6 +30937,7 @@ done
 
         let sessions = Arc::new(Mutex::new(store));
         let approvals = Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap()));
+
         let target = super::approval::Target {
             channel: "telegram".into(),
             chat: "7".into(),
@@ -29766,6 +30996,7 @@ done
         let process = Process::start_with("sh", ["-c", script]).await.unwrap();
         let plugins = registry([process]).await;
         let sessions = Arc::new(Mutex::new(super::state::Store::default()));
+
         {
             let mut store = sessions.lock().unwrap();
             store.create("room", "test").unwrap();
@@ -29784,8 +31015,10 @@ done
         }
 
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
         let approvals = Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap()));
         let (notices, _events) = tokio::sync::mpsc::channel(4);
+
         let response = super::host_tool(
             Request::call(
                 7,
@@ -29923,6 +31156,7 @@ done
         assert!(disabled.error.unwrap().message.contains("disabled"));
 
         let calls_before_scheduler = calls.load(std::sync::atomic::Ordering::Relaxed);
+
         let scheduler_disabled = super::host_tool(
             Request::call(
                 11,
@@ -29989,6 +31223,7 @@ done
 
         assert_eq!(approved.result.unwrap()["text"], "Write executed.");
         assert_eq!(sessions.lock().unwrap().sessions["room"].phase, "unsafe");
+
         stop_registry(&plugins).await;
     }
 
@@ -29996,14 +31231,20 @@ done
     fn validates_selected_code_workspaces() {
         let root =
             std::env::temp_dir().join(format!("krabb-selected-workspace-{}", std::process::id()));
+
         let child = root.join("repo");
+
         let outside =
             root.with_file_name(format!("{}-outside", root.file_name().unwrap().to_string_lossy()));
+
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+
         std::fs::create_dir_all(&child).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
+
         let configured = std::fs::canonicalize(&root).unwrap();
+
         let selected = super::selected_workspace(
             &serde_json::json!({"workspace": child.display().to_string()}),
             &configured,
@@ -30011,6 +31252,7 @@ done
         .unwrap();
 
         assert_eq!(selected, std::fs::canonicalize(&child).unwrap());
+
         assert!(
             super::selected_workspace(
                 &serde_json::json!({"workspace": outside.display().to_string()}),
@@ -30018,6 +31260,7 @@ done
             )
             .is_err()
         );
+
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
     }
@@ -30026,8 +31269,11 @@ done
     #[tokio::test]
     async fn interrupts_a_stalled_tool_on_shutdown() {
         let root = test_root("stalled-tool");
+
         fs::create_dir_all(&root).unwrap();
+
         let tool_started = root.join("tool-started");
+
         let provider_script = r#"
 while IFS= read -r line; do
     case "$line" in
@@ -30045,6 +31291,7 @@ while IFS= read -r line; do
     esac
 done
 "#;
+
         let tool_script = format!(
             r#"
 while IFS= read -r line; do
@@ -30069,15 +31316,20 @@ done
 "#,
             started = tool_started.display()
         );
+
         let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
         let tool = Process::start_with("sh", ["-c", &tool_script]).await.unwrap();
         let plugins = registry([provider, tool]).await;
         let provider = plugins.get("codex").await.unwrap();
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         sessions.lock().unwrap().create("session", "test").unwrap();
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
+
         let notifier = tokio::spawn(async move {
             let started = tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 while !tool_started.exists() {
@@ -30139,8 +31391,10 @@ done
 
         assert_eq!(result.to_string(), "The turn was interrupted.");
         assert!(notifier.await.unwrap(), "the stalled tool was not called before shutdown");
+
         drain.await.unwrap();
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -30149,14 +31403,18 @@ done
     async fn restarts_a_failed_tool_process() {
         let marker =
             std::env::temp_dir().join(format!("krabb-tool-restart-{}", std::process::id()));
+
         let _ = fs::remove_file(&marker);
+
         let script = format!(
             r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocol":{{"major":0,"minor":1}},"id":"tools","version":"0.1.0","capabilities":["tool"]}}}}' ;; *read*) if [ ! -e "{marker}" ]; then touch "{marker}"; exit 0; else printf '%s\n' '{{"jsonrpc":"2.0","id":7,"result":{{"text":"recovered"}}}}'; fi ;; *shutdown*) printf '%s\n' '{{"jsonrpc":"2.0","id":9999,"result":{{"ok":true}}}}'; exit 0 ;; esac; done"#,
             marker = marker.display()
         );
+
         let process = Process::start_with("sh", ["-c", &script]).await.unwrap();
         let plugins = registry([process]).await;
         let mut failed = None;
+
         let error = tool(
             &plugins,
             7,
@@ -30174,7 +31432,9 @@ done
         assert_eq!(failed.as_deref(), Some("tools"));
 
         restart_tool(&plugins, failed.as_deref().unwrap()).await;
+
         let mut ignored = None;
+
         let output = tool(
             &plugins,
             7,
@@ -30189,7 +31449,9 @@ done
         .unwrap();
 
         assert_eq!(output, "recovered");
+
         stop_registry(&plugins).await;
+
         let _ = fs::remove_file(marker);
     }
 
@@ -30252,7 +31514,9 @@ done
         .await
         .unwrap()
         .unwrap();
+
         notifier.await.unwrap();
+
         {
             let store = sessions.lock().unwrap();
 
@@ -30261,6 +31525,7 @@ done
         }
 
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -30269,16 +31534,21 @@ done
     async fn retries_channel_acknowledgement_after_restarting_plugin() {
         let root = test_root("ack");
         let marker = root.join("failed");
+
         let script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *ack*) if [ ! -e "__MARKER__" ]; then touch "__MARKER__"; printf '%s\n' '{"jsonrpc":"2.0","id":10,"error":{"code":-32000,"message":"retry"}}'; else printf '%s\n' '{"jsonrpc":"2.0","id":11,"result":{"acknowledged":true}}'; fi ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#
             .replace("__MARKER__", &marker.display().to_string())
             .replace("\\\\n", "\\n")
             .replace("\\\"", "\"");
+
         let channel = Process::start_with("sh", ["-c", &script]).await.unwrap();
         let channel = Live::new(channel);
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         let mut current = 0;
         let mut call = 10;
+
         commit_event(
             &channel,
             &sessions,
@@ -30295,7 +31565,9 @@ done
         assert_eq!(current, 2);
         assert_eq!(call, 12);
         assert!(sessions.lock().unwrap().known("telegram", "event"));
+
         channel.stop().await.unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -30303,17 +31575,21 @@ done
     #[tokio::test]
     async fn retries_a_deferred_event_acknowledgement_after_replay() {
         let root = test_root("deferred-ack");
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         sessions
             .lock()
             .unwrap()
             .defer_event("telegram", serde_json::json!({"id": "event", "gateway_sequence": 7}))
             .unwrap();
+
         let mut current = 0;
         let mut call = 10;
 
         assert!(!sessions.lock().unwrap().deferred_acknowledged("telegram", "event"));
+
         let success_script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *ack*) printf '%s\n' '{"jsonrpc":"2.0","id":10,"result":{"acknowledged":true}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
         let channel = Live::new(Process::start_with("sh", ["-c", success_script]).await.unwrap());
 
@@ -30341,6 +31617,7 @@ done
         }
 
         channel.stop().await.unwrap();
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -30356,10 +31633,13 @@ done
         let plugins = registry([channel, provider]).await;
         let root = std::env::temp_dir().join(format!("krabb-interrupt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         let sessions =
             Arc::new(Mutex::new(super::state::Store::load(root.join("sessions.json")).unwrap()));
+
         let stop = Arc::new(Stop::new());
         let signal = Arc::clone(&stop);
+
         let notifier = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             signal.signal();
@@ -30378,10 +31658,13 @@ done
         )
         .await
         .unwrap();
+
         notifier.await.unwrap();
 
         assert_eq!(sessions.lock().unwrap().sessions["telegram-7"].status, "interrupted");
+
         stop_registry(&plugins).await;
+
         let _ = fs::remove_dir_all(root);
     }
 }

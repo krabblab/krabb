@@ -61,6 +61,7 @@ async fn generate(
     }
 
     let input: ModelRequest = serde_json::from_value(params)?;
+
     let key = std::env::var("KRABB_GEMINI_KEY")
         .map_err(|_| krabb_core::Error::Denied("KRABB_GEMINI_KEY is not configured.".into()))?;
 
@@ -210,7 +211,9 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
 
         if message.role == Role::Assistant {
             flush_tool_parts(&mut contents, &mut tool_parts);
+
             let (parts, found) = assistant_parts(message, require_signature)?;
+
             calls.extend(found);
             contents.push(json!({"role": "model", "parts": parts}));
             continue;
@@ -224,6 +227,7 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
                 .or_else(|| message.sender.is_none().then_some(0));
 
             let matched = index.and_then(|index| calls.remove(index));
+
             let name = message
                 .sender
                 .clone()
@@ -259,6 +263,7 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
         }
 
         flush_tool_parts(&mut contents, &mut tool_parts);
+
         contents.push(json!({
             "role": "user",
             "parts": message.content.iter().flat_map(content_parts).collect::<Vec<_>>(),
@@ -425,6 +430,7 @@ fn assistant_parts(
                 && (legacy_turn || (!saw_tool_call && thought_signature.is_none()));
 
             let id = id.clone().unwrap_or_else(|| format!("{}-{index}", message.id));
+
             index += 1;
 
             if legacy {
@@ -459,6 +465,7 @@ fn assistant_parts(
 
         for line in value.split_inclusive('\n') {
             let candidate = line.strip_suffix('\n').unwrap_or(line);
+
             let Some((name, args)) = candidate.strip_prefix("[Tool call ").and_then(|value| {
                 let (name, args) = value.split_once("]: ")?;
                 Some((name, serde_json::from_str::<Value>(args).ok()?))
@@ -469,6 +476,7 @@ fn assistant_parts(
 
             if require_signature {
                 let id = format!("{}-{index}", message.id);
+
                 index += 1;
 
                 if !buffered.is_empty() {
@@ -494,6 +502,7 @@ fn assistant_parts(
             }
 
             let id = format!("{}-{index}", message.id);
+
             index += 1;
 
             parts.push(json!({"functionCall": {"id": id, "name": name, "args": args}}));

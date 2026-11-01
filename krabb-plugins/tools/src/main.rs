@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::atomic::AtomicU64;
+
 use std::{
     ffi::OsString,
     io::{ErrorKind, Read, Write},
@@ -28,6 +29,7 @@ use rustix::{
 
 use reqwest::{Url, header::ACCEPT};
 use serde_json::json;
+
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::lookup_host,
@@ -403,6 +405,7 @@ impl Sandbox {
     fn from_env() -> std::io::Result<Option<Self>> {
         let runtime = std::env::var("KRABB_SANDBOX_RUNTIME").ok();
         let image = std::env::var("KRABB_SANDBOX_IMAGE").ok();
+
         Self::parse(runtime.as_deref(), image.as_deref())
     }
 
@@ -448,6 +451,7 @@ impl Sandbox {
             .ok_or_else(|| invalid("Sandbox workspace path cannot be represented safely."))?;
 
         let mut process = Command::new(&self.runtime);
+
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -500,6 +504,7 @@ impl Sandbox {
         }
 
         let mut process = Command::new(&self.runtime);
+
         process
             .args(["rm", "--force", &id])
             .stdin(std::process::Stdio::null())
@@ -535,16 +540,15 @@ async fn shell_with(
     {
         let mut process = Command::new("cmd");
         process.args(["/C", command]).current_dir(root);
-        Box::pin(capture(process, None, true)).await
+        Box::pin(contained(process, None)).await
     }
 
     #[cfg(target_os = "linux")]
     {
         let mut process = Command::new("sh");
-        process.process_group(0).args(["-c", command]);
+        process.args(["-c", command]);
         process.current_dir(root);
-        krabb_process::restrict_process_group(process.as_std_mut());
-        capture(process, None, true).await
+        contained(process, None).await
     }
 
     #[cfg(not(any(target_os = "linux", windows)))]
@@ -562,6 +566,7 @@ async fn sandbox_shell(
     let cid_dir = cid_dir()?;
 
     let cidfile = cid_dir.join("id");
+
     let process = match sandbox.process(command, root, &cidfile) {
         Ok(process) => process,
 
@@ -659,6 +664,7 @@ const DISABLED_HOOKS: &str = "/dev/null";
 
 fn git_command(args: &[String]) -> Command {
     let mut process = Command::new("git");
+
     process.args(["--no-pager", "--no-optional-locks", "-c"]);
     process.arg(format!("core.hooksPath={DISABLED_HOOKS}"));
     process.args(["-c", "core.fsmonitor=false", "-c", "diff.external="]);
@@ -690,12 +696,14 @@ fn git_command(args: &[String]) -> Command {
 
 async fn git(args: &[String], root: &Path) -> std::io::Result<std::process::Output> {
     let mut process = git_command(args);
+
     process.current_dir(root);
-    capture(process, None, false).await
+    contained(process, None).await
 }
 
 async fn apply(root: &Path, text: &str, check: bool) -> std::io::Result<std::process::Output> {
     let mut command = git_command(&["apply".into()]);
+
     command.arg("--whitespace=error");
 
     if check {
@@ -709,7 +717,35 @@ async fn apply(root: &Path, text: &str, check: bool) -> std::io::Result<std::pro
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    capture(command, Some(text.as_bytes()), false).await
+    contained(command, Some(text.as_bytes())).await
+}
+
+async fn contained(
+    command: Command,
+    input: Option<&[u8]>,
+) -> std::io::Result<std::process::Output> {
+    #[cfg(target_os = "linux")]
+    let command = {
+        let mut command = command;
+        command.process_group(0);
+        krabb_process::restrict_process_group(command.as_std_mut());
+        command
+    };
+
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        capture(command, input, true).await
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (command, input);
+
+        Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "Host command containment is unavailable; use the sandboxed shell tool.",
+        ))
+    }
 }
 
 async fn capture(
@@ -745,6 +781,7 @@ async fn capture(
 
         if let Err(error) = job.assign_and_resume(process_id) {
             job.terminate();
+
             let _ = child.kill().await;
             let _ = child.wait().await;
 
@@ -936,6 +973,7 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
     #[cfg(unix)]
     if group && let Some(group) = process_id.and_then(external_group) {
         let _ = kill_process_group(group, Signal::TERM);
+
         tokio::time::sleep(Duration::from_millis(100)).await;
         kill_group(group, Signal::KILL);
     }
@@ -961,6 +999,7 @@ fn child_group(id: u32) -> Option<u32> {
 #[cfg(unix)]
 fn external_group(id: u32) -> Option<Pid> {
     let group = Pid::from_raw(i32::try_from(id).ok()?)?;
+
     (group != getpgrp()).then_some(group)
 }
 
@@ -1168,6 +1207,7 @@ fn public_ip(address: IpAddr) -> bool {
 
 fn public_ipv4(address: Ipv4Addr) -> bool {
     let value = u32::from(address);
+
     let in_range = |network: Ipv4Addr, prefix: u32| {
         let mask = u32::MAX << (32 - prefix);
         value & mask == u32::from(network) & mask
@@ -1578,6 +1618,7 @@ fn open_confined(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
 
     let mut options = OpenOptions::new();
+
     options.read(!write).write(write).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
 
     if write {
@@ -1585,6 +1626,7 @@ fn open_confined(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
     }
 
     let file = options.open(path)?;
+
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
@@ -1602,6 +1644,7 @@ fn open_confined(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
 #[cfg(all(not(unix), not(windows)))]
 fn open_confined(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
+
     options.read(!write).write(write);
 
     if write {
@@ -1694,6 +1737,7 @@ fn patch_paths_at(policy: &Policy, text: &str, workspace: Option<&Path>) -> krab
         }
 
         let path = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).unwrap_or(path);
+
         file_at(policy, path, workspace)?;
     }
 
@@ -1708,6 +1752,7 @@ fn search(
     hits: &mut Vec<String>,
 ) -> krabb_core::Result<()> {
     let mut budget = Search::new();
+
     search_at(path, policy, needle, hits, None, &mut budget, 0)
 }
 
@@ -1762,6 +1807,7 @@ impl Search {
         let count = if directory { &mut self.directories } else { &mut self.files };
 
         *count = count.saturating_add(1);
+
         let limit = if directory { SEARCH_DIRECTORIES } else { SEARCH_FILES };
 
         if *count > limit {
@@ -1803,6 +1849,7 @@ fn search_at(
     }
 
     let path = confined(policy, display.to_string_lossy().as_ref(), workspace, false)?;
+
     search_confined(&path, needle, hits, budget, depth)
 }
 
@@ -1938,12 +1985,14 @@ fn search_request(
     let path = file_at(policy, path, workspace.as_deref())?;
     let mut hits = Vec::new();
     let mut budget = Search::with_cancel(cancel);
+
     search_at(&path, policy, needle, &mut hits, workspace.as_deref(), &mut budget, 0)?;
     Ok(hits)
 }
 
 fn read_text(file: std::fs::File) -> std::io::Result<String> {
     let mut bytes = Vec::new();
+
     file.take((FILE_LIMIT as u64).saturating_add(1)).read_to_end(&mut bytes)?;
 
     if bytes.len() > FILE_LIMIT {
@@ -1955,6 +2004,9 @@ fn read_text(file: std::fs::File) -> std::io::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(test, any(target_os = "linux", windows)))]
+    mod git;
+
     use super::{
         ENTRY_LIMIT, Policy, Sandbox, Shell, apply, call, confined, denied, fetch_url_parse, file,
         git, list_confined, patch_paths, public_ip, search, shell, shell_with, tool_specs,
@@ -1962,6 +2014,7 @@ mod tests {
 
     use krabb_core::types::{Request, Response};
     use serde_json::json;
+
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1976,6 +2029,7 @@ mod tests {
 
     fn test_root(prefix: &str) -> PathBuf {
         let nonce = TEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+
         std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()))
     }
 
@@ -1987,10 +2041,13 @@ mod tests {
     #[test]
     fn directory_guards_prevent_parent_replacement() {
         let root = test_root("windows-directory-guards");
+
         std::fs::create_dir_all(root.join("parent")).unwrap();
+
         let guards = super::lock_parents(&root.join("parent/note"), false).unwrap();
 
         assert!(std::fs::rename(root.join("parent"), root.join("moved")).is_err());
+
         drop(guards);
         std::fs::rename(root.join("parent"), root.join("moved")).unwrap();
         std::fs::remove_dir_all(root).unwrap();
@@ -2004,6 +2061,7 @@ mod tests {
         assert!(Sandbox::parse(Some("docker"), None).is_err());
         assert!(Sandbox::parse(Some("containerd"), Some("image:latest")).is_err());
         assert!(Sandbox::parse(Some("podman"), Some("unsafe image")).is_err());
+
         assert_eq!(
             Sandbox::parse(Some("docker"), Some("local/tool:latest")).unwrap(),
             Some(Sandbox { runtime: "docker".into(), image: "local/tool:latest".into() })
@@ -2013,7 +2071,9 @@ mod tests {
     #[tokio::test]
     async fn advertises_tool_schemas_for_enabled_operations() {
         let root = test_root("tools-list");
+
         fs::create_dir_all(&root).unwrap();
+
         let response =
             call(&policy(&root), Request::call(1, "tools/list", json!({}))).await.unwrap().unwrap();
 
@@ -2023,6 +2083,7 @@ mod tests {
         assert!(definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "fetch"));
         assert!(!definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "shell"));
         assert!(tool_specs(true).iter().any(|tool| tool.name == "shell"));
+
         assert_eq!(
             definitions.as_array().unwrap().iter().find(|tool| tool["name"] == "write").unwrap()["schema"]
                 ["required"],
@@ -2055,6 +2116,7 @@ mod tests {
     #[tokio::test]
     async fn web_fetch_rejects_non_https_requests_without_network_access() {
         let root = test_root("krabb-tools-fetch");
+
         fs::create_dir_all(&root).unwrap();
 
         assert!(
@@ -2077,6 +2139,7 @@ mod tests {
         let root = test_root("krabb-tools-sandbox");
         let sandbox = Sandbox { runtime: "docker".into(), image: "local/tool:latest".into() };
         let command = sandbox.process("touch note", &root, Path::new("/tmp/container-id")).unwrap();
+
         let args = command
             .as_std()
             .get_args()
@@ -2114,7 +2177,9 @@ mod tests {
     async fn configured_sandbox_does_not_fall_back_to_host_shell() {
         let root = test_root("krabb-tools-sandbox");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let sandbox = Sandbox {
             runtime: "krabb-missing-container-runtime".into(),
             image: "local/tool:latest".into(),
@@ -2122,6 +2187,7 @@ mod tests {
 
         assert!(shell_with("touch host-marker", &root, Some(&sandbox)).await.is_err());
         assert!(!root.join("host-marker").exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2133,7 +2199,9 @@ mod tests {
         let root = test_root("krabb-tools-sandbox-smoke");
         let runtime = root.join("runtime");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         fs::write(
             &runtime,
             "#!/bin/sh\ncase \"$1\" in\ncreate) while [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --cidfile) printf '%s\\n' 0123456789abcdef > \"$2\"; shift 2 ;;\n    -lc) shift; printf '%s' \"$1\" > script; exit 0 ;;\n    *) shift ;;\n  esac\ndone ;;\nstart) /bin/sh script ;;\nrm) exit 0 ;;\nesac\n",
@@ -2141,6 +2209,7 @@ mod tests {
         .unwrap();
 
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+
         let sandbox =
             Sandbox { runtime: runtime.display().to_string(), image: "local/tool:latest".into() };
 
@@ -2148,6 +2217,7 @@ mod tests {
 
         assert_eq!(String::from_utf8_lossy(&output.stdout), "sandboxed");
         assert!(!root.join("host-marker").exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2158,19 +2228,23 @@ mod tests {
 
         let root = test_root("krabb-tools-executable-busy");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         let executable = root.join("runtime");
+
         fs::write(&executable, "#!/bin/sh\nprintf launched\n").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
 
         let writable = OpenOptions::new().write(true).open(&executable).unwrap();
+
         let release = thread::spawn(move || {
             thread::sleep(Duration::from_millis(30));
             drop(writable);
         });
 
         let output = super::capture(super::Command::new(&executable), None, false).await.unwrap();
+
         release.join().unwrap();
 
         assert_eq!(String::from_utf8_lossy(&output.stdout), "launched");
@@ -2184,7 +2258,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = test_root("write-permissions");
+
         fs::create_dir_all(&root).unwrap();
+
         let policy = policy(&root);
         let path = root.join("script");
 
@@ -2223,7 +2299,9 @@ mod tests {
     async fn tools_read_write_list_and_search_within_root() {
         let root = test_root("krabb-tools");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let policy = Arc::new(policy(&root));
 
         let write = call(
@@ -2239,6 +2317,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(write.result.unwrap()["ok"], true);
+
         call(
             &policy,
             Request::call(
@@ -2261,8 +2340,10 @@ mod tests {
         assert_eq!(read.result.unwrap()["text"], "hello");
 
         let nested = root.join("nested");
+
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("nested.txt"), "nested").unwrap();
+
         let nested_read = call(
             &policy,
             Request::call(
@@ -2276,6 +2357,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(nested_read.result.unwrap()["text"], "nested");
+
         assert!(call(
             &policy,
             Request::call(
@@ -2297,11 +2379,13 @@ mod tests {
         );
 
         let mut hits = Vec::new();
+
         search(&root, &policy, "ell", &mut hits).unwrap();
 
         assert_eq!(hits.len(), 1);
 
         assert!(file(&policy, "../outside").is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2309,6 +2393,7 @@ mod tests {
     fn list_enforces_entry_limit_while_reading() {
         let root = test_root("krabb-tools-list");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         for index in 0..=ENTRY_LIMIT {
@@ -2332,11 +2417,13 @@ mod tests {
         let outside = test_root("krabb-tools-outside");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_file(&outside);
+
         fs::create_dir_all(&root).unwrap();
         fs::write(&outside, "secret").unwrap();
         symlink(&outside, root.join("outside")).unwrap();
 
         let mut hits = Vec::new();
+
         search(&root, &policy(&root), "secret", &mut hits).unwrap();
 
         assert!(hits.is_empty());
@@ -2354,6 +2441,7 @@ mod tests {
         let outside = test_root("krabb-tools-dangling-target");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_file(&outside);
+
         fs::create_dir_all(&root).unwrap();
         symlink(&outside, root.join("dangling")).unwrap();
 
@@ -2369,6 +2457,7 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!outside.exists());
+
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(outside);
     }
@@ -2379,22 +2468,31 @@ mod tests {
         let mut budget = super::Search::with_cancel(cancel);
 
         assert!(budget.visit(0, false).is_err());
+
         let mut budget = super::Search::new();
+
         budget.nodes = super::SEARCH_NODES;
 
         assert!(budget.visit(0, false).is_err());
+
         let mut budget = super::Search::new();
+
         budget.bytes = super::SEARCH_BYTES;
 
         assert!(budget.read(1).is_err());
+
         let mut budget = super::Search::new();
 
         assert!(budget.visit(super::SEARCH_DEPTH + 1, false).is_err());
+
         let mut budget = super::Search::new();
+
         budget.files = super::SEARCH_FILES;
 
         assert!(budget.visit(0, false).is_err());
+
         let mut budget = super::Search::new();
+
         budget.directories = super::SEARCH_DIRECTORIES;
 
         assert!(budget.visit(0, true).is_err());
@@ -2403,12 +2501,16 @@ mod tests {
     #[tokio::test]
     async fn shell_requires_approval() {
         let root = test_root("krabb-tools-shell");
+
         fs::create_dir_all(&root).unwrap();
+
         let policy = Arc::new(policy(&root));
+
         let error =
             call(&policy, Request::call(1, "shell", json!({"command": "pwd"}))).await.unwrap_err();
 
         assert!(error.to_string().contains("disabled"));
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2416,8 +2518,11 @@ mod tests {
     async fn tools_validate_requests_and_can_run_approved_shell() {
         let root = test_root("krabb-tools-approved");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let mut approved = policy(&root);
+
         approved.shell = Shell::On;
 
         let output =
@@ -2434,6 +2539,7 @@ mod tests {
 
         assert!(call(&approved, Request::call(2, "read", json!({}))).await.is_err());
         assert!(call(&approved, Request::call(3, "write", json!({"path": "x"}))).await.is_err());
+
         assert!(
             call(
                 &approved,
@@ -2444,6 +2550,7 @@ mod tests {
         );
 
         assert!(!root.join("blocked").exists());
+
         assert!(
             call(&approved, Request::call(4, "write", json!({"path": "x", "text": "x"})))
                 .await
@@ -2451,31 +2558,24 @@ mod tests {
         );
 
         assert!(call(&approved, Request::call(5, "search", json!({}))).await.is_err());
+
         assert!(
             call(&approved, Request::call(6, "list", json!({"path": "missing"}))).await.is_err()
         );
 
-        let git =
-            call(&approved, Request::call(7, "git", json!({"args": ["status"], "approve": true})))
-                .await
-                .unwrap()
-                .unwrap();
+        for args in [vec!["status"], vec!["diff"], vec!["worktree", "list"]] {
+            let git =
+                call(&approved, Request::call(7, "git", json!({"args": args, "approve": true})))
+                    .await;
 
-        assert!(git.result.unwrap()["status"].is_number());
-        assert!(
-            call(&approved, Request::call(7, "git", json!({"args": ["diff"], "approve": true})))
-                .await
-                .is_ok()
-        );
+            #[cfg(any(target_os = "linux", windows))]
 
-        assert!(
-            call(
-                &approved,
-                Request::call(7, "git", json!({"args": ["worktree", "list"], "approve": true}))
-            )
-            .await
-            .is_ok()
-        );
+            assert!(git.unwrap().unwrap().result.unwrap()["status"].is_number());
+
+            #[cfg(not(any(target_os = "linux", windows)))]
+
+            assert!(git.unwrap_err().to_string().contains("Host command containment"));
+        }
 
         assert!(
             call(
@@ -2518,6 +2618,7 @@ mod tests {
 
         let active = root.join("active");
         let sibling = root.join("sibling");
+
         fs::create_dir_all(&active).unwrap();
         fs::create_dir_all(&sibling).unwrap();
 
@@ -2554,21 +2655,24 @@ mod tests {
         );
 
         assert!(call(&approved, Request::call(9, "unknown", json!({}))).await.unwrap().is_none());
+
         let note =
             Request::Note { jsonrpc: "2.0".into(), method: "list".into(), params: json!({}) };
 
         assert!(call(&approved, note).await.unwrap().is_none());
         assert!(file(&Policy { root: None, ..approved }, ".").is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn approved_worktrees_do_not_run_hooks() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = test_root("krabb-tools-worktree");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("README"), "test\n").unwrap();
 
@@ -2593,12 +2697,16 @@ mod tests {
         let marker = root.join("hook-ran");
 
         let hook = root.join(".git/hooks/post-checkout");
+
         fs::write(&hook, format!("#!/bin/sh\nprintf ran > '{}'\n", marker.display())).unwrap();
+
         let mut permissions = fs::metadata(&hook).unwrap().permissions();
+
         permissions.set_mode(0o700);
         fs::set_permissions(&hook, permissions).unwrap();
 
         let target = root.join("copy");
+
         let result = call(
             &Arc::new(Policy { shell: Shell::On, ..policy(&root) }),
             Request::call(
@@ -2624,6 +2732,7 @@ mod tests {
 
         assert!(target.join("README").is_file());
         assert!(!marker.exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2631,6 +2740,7 @@ mod tests {
     async fn tools_cover_command_helpers_and_missing_workspace() {
         let root = test_root("krabb-tools-helpers");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         #[cfg(any(target_os = "linux", windows))]
@@ -2645,14 +2755,30 @@ mod tests {
             assert!(!root.join("marker").exists());
         }
 
+        #[cfg(any(target_os = "linux", windows))]
+
         assert!(git(&["status".into()], &root).await.is_ok());
 
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let error = git(&["init".into()], &root).await.unwrap_err();
+
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert!(!root.join(".git").exists());
+
+            let error = apply(&root, "", true).await.unwrap_err();
+
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+
         assert!(denied("Already denied.").to_string().ends_with("Already denied."));
+
         assert!(
             file(&Policy { root: Some(root.join("missing")), shell: Shell::Off }, ".").is_err()
         );
 
         assert!(search(&root.join("missing"), &policy(&root), "x", &mut Vec::new()).is_ok());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2664,6 +2790,7 @@ mod tests {
         let _ = fs::remove_dir_all(&default_root);
         let _ = fs::remove_dir_all(&selected_root);
         let _ = fs::remove_file(&outside_file);
+
         fs::create_dir_all(&default_root).unwrap();
         fs::create_dir_all(&selected_root).unwrap();
         fs::write(selected_root.join("README.md"), "session workspace").unwrap();
@@ -2697,6 +2824,7 @@ mod tests {
         .await;
 
         assert!(outside.is_err());
+
         let _ = fs::remove_dir_all(default_root);
         let _ = fs::remove_dir_all(selected_root);
         let _ = fs::remove_file(outside_file);
@@ -2708,6 +2836,7 @@ mod tests {
         let root = test_root("krabb-tools-group");
         let marker = root.join("marker");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
 
         #[cfg(unix)]
@@ -2730,9 +2859,11 @@ mod tests {
         };
 
         assert!(shell(command, &root).await.unwrap().status.success());
+
         tokio::time::sleep(Duration::from_millis(2_500)).await;
 
         assert!(!marker.exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2749,10 +2880,13 @@ mod tests {
     #[tokio::test]
     async fn bounds_command_output() {
         let mut command = tokio::process::Command::new("sh");
+
         command.args(["-c", "yes output"]);
+
         let error = super::capture(command, None, false).await.unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
+
         let response =
             Response::ok(1, json!({"stdout": "x".repeat(super::OUTPUT_LIMIT), "stderr": ""}));
 
@@ -2760,11 +2894,11 @@ mod tests {
         assert!(super::response(1, json!({"stdout": "x"})).unwrap().is_some());
     }
 
-    #[cfg(unix)]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn git_filters_require_shell_authorization_and_approval() {
         let root = test_root("git-filter-authorization");
+
         fs::create_dir_all(&root).unwrap();
 
         for args in [vec!["init"], vec!["config", "filter.probe.clean", "touch filter-ran; cat"]] {
@@ -2780,6 +2914,7 @@ mod tests {
         fs::write(root.join("note"), "before\n").unwrap();
 
         assert!(git(&["add".into(), "note".into()], &root).await.unwrap().status.success());
+
         fs::write(root.join(".gitattributes"), "note filter=probe\n").unwrap();
         fs::write(root.join("note"), "after\n").unwrap();
 
@@ -2822,24 +2957,30 @@ mod tests {
         );
 
         assert!(root.join("filter-ran").exists());
+
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(any(target_os = "linux", windows))]
     #[tokio::test]
     async fn applies_approved_patches() {
         let root = test_root("krabb-tools-patch");
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("note.txt"), "before\n").unwrap();
 
         assert!(git(&["init".into()], &root).await.unwrap().status.success());
         assert!(git(&["add".into(), "note.txt".into()], &root).await.unwrap().status.success());
+
         let patch = "diff --git a/note.txt b/note.txt\nindex 8f6f5f0..9d5e3f4 100644\n--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-before\n+after\n";
 
         assert!(apply(&root, patch, true).await.unwrap().status.success());
+
         let policy = Arc::new(Policy { shell: Shell::On, ..policy(&root) });
 
         assert!(call(&policy, Request::call(1, "patch", json!({"text": patch}))).await.is_err());
+
         assert!(
             patch_paths(
                 &policy,
@@ -2856,6 +2997,7 @@ mod tests {
 
         assert_eq!(result.result.unwrap()["ok"], true);
         assert_eq!(fs::read_to_string(root.join("note.txt")).unwrap(), "after\n");
+
         let _ = fs::remove_dir_all(root);
     }
 }

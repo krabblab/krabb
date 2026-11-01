@@ -50,7 +50,9 @@ async fn plugin_main() -> krabb_core::Result<()> {
     private(&path)?;
     migrate(&db)?;
     private_sidecars(&path)?;
+
     let db = Arc::new(Mutex::new(db));
+
     serve_with(
         Hello {
             protocol: Protocol::CURRENT,
@@ -268,6 +270,7 @@ fn data(db: &mut Connection, params: &serde_json::Value) -> krabb_core::Result<s
         params["operation"].as_str().ok_or_else(|| denied("data.operation is required."))?;
 
     let database = optional_label(params, "database", "default", "data.database", 64)?;
+
     let table = if matches!(
         operation,
         "create_table"
@@ -890,6 +893,7 @@ fn data_command(args: &[&str]) -> krabb_core::Result<serde_json::Value> {
         ["column", "add", database, table, name, kind, "--required"] => {
             request["database"] = serde_json::json!(database);
             request["table"] = serde_json::json!(table);
+
             request["column"] = serde_json::json!({
                 "name": name, "type": column_type(kind), "required": true
             });
@@ -927,6 +931,7 @@ fn data_command(args: &[&str]) -> krabb_core::Result<serde_json::Value> {
             request["database"] = serde_json::json!(database);
             request["table"] = serde_json::json!(table);
             request["filter"] = parse_json_arg(filter, "filter")?;
+
             request["after_id"] = serde_json::json!(
                 after_id
                     .parse::<i64>()
@@ -937,6 +942,7 @@ fn data_command(args: &[&str]) -> krabb_core::Result<serde_json::Value> {
         ["update", database, table, id, record] => {
             request["database"] = serde_json::json!(database);
             request["table"] = serde_json::json!(table);
+
             request["id"] = serde_json::json!(
                 id.parse::<i64>().map_err(|_| denied("record ID must be a positive integer."))?
             );
@@ -947,6 +953,7 @@ fn data_command(args: &[&str]) -> krabb_core::Result<serde_json::Value> {
         ["delete", database, table, id] => {
             request["database"] = serde_json::json!(database);
             request["table"] = serde_json::json!(table);
+
             request["id"] = serde_json::json!(
                 id.parse::<i64>().map_err(|_| denied("record ID must be a positive integer."))?
             );
@@ -1052,6 +1059,7 @@ fn lease(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<serd
     // TTL is in seconds; 86,400 seconds is 24 hours.
     let ttl = params["ttl"].as_u64().unwrap_or(30).clamp(1, 86_400) as i64;
     let expires = now() + ttl;
+
     let count = db
         .execute(
             "INSERT INTO lease(name, owner, expires) VALUES(?1, ?2, ?3) ON CONFLICT(name) DO UPDATE SET owner = excluded.owner, expires = excluded.expires WHERE lease.expires <= ?4 OR lease.owner = excluded.owner",
@@ -1083,6 +1091,7 @@ fn release(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<se
 fn enqueue(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<serde_json::Value> {
     let dedupe = key(params, "enqueue.key")?;
     let value = value(&params["value"], "enqueue.value")?;
+
     let existing = db
         .query_row("SELECT id FROM outbox WHERE dedupe = ?1", params![dedupe], |row| {
             row.get::<_, i64>(0)
@@ -1124,6 +1133,7 @@ fn enqueue(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<se
 
 fn outbox(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<serde_json::Value> {
     let limit = params["limit"].as_u64().unwrap_or(50).clamp(1, 100) as i64;
+
     let mut statement = db
         .prepare("SELECT id, dedupe, value, attempts FROM outbox ORDER BY id LIMIT ?1")
         .map_err(|error| krabb_core::Error::Denied(format!("SQLite outbox failed: {error}.")))?;
@@ -1187,9 +1197,11 @@ fn retry(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<serd
 
 fn seen(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<serde_json::Value> {
     let value = key(params, "seen.key")?;
+
     // TTL is in seconds; defaults to 24 hours and is capped at 30 days.
     let ttl = params["ttl"].as_u64().unwrap_or(86_400).clamp(1, 2_592_000) as i64;
     let now = now();
+
     db.execute("DELETE FROM seen WHERE expires <= ?1", params![now]).map_err(|error| {
         krabb_core::Error::Denied(format!("SQLite deduplication failed: {error}."))
     })?;
@@ -1214,6 +1226,8 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    mod data;
+
     use super::{DB_LIMIT, data_command, migrate, private, store};
 
     use krabb_core::types::Request;
@@ -1221,7 +1235,7 @@ mod tests {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
-    fn db() -> Arc<Mutex<Connection>> {
+    pub(super) fn db() -> Arc<Mutex<Connection>> {
         let db = Connection::open_in_memory().unwrap();
         migrate(&db).unwrap();
         Arc::new(Mutex::new(db))

@@ -15,6 +15,7 @@ use tracing::{
 
 use tracing_subscriber::{
     EnvFilter,
+    filter::filter_fn,
     fmt::{FmtContext, FormatEvent, FormatFields, format::Writer},
     layer::{Layer, SubscriberExt},
     registry::LookupSpan,
@@ -120,6 +121,15 @@ fn terminal_filter(mode: Mode) -> Option<&'static str> {
     }
 }
 
+fn safe_metadata(metadata: &tracing::Metadata<'_>) -> bool {
+    // WebSocket transports log credential-bearing URLs and recoverable frame payloads.
+    // Apply this globally, before formatting, independently of user verbosity filters.
+    !["tungstenite", "tokio_tungstenite"].iter().any(|target| {
+        metadata.target() == *target
+            || metadata.target().strip_prefix(target).is_some_and(|tail| tail.starts_with("::"))
+    })
+}
+
 fn settings(
     _mode: Mode,
     krabb_filter: Option<&str>,
@@ -127,6 +137,7 @@ fn settings(
     format: Option<&str>,
 ) -> Settings {
     let default = default_filter();
+
     let mut invalid_filter = false;
 
     let filter = [krabb_filter, rust_filter]
@@ -193,6 +204,7 @@ fn initialize_with_command_log_enabled(mode: Mode, capture: bool) -> Option<Path
 
     let initialized = if let Some(filter) = terminal_filter(mode) {
         tracing_subscriber::registry()
+            .with(filter_fn(safe_metadata))
             .with(file_layer)
             .with(
                 tracing_subscriber::fmt::layer()
@@ -204,7 +216,11 @@ fn initialize_with_command_log_enabled(mode: Mode, capture: bool) -> Option<Path
             .try_init()
             .is_ok()
     } else {
-        tracing_subscriber::registry().with(file_layer).try_init().is_ok()
+        tracing_subscriber::registry()
+            .with(filter_fn(safe_metadata))
+            .with(file_layer)
+            .try_init()
+            .is_ok()
     };
 
     if initialized && (settings.invalid_filter || settings.invalid_format) {
@@ -220,11 +236,15 @@ fn initialize_with_command_log_enabled(mode: Mode, capture: bool) -> Option<Path
 
 fn initialize_terminal(mode: Mode) {
     if let Some(filter) = terminal_filter(mode) {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new(filter))
-            .with_writer(std::io::stderr)
-            .with_target(true)
-            .with_ansi(false)
+        let _ = tracing_subscriber::registry()
+            .with(filter_fn(safe_metadata))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_target(true)
+                    .with_ansi(false)
+                    .with_filter(EnvFilter::new(filter)),
+            )
             .try_init();
     }
 }
@@ -241,7 +261,9 @@ impl LogFile {
         let home = application_home();
 
         let directory = home.join("logs");
+
         create_private_dir(&directory).ok()?;
+
         let extension = match format {
             Format::Text => "log",
             Format::Json => "jsonl",

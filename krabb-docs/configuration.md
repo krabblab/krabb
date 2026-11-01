@@ -111,6 +111,10 @@ Approval modes are:
 - `prompt`: Require a signed, single-use inline approval for each mutating
   tool call. Approval buttons expire after five minutes and are bound to the
   channel, chat, thread, session, tool, and exact arguments.
+  Approvals show complete arguments: up to 512 JSON bytes for tool calls or 1,024
+  for schedules including captured context, within a 2,000-byte message. Oversized
+  requests are rejected; shorten them to review in full. ACP uses the same limits
+  and includes the host-selected workspace.
 - `auto`: Permit mutating tool calls without an interactive confirmation.
 
 Use `prompt` for interactive Telegram and Discord channels. Use `auto` only
@@ -239,7 +243,8 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_ACP_COMMAND` | External ACP agent executable |
 | `KRABB_ACP_ARGS` | JSON array of ACP executable arguments |
 | `KRABB_A2A_AGENT_CARD` | Remote A2A agent card URL |
-| `KRABB_A2A_TOKEN` | Optional A2A bearer token |
+| `KRABB_A2A_RPC_ORIGIN` | Explicit trusted RPC origin when different from the configured agent card origin |
+| `KRABB_A2A_TOKEN` | Optional bearer token bound to the configured A2A origin or explicit RPC mapping |
 | `KRABB_AG_UI_LISTEN` | Loopback AG-UI address; defaults to `127.0.0.1:8787` |
 | `KRABB_SANDBOX_RUNTIME` | `docker`, `podman`, or `off`; shell sandbox required on macOS and other non-Linux Unix hosts |
 | `KRABB_SANDBOX_IMAGE` | Locally available image used by the shell sandbox |

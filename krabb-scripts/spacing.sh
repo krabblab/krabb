@@ -108,8 +108,6 @@ scan_delimiters() {
     local next_index
     local expected_hashes=''
     local actual_hashes=''
-    local escaped=false
-    local quote=
     paren_delta=0
     bracket_delta=0
     brace_delta=0
@@ -126,26 +124,48 @@ scan_delimiters() {
                 actual_hashes=${value:index+1:state_ref}
                 if [[ "$actual_hashes" == "$expected_hashes" ]]; then
                     state_ref=-1
-                    break
+                    index=$((index + ${#expected_hashes}))
                 fi
             fi
             continue
         fi
 
-        if [[ -n "$quote" ]]; then
+        if [[ -n "$string_quote" ]]; then
             if $escaped; then
                 escaped=false
-            elif [[ "$character" == '\\' ]]; then
+            elif [[ "$character" == '\' ]]; then
                 escaped=true
-            elif [[ "$character" == "$quote" ]]; then
-                quote=
+            elif [[ "$character" == "$string_quote" ]]; then
+                string_quote=
             fi
+            continue
+        fi
+
+        if ((comment_depth > 0)); then
+            if [[ ${value:index:2} == '/*' ]]; then
+                comment_depth=$((comment_depth + 1))
+                index=$((index + 1))
+            elif [[ ${value:index:2} == '*/' ]]; then
+                comment_depth=$((comment_depth - 1))
+                index=$((index + 1))
+            fi
+            continue
+        fi
+
+        if [[ ${value:index:2} == '/*' ]]; then
+            comment_depth=1
+            index=$((index + 1))
+            continue
+        fi
+
+        if [[ "$character" == "'" && ${value:index} =~ $character_literal ]]; then
+            index=$((index + ${#BASH_REMATCH[0]} - 1))
             continue
         fi
 
         case "$character" in
             '"')
-                quote=$character
+                string_quote=$character
                 ;;
 
             r)
@@ -190,6 +210,8 @@ scan_delimiters() {
                 ;;
         esac
     done
+
+    escaped=false
 }
 
 format_file() {
@@ -204,7 +226,8 @@ format_file() {
     local multiline_indent=0
     local chain=false chain_lines=0
     local paren_depth=0 bracket_depth=0 brace_depth=0
-    local raw_state=-1
+    local raw_state=-1 string_quote= escaped=false comment_depth=0
+    local character_literal="^'([^'\\]|\\\\([^u]|u\\{[0-9a-fA-F]+\\}))'"
     local raw_line=false
     local temporary
 
@@ -216,9 +239,11 @@ format_file() {
         leading=${line%%[![:space:]]*}
         current_indent=${#leading}
         raw_line=false
-        if ((raw_state >= 0)); then
+        if ((raw_state >= 0 || comment_depth > 0)) || [[ -n "$string_quote" ]]; then
             raw_line=true
         fi
+
+        scan_delimiters "$line" raw_state
 
         if ! $raw_line && $pending_blank; then
             if [[ -n "$trimmed" ]] && ! is_continuation "$trimmed"; then
@@ -257,6 +282,11 @@ format_file() {
                     needs_blank=true
                 fi
 
+                if [[ "$previous_trimmed" == '},' && "$trimmed" == *'=>'* ]] \
+                    && ((current_indent == previous_indent)); then
+                    needs_blank=true
+                fi
+
                 if is_closing_block "$previous_trimmed" \
                     && ((current_indent <= previous_indent)) \
                     && { ! is_continuation "$trimmed" || [[ "$trimmed" == //* ]] \
@@ -273,6 +303,25 @@ format_file() {
                     needs_blank=true
                 fi
 
+                if ! $multiline && ! $chain \
+                    && ((current_indent == previous_indent)) \
+                    && [[ "$previous_trimmed" == *\; ]]; then
+                    if is_multiline_start "$trimmed" \
+                        || { is_assertion "$previous_trimmed" \
+                            && ! is_assertion "$trimmed" && ! is_continuation "$trimmed"; }; then
+                        needs_blank=true
+                    fi
+
+                    if [[ "$trimmed" =~ ^let[[:space:]] ]] \
+                        && [[ ! "$previous_trimmed" =~ ^(let|use|const|static)[[:space:]] ]]; then
+                        needs_blank=true
+                    elif [[ "$previous_trimmed" =~ ^let[[:space:]] ]] \
+                        && [[ ! "$trimmed" =~ ^(let|const|static)[[:space:]] ]] \
+                        && ! is_continuation "$trimmed"; then
+                        needs_blank=true
+                    fi
+                fi
+
                 if $needs_blank; then
                     append_blank formatted
                 fi
@@ -283,12 +332,12 @@ format_file() {
 
         if $multiline; then
             multiline_lines=$((multiline_lines + 1))
-            scan_delimiters "$line" raw_state
             paren_depth=$((paren_depth + paren_delta))
             bracket_depth=$((bracket_depth + bracket_delta))
             brace_depth=$((brace_depth + brace_delta))
 
-            if [[ "$trimmed" == *\; ]] \
+            if [[ "$trimmed" == *\; && -z "$string_quote" ]] \
+                && ((raw_state < 0 && comment_depth == 0)) \
                 && ((paren_depth <= 0 && bracket_depth <= 0)) \
                 && ((brace_depth <= 0 || current_indent <= multiline_indent)); then
                 multiline=false
@@ -304,17 +353,16 @@ format_file() {
                     pending_blank=true
                 fi
             fi
-        elif [[ "$trimmed" == .* ]]; then
+        elif ! $raw_line && [[ "$trimmed" == .* ]]; then
             chain=true
             chain_lines=1
-        elif is_multiline_start "$trimmed"; then
+        elif ! $raw_line && is_multiline_start "$trimmed"; then
             multiline=true
             multiline_lines=1
             multiline_indent=$current_indent
             paren_depth=0
             bracket_depth=0
             brace_depth=0
-            scan_delimiters "$line" raw_state
             paren_depth=$paren_delta
             bracket_depth=$bracket_delta
             brace_depth=$brace_delta
@@ -346,6 +394,8 @@ while IFS= read -r -d '' path; do
     fi
 done < <(
     find "$repo_root" -type f -name '*.rs' \
+        ! -path "$repo_root/.revloop/*" \
+        ! -path "$repo_root/.krabb/loops/*" \
         -not -path "$repo_root/target/*" \
         -not -path "$repo_root/krabb-ci/.cache/*" \
         -not -path "$repo_root/krabb-ci/.target/*" \
@@ -353,241 +403,7 @@ done < <(
 )
 
 python_status=0
-python3 - "$repo_root" "$check_only" <<'PY' || python_status=$?
-import argparse
-import ast
-import re
-import sys
-import tokenize
-from io import StringIO
-from pathlib import Path
-
-
-ROOT = Path(sys.argv[1])
-CHECK_ONLY = sys.argv[2] == "true"
-IGNORED = {"node_modules", "target", ".git"}
-LINE_LIMIT = 100
-BLOCK_END = re.compile(r"^\}(?:\)|;|\);|\s*;)?$")
-CONTINUATION = re.compile(r"^(?:\}|else\b|catch\b|finally\b|[.,;\)\]])")
-
-
-def javascript_masks(lines):
-    masks = []
-    template_lines = []
-    quote = None
-    in_template = False
-    in_block_comment = False
-
-    for line in lines:
-        mask = []
-        started_in_template = in_template
-        index = 0
-
-        while index < len(line):
-            char = line[index]
-            following = line[index + 1] if index + 1 < len(line) else ""
-
-            if in_template:
-                if char == "\\":
-                    index += 2
-                    continue
-
-                if char == "`":
-                    in_template = False
-
-                index += 1
-                continue
-
-            if quote:
-                if char == "\\":
-                    index += 2
-                    continue
-
-                if char == quote:
-                    quote = None
-
-                index += 1
-                continue
-
-            if in_block_comment:
-                if char == "*" and following == "/":
-                    in_block_comment = False
-                    index += 2
-                else:
-                    index += 1
-
-                continue
-
-            if char == "/" and following == "/":
-                break
-
-            if char == "/" and following == "*":
-                in_block_comment = True
-                index += 2
-                continue
-
-            if char in "'\"":
-                quote = char
-                index += 1
-                continue
-
-            if char == "`":
-                in_template = True
-                index += 1
-                continue
-
-            mask.append(char)
-            index += 1
-
-        masks.append("".join(mask))
-        template_lines.append(started_in_template)
-
-        if quote:
-            quote = None
-
-    return masks, template_lines
-
-
-def format_javascript(source):
-    lines = source.splitlines()
-    masks, template_lines = javascript_masks(lines)
-
-    for number, line in enumerate(lines, 1):
-        if len(line) > LINE_LIMIT:
-            raise ValueError(f"line {number} exceeds the {LINE_LIMIT}-column limit.")
-
-    for line, in_template in zip(lines, template_lines, strict=True):
-        if line.strip() and not in_template:
-            leading = len(line) - len(line.lstrip(" "))
-
-            if "\t" in line[:leading]:
-                raise ValueError("JavaScript indentation must use spaces.")
-
-            if leading % 4:
-                raise ValueError("JavaScript indentation must use four spaces per level.")
-
-    output = []
-
-    for index, line in enumerate(lines):
-        output.append(line)
-
-        if line.strip() and masks[index].strip() and BLOCK_END.fullmatch(masks[index].strip()):
-            next_index = index + 1
-
-            if next_index < len(lines):
-                next_code = masks[next_index].strip()
-                next_line = lines[next_index]
-                continued = bool(CONTINUATION.match(next_code))
-
-                if next_line.strip() and next_code and not continued:
-                    if output and output[-1].strip():
-                        output.append("")
-
-    return "\n".join(output) + "\n"
-
-
-def is_block_statement(statement):
-    return isinstance(
-        statement,
-        (
-            ast.AsyncFor,
-            ast.AsyncFunctionDef,
-            ast.AsyncWith,
-            ast.ClassDef,
-            ast.For,
-            ast.FunctionDef,
-            ast.If,
-            ast.Match,
-            ast.Try,
-            ast.While,
-            ast.With,
-        ),
-    )
-
-
-def format_python(source):
-    tree = ast.parse(source)
-    lines = source.splitlines()
-    boundaries = {}
-
-    for number, line in enumerate(lines, 1):
-        if len(line) > LINE_LIMIT:
-            raise ValueError(f"line {number} exceeds the {LINE_LIMIT}-column limit.")
-
-    def visit(node):
-        for value in vars(node).values():
-            if isinstance(value, list):
-                statements = [item for item in value if isinstance(item, ast.stmt)]
-                top_level = isinstance(node, ast.Module)
-
-                for previous, current in zip(statements, statements[1:]):
-                    if not is_block_statement(previous) and not is_block_statement(current):
-                        continue
-
-                    definitions = (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef)
-                    blank_lines = 2 if top_level and any(
-                        isinstance(statement, definitions) for statement in (previous, current)
-                    ) else 1
-
-                    after_line = previous.end_lineno or previous.lineno
-                    boundaries[after_line] = max(boundaries.get(after_line, 0), blank_lines)
-
-                for item in value:
-                    if isinstance(item, ast.AST):
-                        visit(item)
-
-            elif isinstance(value, ast.AST):
-                visit(value)
-
-    visit(tree)
-
-    for token in tokenize.generate_tokens(StringIO(source).readline):
-        if token.type == tokenize.INDENT:
-            if "\t" in token.string or len(token.string) % 4:
-                raise ValueError("Python indentation must use four spaces per level.")
-
-    for after_line, blank_lines in sorted(boundaries.items(), reverse=True):
-        index = after_line
-        existing = 0
-
-        while index + existing < len(lines) and not lines[index + existing].strip():
-            existing += 1
-
-        lines[index : index + existing] = [""] * blank_lines
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
-status = 0
-paths = sorted(
-    path
-    for suffix in ("*.mjs", "*.py")
-    for path in ROOT.rglob(suffix)
-    if not any(part in IGNORED for part in path.relative_to(ROOT).parts)
-)
-
-for path in paths:
-    original = path.read_text()
-
-    try:
-        formatted = format_javascript(original) if path.suffix == ".mjs" else format_python(original)
-    except (SyntaxError, tokenize.TokenError, ValueError) as error:
-        print(f"[ERROR] {path.relative_to(ROOT)}: {error}", file=sys.stderr)
-        status = 1
-        continue
-
-    if formatted == original:
-        continue
-
-    if CHECK_ONLY:
-        print(f"[WARN] Code spacing needs formatting: {path.relative_to(ROOT)}", file=sys.stderr)
-        status = 1
-    else:
-        path.write_text(formatted)
-        print(f"[FIXED] {path.relative_to(ROOT)}")
-
-raise SystemExit(status)
-PY
+python3 "$repo_root/krabb-scripts/spacing.py" "$repo_root" "$check_only" || python_status=$?
 
 if ((python_status != 0)); then
     status=1

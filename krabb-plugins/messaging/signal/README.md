@@ -13,5 +13,7 @@ files are normalized through the channel boundary. Attachments are resolved
 through `signal-cli` and cached in `KRABB_MEDIA` (or `KRABB_HOME/media`);
 polled events are retained in a crash-safe inbox under `KRABB_HOME` until
 the host acknowledges them. Cached attachments expire after 24 hours and are
-bounded to 64 MiB; local attachment files are confined there before they are
+bounded to 64 MiB and 256 files. Oldest files are evicted before storage, and cleanup
+failures reject storage; protected session images are preserved. Local attachment files
+are confined there before they are
 sent. Outgoing replies use the standard Krabb delivery contract.

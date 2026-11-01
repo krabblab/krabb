@@ -10,6 +10,9 @@ The plugin supports Anthropic Messages responses, including Server-Sent Event
 streams. Set `KRABB_ANTHROPIC_KEY`, or use the
 `anthropic` operating-system keyring entry with `KRABB_KEYRING=1`.
 
+Streaming generations finish at `message_stop`, preserving the completed text
+and tool calls without waiting for the transport to close.
+
 The plugin advertises image-request support during its handshake and sends
 confined images as bounded base64 or HTTPS image blocks. The selected Claude
 model must support vision.

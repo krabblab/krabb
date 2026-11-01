@@ -67,9 +67,11 @@ mod tests {
     fn path_is_confined_to_root() {
         let root = std::env::temp_dir().join(format!("krabb-policy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("note.txt"), "hello").unwrap();
         fs::write(root.parent().unwrap().join("krabb-policy-outside"), "outside").unwrap();
+
         let policy = Policy { root: Some(root.clone()), ..Policy::default() };
 
         assert_eq!(

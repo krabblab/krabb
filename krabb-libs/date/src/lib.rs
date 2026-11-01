@@ -131,6 +131,7 @@ pub fn format_duration(mut seconds: u64) -> String {
 
         _ => {
             let last = parts.pop().unwrap_or_default();
+
             format!("{} and {last}", parts.join(", "))
         }
     }
@@ -285,6 +286,7 @@ mod tests {
         );
 
         assert_eq!(format_datetime_in_timezone(1_700_000_000, "UTC"), "2023-11-14 22:13:20 UTC");
+
         assert_eq!(
             format_datetime_in_timezone(1_700_000_000, "+03:00"),
             "2023-11-15 01:13:20 +03:00 (+03:00; 2023-11-14 22:13:20 UTC)"

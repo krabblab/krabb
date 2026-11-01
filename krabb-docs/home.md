@@ -20,3 +20,4 @@ Use these guides to install, configure, operate, and extend Krabb.
 15. [Product](product.md) — capabilities, boundaries, and engineering principles.
 16. [Compatibility And Functional Verification](../COMPATIBILITY.md) — OS
     functional status, CI coverage, and plugin tests.
+17. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.

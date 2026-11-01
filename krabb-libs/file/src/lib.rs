@@ -1,12 +1,17 @@
 #![allow(unsafe_code)]
 
+mod cache;
+
 use serde::{Deserialize, Serialize};
+
 use std::{
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+pub use cache::trim;
 
 // Stable SID for NT SERVICE\Krabb, as reported by `sc.exe showsid Krabb`.
 #[cfg(any(windows, test))]
@@ -80,6 +85,7 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
     }
 
     reject_link(path)?;
+
     let nonce = nonce();
     let temporary = path.with_file_name(format!(".{}.tmp-{}", name(path), nonce));
     let backup = path.with_file_name(format!(".{}.backup-{}", name(path), nonce));
@@ -127,6 +133,7 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
 
     if let Err(error) = result {
         let _ = fs::remove_file(&temporary);
+
         return Err(error);
     }
 
@@ -143,9 +150,11 @@ pub fn append(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<(
     reject_link(path)?;
 
     let mut options = OpenOptions::new();
+
     options.append(true).create(true);
     #[cfg(unix)]
     options.mode(0o600);
+
     let mut file = options.open(path)?;
 
     if !file.metadata()?.is_file() {
@@ -179,9 +188,11 @@ pub fn append_jsonl(path: impl AsRef<Path>, record: impl AsRef<[u8]>) -> io::Res
     reject_link(path)?;
 
     let mut options = OpenOptions::new();
+
     options.read(true).write(true).create(true);
     #[cfg(unix)]
     options.mode(0o600);
+
     let mut file = options.open(path)?;
 
     if !file.metadata()?.is_file() {
@@ -197,7 +208,9 @@ pub fn append_jsonl(path: impl AsRef<Path>, record: impl AsRef<[u8]>) -> io::Res
 
     if length > 0 {
         file.seek(SeekFrom::End(-1))?;
+
         let mut last = [0_u8; 1];
+
         file.read_exact(&mut last)?;
 
         if last[0] != b'\n' {
@@ -207,6 +220,7 @@ pub fn append_jsonl(path: impl AsRef<Path>, record: impl AsRef<[u8]>) -> io::Res
             while start > 0 {
                 let chunk_start = start.saturating_sub(chunk.len() as u64);
                 let count = (start - chunk_start) as usize;
+
                 file.seek(SeekFrom::Start(chunk_start))?;
                 file.read_exact(&mut chunk[..count])?;
 
@@ -241,11 +255,13 @@ pub fn append_jsonl(path: impl AsRef<Path>, record: impl AsRef<[u8]>) -> io::Res
 
 pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
+
     let Some(parent) = path.parent() else {
         return Ok(());
     };
 
     let prefix = format!(".{}.txn-", name(path));
+
     let entries = match fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -271,6 +287,21 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
 
         if transaction.path != name(path) {
             continue;
+        }
+
+        let journal_name = entry.file_name();
+        let suffix = journal_name.to_str().and_then(|value| value.strip_prefix(&prefix));
+
+        if !suffix.is_some_and(|suffix| {
+            !suffix.is_empty()
+                && !suffix.contains(['/', '\\', ':'])
+                && transaction.temporary == format!(".{}.tmp-{suffix}", name(path))
+                && transaction.backup == format!(".{}.backup-{suffix}", name(path))
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "State journal references do not match its transaction files.",
+            ));
         }
 
         let temporary = parent.join(&transaction.temporary);
@@ -315,8 +346,10 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
 pub fn private(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     let metadata = metadata(path)?;
+
     #[cfg(windows)]
     let _ = metadata;
+
     #[cfg(unix)]
     {
         let mut permissions = metadata.permissions();
@@ -332,6 +365,7 @@ pub fn private(path: impl AsRef<Path>) -> io::Result<()> {
 
 pub fn credential(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
+
     check(path)?;
 
     if metadata(path)?.len() > CREDENTIAL_LIMIT {
@@ -347,8 +381,10 @@ pub fn credential(path: impl AsRef<Path>) -> io::Result<()> {
 pub fn check(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     let metadata = metadata(path)?;
+
     #[cfg(windows)]
     let _ = metadata;
+
     #[cfg(unix)]
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "State file must be private."));
@@ -387,9 +423,11 @@ fn write_journal(path: &Path, transaction: &Transaction) -> io::Result<()> {
     let bytes = serde_json::to_vec(transaction).map_err(io::Error::other)?;
     let temporary = path.with_file_name(format!(".journal-{}-{}", name(path), nonce()));
     let mut options = OpenOptions::new();
+
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
+
     let mut file = options.open(&temporary)?;
 
     let result = (|| {
@@ -467,6 +505,7 @@ pub fn service(path: impl AsRef<Path>) -> io::Result<()> {
 #[cfg(windows)]
 fn owner(path: &Path) -> io::Result<String> {
     use std::os::windows::ffi::OsStrExt;
+
     use windows_sys::Win32::{
         Foundation::{ERROR_SUCCESS, LocalFree},
         Security::{
@@ -475,11 +514,16 @@ fn owner(path: &Path) -> io::Result<String> {
         },
     };
 
-    let wide =
-        path.as_os_str().encode_wide().map(windows_separator).chain(Some(0)).collect::<Vec<_>>();
+    let wide = fs::canonicalize(path)?
+        .as_os_str()
+        .encode_wide()
+        .map(windows_separator)
+        .chain(Some(0))
+        .collect::<Vec<_>>();
 
     let mut descriptor = std::ptr::null_mut();
     let mut sid = std::ptr::null_mut();
+
     let result = unsafe {
         GetNamedSecurityInfoW(
             wide.as_ptr(),
@@ -501,6 +545,7 @@ fn owner(path: &Path) -> io::Result<String> {
     let converted = unsafe { ConvertSidToStringSidW(sid, &mut text) };
 
     let error = io::Error::last_os_error();
+
     unsafe { LocalFree(descriptor) };
 
     if converted == 0 {
@@ -557,6 +602,13 @@ fn protect(path: &Path) -> io::Result<()> {
         },
     };
 
+    let mut wide = fs::canonicalize(path)?
+        .as_os_str()
+        .encode_wide()
+        .map(windows_separator)
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
     let mut descriptor = std::ptr::null_mut();
     let mut length = 0;
     let principal = principal(path, owner)?;
@@ -584,6 +636,7 @@ fn protect(path: &Path) -> io::Result<()> {
     let mut present = 0;
     let mut defaulted = 0;
     let mut dacl = std::ptr::null_mut();
+
     let result =
         unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) };
 
@@ -593,8 +646,6 @@ fn protect(path: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
 
-    let mut wide = path.as_os_str().encode_wide().map(windows_separator).collect::<Vec<_>>();
-    wide.push(0);
     let result = unsafe {
         SetNamedSecurityInfoW(
             wide.as_mut_ptr(),
@@ -623,6 +674,8 @@ fn windows_separator(value: u16) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    mod recovery;
+
     use super::{
         Transaction, append, append_jsonl, check, credential, load, private, recover, save,
     };
@@ -636,7 +689,7 @@ mod tests {
         assert_eq!(super::windows_separator(b'\\' as u16), b'\\' as u16);
     }
 
-    fn root(name: &str) -> std::path::PathBuf {
+    pub(super) fn root(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("krabb-file-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
@@ -709,6 +762,24 @@ mod tests {
         check(&path).unwrap();
         private(&path).unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn private_transactions_support_long_paths() {
+        let root = root("long-path");
+        let path =
+            root.join("a".repeat(80)).join("b".repeat(80)).join("c".repeat(80)).join("record.md");
+
+        assert!(path.as_os_str().len() > 260);
+
+        save(&path, b"original").unwrap();
+        check(&path).unwrap();
+        save(&path, b"updated").unwrap();
+        private(&path).unwrap();
+
+        assert_eq!(load(&path, 16).unwrap().as_deref(), Some(b"updated".as_slice()));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -792,15 +863,15 @@ mod tests {
     fn recovers_interrupted_transactions_and_rejects_invalid_state() {
         let root = root("recovery");
         let path = root.join("state.json");
-        let temporary = root.join(".state.json.tmp");
+        let temporary = root.join(".state.json.tmp-test");
         let journal = root.join(".state.json.txn-test");
         fs::write(&temporary, b"temporary").unwrap();
         fs::write(
             &journal,
             serde_json::to_vec(&Transaction {
                 path: "state.json".into(),
-                temporary: ".state.json.tmp".into(),
-                backup: ".state.json.backup".into(),
+                temporary: ".state.json.tmp-test".into(),
+                backup: ".state.json.backup-test".into(),
                 phase: "backed_up".into(),
             })
             .unwrap(),
@@ -846,22 +917,22 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"current");
 
         let _ = fs::remove_file(&path);
-        fs::write(root.join(".backup-prepared"), b"prepared backup").unwrap();
-        write_transaction(&root, "prepared", "tmp-unused", "backup-prepared");
+        fs::write(root.join(".state.json.backup-prepared"), b"prepared backup").unwrap();
+        write_transaction(&root, "prepared", "tmp-prepared", "backup-prepared");
         recover(&path).unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"prepared backup");
 
         let _ = fs::remove_file(&path);
-        fs::write(root.join(".backup-installed"), b"installed backup").unwrap();
-        write_transaction(&root, "installed", "tmp-unused", "backup-installed");
+        fs::write(root.join(".state.json.backup-installed"), b"installed backup").unwrap();
+        write_transaction(&root, "installed", "tmp-installed", "backup-installed");
         recover(&path).unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"installed backup");
 
         let _ = fs::remove_file(&path);
-        fs::write(root.join(".backup-backed-up"), b"backed up backup").unwrap();
-        write_transaction(&root, "backed_up", "tmp-missing", "backup-backed-up");
+        fs::write(root.join(".state.json.backup-backed_up"), b"backed up backup").unwrap();
+        write_transaction(&root, "backed_up", "tmp-backed_up", "backup-backed_up");
         recover(&path).unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"backed up backup");
@@ -891,8 +962,8 @@ mod tests {
             journal,
             serde_json::to_vec(&Transaction {
                 path: path.into(),
-                temporary: format!(".{temporary}"),
-                backup: format!(".{backup}"),
+                temporary: format!(".state.json.{temporary}"),
+                backup: format!(".state.json.{backup}"),
                 phase: phase.into(),
             })
             .unwrap(),

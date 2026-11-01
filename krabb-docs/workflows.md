@@ -46,8 +46,13 @@ make spacing
 make fmt
 ```
 
-The spacing formatter is idempotent and preserves the contents of Rust raw
-strings. Keep its inserted blank lines between adjacent multiline statements.
+`make spacing` separates control flow, multiline statements, and setup/assertion phases
+in Rust and Python; it also checks JavaScript block spacing. It preserves embedded strings
+and fixtures and is idempotent. Keep the inserted blank lines when editing.
+
+`make coverage` tests the runner, then measures each package with fresh workspace
+coverage data. Dependency builds remain cached; cleanup, test, and threshold failures
+fail the gate.
 
 Build only the plugins you plan to use. After changing a linked plugin, rebuild
 its package and run `krabb plugin install <id> --link`; the host health-checks the

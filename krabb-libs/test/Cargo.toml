@@ -1,0 +1,16 @@
+[package]
+name = "krabb-test"
+description = "Local fixtures and behavioral contracts shared by Krabb tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+krabb-core = { path = "../../krabb-core" }
+krabb-file = { path = "../file" }
+krabb-log.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

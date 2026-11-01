@@ -8,11 +8,11 @@ use krabb_core::{
     types::{Capability, Hello, Protocol},
 };
 
-#[cfg(not(test))]
 use futures_util::SinkExt;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
@@ -23,7 +23,6 @@ use std::{
 
 use tokio::{fs, net::TcpStream, sync::Mutex};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-#[cfg(not(test))]
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -141,6 +140,7 @@ fn persisted_event(event: &Value) -> Value {
 
 fn exposed_event(event: &Value) -> Value {
     let mut event = event.clone();
+
     let Some(text) = event["text"].as_str().filter(|text| !text.is_empty()).map(str::to_owned)
     else {
         return event;
@@ -165,6 +165,7 @@ impl Inbox {
     fn pending_event(&self) -> Option<Value> {
         let pending = self.pending.first()?;
         let mut event = exposed_event(&pending.event);
+
         event["gateway_sequence"] = json!(pending.sequence);
         Some(event)
     }
@@ -179,6 +180,7 @@ impl Inbox {
     ) -> krabb_core::Result<()> {
         let events = events.into_iter().collect::<Vec<_>>();
         let staged = self.staged(&events, attachments, channel, scanned, cursor)?;
+
         save_inbox(&staged)?;
         *self = staged;
         Ok(())
@@ -192,6 +194,7 @@ impl Inbox {
     ) -> krabb_core::Result<()> {
         let events = events.into_iter().collect::<Vec<_>>();
         let staged = self.staged_with_history(&events, attachments, channel, None, None, false)?;
+
         save_inbox(&staged)?;
         *self = staged;
         Ok(())
@@ -230,6 +233,7 @@ impl Inbox {
         }
 
         let mut staged = self.clone();
+
         staged.attachments = attachments.clone();
 
         if let Some(timestamp) = scanned {
@@ -276,6 +280,7 @@ impl Inbox {
 
         while low < high {
             let middle = low + (high - low).div_ceil(2);
+
             let candidate =
                 self.staged(&events[..middle], attachments, channel, scanned, cursor)?;
 
@@ -458,6 +463,7 @@ fn slack_timestamp_cmp(left: &str, right: &str) -> Ordering {
     let left = left.split_once('.').unwrap_or((left, ""));
 
     let right = right.split_once('.').unwrap_or((right, ""));
+
     left.0
         .len()
         .cmp(&right.0.len())
@@ -480,6 +486,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
         .map_err(|error| krabb_core::Error::Denied(format!("Slack client failed: {error}.")))?;
 
     let inbox = load_inbox()?;
+
     let app = Arc::new(App {
         client,
         socket: Arc::new(Mutex::new(None)),
@@ -539,16 +546,6 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
     Ok(Some(Response::ok(id, result)))
 }
 
-#[cfg(not(test))]
-async fn api(
-    client: &reqwest::Client,
-    token: &str,
-    method: &str,
-    body: Value,
-) -> krabb_core::Result<Value> {
-    api_at(client, token, method, body, "https://slack.com/api").await
-}
-
 async fn api_at(
     client: &reqwest::Client,
     token: &str,
@@ -585,6 +582,7 @@ async fn api_at(
         })?;
 
     let status = response.status();
+
     let retry_after = response
         .headers()
         .get("retry-after")
@@ -592,6 +590,7 @@ async fn api_at(
         .and_then(|value| value.parse::<u64>().ok());
 
     let body = collect_api_body(response.bytes_stream()).await?;
+
     let value: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
 
@@ -609,6 +608,7 @@ async fn api_at(
 
     if status.as_u16() == 429 || value["error"] == "ratelimited" {
         let retry_after = value["retry_after"].as_u64().or(retry_after).unwrap_or_default();
+
         return Err(krabb_core::Error::Denied(format!(
             "Slack request rate limited; retry_after={retry_after}."
         )));
@@ -924,7 +924,6 @@ async fn poll_at(app: &App, token: &str, channels: &str, base: &str) -> krabb_co
     }))
 }
 
-#[cfg(not(test))]
 async fn acknowledge_envelope(stream: &mut Socket, envelope: &str) -> krabb_core::Result<()> {
     stream.send(Message::Text(json!({"envelope_id": envelope}).to_string().into())).await.map_err(
         |error| {
@@ -947,10 +946,19 @@ async fn socket_poll(
     token: &str,
     channels: &str,
 ) -> krabb_core::Result<Option<Vec<Value>>> {
+    socket_poll_at(app, token, channels, "https://slack.com/api").await
+}
+
+async fn socket_poll_at(
+    app: &App,
+    token: &str,
+    channels: &str,
+    base: &str,
+) -> krabb_core::Result<Option<Vec<Value>>> {
     let mut socket = app.socket.lock().await;
 
     if socket.is_none() {
-        let value = api(&app.client, token, "apps.connections.open", json!({})).await?;
+        let value = api_at(&app.client, token, "apps.connections.open", json!({}), base).await?;
         let url = value["url"].as_str().ok_or_else(|| {
             krabb_core::Error::Denied("Slack Socket Mode did not return a URL.".into())
         })?;
@@ -1390,6 +1398,10 @@ async fn send_at(
 
 #[cfg(test)]
 mod tests {
+    mod persistence;
+
+    mod logging;
+
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

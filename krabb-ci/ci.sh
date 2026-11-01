@@ -63,7 +63,7 @@ local_make fmt clippy metrics
 RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR="$local_target_dir" \
     cargo doc --workspace --no-deps --locked
 
-bash -n krabb-scripts/*.sh install.sh
+local_make loops
 
 printf '\n[INFO] Local Test preflight\n'
 local_make coverage
@@ -79,6 +79,8 @@ mkdir -p "$cache_dir" "$artifact_dir"
 
 tar \
     --exclude=.git \
+    --exclude=.revloop \
+    --exclude=.krabb/loops \
     --exclude=target \
     --exclude=krabb-ci/.target \
     --exclude=krabb-ci/.cache \

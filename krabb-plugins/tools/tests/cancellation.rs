@@ -6,6 +6,26 @@ use krabb_core::{plugin::Process, types::Request};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
+mod support;
+
+#[test]
+#[ignore = "bounded Git filter child fixture"]
+fn git_worker() {
+    support::worker();
+}
+
+#[tokio::test]
+async fn restart_stops_git_filter_descendants() {
+    let repo = support::Repository::new("restart", "git_worker", true);
+
+    let process =
+        restart_stops(&repo.0, Request::call(2, "git", json!({"approve": true, "args": ["diff"]})))
+            .await;
+
+    repo.assert_stopped().await;
+    process.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn restart_stops_an_active_approved_shell() {
     #[cfg(unix)]
@@ -22,6 +42,7 @@ async fn restart_stops_an_active_approved_shell() {
 async fn restart_stops_a_worker_that_attempts_to_detach() {
     let executable = std::env::current_exe().unwrap();
     let executable = executable.to_str().unwrap().replace('\'', "'\\''");
+
     let command = format!(
         "KRABB_TEST_DETACH=1 '{executable}' --exact detached_worker --ignored --nocapture & wait"
     );
@@ -39,6 +60,7 @@ fn detached_worker() {
 
     let _ = rustix::process::setsid();
     let _ = rustix::process::setpgid(None, None);
+
     std::fs::write("ready", "ready").unwrap();
     std::thread::sleep(Duration::from_secs(2));
     std::fs::write("leaked", "leaked").unwrap();
@@ -49,15 +71,33 @@ async fn restart_stops_shell(name: &str, command: &str) {
         std::env::temp_dir().join(format!("krabb-shell-cancel-{name}-{}", std::process::id()));
 
     std::fs::create_dir(&root).unwrap();
+
+    let process = restart_stops(
+        &root,
+        Request::call(2, "shell", json!({"approve": true, "command": command})),
+    )
+    .await;
+
+    sleep(Duration::from_millis(2200)).await;
+
+    assert!(!root.join("leaked").exists(), "cancelled shell wrote after restart");
+
+    process.stop().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+async fn restart_stops(root: &std::path::Path, request: Request) -> Process {
     let mut environment = std::collections::BTreeMap::<std::ffi::OsString, _>::new();
+
     environment.insert("PATH".into(), std::env::var_os("PATH").unwrap_or_default());
 
     if let Some(system_root) = std::env::var_os("SystemRoot") {
         environment.insert("SystemRoot".into(), system_root);
     }
 
-    environment.insert("KRABB_ROOT".into(), root.clone().into_os_string());
-    environment.insert("XDG_CONFIG_HOME".into(), root.clone().into_os_string());
+    environment.insert("KRABB_ROOT".into(), root.as_os_str().to_owned());
+    environment.insert("XDG_CONFIG_HOME".into(), root.as_os_str().to_owned());
+    environment.insert("GIT_CONFIG_GLOBAL".into(), root.join("absent-config").into_os_string());
     environment.insert("KRABB_SHELL".into(), "ask".into());
 
     let mut process = Process::start_with_env(
@@ -71,14 +111,7 @@ async fn restart_stops_shell(name: &str, command: &str) {
     let mut stderr = process.take_stderr().unwrap();
 
     {
-        let call = process.call(Request::call(
-            2,
-            "shell",
-            json!({
-                "approve": true,
-                "command": command
-            }),
-        ));
+        let call = process.call(request);
 
         tokio::pin!(call);
 
@@ -89,7 +122,7 @@ async fn restart_stops_shell(name: &str, command: &str) {
                         let messages = std::iter::from_fn(|| stderr.try_recv().ok())
                             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                             .collect::<String>();
-                        panic!("shell ended before cancellation: {result:?}; plugin stderr: {messages}");
+                        panic!("tool ended before cancellation: {result:?}; plugin stderr: {messages}");
                     },
 
                     _ = sleep(Duration::from_millis(10)) => {
@@ -110,19 +143,16 @@ async fn restart_stops_shell(name: &str, command: &str) {
 
     assert!(response.error.is_none());
 
-    sleep(Duration::from_millis(2200)).await;
-
-    assert!(!root.join("leaked").exists(), "cancelled shell wrote after restart");
-
-    process.stop().await.unwrap();
-    std::fs::remove_dir_all(root).unwrap();
+    process
 }
 
 #[cfg(windows)]
 #[tokio::test]
 async fn output_limit_cleanup_preserves_protocol_framing() {
     let root = std::env::temp_dir().join(format!("krabb-shell-framing-{}", std::process::id()));
+
     std::fs::create_dir(&root).unwrap();
+
     std::fs::write(
         root.join("output.cmd"),
         format!(
@@ -133,6 +163,7 @@ async fn output_limit_cleanup_preserves_protocol_framing() {
     .unwrap();
 
     let mut environment = std::collections::BTreeMap::<std::ffi::OsString, _>::new();
+
     environment.insert("PATH".into(), std::env::var_os("PATH").unwrap_or_default());
 
     if let Some(system_root) = std::env::var_os("SystemRoot") {

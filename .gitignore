@@ -1,5 +1,6 @@
 target/
 .revloop/
+.krabb/loops/
 krabb-ci/.cache/
 krabb-ci/.artifacts/
 krabb-ci/.target/
@@ -13,3 +14,5 @@ metadata/
 .env.*
 !.env.example
 SENSITIVE.md
+
+krabb-loops/**/__pycache__/

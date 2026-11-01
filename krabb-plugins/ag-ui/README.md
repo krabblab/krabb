@@ -11,7 +11,9 @@ comma-separated list of exact loopback origins, for example
 `http://localhost:3000`. Other origins are rejected even with a valid token.
 Preflight requests do not need a token; actual requests always do.
 Incomplete request headers and bodies time out after 10 seconds, releasing
-the connection slot. At most four requests are processed concurrently.
+the connection slot. At most four requests are processed concurrently. Additional
+requests receive HTTP 503; the server drains bounded input after sending the response
+to avoid resetting the connection before the client can read it.
 
 Run `krabb ag-ui`. The command stays active until interrupted and prints its
 bound address. Send a JSON run input to `POST /` with `threadId`, `runId`, and

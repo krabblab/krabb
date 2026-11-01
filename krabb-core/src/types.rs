@@ -65,19 +65,23 @@ pub enum Content {
     Text {
         text: String,
     },
+
     Image {
         uri: String,
         alt: Option<String>,
     },
+
     File {
         uri: String,
         name: String,
         mime: Option<String>,
     },
+
     Audio {
         uri: String,
         mime: Option<String>,
     },
+
     ToolCall {
         name: String,
         args: Value,
@@ -176,6 +180,7 @@ pub enum Event {
     Text {
         text: String,
     },
+
     Tool {
         name: String,
         args: Value,
@@ -184,9 +189,11 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
     },
+
     Done {
         text: String,
     },
+
     Error {
         message: String,
     },
@@ -397,6 +404,7 @@ mod tests {
         assert_eq!(serde_json::to_value(content).unwrap()["kind"], "image");
 
         assert_eq!(Content::Text { text: "hello".into() }.render(), "hello");
+
         assert_eq!(
             Content::Image { uri: "file://image".into(), alt: Some("diagram".into()) }.render(),
             "[Image: diagram]"
@@ -439,6 +447,7 @@ mod tests {
         };
 
         assert_eq!(serde_json::to_value(event).unwrap()["kind"], "tool");
+
         let legacy = serde_json::from_value::<Event>(serde_json::json!({
             "kind": "tool",
             "name": "read",
@@ -475,17 +484,21 @@ mod tests {
         let mut request = IpcRequest::call(1, "token", "status", serde_json::json!({}));
 
         assert!(request.valid());
+
         request.token.clear();
 
         assert!(!request.valid());
+
         request.token = "token".into();
         request.method.clear();
 
         assert!(!request.valid());
+
         request.method = "status".into();
         request.jsonrpc = "1.0".into();
 
         assert!(!request.valid());
+
         let error = IpcResponse::fail(1, 400, "bad");
 
         assert_eq!(error.error.unwrap().code, 400);

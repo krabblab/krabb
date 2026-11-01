@@ -12,3 +12,6 @@ krabb-core = { path = "../../../krabb-core" }
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+krabb-test.workspace = true

@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use std::future::Future;
 use std::{net::SocketAddr, sync::Arc};
 use subtle::ConstantTimeEq;
+
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -98,6 +99,7 @@ async fn call(request: Request, emitter: Emitter) -> krabb_core::Result<Option<R
     }
 
     let address = listen_address(std::env::var("KRABB_AG_UI_LISTEN").ok().as_deref())?;
+
     start_command(id, address, emitter).await
 }
 
@@ -108,6 +110,7 @@ async fn start_command(
 ) -> krabb_core::Result<Option<Response>> {
     let bound_address = start_listener(address, emitter.clone(), Security::configured()?).await?;
     let mut emitter = emitter;
+
     emitter.event(json!({"text":format!("AG-UI listening on {bound_address}")})).await?;
 
     tokio::signal::ctrl_c().await.map_err(|error| {
@@ -164,8 +167,7 @@ async fn serve(listener: TcpListener, emitter: Emitter, security: Security) {
             Err(_) => {
                 let mut stream = stream;
 
-                if let Err(error) = tokio::time::timeout(
-                    REQUEST_TIMEOUT,
+                let response = tokio::time::timeout(REQUEST_TIMEOUT, async {
                     write_response(
                         &mut stream,
                         503,
@@ -173,11 +175,25 @@ async fn serve(listener: TcpListener, emitter: Emitter, security: Security) {
                         "application/json",
                         "{}",
                         None,
-                    ),
-                )
-                .await
-                {
-                    tracing::warn!(%error, "AG-UI busy response failed");
+                    )
+                    .await?;
+
+                    // Deliver the response before unread request bytes can trigger a TCP reset.
+                    stream.shutdown().await?;
+                    tokio::io::copy(
+                        &mut stream.take((HEADER_LIMIT + BODY_LIMIT) as u64),
+                        &mut tokio::io::sink(),
+                    )
+                    .await?;
+
+                    Ok::<(), krabb_core::Error>(())
+                })
+                .await;
+
+                match response {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::warn!(%error, "AG-UI busy response failed"),
+                    Err(error) => tracing::warn!(%error, "AG-UI busy response timed out"),
                 }
 
                 continue;
@@ -956,6 +972,8 @@ impl RunInput {
 
 #[cfg(test)]
 mod tests {
+    mod admission;
+
     #[test]
     fn validates_authentication_configuration() {
         for token in ["".into(), "short".into(), format!("{}\n", "a".repeat(32))] {

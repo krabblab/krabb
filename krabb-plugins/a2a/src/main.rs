@@ -79,6 +79,7 @@ struct A2aRequest {
 impl A2aRequest {
     fn parse(args: &[Value]) -> krabb_core::Result<Self> {
         let mut index = 0;
+
         let action = args
             .first()
             .and_then(Value::as_str)
@@ -152,15 +153,36 @@ impl A2aRequest {
     }
 }
 
+#[derive(Default)]
+struct A2aConfig {
+    card: Option<String>,
+    rpc_origin: Option<String>,
+    token: Option<String>,
+}
+
 async fn execute(
     client: &reqwest::Client,
     request: A2aRequest,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Value> {
-    let card_url =
-        request.card.or_else(|| std::env::var("KRABB_A2A_AGENT_CARD").ok()).ok_or_else(|| {
-            krabb_core::Error::Denied("KRABB_A2A_AGENT_CARD is not configured.".into())
-        })?;
+    let config = A2aConfig {
+        card: std::env::var("KRABB_A2A_AGENT_CARD").ok(),
+        rpc_origin: std::env::var("KRABB_A2A_RPC_ORIGIN").ok(),
+        token: std::env::var("KRABB_A2A_TOKEN").ok(),
+    };
+
+    execute_with(client, request, emitter, &config).await
+}
+
+async fn execute_with(
+    client: &reqwest::Client,
+    request: A2aRequest,
+    emitter: &mut Emitter,
+    config: &A2aConfig,
+) -> krabb_core::Result<Value> {
+    let card_url = request.card.or_else(|| config.card.clone()).ok_or_else(|| {
+        krabb_core::Error::Denied("KRABB_A2A_AGENT_CARD is not configured.".into())
+    })?;
 
     let card_url = validate_url(&card_url)?;
     let card = discover(client, &card_url).await?;
@@ -170,11 +192,15 @@ async fn execute(
     }
 
     let endpoint = rpc_endpoint(&card)?;
-    let token = std::env::var("KRABB_A2A_TOKEN").ok();
+
+    authorize_endpoint(&card_url, &endpoint, config)?;
+
+    let token = config.token.as_deref();
 
     match request.action.as_str() {
         "send" => {
             let streaming = request.stream.unwrap_or(card["capabilities"]["streaming"] == true);
+
             let mut message = json!({
                 "messageId": unique_id(),
                 "contextId": request.context,
@@ -195,9 +221,9 @@ async fn execute(
             });
 
             let result = if streaming {
-                stream_message(client, &endpoint, params, token.as_deref(), emitter).await?
+                stream_message(client, &endpoint, params, token, emitter).await?
             } else {
-                rpc(client, &endpoint, "SendMessage", params, token.as_deref()).await?
+                rpc(client, &endpoint, "SendMessage", params, token).await?
             };
 
             Ok(task_summary(&result))
@@ -205,22 +231,41 @@ async fn execute(
 
         "status" => {
             let result =
-                rpc(client, &endpoint, "GetTask", json!({"id": request.task}), token.as_deref())
-                    .await?;
+                rpc(client, &endpoint, "GetTask", json!({"id": request.task}), token).await?;
 
             Ok(task_summary(&result))
         }
 
         "cancel" => {
             let result =
-                rpc(client, &endpoint, "CancelTask", json!({"id": request.task}), token.as_deref())
-                    .await?;
+                rpc(client, &endpoint, "CancelTask", json!({"id": request.task}), token).await?;
 
             Ok(task_summary(&result))
         }
 
         _ => Err(krabb_core::Error::Denied("Unsupported A2A operation.".into())),
     }
+}
+
+fn authorize_endpoint(card: &Url, endpoint: &Url, config: &A2aConfig) -> krabb_core::Result<()> {
+    let configured_card = config.card.as_deref().map(validate_url).transpose()?;
+    let configured_origin = config.rpc_origin.as_deref().map(validate_url).transpose()?;
+    let matches_card = configured_card.as_ref().is_some_and(|url| url.origin() == card.origin());
+    let trusted = if matches_card { configured_origin.as_ref().unwrap_or(card) } else { card };
+
+    if endpoint.origin() != trusted.origin() {
+        return Err(krabb_core::Error::Denied(
+            "A2A RPC origin is not trusted. Configure KRABB_A2A_RPC_ORIGIN for the configured agent card.".into(),
+        ));
+    }
+
+    if config.token.as_deref().is_some_and(|token| !token.trim().is_empty()) && !matches_card {
+        return Err(krabb_core::Error::Denied(
+            "A2A bearer credentials require the configured agent card origin; an unrelated --card override cannot reuse them.".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 async fn discover(client: &reqwest::Client, card_url: &Url) -> krabb_core::Result<Value> {
@@ -270,7 +315,7 @@ fn validate_url(value: &str) -> krabb_core::Result<Url> {
         ));
     }
 
-    if url.scheme() != "https" && !loopback {
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
         return Err(krabb_core::Error::Denied(
             "A2A endpoints must use HTTPS outside loopback.".into(),
         ));
@@ -365,6 +410,7 @@ async fn stream_message(
 
         while let Some((end, delimiter)) = event_boundary(&buffer) {
             let event = buffer.drain(..end + delimiter).collect::<Vec<_>>();
+
             let event = std::str::from_utf8(&event)
                 .map_err(|_| krabb_core::Error::Protocol("A2A stream was not UTF-8.".into()))?;
 
@@ -386,6 +432,7 @@ async fn stream_message(
                 }
 
                 let event = value.get("result").unwrap_or(&value);
+
                 accumulate_event(&mut result, event);
                 emit_stream_event(event, emitter, &mut pending, &mut emitted).await?;
             }
@@ -601,26 +648,49 @@ fn event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        A2aRequest, artifact_text, execute, rpc_endpoint, task_summary, task_text, validate_url,
+        A2aConfig, A2aRequest, artifact_text, execute_with, rpc_endpoint, task_summary, task_text,
+        validate_url,
     };
 
-    use serde_json::json;
+    use serde_json::{Value, json};
+
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
     };
 
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(super::Duration::from_secs(2))
+            .build()
+            .unwrap()
+    }
+
     async fn mock_server(
         responses: Vec<(String, String)>,
     ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
         let address = listener.local_addr().unwrap();
+
         let handle = tokio::spawn(async move {
             let mut requests = Vec::new();
 
             for (content_type, body) in responses {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                requests.push(read_http_request(&mut stream).await);
+                let (mut stream, _) =
+                    tokio::time::timeout(super::Duration::from_secs(5), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                requests.push(
+                    tokio::time::timeout(
+                        super::Duration::from_secs(5),
+                        read_http_request(&mut stream),
+                    )
+                    .await
+                    .unwrap(),
+                );
                 let body = body.replace("MOCK_ENDPOINT", &format!("http://{address}"));
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -644,6 +714,7 @@ mod tests {
             let count = stream.read(&mut buffer).await.unwrap();
 
             assert_ne!(count, 0);
+
             bytes.extend_from_slice(&buffer[..count]);
 
             if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
@@ -653,6 +724,7 @@ mod tests {
         }
 
         let header = String::from_utf8_lossy(&bytes[..header_end]);
+
         let content_length = header
             .lines()
             .find_map(|line| {
@@ -666,6 +738,7 @@ mod tests {
 
         if remaining > 0 {
             let start = bytes.len();
+
             bytes.resize(start + remaining, 0);
             stream.read_exact(&mut bytes[start..]).await.unwrap();
         }
@@ -689,6 +762,199 @@ mod tests {
             "result":{"id":"task-1","contextId":"context-1","status":{"state":"TASK_STATE_COMPLETED","message":{"parts":[{"text":"answer"}]}},"artifacts":[]}
         })
         .to_string()
+    }
+
+    fn action_args(action: &str, stream: bool) -> Vec<Value> {
+        if action == "send" {
+            vec![
+                json!("send"),
+                json!(if stream { "--stream" } else { "--no-stream" }),
+                json!("private fixture prompt"),
+            ]
+        } else {
+            vec![json!(action), json!("--task"), json!("private-task")]
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_untrusted_rpc_origins_before_sending_credentials_or_content() {
+        for (action, stream) in
+            [("send", false), ("send", true), ("status", false), ("cancel", false)]
+        {
+            for token in [None, Some("dummy-fixture-token".to_owned())] {
+                let recipient = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let rpc = format!("http://{}", recipient.local_addr().unwrap());
+                let (discovery, server) =
+                    mock_server(vec![("application/json".into(), card(&rpc, stream))]).await;
+                let config = A2aConfig { card: Some(discovery), token, ..Default::default() };
+                let client = client();
+                let (output, _events) = tokio::sync::mpsc::channel(8);
+                let mut emitter = krabb_core::plugin::Emitter::new(output);
+                let request = A2aRequest::parse(&action_args(action, stream)).unwrap();
+                let error =
+                    execute_with(&client, request, &mut emitter, &config).await.unwrap_err();
+
+                assert!(error.to_string().contains("RPC origin is not trusted"));
+                assert!(
+                    tokio::time::timeout(super::Duration::from_millis(20), recipient.accept())
+                        .await
+                        .is_err()
+                );
+                let requests = server.await.unwrap();
+
+                assert_eq!(requests.len(), 1);
+                assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+                assert!(!requests[0].contains("private fixture prompt"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unrelated_card_overrides_cannot_reuse_configured_credentials_or_rpc_mapping() {
+        for (action, stream) in
+            [("send", false), ("send", true), ("status", false), ("cancel", false)]
+        {
+            let (discovery, server) =
+                mock_server(vec![("application/json".into(), card("MOCK_ENDPOINT", stream))]).await;
+            let config = A2aConfig {
+                card: Some("https://configured.example/agent-card.json".into()),
+                rpc_origin: Some(discovery.clone()),
+                token: Some("dummy-fixture-token".into()),
+            };
+
+            let mut args = action_args(action, stream);
+            args.extend([json!("--card"), json!(discovery)]);
+            let request = A2aRequest::parse(&args).unwrap();
+            let client = client();
+            let (output, _events) = tokio::sync::mpsc::channel(8);
+            let mut emitter = krabb_core::plugin::Emitter::new(output);
+            let error = execute_with(&client, request, &mut emitter, &config).await.unwrap_err();
+
+            assert!(error.to_string().contains("unrelated --card override"));
+            let requests = server.await.unwrap();
+
+            assert_eq!(requests.len(), 1);
+            assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_rpc_mapping_preserves_authenticated_operations() {
+        for (action, stream, method) in [
+            ("send", false, "SendMessage"),
+            ("send", true, "SendStreamingMessage"),
+            ("status", false, "GetTask"),
+            ("cancel", false, "CancelTask"),
+        ] {
+            let reply = if stream {
+                ("text/event-stream".into(), format!("data: {}\n\n", task()))
+            } else {
+                ("application/json".into(), task())
+            };
+
+            let (rpc, recipient) = mock_server(vec![reply]).await;
+            let (discovery, server) =
+                mock_server(vec![("application/json".into(), card(&rpc, stream))]).await;
+            let config = A2aConfig {
+                card: Some(discovery),
+                rpc_origin: Some(rpc),
+                token: Some("dummy-fixture-token".into()),
+            };
+
+            let client = client();
+            let (output, _events) = tokio::sync::mpsc::channel(8);
+            let mut emitter = krabb_core::plugin::Emitter::new(output);
+            let request = A2aRequest::parse(&action_args(action, stream)).unwrap();
+            let result = execute_with(&client, request, &mut emitter, &config).await.unwrap();
+
+            assert_eq!(result["text"], "answer");
+            assert!(!server.await.unwrap()[0].to_ascii_lowercase().contains("authorization:"));
+            let requests = recipient.await.unwrap();
+
+            assert_eq!(requests.len(), 1);
+            assert!(
+                requests[0]
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer dummy-fixture-token")
+            );
+
+            assert!(requests[0].contains(method));
+        }
+    }
+
+    #[test]
+    fn credentials_are_bound_to_normalized_scheme_host_and_port() {
+        let config = A2aConfig {
+            card: Some("https://agent.example/agent-card.json".into()),
+            token: Some("dummy-fixture-token".into()),
+            ..Default::default()
+        };
+
+        let card = validate_url(config.card.as_deref().unwrap()).unwrap();
+
+        assert!(
+            super::authorize_endpoint(
+                &card,
+                &validate_url("https://AGENT.example:443/rpc").unwrap(),
+                &config
+            )
+            .is_ok()
+        );
+
+        assert!(
+            super::authorize_endpoint(
+                &card,
+                &validate_url("https://agent.example:444/rpc").unwrap(),
+                &config
+            )
+            .is_err()
+        );
+
+        assert!(
+            super::authorize_endpoint(
+                &card,
+                &validate_url("https://other.example/rpc").unwrap(),
+                &config
+            )
+            .is_err()
+        );
+
+        assert!(validate_url("ftp://localhost/file").is_err());
+        assert!(validate_url("https://agent.example/rpc#fragment").is_err());
+    }
+
+    #[test]
+    fn rejects_discovery_origin_token_rebinding_and_invalid_configuration() {
+        let card = validate_url("https://discovery.example/agent-card.json").unwrap();
+        let rpc = validate_url("https://rpc.example/rpc").unwrap();
+
+        let mut config = A2aConfig {
+            card: Some(card.to_string()),
+            rpc_origin: Some(rpc.to_string()),
+            token: Some("dummy-fixture-token".into()),
+        };
+
+        assert!(super::authorize_endpoint(&card, &rpc, &config).is_ok());
+        assert!(super::authorize_endpoint(&rpc, &rpc, &config).is_err());
+        assert!(super::authorize_endpoint(&rpc, &card, &config).is_err());
+
+        config.card = None;
+
+        assert!(super::authorize_endpoint(&card, &card, &config).is_err());
+
+        config.token = Some(" ".into());
+
+        assert!(super::authorize_endpoint(&card, &card, &config).is_ok());
+        assert!(super::authorize_endpoint(&card, &rpc, &config).is_err());
+
+        config.card = Some("invalid".into());
+
+        assert!(super::authorize_endpoint(&card, &card, &config).is_err());
+
+        config.card = Some(card.to_string());
+        config.rpc_origin = Some("invalid".into());
+
+        assert!(super::authorize_endpoint(&card, &rpc, &config).is_err());
     }
 
     #[test]
@@ -719,6 +985,7 @@ mod tests {
         assert!(validate_url("http://127.0.0.1:9000/a2a").is_ok());
         assert!(validate_url("http://agent.example/a2a").is_err());
         assert!(validate_url("https://user:pass@agent.example/a2a").is_err());
+
         let card = json!({"supportedInterfaces":[
             {"protocolBinding":"HTTP+JSON","url":"https://agent.example/rest"},
             {"protocolBinding":"JSONRPC","url":"https://agent.example/rpc"}
@@ -737,6 +1004,7 @@ mod tests {
         });
 
         assert_eq!(task_text(&task).as_deref(), Some("result\ndone"));
+
         assert_eq!(
             artifact_text(&json!({"parts":[{"text":"a"},{"text":"b"}]})).as_deref(),
             Some("ab")
@@ -774,6 +1042,7 @@ mod tests {
     #[tokio::test]
     async fn discovers_and_sends_to_a_json_rpc_agent() {
         let task = task();
+
         let (endpoint, server) = mock_server(vec![
             ("application/json".into(), card("MOCK_ENDPOINT", false)),
             ("application/json".into(), card("MOCK_ENDPOINT", false)),
@@ -781,13 +1050,15 @@ mod tests {
         ])
         .await;
 
-        let client = reqwest::Client::new();
+        let client = client();
         let (output, _events) = tokio::sync::mpsc::channel(8);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
+
         let discovery =
             A2aRequest::parse(&[json!("discover"), json!("--card"), json!(endpoint)]).unwrap();
 
-        let found = execute(&client, discovery, &mut emitter).await.unwrap();
+        let found =
+            execute_with(&client, discovery, &mut emitter, &A2aConfig::default()).await.unwrap();
 
         assert_eq!(found["name"], "fixture");
 
@@ -801,7 +1072,8 @@ mod tests {
         ])
         .unwrap();
 
-        let result = execute(&client, send, &mut emitter).await.unwrap();
+        let result =
+            execute_with(&client, send, &mut emitter, &A2aConfig::default()).await.unwrap();
 
         assert_eq!(result["taskId"], "task-1");
         assert_eq!(result["text"], "answer");
@@ -833,6 +1105,7 @@ mod tests {
         }
 
         emitter.event(json!({"kind":"text","text":pending})).await.unwrap();
+
         let mut text = String::new();
         let mut count = 0;
 
@@ -848,20 +1121,23 @@ mod tests {
     #[tokio::test]
     async fn streams_agent_task_updates_as_normalized_text_events() {
         let event = format!("data: {}\n\n", task());
+
         let (endpoint, server) = mock_server(vec![
             ("application/json".into(), card("MOCK_ENDPOINT", true)),
             ("text/event-stream".into(), event),
         ])
         .await;
 
-        let client = reqwest::Client::new();
+        let client = client();
         let (output, mut events) = tokio::sync::mpsc::channel(8);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
+
         let request =
             A2aRequest::parse(&[json!("send"), json!("--card"), json!(endpoint), json!("hello")])
                 .unwrap();
 
-        let result = execute(&client, request, &mut emitter).await.unwrap();
+        let result =
+            execute_with(&client, request, &mut emitter, &A2aConfig::default()).await.unwrap();
 
         assert_eq!(result["text"], "answer");
         assert_eq!(events.recv().await.unwrap()["params"]["event"]["text"], "answer");
@@ -892,14 +1168,16 @@ mod tests {
         ])
         .await;
 
-        let client = reqwest::Client::new();
+        let client = client();
         let (output, mut events) = tokio::sync::mpsc::channel(8);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
+
         let request =
             A2aRequest::parse(&[json!("send"), json!("--card"), json!(endpoint), json!("hello")])
                 .unwrap();
 
-        let result = execute(&client, request, &mut emitter).await.unwrap();
+        let result =
+            execute_with(&client, request, &mut emitter, &A2aConfig::default()).await.unwrap();
 
         assert_eq!(
             result,
@@ -910,6 +1188,7 @@ mod tests {
         );
 
         assert_eq!(events.recv().await.unwrap()["params"]["event"]["text"], "answer");
+
         assert_eq!(
             events.recv().await.unwrap()["params"]["event"]["text"],
             "[A2A task: TASK_STATE_COMPLETED]"
@@ -922,6 +1201,7 @@ mod tests {
     #[test]
     fn accumulates_task_status_and_artifact_replacements_and_appends() {
         let mut result = serde_json::Value::Null;
+
         super::accumulate_event(
             &mut result,
             &json!({"task":{
@@ -987,6 +1267,7 @@ mod tests {
     #[tokio::test]
     async fn reads_and_cancels_remote_tasks() {
         let task = task();
+
         let (endpoint, server) = mock_server(vec![
             ("application/json".into(), card("MOCK_ENDPOINT", false)),
             ("application/json".into(), task.clone()),
@@ -995,7 +1276,7 @@ mod tests {
         ])
         .await;
 
-        let client = reqwest::Client::new();
+        let client = client();
         let (output, _events) = tokio::sync::mpsc::channel(8);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
 
@@ -1009,7 +1290,8 @@ mod tests {
             ])
             .unwrap();
 
-            let result = execute(&client, request, &mut emitter).await.unwrap();
+            let result =
+                execute_with(&client, request, &mut emitter, &A2aConfig::default()).await.unwrap();
 
             assert_eq!(result["taskId"], "task-1");
         }

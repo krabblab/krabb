@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
 use std::{
     fs,
     net::IpAddr,
@@ -150,8 +151,11 @@ impl Inbox {
             let Some(pending) = self.pending.get(events.len()) else { break };
 
             let mut event = pending.event.clone();
+
             event["gateway_sequence"] = json!(pending.sequence);
+
             let mut candidate = events.clone();
+
             candidate.push(event.clone());
 
             if response_fits(id, &candidate)? {
@@ -173,6 +177,7 @@ impl Inbox {
 
     fn stage(&mut self, events: impl IntoIterator<Item = Value>) -> Result<(), InboxStageError> {
         let mut seen = self.message_ids.clone();
+
         seen.extend(
             self.pending
                 .iter()
@@ -205,6 +210,7 @@ impl Inbox {
 
         for event in &events {
             let mut candidate = event.clone();
+
             candidate["gateway_sequence"] = json!(sequence);
 
             if !response_fits(u64::MAX, &[candidate]).map_err(InboxStageError::Store)? {
@@ -262,6 +268,7 @@ impl Inbox {
         };
 
         let previous = self.clone();
+
         self.pending.remove(index);
 
         match save_inbox(self) {
@@ -277,6 +284,7 @@ impl Inbox {
 
 fn response_fits(id: u64, events: &[Value]) -> krabb_core::Result<bool> {
     let response = Response::ok(id, json!({"events": events}));
+
     Ok(serde_json::to_vec(&response)?.len().saturating_add(1) <= krabb_core::jsonl::MAX)
 }
 
@@ -365,11 +373,13 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     let inbox = load_inbox()?;
     let app = App { client, queue: Arc::new(Mutex::new(inbox)) };
+
     let listener = TcpListener::bind(listen()).await.map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp webhook listener failed: {error}."))
     })?;
 
     let webhook = app.clone();
+
     tokio::spawn(async move { webhook_loop(listener, webhook).await });
 
     serve_with(
@@ -439,6 +449,7 @@ async fn webhook_loop(listener: TcpListener, app: App) {
         };
 
         let app = app.clone();
+
         tokio::spawn(async move {
             let _permit = permit;
             let secret = app_secret().ok();
@@ -465,7 +476,7 @@ async fn webhook_loop(listener: TcpListener, app: App) {
 }
 
 async fn handle_http_with(
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
     app: &App,
     secret: Option<&str>,
     verify: Option<&str>,
@@ -476,7 +487,7 @@ async fn handle_http_with(
 }
 
 async fn handle_http_inner(
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
     app: &App,
     secret: Option<&str>,
     verify: Option<&str>,
@@ -537,6 +548,7 @@ async fn handle_http_inner(
     while bytes.len() < request_end {
         let remaining = request_end - bytes.len();
         let read_limit = remaining.min(buffer.len());
+
         let count =
             stream.read(&mut buffer[..read_limit]).await.map_err(|error| error.to_string())?;
 
@@ -559,6 +571,7 @@ async fn handle_http_inner(
     }
 
     verify_with(body, signature.as_deref(), secret.ok_or("Webhook secret is missing.")?)?;
+
     let value: Value = serde_json::from_slice(body).map_err(|_| "Webhook JSON was invalid.")?;
     let events = normalize(&value);
     let mut queue = app.queue.lock().await;
@@ -800,6 +813,7 @@ async fn send_media(
 ) -> krabb_core::Result<Value> {
     let root = media_root()?;
     let phone = phone()?;
+
     send_media_at(app, base, token, chat, uri, kind, mime, name, &phone, &root).await
 }
 
@@ -817,6 +831,7 @@ async fn send_media_at(
     root: &std::path::Path,
 ) -> krabb_core::Result<Value> {
     let path = local_media_at(uri, root)?;
+
     let bytes = fs::read(&path).map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp attachment could not be read: {error}."))
     })?;
@@ -853,6 +868,7 @@ async fn send_media_at(
         .map_err(|error| krabb_core::Error::Denied(format!("WhatsApp upload failed: {error}.")))?;
 
     let body = collect(upload.bytes_stream(), BODY_LIMIT, "WhatsApp upload response").await?;
+
     let media: Value = serde_json::from_slice(&body).map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp upload response failed: {error}."))
     })?;
@@ -890,6 +906,7 @@ async fn graph(app: &App, url: &str, token: &str, body: Value) -> krabb_core::Re
 
     let status = response.status();
     let body = collect(response.bytes_stream(), BODY_LIMIT, "WhatsApp response").await?;
+
     let body: Value = serde_json::from_slice(&body).map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp response failed: {error}."))
     })?;
@@ -916,6 +933,7 @@ async fn media(app: &App, uri: &str) -> krabb_core::Result<Value> {
     let token = token()?;
     let base = graph_url()?;
     let root = media_root()?;
+
     media_at(app, id, &token, &base, &root, allowed_url).await
 }
 
@@ -928,6 +946,7 @@ async fn media_at(
     allow: fn(&str) -> bool,
 ) -> krabb_core::Result<Value> {
     cleanup_media(root);
+
     let lookup = app.client.get(format!("{base}/{id}")).bearer_auth(token).send().await.map_err(
         |error| krabb_core::Error::Denied(format!("WhatsApp media lookup failed: {error}.")),
     )?;
@@ -937,6 +956,7 @@ async fn media_at(
     }
 
     let body = collect(lookup.bytes_stream(), BODY_LIMIT, "WhatsApp media response").await?;
+
     let response: Value = serde_json::from_slice(&body).map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp media response failed: {error}."))
     })?;
@@ -955,11 +975,13 @@ async fn media_at(
     }
 
     let bytes = collect(response.bytes_stream(), MEDIA_LIMIT, "WhatsApp media").await?;
+
     fs::create_dir_all(root).map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp media directory failed: {error}."))
     })?;
 
     let path = root.join(format!("{id}.bin"));
+
     krabb_file::save(&path, bytes).map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp media storage failed: {error}."))
     })?;
@@ -990,6 +1012,7 @@ fn cleanup_media_with_limits(root: &Path, limit: u64, file_limit: usize) {
 
         if metadata.modified().is_ok_and(|value| value < cutoff) {
             let _ = fs::remove_file(entry.path());
+
             continue;
         }
 
@@ -999,6 +1022,7 @@ fn cleanup_media_with_limits(root: &Path, limit: u64, file_limit: usize) {
     }
 
     files.sort_by_key(|(_, modified, _)| *modified);
+
     let mut total = files.iter().map(|(_, _, size)| *size).sum::<u64>();
     let mut count = files.len();
 
@@ -1162,6 +1186,8 @@ fn media_root() -> krabb_core::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    mod persistence;
+
     use super::{
         App, BODY_LIMIT, HEADER_LIMIT, INBOX_BYTES_LIMIT, Inbox, MEDIA_LIMIT, MEDIA_TTL,
         QUEUE_LIMIT, Request, allowed_url, call, challenge_with, chunks, cleanup_media,

@@ -58,6 +58,7 @@ async fn generate(
 
     let input: ModelRequest = serde_json::from_value(params)?;
     let primary = std::env::var("KRABB_ANTHROPIC_KEY").ok();
+
     let key = key(primary.as_deref())
         .or_else(|_| {
             keyring("anthropic").ok_or_else(|| {
@@ -102,6 +103,7 @@ fn file_key() -> krabb_core::Result<String> {
     };
 
     krabb_file::private(&path)?;
+
     let text = std::fs::read_to_string(path).map_err(|error| {
         krabb_core::Error::Denied(format!("Credentials could not be read: {error}."))
     })?;
@@ -175,6 +177,7 @@ async fn request(
     stream: bool,
 ) -> krabb_core::Result<Option<Response>> {
     let (system, messages) = messages(&input)?;
+
     let response = client
         .post(format!("{base}/v1/messages"))
         .header("x-api-key", key)
@@ -260,7 +263,7 @@ where
     let mut ticker = tokio::time::interval(Duration::from_millis(80));
     ticker.tick().await;
 
-    loop {
+    'stream: loop {
         tokio::select! {
             chunk = stream.next() => {
                 let Some(chunk) = chunk else { break };
@@ -282,7 +285,8 @@ where
                     let line = buffered.drain(..=end).collect::<Vec<_>>();
 
                     if anthropic_line(&line, &mut text, &mut pending, &mut tools, &mut stop)? {
-                        break;
+                        buffered.clear();
+                        break 'stream;
                     }
 
                     if pending.len() >= 128 {
@@ -357,6 +361,8 @@ fn anthropic_line(
     let value: serde_json::Value = serde_json::from_str(data.trim())?;
 
     match value["type"].as_str().unwrap_or_default() {
+        "message_stop" => return Ok(true),
+
         "error" => {
             return Err(krabb_core::Error::Denied(
                 "Anthropic stream returned an error event.".into(),
@@ -658,6 +664,8 @@ fn response(id: u64, result: serde_json::Value) -> krabb_core::Result<Option<Res
 
 #[cfg(test)]
 mod tests {
+    mod streaming;
+
     use super::{
         BODY_LIMIT, Emitter, anthropic_line, append_text, collect, generate, generate_at,
         generate_request, image_block, key, keyring, live_stream, messages, response,

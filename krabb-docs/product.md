@@ -137,7 +137,9 @@ conditional on that plugin being installed.
   channel-safe final chunks.
 - Accept text, images, safe text/code files, and voice. Gate media by model
   support and limits. Delete raw voice after transcription and expire other
-  cached attachments after 24 hours unless pinned.
+  cached attachments after 24 hours unless pinned. Bound retained images and caches;
+  reclaim only unreferenced durable images and report omissions when storage is full.
+  See [media persistence](architecture.md#turn-flow) for retention guarantees.
 - Browser observations can reach vision-capable models as temporary image
   inputs. The Playwright plugin requires separately installed Node.js,
   Playwright, and Chromium; network interception does not replace OS egress
@@ -158,15 +160,20 @@ conditional on that plugin being installed.
   without secrets or sensitive inferences. Its private `memory/` home is
   created only after the plugin is installed and first used.
 - Scheduling supports approved one-time and recurring agent tasks, including
-  cron expressions with IANA timezones.
+  cron expressions with IANA timezones. Model proposals follow approval policy;
+  remote controls are conversation-scoped and local administration covers all tasks.
+  Pause automatic retries after possible mutations, including failed response saves.
   Missed tasks default to skip-and-notify, with configurable once recovery.
 - Tools provide root-confined files, search, patches, Git status/diff/
   worktrees, and optional shell. Shell is disabled by default and each
-  command requires approval. Docker/Podman isolation is optional on Linux and Windows
+  command requires approval. Display complete arguments and reject requests exceeding
+  the [approval limits](configuration.md).
+  Docker/Podman isolation is optional on Linux and Windows
   and required on other Unix hosts for shell containment. Containers are local-only,
   networkless, read-only-root, and limited to a writable active workspace.
-  Remote
-  rooms default to isolated worktrees; owner DM/TUI defaults to in-place.
+  Direct Git and Git-backed patches share host shell descendant containment on Linux
+  and Windows; other platforms require Git execution through the sandboxed shell.
+  Remote rooms default to isolated worktrees; owner DM/TUI defaults to in-place.
 - Codex supports Platform API keys and personal Codex OAuth through its
   installed runtime, owner-only by default. Anthropic uses API keys with no
   Claude OAuth or
@@ -174,9 +181,13 @@ conditional on that plugin being installed.
   with KRABB_OLLAMA_API_KEY.
 - Personal Codex sign-in uses the installed Codex CLI app-server, with runtime
   protocol validation; shared deployments can use provider API keys without
-  Codex account coupling.
+  Codex account coupling. Inherited MCP servers are individually disabled before
+  model threads, leaving Krabb dynamic tools under host approval.
+- A2A discovery cannot redirect task content or bearer credentials to an unrelated
+  RPC origin. Separate discovery and RPC origins require explicit configuration.
 - Collect no telemetry and redact credentials, tokens, authorization headers,
-  and sensitive paths from logs.
+  and sensitive paths from logs. Suppress WebSocket transport logs at every verbosity
+  to protect connection credentials and message payloads.
 
 ## Engineering, Governance, And Delivery
 

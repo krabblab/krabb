@@ -7,6 +7,7 @@ use krabb_core::{
 
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Stdio, time::Duration};
+
 use tokio::{
     io::{AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout, Command},
@@ -70,6 +71,7 @@ struct RunRequest {
 impl RunRequest {
     fn parse(args: &[Value]) -> krabb_core::Result<Self> {
         let mut session = None;
+
         let mut workspace =
             std::env::var_os("KRABB_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
 
@@ -87,6 +89,7 @@ impl RunRequest {
 
                 "--workspace" => {
                     index += 1;
+
                     workspace =
                         args.get(index).and_then(Value::as_str).map(PathBuf::from).ok_or_else(
                             || krabb_core::Error::Denied("An ACP workspace is required.".into()),
@@ -184,6 +187,7 @@ async fn run_command(
             "clientCapabilities": {
                 "fs": {"readTextFile": true, "writeTextFile": true}
             },
+
             "clientInfo": {
                 "name": "krabb",
                 "title": "Krabb",
@@ -331,6 +335,7 @@ async fn rpc(
         if message["method"] == "session/request_permission" {
             let request_id = message["id"].clone();
             let rejected = rejection(&message["params"]["options"]);
+
             write_message(
                 writer,
                 json!({"jsonrpc":"2.0","id":request_id,"result":{"outcome":rejected}}),
@@ -390,6 +395,7 @@ async fn filesystem_request(
         .ok_or_else(|| krabb_core::Error::Denied("ACP filesystem path is required.".into()))?;
 
     let relative = workspace_relative(path, workspace)?;
+
     let (tool, args) = if method == "fs/read_text_file" {
         ("read", json!({"path":relative,"workspace":workspace}))
     } else {
@@ -414,6 +420,7 @@ async fn filesystem_request(
             .ok_or_else(|| krabb_core::Error::Protocol("Krabb read returned no text.".into()))?;
 
         let content = select_lines(content, params["line"].as_u64(), params["limit"].as_u64());
+
         Ok(json!({"content":content}))
     } else {
         Ok(json!({}))
@@ -443,6 +450,7 @@ fn workspace_relative(path: &str, workspace: &std::path::Path) -> krabb_core::Re
 fn select_lines(content: &str, line: Option<u64>, limit: Option<u64>) -> String {
     let start = line.unwrap_or(1).max(1) as usize - 1;
     let lines = content.lines().skip(start);
+
     let lines: Vec<_> = match limit {
         Some(limit) => lines.take(limit as usize).collect(),
         None => lines.collect(),
@@ -552,6 +560,7 @@ async fn write_message(writer: &mut ChildStdin, message: Value) -> krabb_core::R
 mod tests {
     #[cfg(unix)]
     use super::run_command;
+
     use super::{
         RunRequest, command_args_from, command_args_from_optional, filesystem_request, hello,
         rejection, safe_id, select_lines, stream_update, workspace_relative,
@@ -561,7 +570,7 @@ mod tests {
     use serde_json::json;
 
     #[cfg(unix)]
-    use std::{fs, os::unix::fs::PermissionsExt, time::SystemTime};
+    use std::{fs, time::SystemTime};
 
     #[test]
     fn describes_the_acp_agent_command() {
@@ -676,6 +685,7 @@ mod tests {
     async fn maps_streamed_text_and_tool_status_without_fabricating_tools() {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
         let mut emitter = Emitter::new(sender);
+
         let mut updates = super::Updates {
             emitter: &mut emitter,
             pending: String::new(),
@@ -705,6 +715,7 @@ mod tests {
 
         assert_eq!(updates.text, "hello");
         assert_eq!(receiver.recv().await.unwrap()["params"]["event"]["text"], "hello");
+
         assert_eq!(
             receiver.recv().await.unwrap()["params"]["event"]["text"],
             "[External agent: Reading a file]"
@@ -720,6 +731,7 @@ mod tests {
     async fn coalesces_external_updates_after_the_notification_budget() {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(256);
         let mut emitter = Emitter::new(sender);
+
         let mut updates = super::Updates {
             emitter: &mut emitter,
             pending: String::new(),
@@ -737,6 +749,7 @@ mod tests {
         }
 
         updates.flush().await.unwrap();
+
         let mut text = String::new();
         let mut count = 0;
 
@@ -766,6 +779,7 @@ mod tests {
         let request = RunRequest { prompt: "test".into(), session: None, workspace: directory };
         let (sender, _events) = tokio::sync::mpsc::channel(1);
         let mut emitter = Emitter::new(sender);
+
         // Keep stdout open after exceeding the limit: rejection must precede EOF.
         let script =
             format!("head -c {} /dev/zero; read ignored; read ignored", super::LINE_LIMIT + 1);
@@ -785,8 +799,11 @@ mod tests {
     async fn runs_an_external_agent_through_the_acp_v1_lifecycle() {
         let nonce = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
         let directory = std::env::temp_dir().join(format!("krabb-acp-test-{nonce}"));
+
         fs::create_dir_all(&directory).unwrap();
+
         let script = directory.join("agent");
+
         let content = concat!(
             "#!/bin/sh\n",
             "while IFS= read -r line; do\n",
@@ -806,9 +823,9 @@ mod tests {
         );
 
         fs::write(&script, content).unwrap();
-        let mut permissions = fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&script, permissions).unwrap();
+        // Concurrent forks may briefly retain a writable descriptor to the fixture inode.
+        // Read it through the interpreter instead of executing that mutable inode.
+        let arguments = vec![script.display().to_string()];
 
         let request = RunRequest::parse(&[
             json!("--workspace"),
@@ -819,7 +836,9 @@ mod tests {
 
         let (sender, mut events) = tokio::sync::mpsc::channel(4);
         let mut emitter = Emitter::new(sender);
-        let result = run_command(request, &mut emitter, script.clone(), Vec::new()).await.unwrap();
+
+        let result =
+            run_command(request, &mut emitter, "/bin/sh".into(), arguments.clone()).await.unwrap();
 
         assert_eq!(result["text"], "hello");
         assert_eq!(result["sessionId"], "session-1");
@@ -837,7 +856,9 @@ mod tests {
 
         let (sender, mut events) = tokio::sync::mpsc::channel(4);
         let mut emitter = Emitter::new(sender);
-        let result = run_command(request, &mut emitter, script.clone(), Vec::new()).await.unwrap();
+
+        let result =
+            run_command(request, &mut emitter, "/bin/sh".into(), arguments.clone()).await.unwrap();
 
         assert_eq!(result["text"], "hello");
         assert_eq!(result["sessionId"], "resume-2");
@@ -855,13 +876,16 @@ mod tests {
                 );
 
             fs::write(&script, denied).unwrap();
+
             let request =
                 RunRequest { prompt: "hello".into(), workspace: directory.clone(), session };
 
             let (sender, _) = tokio::sync::mpsc::channel(4);
             let mut emitter = Emitter::new(sender);
-            let error =
-                run_command(request, &mut emitter, script.clone(), Vec::new()).await.unwrap_err();
+
+            let error = run_command(request, &mut emitter, "/bin/sh".into(), arguments.clone())
+                .await
+                .unwrap_err();
 
             assert!(error.to_string().contains("Authentication required"));
         }

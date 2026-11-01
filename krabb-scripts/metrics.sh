@@ -50,16 +50,23 @@ rust_lines=$(find "$root" -type f -name '*.rs' \
         ! -path "$root/target/*" \
         ! -path "$root/.git/*" \
         ! -path "$root/.revloop/*" \
+        ! -path "$root/.krabb/loops/*" \
         -exec cat {} + | awk 'END { print NR + 0 }')
 script_lines=$(find "$root/krabb-scripts" -type f \( -name '*.sh' -o -name '*.ps1' \) \
     -exec cat {} + | awk 'END { print NR + 0 }')
+if [[ -d "$root/krabb-loops" ]]; then
+    loop_lines=$(find "$root/krabb-loops" -type f \( -name '*.sh' -o -name '*.py' \) \
+        -exec cat {} + | awk 'END { print NR + 0 }')
+    script_lines=$((script_lines + loop_lines))
+fi
+
 for file in "$root/install.sh" "$root/install.ps1"; do
     if [[ -f "$file" ]]; then
         script_lines=$((script_lines + $(wc -l < "$file")))
     fi
 done
 tests=$(rg -o --glob '*.rs' --glob '!target/**' --glob '!.git/**' \
-    --glob '!.revloop/**' \
+    --glob '!.revloop/**' --glob '!.krabb/loops/**' \
     '#\[(tokio::test|test)\]' "$root" | wc -l)
 total_lines=$((rust_lines + script_lines))
 

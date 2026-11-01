@@ -19,6 +19,9 @@ overrides for local integration tests.
 
 Image, voice-message audio, and bounded text-file attachments are downloaded
 through opaque references into the private `KRABB_MEDIA` cache. The plugin
+expires files after 24 hours and evicts oldest files before storage to keep the
+cache within 64 MiB and 256 files. Cleanup failures reject storage; the protected
+session image directory is preserved. The plugin
 supports attachment uploads, but the current daemon sends generated replies as
 text. Direct messages work by default; guild channels and threads require the
 daemon channel allowlist.

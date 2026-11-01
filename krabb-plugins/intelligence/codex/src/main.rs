@@ -74,6 +74,7 @@ async fn generate_with_session(
 
     if method == "command" {
         let text = codex::command(&params, emitter).await?;
+
         return Ok(Some(Response::ok(id, json!({"text": text}))));
     }
 
@@ -82,6 +83,7 @@ async fn generate_with_session(
     }
 
     let input: ModelRequest = serde_json::from_value(params)?;
+
     let Some(key) = credential()? else {
         return codex_session.lock().await.generate(id, input, emitter).await;
     };
@@ -115,6 +117,7 @@ async fn generate_request(
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
     let messages = messages(&input)?;
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
@@ -127,6 +130,7 @@ async fn generate_request(
 
     let status = response.status();
     let body = read(response, "OpenAI").await?;
+
     let body: serde_json::Value = serde_json::from_str(&body)
         .map_err(|error| krabb_core::Error::Denied(format!("OpenAI response failed: {error}.")))?;
 
@@ -142,6 +146,7 @@ async fn stream_request(
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
     let messages = messages(&input)?;
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
@@ -352,6 +357,7 @@ where
                     let line = buffered.drain(..=end).collect::<Vec<_>>();
 
                     if stream_line(&line, &mut text, &mut pending, &mut tools)? {
+                        buffered.clear();
                         done = true;
                         break;
                     }
@@ -617,6 +623,8 @@ fn credentials_path() -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    mod streaming;
+
     use super::{
         BODY_LIMIT, Emitter, collect, credential, credential_file, credentials_path, generate,
         generate_at, generate_request, keyring, messages, response_body, stream_body,

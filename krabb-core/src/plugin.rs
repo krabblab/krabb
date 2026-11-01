@@ -72,6 +72,7 @@ impl Emitter {
         }
 
         let value = serde_json::to_value(note)?;
+
         self.output
             .send(value)
             .await
@@ -105,11 +106,16 @@ impl Emitter {
         }
 
         let (sender, mut receiver) = oneshot::channel();
+
         self.replies.lock().expect("call registry poisoned").insert(id, sender);
+
         let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+
         self.streams.lock().expect("call registry poisoned").insert(id, event_sender);
+
         let mut registration = Registration { emitter: self.clone(), id, sent: false };
         let value = serde_json::to_value(request)?;
+
         self.output
             .send(value)
             .await
@@ -185,6 +191,7 @@ pub async fn serve(hello: Hello) -> Result<()> {
     let stdin = tokio::io::stdin();
 
     let stdout = tokio::io::stdout();
+
     serve_io(hello, BufReader::new(stdin), stdout, |_| async { Ok(None) }).await
 }
 
@@ -569,6 +576,7 @@ where
     .await;
 
     reader.abort();
+    workers.shutdown().await;
     drop(sender);
 
     let written = writer
@@ -1407,6 +1415,9 @@ fn kill_session(group: Pid, signal: Signal) {
 
 #[cfg(test)]
 mod tests {
+    mod admission;
+    mod teardown;
+
     use super::{
         Emitter, Process, binary_name, serve_io, serve_io_events, serve_io_events_concurrent,
     };
@@ -1662,6 +1673,7 @@ fn main() {
         ));
 
         jsonl::write(&mut client_write, &Request::call(1, "hello", json!({}))).await.unwrap();
+
         jsonl::write(
             &mut client_write,
             &Request::Note { jsonrpc: "2.0".into(), method: "hello".into(), params: json!({}) },
@@ -1670,6 +1682,7 @@ fn main() {
         .unwrap();
 
         jsonl::write(&mut client_write, &Request::call(2, "ping", json!({}))).await.unwrap();
+
         jsonl::write(
             &mut client_write,
             &Request::Note { jsonrpc: "2.0".into(), method: "ping".into(), params: json!({}) },
@@ -1701,6 +1714,7 @@ fn main() {
 
         for _ in 0..7 {
             let mut line = String::new();
+
             input.read_line(&mut line).await.unwrap();
             responses.push(serde_json::from_str::<Response>(&line).unwrap());
         }
@@ -1739,21 +1753,29 @@ fn main() {
 
         let mut input = BufReader::new(&mut client_read);
         let mut line = String::new();
+
         input.read_line(&mut line).await.unwrap();
+
         let event: Request = serde_json::from_str(&line).unwrap();
+
         assert!(matches!(event, Request::Note { method, .. } if method == "event"));
 
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         let response: Response = serde_json::from_str(&line).unwrap();
+
         assert_eq!(response.id, 1);
         assert_eq!(response.result.unwrap()["done"], true);
 
         jsonl::write(&mut client_write, &Request::call(2, "shutdown", json!({}))).await.unwrap();
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         let shutdown: Response = serde_json::from_str(&line).unwrap();
+
         assert_eq!(shutdown.id, 2);
+
         task.await.unwrap().unwrap();
     }
 
@@ -1762,6 +1784,7 @@ fn main() {
         let (client, server) = duplex(16 * 1024);
         let (mut client_read, mut client_write) = split(client);
         let (server_read, server_write) = split(server);
+
         let handle = |request: Request, _emitter: Emitter| async move {
             let Request::Call { id, .. } = request else {
                 return Ok(None);
@@ -1784,10 +1807,14 @@ fn main() {
 
         let mut input = BufReader::new(&mut client_read);
         let mut line = String::new();
+
         input.read_line(&mut line).await.unwrap();
+
         let first: Response = serde_json::from_str(&line).unwrap();
+
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         let second: Response = serde_json::from_str(&line).unwrap();
 
         assert_eq!((first.id, second.id), (2, 1));
@@ -1795,8 +1822,11 @@ fn main() {
         jsonl::write(&mut client_write, &Request::call(3, "shutdown", json!({}))).await.unwrap();
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         let shutdown: Response = serde_json::from_str(&line).unwrap();
+
         assert_eq!(shutdown.id, 3);
+
         task.await.unwrap().unwrap();
     }
 
@@ -1807,6 +1837,7 @@ fn main() {
         let (client, server) = duplex(16 * 1024);
         let (client_read, mut client_write) = split(client);
         let (server_read, server_write) = split(server);
+
         let server = serve_io_events_concurrent(
             hello(),
             BufReader::new(server_read),
@@ -1815,7 +1846,9 @@ fn main() {
                 Ok(Some(Response::ok(request.id().unwrap(), json!({"done": true}))))
             },
         );
+
         tokio::pin!(server);
+
         let mut input = BufReader::new(client_read);
 
         std::future::poll_fn(|cx| {
@@ -1828,6 +1861,7 @@ fn main() {
             jsonl::write(&mut client_write, &Request::call(1, "generate", json!({})))
                 .await
                 .unwrap();
+
             tokio::task::yield_now().await;
 
             // Leave completed workers unjoined until the next request is queued.
@@ -1857,6 +1891,7 @@ fn main() {
         let (client, server) = duplex(16 * 1024);
         let (mut client_read, mut client_write) = split(client);
         let (server_read, server_write) = split(server);
+
         let handle = |request: Request, _emitter: Emitter| async move {
             let Request::Call { id, .. } = request else {
                 return Ok(None);
@@ -1875,6 +1910,7 @@ fn main() {
         });
 
         jsonl::write(&mut client_write, &Request::call(1, "run", json!({}))).await.unwrap();
+
         jsonl::write(
             &mut client_write,
             &Request::Note {
@@ -1885,13 +1921,18 @@ fn main() {
         )
         .await
         .unwrap();
+
         jsonl::write(&mut client_write, &Request::call(2, "shutdown", json!({}))).await.unwrap();
 
         let mut input = BufReader::new(&mut client_read);
         let mut line = String::new();
+
         timeout(Duration::from_secs(1), input.read_line(&mut line)).await.unwrap().unwrap();
+
         let shutdown: Response = serde_json::from_str(&line).unwrap();
+
         assert_eq!(shutdown.id, 2);
+
         task.await.unwrap().unwrap();
     }
 
@@ -1900,25 +1941,33 @@ fn main() {
         let (output, mut sent) = tokio::sync::mpsc::channel(1);
         let emitter = Emitter::new(output);
         let task_emitter = emitter.clone();
+
         let call =
             tokio::spawn(async move { task_emitter.call("host/model_stream", json!({})).await });
+
         let request = sent.recv().await.unwrap();
         let id = request["id"].as_u64().unwrap();
+
         call.abort();
+
         assert!(call.await.unwrap_err().is_cancelled());
 
         assert!(emitter.replies.lock().unwrap().is_empty());
         assert!(emitter.streams.lock().unwrap().is_empty());
+
         let cancel = sent.recv().await.unwrap();
 
         assert_eq!(cancel["method"], "cancel");
         assert_eq!(cancel["params"]["id"], id);
 
         let mut input = Vec::new();
+
         jsonl::write(&mut input, &Response::ok(id, json!({}))).await.unwrap();
         jsonl::write(&mut input, &Request::call(90, "ping", json!({}))).await.unwrap();
         jsonl::write(&mut input, &Response::ok(id + 1, json!({}))).await.unwrap();
+
         let (incoming, mut received) = tokio::sync::mpsc::channel(8);
+
         super::read_input(
             BufReader::new(input.as_slice()),
             incoming,
@@ -1932,6 +1981,7 @@ fn main() {
             received.recv().await,
             Some(super::Incoming::Request(Request::Call { id: 90, .. }))
         ));
+
         assert!(matches!(received.recv().await, Some(super::Incoming::Error(_))));
     }
 
@@ -1940,6 +1990,7 @@ fn main() {
         let (mut writer, reader) = duplex(1024);
         let mut input = BufReader::new(reader);
         let mut frame = Vec::new();
+
         writer.write_all(b"{\"jsonrpc\":").await.unwrap();
 
         assert!(
@@ -1947,7 +1998,9 @@ fn main() {
                 .await
                 .is_err()
         );
+
         writer.write_all(b"\"2.0\",\"id\":1,\"result\":{}}\n").await.unwrap();
+
         let value = super::read_frame(&mut input, &mut frame).await.unwrap();
 
         assert_eq!(value["id"], 1);
@@ -1973,10 +2026,12 @@ fn main() {
                 *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{}}'; exit 0 ;;
             esac
         done"#;
+
         let mut process = start_test_plugin("host_cancel", script).await.unwrap();
         let (dropped, mut cancelled) = tokio::sync::oneshot::channel::<()>();
         let mut dropped = Some(dropped);
         let mut calls = Vec::new();
+
         let result = timeout(
             Duration::from_secs(5),
             process.listen_stream_async(
@@ -2009,12 +2064,14 @@ fn main() {
         .unwrap();
 
         assert_eq!(calls, vec![7, 9]);
+
         assert!(matches!(
             cancelled.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Closed)
         ));
 
         assert_eq!(result.result.unwrap()["done"], true);
+
         process.stop().await.unwrap();
     }
 
@@ -2023,6 +2080,7 @@ fn main() {
         let (client, server) = duplex(16 * 1024);
         let (mut client_read, mut client_write) = split(client);
         let (server_read, server_write) = split(server);
+
         let handle = |request: Request, emitter: Emitter| async move {
             let Request::Call { id, .. } = request else {
                 return Ok(None);
@@ -2042,10 +2100,14 @@ fn main() {
 
         let mut input = BufReader::new(&mut client_read);
         let mut line = String::new();
+
         input.read_line(&mut line).await.unwrap();
+
         let first: Request = serde_json::from_str(&line).unwrap();
+
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         let second: Request = serde_json::from_str(&line).unwrap();
 
         let Request::Call { id: first_id, params: first_params, .. } = first else {
@@ -2066,7 +2128,9 @@ fn main() {
         for _ in 0..2 {
             line.clear();
             input.read_line(&mut line).await.unwrap();
+
             let response: Response = serde_json::from_str(&line).unwrap();
+
             responses.insert(response.id, response.result.unwrap());
         }
 
@@ -2076,7 +2140,9 @@ fn main() {
         jsonl::write(&mut client_write, &Request::call(3, "shutdown", json!({}))).await.unwrap();
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         assert_eq!(serde_json::from_str::<Response>(&line).unwrap().id, 3);
+
         task.await.unwrap().unwrap();
     }
 
@@ -2086,6 +2152,7 @@ fn main() {
         let (mut client_read, mut client_write) = split(client);
         let (server_read, server_write) = split(server);
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+
         let handle = {
             let captured = Arc::clone(&captured);
             move |request: Request, emitter: Emitter| {
@@ -2119,7 +2186,9 @@ fn main() {
 
         let mut input = BufReader::new(&mut client_read);
         let mut line = String::new();
+
         input.read_line(&mut line).await.unwrap();
+
         let Request::Call { id, .. } = serde_json::from_str(&line).unwrap() else {
             panic!("host stream must start with a request");
         };
@@ -2134,11 +2203,14 @@ fn main() {
         )
         .await
         .unwrap();
+
         jsonl::write(&mut client_write, &Response::ok(id, json!({"done":true}))).await.unwrap();
 
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         let response: Response = serde_json::from_str(&line).unwrap();
+
         assert_eq!(response.result.unwrap()["done"], true);
         assert_eq!(*captured.lock().unwrap(), vec![json!({"kind":"text","text":"piece"})]);
 
@@ -2171,7 +2243,9 @@ fn main() {
 
         let mut input = BufReader::new(&mut client_read);
         let mut line = String::new();
+
         input.read_line(&mut line).await.unwrap();
+
         let call: Request = serde_json::from_str(&line).unwrap();
 
         let Request::Call { id, method, params, .. } = call else {
@@ -2180,20 +2254,25 @@ fn main() {
 
         assert_eq!(method, "host/tool");
         assert_eq!(params["name"], "read");
+
         jsonl::write(&mut client_write, &Response::ok(id, json!({"text": "contents"})))
             .await
             .unwrap();
 
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         let response: Response = serde_json::from_str(&line).unwrap();
+
         assert_eq!(response.id, 1);
         assert_eq!(response.result.unwrap()["text"], "contents");
 
         jsonl::write(&mut client_write, &Request::call(2, "shutdown", json!({}))).await.unwrap();
         line.clear();
         input.read_line(&mut line).await.unwrap();
+
         assert_eq!(serde_json::from_str::<Response>(&line).unwrap().id, 2);
+
         task.await.unwrap().unwrap();
     }
 
@@ -2203,10 +2282,15 @@ fn main() {
         let script = "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*hello*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol\":{\"major\":0,\"minor\":1},\"id\":\"test\",\"version\":\"0.1.0\",\"capabilities\":[\"model\"]}}' ;;\n*ping*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}' ;;\n*shutdown*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{\"ok\":true}}'; exit 0 ;;\nesac\ndone\n";
         let mut process = start_test_plugin("normal", script).await.unwrap();
         let response = process.call(Request::call(2, "ping", json!({}))).await.unwrap();
+
         assert_eq!(response.result.unwrap()["ok"], true);
+
         process.restart().await.unwrap();
+
         let response = process.call(Request::call(2, "ping", json!({}))).await.unwrap();
+
         assert_eq!(response.result.unwrap()["ok"], true);
+
         timeout(Duration::from_secs(2), process.stop()).await.unwrap().unwrap();
     }
 
@@ -2283,6 +2367,7 @@ fn main() {
             .unwrap();
 
             task.abort();
+
             assert!(task.await.unwrap_err().is_cancelled());
 
             timeout(Duration::from_secs(3), async {
@@ -2317,6 +2402,7 @@ fn main() {
     #[test]
     fn process_cleanup_rejects_its_own_group() {
         let group = u32::try_from(getpgrp().as_raw_pid()).unwrap();
+
         assert!(external_group(group).is_none());
         assert!(external_group(u32::MAX).is_none());
     }
@@ -2325,6 +2411,7 @@ fn main() {
     #[tokio::test]
     async fn stops_descendants_after_the_plugin_exits() {
         let marker = temp_path("descendant", "pid");
+
         let script = format!(
             "sleep 30 & echo $! > '{}'; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol\":{{\"major\":0,\"minor\":1}},\"id\":\"test\",\"version\":\"0.1.0\",\"capabilities\":[]}}}}'; exit 0\n",
             marker.display()
@@ -2342,7 +2429,9 @@ fn main() {
         }
 
         let pid = std::fs::read_to_string(&marker).unwrap();
+
         drop(process);
+
         let mut running = true;
 
         for _ in 0..200 {
@@ -2365,6 +2454,7 @@ fn main() {
         }
 
         assert!(!running);
+
         let _ = std::fs::remove_file(marker);
     }
 
@@ -2383,6 +2473,7 @@ fn main() {
             ("bad_result", r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"failed"}}"#),
         ] {
             let script = format!("#!/bin/sh\nprintf '%s\\n' '{}'\nsleep 5\n", response);
+
             assert!(start_test_plugin(mode, &script).await.is_err());
         }
     }
@@ -2392,6 +2483,7 @@ fn main() {
     async fn rejects_invalid_calls_and_responses() {
         let script = "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in *hello*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol\":{\"major\":0,\"minor\":1},\"id\":\"test\",\"version\":\"0.1.0\",\"capabilities\":[]}}' ;; *ping*) printf '%s\\n' '{\"jsonrpc\":\"1.0\",\"id\":2,\"result\":{}}' ;; *shutdown*) exit 0 ;; esac; done\n";
         let mut process = start_test_plugin("invalid_calls", script).await.unwrap();
+
         assert!(
             process
                 .call(Request::Note {
@@ -2404,6 +2496,7 @@ fn main() {
         );
 
         assert!(process.call(Request::call(2, "ping", json!({}))).await.is_err());
+
         process.stop().await.unwrap();
     }
 
@@ -2454,6 +2547,7 @@ fn main() {
             .unwrap();
 
         assert_eq!(response.result.unwrap()["ok"], true);
+
         process.stop().await.unwrap();
     }
 
@@ -2502,9 +2596,11 @@ fn main() {
         assert_eq!(calls, 300);
         assert_eq!(notes, 300);
         assert_eq!(response.result.unwrap()["done"], true);
+
         process.stop().await.unwrap();
 
         let mut process = start_test_plugin("operation_budget", script).await.unwrap();
+
         let result = process
             .call_full_timeout_stream_async(
                 Request::call(2, "command", json!({})),
@@ -2515,6 +2611,7 @@ fn main() {
             .await;
 
         assert!(matches!(result, Err(crate::Error::Limit(_))));
+
         drop(process);
     }
 
@@ -2524,6 +2621,7 @@ fn main() {
         let script = r#"while IFS= read -r line; do id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p'); case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"test","version":"0.1.0","capabilities":[]}}' ;; *command*) printf '%s\n' '{"jsonrpc":"2.0","id":7,"method":"host/model_stream","params":{}}'; IFS= read -r reply; IFS= read -r stream_event; printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"done":true}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
         let mut process = start_test_plugin("stream_server_request", script).await.unwrap();
         let mut notes = Vec::new();
+
         let response = process
             .call_full_timeout_stream_async(
                 Request::call(2, "command", json!({})),

@@ -17,6 +17,7 @@ use krabb_core::{
 #[cfg(unix)]
 use rustix::process::{Pid, Signal, getpgid, kill_process_group};
 use serde_json::{Value, json};
+
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -37,6 +38,7 @@ async fn main() -> std::process::ExitCode {
 async fn plugin_main() -> krabb_core::Result<()> {
     let state = Arc::new(Mutex::new(BrowserState::default()));
     let reaper_state = Arc::clone(&state);
+
     let reaper = tokio::spawn(async move {
         let mut interval = tokio::time::interval(SESSION_REAPER);
 
@@ -103,6 +105,7 @@ impl Worker {
         })?;
 
         let node = std::env::var_os("KRABB_NODE").unwrap_or_else(|| "node".into());
+
         Self::start_with(node, module, WORKER_TIME).await
     }
 
@@ -112,6 +115,7 @@ impl Worker {
         time_limit: Duration,
     ) -> krabb_core::Result<Self> {
         let mut command = Command::new(node);
+
         command
             .arg("--input-type=module")
             .arg("-e")
@@ -166,6 +170,7 @@ impl Worker {
                 Err(error) => {
                     #[cfg(unix)]
                     let retry = error.raw_os_error() == Some(26) && _attempt < 2;
+
                     #[cfg(not(unix))]
                     let retry = false;
 
@@ -239,12 +244,14 @@ impl Worker {
         }
 
         let id = self.next_id;
+
         self.next_id = self.next_id.checked_add(1).ok_or_else(|| {
             krabb_core::Error::Limit("Playwright worker exhausted request IDs.".into())
         })?;
 
         let request = json!({"id": id, "method": method, "params": params});
         let mut frame = serde_json::to_vec(&request)?;
+
         frame.push(b'\n');
 
         if frame.len() > jsonl::MAX {
@@ -266,6 +273,7 @@ impl Worker {
         }
 
         let mut response = Vec::new();
+
         let read = timeout(
             self.time_limit,
             (&mut self.output).take((jsonl::MAX + 1) as u64).read_until(b'\n', &mut response),
@@ -307,6 +315,7 @@ impl Worker {
 
         if response["ok"] != true {
             let message = response["error"].as_str().unwrap_or("Browser operation failed.");
+
             return Err(denied(message.to_owned()));
         }
 
@@ -431,6 +440,7 @@ async fn open(state: &mut BrowserState, owner: &str) -> krabb_core::Result<Value
     let session_id = session_id()?;
     let worker = worker(state).await?;
     let result = worker.call("browser_open", json!({"session_id": session_id})).await?;
+
     state.sessions.insert(
         session_id.clone(),
         BrowserSession { owner: owner.into(), last_used: Instant::now() },
@@ -512,6 +522,7 @@ async fn worker(state: &mut BrowserState) -> krabb_core::Result<&mut Worker> {
 
 fn session_id() -> krabb_core::Result<String> {
     let mut bytes = [0_u8; 24];
+
     getrandom::fill(&mut bytes)
         .map_err(|error| denied(format!("Session ID generation failed: {error}")))?;
 
@@ -560,6 +571,7 @@ mod tests {
 
     use krabb_core::types::Request;
     use serde_json::json;
+
     use std::{
         collections::BTreeMap,
         fs,
@@ -583,6 +595,7 @@ mod tests {
         ));
 
         let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+
         file.write_all(format!("#!/bin/sh\n{script}\n").as_bytes()).unwrap();
         drop(file);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -607,6 +620,7 @@ mod tests {
     #[tokio::test]
     async fn lists_browser_tools_without_starting_node() {
         let state = Mutex::new(BrowserState::default());
+
         let response =
             handle(&state, Request::call(1, "tools/list", json!({}))).await.unwrap().unwrap();
 
@@ -749,6 +763,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+
         let state = state.lock().await;
 
         assert!(state.sessions.is_empty());
@@ -806,10 +821,12 @@ mod tests {
     #[tokio::test]
     async fn worker_times_out_when_child_does_not_answer() {
         let path = fake_worker("while IFS= read -r line; do sleep 1; done");
+
         let mut worker =
             Worker::start_with(&path, "unused", Duration::from_millis(10)).await.unwrap();
 
         assert!(worker.call("slow", json!({})).await.is_err());
+
         let _ = worker.child.kill().await;
         let _ = fs::remove_file(path);
     }
@@ -841,6 +858,7 @@ mod tests {
         }
 
         let child_pid = child_pid.expect("worker should start its fixture child");
+
         drop(worker);
 
         let mut stopped = false;

@@ -10,6 +10,7 @@ This guide explains Krabb’s process boundaries, runtime, and plugin protocol.
 - [Protocol](#protocol)
 - [Extension Rules](#extension-rules)
 - [Security](#security)
+- [Test Organization](#test-organization)
 
 ## Architecture Style
 
@@ -84,6 +85,12 @@ memory, scheduler, MCP, speech, browser, isolated desktop, and client plugins
 are explicit extension seams; only model, channel, and tool routing is enabled
 in the initial daemon flow.
 
+Remote schedule controls carry a host-supplied conversation identity through the
+scheduler's `control` RPC. The scheduler compares it with the task's captured
+origin while holding the mutation lock. Local CLI/TUI administration uses the
+existing methods over authenticated IPC. Unsupported scoped controls fail closed
+without retrying an unscoped request.
+
 The runtime keeps a live registry of verified plugin processes. `plugin install`
 and `plugin link` request authenticated IPC activation after committing the
 plugin; `plugin uninstall` reserves the daemon lifecycle, waits for active channel,
@@ -117,6 +124,9 @@ and explicit Node.js executable paths receive additive read/execute grants.
 Forced reinstalls stop the previous service before migration;
 rollback retains the unprivileged identity. Forced configuration changes use the same
 shutdown-aware restart operation as `service restart`.
+ACP host tool approvals normalize the workspace before displaying complete arguments.
+Requests exceeding the approval display limits are rejected before confirmation; only
+reviewed arguments and the host approval flag reach the tools plugin.
 ACP response reads use the shared bounded JSONL decoder, rejecting oversized frames
 without waiting for a newline or EOF. Memory reloads propagate filesystem errors and
 preserve active state; only invalid contents trigger corruption recovery. Browser
@@ -126,6 +136,10 @@ responses by ID, and exposes HTTP session IDs for explicit reuse by the caller.
 Its HTTP reader handles bounded JSON/SSE responses and empty acknowledgements.
 Discord's bounded response collector preserves raw attachment bytes and decodes
 UTF-8 only for textual REST responses.
+
+OpenAI and OpenRouter finish a streaming generation when their terminal marker arrives,
+including when the response transport remains open. Fatal plugin input errors retire
+concurrent request handlers before waiting for the output channel to close.
 
 ## Turn Flow
 
@@ -162,16 +176,27 @@ validated text and inline images. The runtime keeps those images in the active
 turn so a vision-capable provider receives them as image inputs, then stores
 only text for temporary tool screenshots in the session transcript.
 
+Incoming images are pinned under the session lock after admission, within a disk-counted
+64 MiB/1,024-file budget. Full or unavailable storage produces an omission notice.
+Reclamation runs only after a successful session save and preserves every durable reference,
+including queued, inflight, compacted, forked, and deferred content. Crash orphans are
+reclaimed on the next successful save. Existing pins above the budget remain readable
+but prevent new retention until reclaimed.
+
 Cancellation is terminal for the active turn. A restart can requeue only a
 lease marked replay-safe; a lease that reached a mutating tool is recorded as
-interrupted instead of being replayed.
+interrupted instead of being replayed. Scheduled model replies requesting a retry also
+pause when that lease records a possible mutation; a confirmed successful completion
+still completes normally. Scheduled final responses are persisted before clearing the
+lease, so a failed response save retains mutation evidence and pauses automatic retries.
 
 ## Persistence
 
 State files are written through the shared `krabb-file` crate. The writer fsyncs content and a
 transaction journal before replacement, atomically publishes each journal phase, and repairs
 an interrupted transaction at the next read. Files are private on Unix and
-owner-only on Windows. Discord stores its gateway sequence and session cursor
+owner-only on Windows. Windows security checks use canonical extended paths so long
+data paths retain the same access controls. Discord stores its gateway sequence and session cursor
 through the same path, allowing a resumed gateway session after a plugin
 restart.
 
@@ -275,3 +300,11 @@ The host treats plugins as executable trust boundaries. Filesystem tools must
 stay below their configured root, TUI shell access is disabled by default, and every
 mutating or risky action carries approval metadata. Logs must not contain
 credentials or authorization headers.
+
+## Test Organization
+
+Unit tests use the owning module’s `#[cfg(test)] mod tests`, with larger suites split
+into named child modules under its tests directory. Crate-level `tests/` contains
+public-API and executable integration tests; `tests/support/mod.rs` supplies local fixtures.
+The unpublished `krabb-libs/test` crate shares stream, cache, inbox and logging contracts through
+dev-dependencies and explicit adapters. It adds no runtime or provider capability to the core.

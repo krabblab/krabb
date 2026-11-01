@@ -49,6 +49,7 @@ impl TerminalJob {
 
     pub fn assign_and_resume(&self, process_id: u32) -> io::Result<()> {
         use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+
         use windows_sys::Win32::System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
@@ -171,6 +172,7 @@ mod windows_tests {
     fn terminates_a_suspended_process_after_job_assignment() {
         let job = TerminalJob::new().expect("create process job");
         let mut command = Command::new("cmd.exe");
+
         command.args(["/C", "ping -n 60 127.0.0.1 > nul"]);
         command.creation_flags(CREATE_SUSPENDED);
 

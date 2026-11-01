@@ -2,6 +2,47 @@ use super::*;
 use krabb_core::types::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use krabb_test::logging;
+
+async fn logged_request(base: String, key: String) -> Result<(), String> {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let input = ModelRequest {
+        model: "fixture".into(),
+        workspace: None,
+        messages: vec![],
+        stream: false,
+        tools: vec![],
+    };
+
+    generate_configured(&client, 1, input, &key, &base)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tokio::test]
+async fn provider_logging_connection_failure() {
+    logging::check(
+        "tests::provider_logging_connection_failure",
+        &["connect"],
+        "{}",
+        logged_request,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn provider_logging_http_responses() {
+    logging::check(
+        "tests::provider_logging_http_responses",
+        &["success", "rejected", "disconnect"],
+        r#"{"candidates":[{"content":{"parts":[{"text":"fixture response"}]}}]}"#,
+        logged_request,
+    )
+    .await;
+}
+
 async fn loopback_listener() -> Option<tokio::net::TcpListener> {
     match tokio::net::TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => Some(listener),
@@ -46,6 +87,7 @@ fn builds_gemini_messages_and_tools() {
     assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "read");
 
     let mut input = request;
+
     input.messages.push(Message {
         id: "assistant-tool".into(),
         session: "s".into(),
@@ -139,6 +181,7 @@ fn encodes_bounded_data_images_as_gemini_inline_parts() {
 #[test]
 fn preserves_large_function_call_arguments() {
     let args = json!({"patch": "x".repeat(4097)});
+
     let input = ModelRequest {
         model: "gemini-2.5-flash".into(),
         workspace: None,
@@ -288,12 +331,15 @@ fn preserves_gemini_three_tool_signatures_and_migrates_legacy_calls() {
                 "name": "read",
                 "args": {"path": "README.md"}
             },
+
             "thoughtSignature": "sig-1"
         })
     );
 
     let mut parallel = request.clone();
+
     parallel.model = "default".into();
+
     parallel.messages[0].content.push(Content::ToolCall {
         name: "read".into(),
         args: json!({"path": "Cargo.toml"}),
@@ -309,6 +355,7 @@ fn preserves_gemini_three_tool_signatures_and_migrates_legacy_calls() {
     assert!(body["contents"][0]["parts"][1].get("thoughtSignature").is_none());
 
     let mut legacy = request;
+
     legacy.messages[0].content[0] =
         Content::Text { text: "[Tool call read]: {\"path\":\"README.md\"}".into() };
 
@@ -359,6 +406,7 @@ fn migrates_legacy_tool_history_for_explicit_gemini_three() {
     let body = request_body(&request).unwrap();
 
     assert_eq!(body["contents"][0]["role"], "model");
+
     assert_eq!(
         body["contents"][0]["parts"][0]["text"],
         "[Tool call read]: {\"path\":\"README.md\"}"
@@ -389,10 +437,13 @@ fn routes_default_legacy_transcripts_to_gemini_two() {
     };
 
     assert_eq!(effective_model(&request), LEGACY_MODEL);
+
     let mut request = request;
+
     request.model = "unset".into();
 
     assert_eq!(effective_model(&request), LEGACY_MODEL);
+
     let body = request_body(&request).unwrap();
 
     assert_eq!(body["contents"][0]["parts"][1]["functionCall"]["name"], "read");
@@ -410,7 +461,9 @@ fn routes_the_host_default_model_to_gemini_default() {
     };
 
     assert_eq!(effective_model(&request), DEFAULT_MODEL);
+
     let mut request = request;
+
     request.model = "unset".into();
 
     assert_eq!(effective_model(&request), DEFAULT_MODEL);
@@ -438,10 +491,13 @@ fn routes_default_signatureless_tool_history_to_gemini_two() {
     };
 
     assert_eq!(effective_model(&request), LEGACY_MODEL);
+
     let mut request = request;
+
     request.model = "unset".into();
 
     assert_eq!(effective_model(&request), LEGACY_MODEL);
+
     let body = request_body(&request).unwrap();
 
     assert_eq!(body["contents"][0]["parts"][0]["functionCall"]["name"], "read");
@@ -462,6 +518,7 @@ async fn rejects_notes_and_unknown_calls_before_credentials() {
 #[tokio::test]
 async fn validates_gemini_configuration_before_network_access() {
     let client = reqwest::Client::new();
+
     let request = ModelRequest {
         model: "test".into(),
         workspace: None,
@@ -498,6 +555,7 @@ fn parses_text_and_function_calls() {
 
     assert_eq!(text, "I will read it.");
     assert_eq!(events.len(), 1);
+
     assert_eq!(
         events[0],
         Event::Tool {
@@ -509,6 +567,7 @@ fn parses_text_and_function_calls() {
     );
 
     assert_eq!(parse_reply(&json!({})), (String::new(), Vec::new()));
+
     assert_eq!(
         parse_reply(&json!({"candidates": [{"content": {"parts": [
             {"functionCall": {"args": {}}},
@@ -525,6 +584,7 @@ async fn sends_a_bounded_request_and_parses_status() {
     };
 
     let address = listener.local_addr().unwrap();
+
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0_u8; 4096];
@@ -541,6 +601,7 @@ async fn sends_a_bounded_request_and_parses_status() {
     });
 
     let client = reqwest::Client::new();
+
     let request = ModelRequest {
         model: "test".into(),
         workspace: None,
@@ -555,6 +616,7 @@ async fn sends_a_bounded_request_and_parses_status() {
         .unwrap();
 
     assert_eq!(response.result.unwrap()["text"], "ok");
+
     server.await.unwrap();
 }
 
@@ -565,6 +627,7 @@ async fn uses_the_default_model_and_parses_tool_replies() {
     };
 
     let address = listener.local_addr().unwrap();
+
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0_u8; 4096];
@@ -602,6 +665,7 @@ async fn uses_the_default_model_and_parses_tool_replies() {
             .unwrap();
 
     assert_eq!(response.result.unwrap()["stop"], "tool");
+
     server.await.unwrap();
 }
 
@@ -612,6 +676,7 @@ async fn rejects_an_oversized_response_before_parsing() {
     };
 
     let address = listener.local_addr().unwrap();
+
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let body = vec![b'x'; BODY_LIMIT + 1];

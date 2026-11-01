@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 
-#[cfg(not(test))]
 use krabb_core::types::Request;
 use krabb_core::types::Response;
 #[cfg(not(test))]
@@ -10,6 +9,7 @@ use krabb_core::{
 };
 
 use serde_json::{Value, json};
+
 use std::{
     fs,
     fs::OpenOptions,
@@ -25,16 +25,15 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 
-#[cfg(not(test))]
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, Command};
-#[cfg(not(test))]
 use tokio::sync::Mutex;
 
 const OUTPUT_LIMIT: usize = krabb_core::jsonl::MAX / 2;
 const MEDIA_LIMIT: usize = 4 * 1024 * 1024;
 const MEDIA_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
+const MEDIA_CACHE_FILES: usize = 256;
 const MEDIA_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const INBOX_BYTES_LIMIT: usize = 16 * 1024 * 1024;
 const QUEUE_LIMIT: usize = 4096;
@@ -77,8 +76,11 @@ impl Inbox {
             let Some(pending) = self.pending.get(events.len()) else { break };
 
             let mut event = pending.event.clone();
+
             event["gateway_sequence"] = json!(pending.sequence);
+
             let mut candidate = events.clone();
+
             candidate.push(event.clone());
 
             if response_fits(id, &candidate)? {
@@ -115,6 +117,7 @@ impl Inbox {
         for event in &events {
             let sequence = self.next_sequence;
             let mut candidate = event.clone();
+
             candidate["gateway_sequence"] = json!(sequence);
 
             if !response_fits(u64::MAX, &[candidate])? {
@@ -150,6 +153,7 @@ impl Inbox {
         };
 
         let previous = self.clone();
+
         self.pending.remove(index);
 
         match save_inbox(self) {
@@ -165,6 +169,7 @@ impl Inbox {
 
 fn response_fits(id: u64, events: &[Value]) -> krabb_core::Result<bool> {
     let response = Response::ok(id, json!({"events": events}));
+
     Ok(serde_json::to_vec(&response)?.len().saturating_add(1) <= krabb_core::jsonl::MAX)
 }
 
@@ -251,7 +256,6 @@ async fn plugin_main() -> krabb_core::Result<()> {
     .await
 }
 
-#[cfg(not(test))]
 async fn call(inbox: &Arc<Mutex<Inbox>>, request: Request) -> krabb_core::Result<Option<Response>> {
     let (id, method, params) = match request {
         Request::Call { id, method, params, .. } => (id, method, params),
@@ -398,8 +402,10 @@ async fn capture_output(
 ) -> io::Result<Output> {
     let stdout = read_output(stdout, stdout_limit);
     let stderr = read_output(stderr, stderr_limit);
+
     tokio::pin!(stdout);
     tokio::pin!(stderr);
+
     let (stdout, stderr) = tokio::select! {
         result = &mut stdout => {
             let stdout = result?;
@@ -415,6 +421,7 @@ async fn capture_output(
     };
 
     let status = child.wait().await?;
+
     Ok(Output { status, stdout, stderr })
 }
 
@@ -455,8 +462,10 @@ async fn receive_output(
     let mut stderr = stderr;
     let stdout = stream_output(&mut stdout, spool, OUTPUT_LIMIT);
     let stderr = read_output(&mut stderr, OUTPUT_LIMIT);
+
     tokio::pin!(stdout);
     tokio::pin!(stderr);
+
     let stderr = tokio::select! {
         result = &mut stdout => {
             result?;
@@ -471,6 +480,7 @@ async fn receive_output(
     };
 
     let status = child.wait().await?;
+
     Ok(Output { status, stdout: Vec::new(), stderr })
 }
 
@@ -491,9 +501,9 @@ fn signal_error(error: io::Error) -> krabb_core::Error {
     }
 }
 
-#[cfg(not(test))]
 async fn poll(account: &str) -> krabb_core::Result<Value> {
     let command = std::env::var("KRABB_SIGNAL_COMMAND").unwrap_or_else(|_| "signal-cli".into());
+
     let path = receive_spool_path().ok_or_else(|| {
         krabb_core::Error::Denied("KRABB_HOME is required for the Signal receive spool.".into())
     })?;
@@ -507,6 +517,7 @@ async fn poll(account: &str) -> krabb_core::Result<Value> {
     };
 
     let events = values.iter().filter_map(normalize).collect::<Vec<_>>();
+
     Ok(json!({"events": events}))
 }
 
@@ -515,11 +526,13 @@ async fn poll_with(account: &str, command: &str, prefix: &[String]) -> krabb_cor
     let args = receive_args(account, prefix);
     let values = run_jsonl_with(command, &args).await?;
     let events = values.iter().filter_map(normalize).collect::<Vec<_>>();
+
     Ok(json!({"events": events}))
 }
 
 fn receive_args(account: &str, prefix: &[String]) -> Vec<String> {
     let mut args = prefix.to_vec();
+
     args.extend([
         "-a".into(),
         account.into(),
@@ -534,6 +547,7 @@ fn receive_args(account: &str, prefix: &[String]) -> Vec<String> {
 
 fn receive_temp_path(path: &Path) -> PathBuf {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_nanos());
+
     path.with_file_name(format!(".signal-receive.jsonl.tmp-{nonce}"))
 }
 
@@ -559,6 +573,7 @@ async fn receive_to_spool(
     }
 
     let temporary = receive_temp_path(path);
+
     let file =
         OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|error| {
             krabb_core::Error::Denied(format!(
@@ -609,6 +624,7 @@ async fn receive_to_spool(
     };
 
     let spool = tokio::fs::File::from_std(file);
+
     let output = match tokio::time::timeout(
         Duration::from_secs(45),
         receive_output(&mut child, stdout, stderr, spool),
@@ -639,11 +655,13 @@ async fn receive_to_spool(
 
     if output.stderr.len() > OUTPUT_LIMIT {
         let _ = fs::remove_file(&temporary);
+
         return Err(krabb_core::Error::Denied("signal-cli output exceeded the limit.".into()));
     }
 
     if !output.status.success() {
         let _ = fs::remove_file(&temporary);
+
         return Err(krabb_core::Error::Denied(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         ));
@@ -658,11 +676,13 @@ async fn receive_to_spool(
 
     if metadata.len() > OUTPUT_LIMIT as u64 {
         let _ = fs::remove_file(&temporary);
+
         return Err(krabb_core::Error::Denied("signal-cli output exceeded the limit.".into()));
     }
 
     if let Err(error) = load_receive_spool(&temporary) {
         let _ = fs::remove_file(&temporary);
+
         return Err(error);
     }
 
@@ -679,12 +699,14 @@ async fn receive_to_spool(
 
     if let Err(error) = krabb_file::save(path, bytes) {
         let _ = fs::remove_file(&temporary);
+
         return Err(krabb_core::Error::Denied(format!(
             "Signal receive spool could not be installed: {error}."
         )));
     }
 
     let _ = fs::remove_file(&temporary);
+
     Ok(())
 }
 
@@ -810,6 +832,7 @@ fn normalize(value: &Value) -> Option<Value> {
     }
 
     let content = content(data, group_id.map_or("recipient", |_| "group"), group);
+
     Some(json!({
         "id": format!("{source}:{group}:{timestamp}"),
         "chat": group,
@@ -839,6 +862,7 @@ fn content(data: &Value, origin_kind: &str, origin: &str) -> Vec<Value> {
 
         let mime = attachment["contentType"].as_str();
         let name = attachment["filename"].as_str().unwrap_or("attachment");
+
         let kind = if mime.is_some_and(|value| value.starts_with("audio/")) {
             "audio"
         } else if mime.is_some_and(|value| value.starts_with("image/")) {
@@ -901,9 +925,9 @@ fn attachment_origin(query: &str) -> krabb_core::Result<AttachmentOrigin> {
     }
 }
 
-#[cfg(not(test))]
 async fn send(account: &str, params: &Value) -> krabb_core::Result<Value> {
     let command = std::env::var("KRABB_SIGNAL_COMMAND").unwrap_or_else(|_| "signal-cli".into());
+
     send_with(account, params, &command, &[]).await
 }
 
@@ -922,6 +946,7 @@ async fn send_with(
         .ok_or_else(|| krabb_core::Error::Denied("Signal send requires text.".into()))?;
 
     let mut args = prefix.to_vec();
+
     args.extend(["-a".into(), account.into(), "send".into(), "-m".into(), text.into()]);
 
     if let Some(values) = params["content"].as_array() {
@@ -929,6 +954,7 @@ async fn send_with(
             let Some(uri) = value["uri"].as_str() else { continue };
 
             let path = local_media(uri)?;
+
             args.extend(["-a".into(), path.display().to_string()]);
         }
     }
@@ -942,7 +968,6 @@ async fn send_with(
     run_with(command, &args).await
 }
 
-#[cfg(not(test))]
 async fn media(account: &str, params: &Value) -> krabb_core::Result<Value> {
     let uri = params["uri"]
         .as_str()
@@ -950,6 +975,7 @@ async fn media(account: &str, params: &Value) -> krabb_core::Result<Value> {
 
     let root = media_root()?;
     let command = std::env::var("KRABB_SIGNAL_COMMAND").unwrap_or_else(|_| "signal-cli".into());
+
     signal_media_at(account, uri, &root, &command, &[]).await
 }
 
@@ -992,7 +1018,8 @@ async fn signal_media_at(
         krabb_core::Error::Denied(format!("Signal media directory failed: {error}."))
     })?;
 
-    cleanup_media(root);
+    trim_media(root, MEDIA_CACHE_LIMIT, MEDIA_CACHE_FILES)?;
+
     let name =
         format!("signal-{}.bin", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id));
 
@@ -1009,55 +1036,22 @@ async fn signal_media_at(
         return Err(krabb_core::Error::Denied("Signal media is too large.".into()));
     }
 
+    reserve_media(root, bytes.len() as u64)?;
+
     krabb_file::save(&destination, bytes).map_err(|error| {
         krabb_core::Error::Denied(format!("Signal media storage failed: {error}."))
     })?;
 
-    cleanup_media(root);
     media_at(&format!("file://{}", destination.display()), root).await
 }
 
-fn cleanup_media(root: &Path) {
-    cleanup_media_with_limit(root, MEDIA_CACHE_LIMIT);
+fn trim_media(root: &Path, bytes: u64, files: usize) -> krabb_core::Result<()> {
+    krabb_file::trim(root, bytes, files, MEDIA_TTL)
+        .map_err(|_| krabb_core::Error::Denied("Signal media cache is unavailable.".into()))
 }
 
-fn cleanup_media_with_limit(root: &Path, limit: u64) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-
-    let cutoff = SystemTime::now().checked_sub(MEDIA_TTL).unwrap_or(SystemTime::UNIX_EPOCH);
-    let mut files = Vec::new();
-
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|value| value.is_file()) {
-            continue;
-        }
-
-        let Ok(metadata) = entry.metadata() else { continue };
-
-        let Ok(modified) = metadata.modified() else { continue };
-
-        if modified < cutoff {
-            let _ = fs::remove_file(entry.path());
-            continue;
-        }
-
-        files.push((entry.path(), modified, metadata.len()));
-    }
-
-    files.sort_by_key(|(_, modified, _)| *modified);
-    let mut total = files.iter().map(|(_, _, size)| *size).sum::<u64>();
-
-    for (path, _, size) in files {
-        if total <= limit {
-            break;
-        }
-
-        if fs::remove_file(path).is_ok() {
-            total = total.saturating_sub(size);
-        }
-    }
+fn reserve_media(root: &Path, incoming: u64) -> krabb_core::Result<()> {
+    trim_media(root, MEDIA_CACHE_LIMIT.saturating_sub(incoming), MEDIA_CACHE_FILES - 1)
 }
 
 async fn get_attachment(
@@ -1068,7 +1062,9 @@ async fn get_attachment(
     prefix: &[String],
 ) -> krabb_core::Result<Vec<u8>> {
     let args = attachment_args(account, id, origin, prefix);
+
     let encoded_limit = MEDIA_LIMIT.saturating_add(2) / 3 * 4;
+
     let output =
         command_output(command, &args, encoded_limit, OUTPUT_LIMIT).await.map_err(signal_error)?;
 
@@ -1141,7 +1137,6 @@ fn local_media(uri: &str) -> krabb_core::Result<std::path::PathBuf> {
     local_media_at(uri, &root)
 }
 
-#[cfg(not(test))]
 fn media_root() -> krabb_core::Result<PathBuf> {
     std::env::var_os("KRABB_MEDIA")
         .or_else(|| {
@@ -1173,6 +1168,13 @@ fn local_media_at(uri: &str, root: &Path) -> krabb_core::Result<std::path::PathB
 
 #[cfg(test)]
 mod tests {
+    mod persistence;
+
+    #[test]
+    fn media_cache_reserves_bytes_and_files_preserving_pinned_images() {
+        krabb_test::cache::check(super::reserve_media);
+    }
+
     use super::*;
 
     #[test]
@@ -1200,6 +1202,7 @@ mod tests {
         assert_eq!(event["content"][1]["uri"], "signal://attachment/img?recipient=KzE");
         assert_eq!(event["content"][2]["kind"], "audio");
         assert_eq!(event["content"][3]["kind"], "file");
+
         let group = json!({
             "envelope": {
                 "source": "+2",
@@ -1250,9 +1253,11 @@ mod tests {
     #[test]
     fn retains_events_until_host_acknowledgement() {
         let mut inbox = Inbox::default();
+
         inbox.stage([json!({"id": "event", "chat": "chat"})]).unwrap();
 
         assert_eq!(inbox.events(1).unwrap()[0]["gateway_sequence"], 1);
+
         inbox.acknowledge(1).unwrap();
         inbox.acknowledge(1).unwrap();
 
@@ -1263,6 +1268,7 @@ mod tests {
     fn stages_received_events_idempotently() {
         let mut inbox = Inbox::default();
         let event = json!({"id": "event", "chat": "chat"});
+
         inbox.stage([event.clone()]).unwrap();
         inbox.stage([event]).unwrap();
 
@@ -1304,6 +1310,7 @@ mod tests {
         let value = run_with("printf", &["%s".into(), "[{\"ok\":true}]".into()]).await.unwrap();
 
         assert_eq!(value[0]["ok"], true);
+
         let value = run_with("printf", &["%s".into(), "plain".into()]).await.unwrap();
 
         assert_eq!(value["output"], "plain");
@@ -1316,8 +1323,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-signal-fetch-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let root = std::fs::canonicalize(&root).unwrap();
+
         let value = signal_media_at(
             "+1000",
             "signal://attachment/7?recipient=KzEwMDA",
@@ -1332,6 +1342,7 @@ mod tests {
 
         assert!(std::path::Path::new(path).starts_with(&root));
         assert_eq!(std::fs::read(path).unwrap(), b"hello");
+
         let cached = signal_media_at(
             "+1000",
             "signal://attachment/7?recipient=KzEwMDA",
@@ -1343,7 +1354,48 @@ mod tests {
         .unwrap();
 
         assert_eq!(cached, value);
+
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn incoming_attachments_respect_cache_budgets() {
+        let root =
+            std::env::temp_dir().join(format!("krabb-signal-capacity-{}", std::process::id()));
+
+        std::fs::create_dir_all(&root).unwrap();
+
+        let source = root.join("fixture.rs");
+
+        std::fs::write(&source, "fn main() { println!(\"aGVsbG8=\"); }").unwrap();
+
+        let executable = root.join(if cfg!(windows) { "fixture.exe" } else { "fixture" });
+
+        let compiled = std::process::Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+
+        assert!(compiled.status.success(), "{}", String::from_utf8_lossy(&compiled.stderr));
+
+        for case in ["bytes", "files", "protected-bytes", "protected-files"] {
+            let fixture = krabb_test::cache::WriteFixture::new(case);
+
+            let result = signal_media_at(
+                "+1000",
+                "signal://attachment/7?recipient=KzEwMDA",
+                &fixture.root,
+                executable.to_str().unwrap(),
+                &[],
+            )
+            .await;
+
+            fixture.verify(result, "signal-Nw.bin", b"hello");
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1352,14 +1404,19 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-signal-cleanup-{}", std::process::id()));
 
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let expired = root.join("expired.bin");
         let oldest = root.join("oldest.bin");
         let newest = root.join("newest.bin");
+
         fs::write(&expired, b"expired").unwrap();
         fs::write(&oldest, b"oldest").unwrap();
         fs::write(&newest, b"newest").unwrap();
+
         let now = SystemTime::now();
+
         OpenOptions::new()
             .write(true)
             .open(&expired)
@@ -1374,17 +1431,19 @@ mod tests {
             .set_times(fs::FileTimes::new().set_modified(now - Duration::from_secs(2)))
             .unwrap();
 
-        cleanup_media_with_limit(&root, 10);
+        trim_media(&root, 10, MEDIA_CACHE_FILES).unwrap();
 
         assert!(!expired.exists());
         assert!(!oldest.exists());
         assert!(newest.exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn rejects_an_oversized_pending_event() {
         let mut inbox = Inbox::default();
+
         inbox.pending.push(Pending {
             sequence: 1,
             event: json!({"text": "x".repeat(krabb_core::jsonl::MAX)}),
@@ -1458,6 +1517,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(sent["sent"], true);
+
         let sent = send_with(
             "+1000",
             &json!({"chat":"group","private":false,"text":"hello"}),
@@ -1476,8 +1536,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-signal-spool-{}", std::process::id()));
 
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let path = root.join("signal-receive.jsonl");
+
         receive_to_spool(
             "+1000",
             "sh",
@@ -1494,6 +1557,7 @@ mod tests {
 
         assert_eq!(values.len(), 1);
         assert_eq!(normalize(&values[0]).unwrap()["text"], "hello");
+
         assert!(fs::read_dir(&root).unwrap().flatten().all(|entry| {
             !entry.file_name().to_string_lossy().starts_with(".signal-receive.jsonl.tmp-")
         }));
@@ -1508,8 +1572,11 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-signal-failed-spool-{}", std::process::id()));
 
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let path = root.join("signal-receive.jsonl");
+
         fs::write(
             &path,
             br#"{"envelope":{"sourceNumber":"+1","timestamp":7,"dataMessage":{"message":"old"}}}"#,
@@ -1530,6 +1597,7 @@ mod tests {
         let values = load_receive_spool(&path).unwrap().unwrap();
 
         assert_eq!(normalize(&values[0]).unwrap()["text"], "old");
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1540,8 +1608,11 @@ mod tests {
             .join(format!("krabb-signal-oversized-spool-{}", std::process::id()));
 
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let path = root.join("signal-receive.jsonl");
+
         fs::write(
             &path,
             br#"{"envelope":{"sourceNumber":"+1","timestamp":7,"dataMessage":{"message":"old"}}}"#,
@@ -1552,6 +1623,7 @@ mod tests {
 
         for stream in ["", " >&2"] {
             let script = format!("head -c {} /dev/zero{}; exec sleep 30", OUTPUT_LIMIT + 1, stream);
+
             let result = tokio::time::timeout(
                 Duration::from_secs(3),
                 receive_to_spool("+1000", "sh", &["-c".into(), script], &path),
@@ -1560,6 +1632,7 @@ mod tests {
             .expect("oversized receive should terminate promptly");
 
             assert!(result.is_err());
+
             let values = load_receive_spool(&path).unwrap().unwrap();
 
             assert_eq!(normalize(&values[0]).unwrap()["text"], "old");
@@ -1574,13 +1647,17 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-signal-invalid-spool-{}", std::process::id()));
 
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(&root).unwrap();
+
         let path = root.join("signal-receive.jsonl");
+
         fs::write(&path, b"partial json").unwrap();
         krabb_file::private(&path).unwrap();
 
         assert_eq!(load_or_clear_receive_spool(&path).unwrap(), None);
         assert!(!path.exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1589,9 +1666,13 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-signal-media-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let path = root.join("voice.ogg");
+
         std::fs::write(&path, b"voice").unwrap();
+
         let value = media_at(&format!("file://{}", path.display()), &root).await.unwrap();
 
         assert!(value["uri"].as_str().unwrap().ends_with("voice.ogg"));
@@ -1604,6 +1685,7 @@ mod tests {
         std::fs::write(&outside, b"outside").unwrap();
 
         assert!(media_at(&format!("file://{}", outside.display()), &root).await.is_err());
+
         let _ = std::fs::remove_file(outside);
         let _ = std::fs::remove_dir_all(root);
     }

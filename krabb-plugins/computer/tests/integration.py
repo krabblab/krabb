@@ -31,6 +31,7 @@ root.mainloop()
 """
 
 display = f":{100 + os.getpid() % 30000}"
+
 environment = {
     **os.environ,
     "KRABB_COMPUTER_MODE": "isolated",
@@ -51,7 +52,9 @@ def call(method, arguments=None, host=True):
     global next_id
 
     request_id = next_id
+
     next_id += 1
+
     params = {"arguments": arguments or {}}
 
     if host:
@@ -63,6 +66,7 @@ def call(method, arguments=None, host=True):
     )
 
     process.stdin.flush()
+
     deadline = time.monotonic() + 10
 
     while time.monotonic() < deadline:
@@ -102,16 +106,22 @@ def wait_for_title(title):
 
 try:
     call("hello", host=False)
+
     opened = call("computer_open")
     session_id = opened["session_id"]
     dimensions = call("computer_displays", {"session_id": session_id})
+
     assert (dimensions["width"], dimensions["height"]) == (1280, 720)
+
     wait_for_title("ready")
 
     screenshot = call("computer_screenshot", {"session_id": session_id})
     image_uri = screenshot["content"][1]["uri"]
+
     assert image_uri.startswith("data:image/png;base64,")
+
     image = base64.b64decode(image_uri.split(",", 1)[1], validate=True)
+
     assert image.startswith(b"\x89PNG\r\n\x1a\n")
     assert screenshot["metadata"]["width"] == 1280
 
@@ -122,7 +132,9 @@ try:
     wait_for_title("typed")
 
     call("computer_close", {"session_id": session_id})
+
     session_id = None
+
     print("Disposable Xvfb computer integration passed.")
 finally:
     if session_id:

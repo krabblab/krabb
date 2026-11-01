@@ -224,7 +224,24 @@ async fn call_at(
         Request::Note { .. } => return Ok(None),
     };
 
-    let result = match method.as_str() {
+    let caller = if method == "control" {
+        Some(params.get("caller").filter(|value| value.is_object()).ok_or_else(|| {
+            krabb_core::Error::Denied("Schedule control requires a trusted caller.".into())
+        })?)
+    } else {
+        None
+    };
+
+    let method = if caller.is_some() {
+        match params["action"].as_str() {
+            Some(action @ ("pause" | "resume" | "run" | "retry" | "remove")) => action,
+            _ => return Err(krabb_core::Error::Denied("Invalid schedule control action.".into())),
+        }
+    } else {
+        method.as_str()
+    };
+
+    let result = match method {
         "add" => {
             let id = params["id"]
                 .as_u64()
@@ -524,6 +541,7 @@ async fn call_at(
                         } else {
                             task.name.clone()
                         },
+
                         "text": task.text.chars().take(1_000).collect::<String>(),
                         "delay": task.delay,
                         "due": task.due,
@@ -835,7 +853,9 @@ async fn call_at(
                 return Err(krabb_core::Error::Denied("Scheduled task was not found.".into()));
             };
 
-            let status = match method.as_str() {
+            authorize_control(current, caller)?;
+
+            let status = match method {
                 "approve" if current.status == "pending" => "active",
                 "pause" if current.status == "active" => "paused",
                 "pause" if current.status == "running" => "running",
@@ -885,7 +905,7 @@ async fn call_at(
                 .ok_or_else(|| krabb_core::Error::Denied("Scheduled task was not found.".into()))?;
             let task = Arc::make_mut(task);
 
-            match method.as_str() {
+            match method {
                 "run" => {
                     task.manual_run = true;
                     task.manual_retry = false;
@@ -1009,41 +1029,33 @@ async fn call_at(
             let id = params["id"]
                 .as_u64()
                 .ok_or_else(|| krabb_core::Error::Denied("remove.id is required.".into()))?;
-            let previous = {
-                let mut tasks = tasks
-                    .lock()
-                    .map_err(|_| krabb_core::Error::Denied("Scheduler lock is poisoned.".into()))?;
+            let mut tasks = tasks
+                .lock()
+                .map_err(|_| krabb_core::Error::Denied("Scheduler lock is poisoned.".into()))?;
 
-                let previous = tasks.clone();
-                let cancel_requested = if let Some(task) = tasks.get_mut(&id)
-                    && task.status == "running"
-                {
-                    let task = Arc::make_mut(task);
-                    task.cancel_requested = true;
-                    true
-                } else {
-                    false
-                };
-
-                if !cancel_requested {
-                    tasks.remove(&id);
-                }
-
-                (previous, cancel_requested)
-            };
-
-            if let Err(error) = persist_at(location, tasks) {
-                if let Ok(mut tasks) = tasks.lock() {
-                    *tasks = previous.0;
-                }
-
-                return Err(error);
+            if let Some(task) = tasks.get(&id) {
+                authorize_control(task, caller)?;
             }
 
-            if previous.1 {
+            let mut next_tasks = tasks.clone();
+            let cancel_requested = if let Some(task) = next_tasks.get_mut(&id)
+                && task.status == "running"
+            {
+                Arc::make_mut(task).cancel_requested = true;
+                true
+            } else {
+                false
+            };
+
+            let deleted = !cancel_requested && next_tasks.remove(&id).is_some();
+
+            persist_locked_at(location, &next_tasks)?;
+            *tasks = next_tasks;
+
+            if cancel_requested {
                 json!({"deleted": false, "cancel_requested": true})
             } else {
-                json!({"deleted": previous.0.contains_key(&id)})
+                json!({"deleted": deleted})
             }
         }
 
@@ -1051,7 +1063,30 @@ async fn call_at(
     };
 
     let response = checked_response(id, result)?;
+
     Ok(Some(response))
+}
+
+fn authorize_control(task: &Task, caller: Option<&serde_json::Value>) -> krabb_core::Result<()> {
+    let Some(caller) = caller else {
+        return Ok(());
+    };
+
+    let origin = &task.context["origin"];
+
+    let owns = ["channel", "chat", "session"].into_iter().all(|field| {
+        caller[field].as_str().is_some_and(|value| !value.is_empty())
+            && caller[field] == origin[field]
+    }) && (caller["thread"].is_null() || caller["thread"].is_string())
+        && caller["thread"] == origin["thread"];
+
+    if !owns {
+        return Err(krabb_core::Error::Denied(
+            "Scheduled task belongs to another conversation.".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn checked_response(id: u64, result: serde_json::Value) -> krabb_core::Result<Response> {
@@ -1109,6 +1144,7 @@ fn load_with_legacy_at(
     };
 
     let migration_marker = schedule_path.with_file_name("timer-migration-complete");
+
     let marker = load_file(&migration_marker, 1).map_err(|error| {
         krabb_core::Error::Denied(format!(
             "Could not load timer migration marker {}: {error}",
@@ -1196,6 +1232,7 @@ fn load_with_legacy_at(
 
     normalize_schedule_names(&mut tasks);
     persist_locked_at(Some(schedule_path), &tasks)?;
+
     save_file(&migration_marker, b"1").map_err(|error| {
         krabb_core::Error::Denied(format!(
             "Could not save timer migration marker {}: {error}",
@@ -1392,6 +1429,10 @@ fn now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    mod durability;
+
+    mod control;
+
     use super::{
         BYTE_LIMIT, LIMIT, TEXT_LIMIT, Task, Tasks, call, call_at, load_at, load_with_legacy_at,
         next, now, parse_field, path, persist_at, timezone, validate_cron, validate_zone,
@@ -1399,6 +1440,7 @@ mod tests {
 
     use krabb_core::types::Request;
     use serde_json::json;
+
     use std::{
         collections::{BTreeMap, BTreeSet},
         sync::{Arc, Mutex},
@@ -1468,6 +1510,7 @@ mod tests {
     #[tokio::test]
     async fn schedule_proposals_require_approval_and_execute_once() {
         let tasks = tasks();
+
         let added =
             call(&tasks, Request::call(1, "add", json!({"id": 4, "text": "check", "delay": 0, "cron": "*/5 * * * *", "zone": "Europe/Rome"})))
                 .await
@@ -1484,6 +1527,7 @@ mod tests {
         assert_eq!(listed["items"][0]["status"], "pending");
 
         call(&tasks, Request::call(3, "approve", json!({"id": 4}))).await.unwrap();
+
         let claimed = call(&tasks, Request::call(4, "claim", json!({"at": u64::MAX})))
             .await
             .unwrap()
@@ -1512,6 +1556,7 @@ mod tests {
     #[tokio::test]
     async fn repeated_finish_calls_return_the_saved_result_without_reapplying_it() {
         let tasks = tasks();
+
         call(
             &tasks,
             Request::call(
@@ -1613,6 +1658,7 @@ mod tests {
     #[tokio::test]
     async fn pending_reports_are_returned_in_bounded_id_pages() {
         let tasks = tasks();
+
         let mut task = Task {
             name: "check".into(),
             text: "check".into(),
@@ -1679,6 +1725,7 @@ mod tests {
     #[tokio::test]
     async fn recurring_task_waits_for_report_acknowledgement_before_next_run() {
         let tasks = tasks();
+
         call(
             &tasks,
             Request::call(
@@ -1738,6 +1785,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_schedule_creation_activates_the_task_immediately() {
         let tasks = tasks();
+
         let added = call(
             &tasks,
             Request::call(
@@ -1766,6 +1814,7 @@ mod tests {
     #[tokio::test]
     async fn unnamed_schedules_get_a_random_adjective_creature_name() {
         let tasks = tasks();
+
         let added = call(
             &tasks,
             Request::call(
@@ -1863,6 +1912,7 @@ mod tests {
         assert_eq!(second["from"], 21);
         assert_eq!(second["to"], 21);
         assert_eq!(second["items"].as_array().unwrap().len(), 1);
+
         assert!(
             call_at(&tasks, Request::call(32, "list", json!({"page": 0})), None).await.is_err()
         );
@@ -1933,6 +1983,7 @@ mod tests {
     #[tokio::test]
     async fn manual_runs_and_configured_retries_are_durable_and_bounded() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2057,6 +2108,7 @@ mod tests {
     #[tokio::test]
     async fn uncertain_failures_pause_without_using_configured_retries() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2099,6 +2151,19 @@ mod tests {
         assert!(finished["retry_at"].is_null());
         assert_eq!(tasks.lock().unwrap()[&11].attempts, 1);
         assert_eq!(tasks.lock().unwrap()[&11].retries, 3);
+
+        let later = now() + 3600;
+
+        let claimed =
+            call_at(&tasks, Request::call(6, "claim", json!({"at": later, "since": later})), None)
+                .await
+                .unwrap()
+                .unwrap()
+                .result
+                .unwrap();
+
+        assert!(claimed["item"].is_null());
+        assert_eq!(tasks.lock().unwrap()[&11].attempts, 1);
     }
 
     #[tokio::test]
@@ -2178,6 +2243,7 @@ mod tests {
     #[tokio::test]
     async fn configured_continue_skips_a_failed_occurrence_and_keeps_the_next_run() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2198,6 +2264,7 @@ mod tests {
         .unwrap();
 
         let original_due = tasks.lock().unwrap()[&31].due;
+
         call_at(&tasks, Request::call(2, "claim", json!({"at": now()})), None).await.unwrap();
 
         let finished = call_at(
@@ -2225,6 +2292,7 @@ mod tests {
     #[tokio::test]
     async fn removing_a_running_schedule_requests_cancellation_and_stops_future_runs() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2281,6 +2349,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_does_not_replay_a_schedule_cancelled_during_interruption() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2311,6 +2380,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_preserves_runs_owned_by_live_daemon_workers() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2354,6 +2424,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_reports_interrupted_run_once() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2411,6 +2482,7 @@ mod tests {
     #[tokio::test]
     async fn running_a_recurring_task_now_keeps_its_regular_due_time() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2424,6 +2496,7 @@ mod tests {
         .unwrap();
 
         let original_due = tasks.lock().unwrap()[&12].due;
+
         call_at(&tasks, Request::call(2, "approve", json!({"id": 12})), None).await.unwrap();
         call_at(&tasks, Request::call(3, "run", json!({"id": 12})), None).await.unwrap();
 
@@ -2458,6 +2531,7 @@ mod tests {
     #[tokio::test]
     async fn manually_running_a_due_recurring_task_consumes_that_occurrence() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2471,6 +2545,7 @@ mod tests {
         .unwrap();
 
         call_at(&tasks, Request::call(2, "run", json!({"id": 14})), None).await.unwrap();
+
         let first = call_at(&tasks, Request::call(3, "claim", json!({"at": u64::MAX})), None)
             .await
             .unwrap()
@@ -2502,6 +2577,7 @@ mod tests {
     #[tokio::test]
     async fn running_a_one_time_task_now_retains_its_completion() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(1, "add", json!({"id": 13, "text": "send a message", "delay": 3600})),
@@ -2536,6 +2612,7 @@ mod tests {
     #[tokio::test]
     async fn missed_one_time_task_is_retained_as_skipped_for_review() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2562,6 +2639,7 @@ mod tests {
         assert_eq!(skipped["item"]["skipped"], true);
         assert_eq!(skipped["item"]["skipped_at"], 200);
         assert_eq!(tasks.lock().unwrap()[&44].status, "skipped");
+
         assert!(
             tasks.lock().unwrap()[&44]
                 .last_result
@@ -2573,6 +2651,7 @@ mod tests {
     #[tokio::test]
     async fn completed_and_skipped_one_time_tasks_can_be_run_again() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2586,6 +2665,7 @@ mod tests {
         .unwrap();
 
         call_at(&tasks, Request::call(2, "claim", json!({"at": u64::MAX})), None).await.unwrap();
+
         call_at(
             &tasks,
             Request::call(3, "finish", json!({"id": 60, "success": true, "result": "done"})),
@@ -2599,6 +2679,7 @@ mod tests {
             .unwrap();
 
         call_at(&tasks, Request::call(4, "run", json!({"id": 60})), None).await.unwrap();
+
         let completed = call_at(&tasks, Request::call(5, "claim", json!({"at": u64::MAX})), None)
             .await
             .unwrap()
@@ -2637,6 +2718,7 @@ mod tests {
             .unwrap();
 
         call_at(&tasks, Request::call(9, "run", json!({"id": 61})), None).await.unwrap();
+
         let skipped =
             call_at(&tasks, Request::call(10, "claim", json!({"at": 200, "since": 150})), None)
                 .await
@@ -2653,6 +2735,7 @@ mod tests {
     #[tokio::test]
     async fn skipped_one_time_task_can_be_retried_after_daemon_downtime() {
         let tasks = tasks();
+
         call_at(
             &tasks,
             Request::call(
@@ -2677,6 +2760,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(tasks.lock().unwrap()[&62].status, "skipped");
+
         call_at(&tasks, Request::call(3, "report", json!({"id": 62, "run_id": 2})), None)
             .await
             .unwrap();
@@ -2712,6 +2796,7 @@ mod tests {
         let tasks = tasks();
 
         assert!(call(&tasks, Request::call(1, "add", json!({"text": "check"}))).await.is_err());
+
         assert!(
             call(
                 &tasks,
@@ -2722,6 +2807,7 @@ mod tests {
         );
 
         assert!(call(&tasks, Request::call(2, "add", json!({"id": 4}))).await.is_err());
+
         assert!(
             call(&tasks, Request::call(3, "add", json!({"id": 4, "text": "check", "cron": "bad"})))
                 .await
@@ -2774,6 +2860,7 @@ mod tests {
         assert_eq!(cron.result.unwrap()["id"], 5);
 
         let exact_time = now().saturating_add(600);
+
         let exact = call(
             &tasks,
             Request::call(
@@ -2812,11 +2899,13 @@ mod tests {
         );
 
         assert!(call(&tasks, Request::call(9, "remove", json!({}))).await.is_err());
+
         let removed =
             call(&tasks, Request::call(10, "remove", json!({"id": 4}))).await.unwrap().unwrap();
 
         assert_eq!(removed.result.unwrap()["deleted"], false);
         assert!(call(&tasks, Request::call(7, "unknown", json!({}))).await.unwrap().is_none());
+
         let note =
             Request::Note { jsonrpc: "2.0".into(), method: "list".into(), params: json!({}) };
 
@@ -2829,9 +2918,13 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-scheduler-blocker-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let blocker = root.join("blocker");
+
         std::fs::write(&blocker, "file").unwrap();
+
         let tasks = tasks();
 
         assert!(
@@ -2845,6 +2938,7 @@ mod tests {
         );
 
         assert!(tasks.lock().unwrap().is_empty());
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2855,6 +2949,7 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let tasks = tasks();
+
         tasks.lock().unwrap().insert(
             1,
             Arc::new(Task {
@@ -2892,6 +2987,7 @@ mod tests {
 
         for id in 2..=LIMIT as u64 + 1 {
             let mut task = template.clone();
+
             Arc::make_mut(&mut task).due = id;
             tasks.lock().unwrap().insert(id, task);
         }
@@ -2902,15 +2998,18 @@ mod tests {
 
         assert_eq!(loaded.lock().unwrap()[&1].text.as_ref(), "check");
         assert_eq!(loaded.lock().unwrap().len(), LIMIT + 1);
+
         std::fs::write(&path, "broken").unwrap();
 
         assert!(load_at(Some(&path)).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"broken");
+
         std::fs::File::create(&path).unwrap().set_len(BYTE_LIMIT as u64 + 1).unwrap();
 
         assert!(load_at(Some(&path)).is_err());
         assert_eq!(std::fs::metadata(&path).unwrap().len(), BYTE_LIMIT as u64 + 1);
         assert!(persist_at(Some(&path.with_file_name("missing-dir/item")), &tasks).is_err());
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -2920,7 +3019,9 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-scheduler-startup-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let schedule_path = root.join("data/schedules/schedules.json");
 
         super::prepare_state_directory(Some(&schedule_path)).unwrap();
@@ -2948,8 +3049,11 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-scheduler-names-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let path = root.join("schedules.json");
+
         super::save_file(
             &path,
             br#"{"1":{"text":"first","delay":60},"2":{"text":"second","delay":60}}"#,
@@ -2957,6 +3061,7 @@ mod tests {
         .unwrap();
 
         let loaded = load_at(Some(&path)).unwrap();
+
         let names =
             loaded.lock().unwrap().values().map(|task| task.name.clone()).collect::<BTreeSet<_>>();
 
@@ -2968,6 +3073,7 @@ mod tests {
         assert!(persisted.values().all(|task| !task.name.is_empty()));
 
         let reloaded = load_at(Some(&path)).unwrap();
+
         let reloaded_names = reloaded
             .lock()
             .unwrap()
@@ -2976,6 +3082,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(reloaded_names, names);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2985,11 +3092,14 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-scheduler-migration-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
 
         let scheduler_path = root.join("data/schedules/schedules.json");
         let timer_path = root.join("timer.json");
+
         std::fs::create_dir_all(scheduler_path.parent().unwrap()).unwrap();
+
         super::save_file(
             &scheduler_path,
             br#"{"42":{"text":"existing","delay":0,"due":2000,"repeat":0,"cron":null,"zone":"UTC","status":"pending"}}"#,
@@ -3003,6 +3113,7 @@ mod tests {
         .unwrap();
 
         let loaded = load_with_legacy_at(Some(&scheduler_path), Some(&timer_path)).unwrap();
+
         {
             let guard = loaded.lock().unwrap();
             let task = guard.values().find(|task| task.text.as_ref() == "remind me").unwrap();
@@ -3020,6 +3131,7 @@ mod tests {
         let loaded_again = load_with_legacy_at(Some(&scheduler_path), Some(&timer_path)).unwrap();
 
         assert_eq!(loaded_again.lock().unwrap().len(), 2);
+
         assert!(
             loaded_again
                 .lock()
@@ -3046,6 +3158,7 @@ mod tests {
         let after_removal = load_with_legacy_at(Some(&scheduler_path), Some(&timer_path)).unwrap();
 
         assert_eq!(after_removal.lock().unwrap().len(), 1);
+
         assert!(
             !after_removal.lock().unwrap().values().any(|task| task.text.as_ref() == "remind me")
         );
@@ -3058,6 +3171,7 @@ mod tests {
         let _ = path();
 
         assert!(load_at(None).unwrap().lock().unwrap().is_empty());
+
         persist_at(None, &tasks()).unwrap();
     }
 
@@ -3111,6 +3225,7 @@ mod tests {
         assert!(validate_zone("+24:00").is_err());
         assert!(validate_zone("Not/AZone").is_err());
         assert!(timezone("UTC").is_ok());
+
         let weekday_noon = super::CronSchedule::parse("0 12 * * 1-5").unwrap();
 
         assert!(weekday_noon.matches(&[0, 12, 1, 1, 1]));
@@ -3128,6 +3243,7 @@ mod tests {
     #[tokio::test]
     async fn repeats_interval_tasks_and_retains_completed_one_shots() {
         let tasks = tasks();
+
         call(
             &tasks,
             Request::call(1, "add", json!({"id": 1, "text": "repeat", "delay": 0, "repeat": 5})),
@@ -3144,6 +3260,7 @@ mod tests {
 
         for task in tasks.lock().unwrap().values_mut() {
             let task = Arc::make_mut(task);
+
             task.due = 0;
         }
 
@@ -3153,6 +3270,7 @@ mod tests {
         let claimed_id = claimed.result.unwrap()["item"]["id"].as_u64().unwrap();
 
         assert_eq!(claimed_id, 1);
+
         call(
             &tasks,
             Request::call(
@@ -3168,6 +3286,7 @@ mod tests {
             call(&tasks, Request::call(7, "claim", json!({"at": 1}))).await.unwrap().unwrap();
 
         assert_eq!(claimed.result.unwrap()["item"]["id"], 2);
+
         call(
             &tasks,
             Request::call(8, "finish", json!({"id": 2, "success": true, "result": "done"})),
@@ -3196,8 +3315,10 @@ mod tests {
             .unwrap();
 
             call(&tasks, Request::call(10 + id, "approve", json!({"id": id}))).await.unwrap();
+
             let mut tasks = tasks.lock().unwrap();
             let task = tasks.get_mut(&id).unwrap();
+
             Arc::make_mut(task).due = 100;
         }
 
@@ -3207,6 +3328,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(skipped.result.unwrap()["item"]["skipped"], true);
+
         let reports = call(&tasks, Request::call(23, "reports", json!({})))
             .await
             .unwrap()
@@ -3249,6 +3371,7 @@ mod tests {
     #[tokio::test]
     async fn replay_limit_counts_occurrences_that_become_overdue_after_startup() {
         let tasks = tasks();
+
         call(
             &tasks,
             Request::call(
@@ -3270,6 +3393,7 @@ mod tests {
         call(&tasks, Request::call(2, "claim", json!({"at": 200, "since": 150}))).await.unwrap();
 
         assert_eq!(tasks.lock().unwrap()[&1].replay_count, 1);
+
         call(&tasks, Request::call(4, "finish", json!({"id": 1, "run_id": 2, "success": true})))
             .await
             .unwrap();
@@ -3298,6 +3422,7 @@ mod tests {
     async fn keeps_tasks_when_due_response_is_too_large() {
         let tasks = tasks();
         let text = "x".repeat(TEXT_LIMIT);
+
         {
             let mut scheduled = tasks.lock().unwrap();
 
@@ -3351,13 +3476,17 @@ mod tests {
             .join(format!("krabb-scheduler-shared-{}.json", std::process::id()));
 
         let _ = std::fs::remove_file(&path);
+
         std::fs::write(&path, "{}").unwrap();
+
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+
         permissions.set_mode(0o644);
         std::fs::set_permissions(&path, permissions).unwrap();
 
         assert!(load_at(Some(&path)).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+
         let _ = std::fs::remove_file(path);
     }
 }

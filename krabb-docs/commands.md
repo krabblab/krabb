@@ -118,6 +118,8 @@ krabb completion powershell >> $PROFILE
   the version.
 - Application logs are stored under `KRABB_HOME/logs/`. Set `KRABB_LOG` or
   `RUST_LOG` to filter them; set `KRABB_LOG_FORMAT=json` for JSON logs.
+  WebSocket transport internals are always excluded from files and stderr because
+  they can contain credentials and message payloads, including at debug level.
 
 See [Configuration](configuration.md) for log paths and settings.
 
@@ -245,6 +247,10 @@ acceptable. See [Concepts](concepts.md) for session and delivery state.
 ## Scheduling
 
 The scheduler plugin adds `krabb schedule add|list|history|run|retry|pause|resume|remove`.
+Explicit CLI additions authorize immediate activation. Model-generated scheduling
+proposals follow the turn's approval policy before activation; `off` blocks them.
+Remote schedule controls can change only tasks owned by the same channel, chat,
+thread, and session. Local CLI/TUI administration can control all schedules.
 Create a task with one timing option and an explicit provider and model:
 
 ```sh

@@ -7,7 +7,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:${PATH}
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y build-essential ca-certificates curl gcc-mingw-w64-x86-64 pkg-config ripgrep zip \
+    && apt-get install --no-install-recommends -y build-essential ca-certificates curl gcc-mingw-w64-x86-64 pkg-config python3 ripgrep zip \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89.0 --profile minimal \
     && rustup component add clippy llvm-tools-preview rustfmt \
