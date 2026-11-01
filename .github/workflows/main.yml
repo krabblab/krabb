@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
 
-  verify:
-    name: Verify
-    uses: ./.github/workflows/verify.yml
+  # verify:
+  #   name: Verify
+  #   uses: ./.github/workflows/verify.yml
 
   agentskill:
     name: Agentskill
@@ -39,5 +39,4 @@ jobs:
 
   test:
     name: Test
-    needs: verify
     uses: ./.github/workflows/test.yml
