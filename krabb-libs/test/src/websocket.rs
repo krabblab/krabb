@@ -48,22 +48,15 @@ where
                 ));
                 std::fs::create_dir_all(&root).unwrap();
 
-                let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+                let mut command = crate::process::command(test);
                 command
-                    .args(["--exact", test, "--nocapture"])
-                    .env_clear()
                     .env("KRABB_HOME", &root)
                     .env("KRABB_LOG_FORMAT", format)
                     .env("KRABB_WEBSOCKET_FIXTURE", base)
-                    .env("KRABB_WEBSOCKET_MODE", mode)
-                    .kill_on_drop(true);
+                    .env("KRABB_WEBSOCKET_MODE", mode);
 
                 if let Some(filter) = filter {
                     command.env("KRABB_LOG", filter).env("RUST_LOG", filter);
-                }
-
-                if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-                    command.env("LLVM_PROFILE_FILE", profile);
                 }
 
                 let result = tokio::time::timeout(Duration::from_secs(15), command.output()).await;

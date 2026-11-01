@@ -19311,9 +19311,14 @@ mod tests {
     }
 
     pub(super) fn test_root(label: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nonce =
             SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_nanos());
-        std::env::temp_dir().join(format!("krabb-{label}-{}-{nonce}", std::process::id()))
+
+        std::env::temp_dir()
+            .join(format!("krabb-{label}-{}-{nonce}-{sequence}", std::process::id()))
     }
 
     fn approval_finished(sessions: &Arc<Mutex<super::state::Store>>) -> bool {
@@ -29089,7 +29094,7 @@ fn main() {
 
         let pinned = PathBuf::from(uri.strip_prefix("file://").unwrap());
 
-        assert!(pinned.starts_with(root.join("pinned")));
+        assert_eq!(pinned.parent(), Some(fs::canonicalize(root.join("pinned")).unwrap().as_path()));
         assert!(pinned.is_file());
 
         let again = super::media::pin(content, &root);

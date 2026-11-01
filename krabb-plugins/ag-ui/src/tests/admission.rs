@@ -40,6 +40,12 @@ async fn rejected(address: SocketAddr, output: &mut mpsc::Receiver<Value>) {
     reader.read_line(&mut status).await.unwrap();
 
     assert_eq!(status, "HTTP/1.1 503 Service Unavailable\r\n");
+
+    let mut response = String::new();
+
+    reader.read_to_string(&mut response).await.unwrap();
+
+    assert!(response.ends_with("\r\n\r\n{}"));
     assert!(matches!(output.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
 }
 

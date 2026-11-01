@@ -85,7 +85,7 @@ for line in sys.stdin:
         for &(tool, final_text, success, pause) in &cases {
             let root = tests::test_root("schedule-model-retry");
 
-            fs::create_dir_all(&root).unwrap();
+            fs::create_dir(&root).unwrap();
 
             let root = root.canonicalize().unwrap();
 
@@ -108,6 +108,8 @@ for line in sys.stdin:
             let mut store = state::Store::load(&path).unwrap();
 
             if full {
+                // Exercise the production size check without rewriting 32 MiB on every phase.
+                store.record_limit = Some(32 * 1024);
                 store.ensure_schedule("schedule-71", "test").unwrap();
                 store
                     .append(
@@ -117,9 +119,7 @@ for line in sys.stdin:
                             session: "schedule-71".into(),
                             role: Role::Assistant,
                             sender: None,
-                            content: vec![Content::Text {
-                                text: "h".repeat(32 * 1024 * 1024 - 8 * 1024),
-                            }],
+                            content: vec![Content::Text { text: "h".repeat(24 * 1024) }],
                         },
                     )
                     .unwrap();
@@ -203,7 +203,12 @@ for line in sys.stdin:
             }
 
             if tool == "write" {
-                assert_eq!(fs::read_to_string(root.join("mutations")).unwrap(), "write\n");
+                assert_eq!(
+                    fs::read_to_string(root.join("mutations")).unwrap(),
+                    "write\n",
+                    "{mode} {tool} at {}",
+                    root.display()
+                );
 
                 assert_eq!(
                     fs::read_to_string(root.join("note.txt")).unwrap(),

@@ -195,7 +195,8 @@ lease, so a failed response save retains mutation evidence and pauses automatic 
 State files are written through the shared `krabb-file` crate. The writer fsyncs content and a
 transaction journal before replacement, atomically publishes each journal phase, and repairs
 an interrupted transaction at the next read. Files are private on Unix and
-owner-only on Windows. Discord stores its gateway sequence and session cursor
+owner-only on Windows. Windows security checks use canonical extended paths so long
+data paths retain the same access controls. Discord stores its gateway sequence and session cursor
 through the same path, allowing a resumed gateway session after a plugin
 restart.
 

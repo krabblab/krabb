@@ -3,5 +3,6 @@
 pub mod cache;
 pub mod inbox;
 pub mod logging;
+mod process;
 pub mod stream;
 pub mod websocket;

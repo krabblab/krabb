@@ -25,19 +25,12 @@ pub async fn isolated(test: &str, environment: &[(&str, &str)]) -> bool {
 
     fs::create_dir(&home.0).unwrap();
 
-    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    let mut command = crate::process::command(test);
 
     command
-        .args(["--exact", test, "--nocapture"])
-        .env_clear()
         .env("KRABB_HOME", &home.0)
         .env("KRABB_INBOX_FIXTURE", test)
-        .envs(environment.iter().copied())
-        .kill_on_drop(true);
-
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
+        .envs(environment.iter().copied());
 
     let output = tokio::time::timeout(Duration::from_secs(15), command.output())
         .await

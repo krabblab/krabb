@@ -514,8 +514,12 @@ fn owner(path: &Path) -> io::Result<String> {
         },
     };
 
-    let wide =
-        path.as_os_str().encode_wide().map(windows_separator).chain(Some(0)).collect::<Vec<_>>();
+    let wide = fs::canonicalize(path)?
+        .as_os_str()
+        .encode_wide()
+        .map(windows_separator)
+        .chain(Some(0))
+        .collect::<Vec<_>>();
 
     let mut descriptor = std::ptr::null_mut();
     let mut sid = std::ptr::null_mut();
@@ -598,6 +602,13 @@ fn protect(path: &Path) -> io::Result<()> {
         },
     };
 
+    let mut wide = fs::canonicalize(path)?
+        .as_os_str()
+        .encode_wide()
+        .map(windows_separator)
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
     let mut descriptor = std::ptr::null_mut();
     let mut length = 0;
     let principal = principal(path, owner)?;
@@ -634,10 +645,6 @@ fn protect(path: &Path) -> io::Result<()> {
 
         return Err(io::Error::last_os_error());
     }
-
-    let mut wide = path.as_os_str().encode_wide().map(windows_separator).collect::<Vec<_>>();
-
-    wide.push(0);
 
     let result = unsafe {
         SetNamedSecurityInfoW(
@@ -755,6 +762,24 @@ mod tests {
         check(&path).unwrap();
         private(&path).unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn private_transactions_support_long_paths() {
+        let root = root("long-path");
+        let path =
+            root.join("a".repeat(80)).join("b".repeat(80)).join("c".repeat(80)).join("record.md");
+
+        assert!(path.as_os_str().len() > 260);
+
+        save(&path, b"original").unwrap();
+        check(&path).unwrap();
+        save(&path, b"updated").unwrap();
+        private(&path).unwrap();
+
+        assert_eq!(load(&path, 16).unwrap().as_deref(), Some(b"updated".as_slice()));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

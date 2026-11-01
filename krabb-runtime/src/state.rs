@@ -181,6 +181,9 @@ pub struct Store {
     path: Option<PathBuf>,
     #[serde(skip)]
     pub(crate) media_root: Option<PathBuf>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) record_limit: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2492,6 +2495,11 @@ fn save_catalog(path: &Path, store: &Store) -> std::io::Result<()> {
 }
 
 fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
+    let record_limit = BYTE_LIMIT;
+
+    #[cfg(test)]
+    let record_limit = store.record_limit.unwrap_or(record_limit);
+
     let root = path.parent().expect("catalog has parent");
     let mut sessions = BTreeMap::new();
 
@@ -2505,7 +2513,7 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
 
         let bytes = serde_json::to_vec(session).map_err(std::io::Error::other)?;
 
-        if bytes.len() as u64 > BYTE_LIMIT {
+        if bytes.len() as u64 > record_limit {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::FileTooLarge,
                 "Session record exceeds the size limit.",

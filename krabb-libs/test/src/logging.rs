@@ -129,19 +129,12 @@ where
                         .as_nanos(),
                 );
                 let root = &home.0;
-                let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+                let mut command = crate::process::command(test);
                 command
-                    .args(["--exact", test, "--nocapture"])
-                    .env_clear()
                     .env("KRABB_HOME", root)
                     .env("KRABB_LOG_FORMAT", format)
                     .env("KRABB_LOG_FIXTURE_CHILD", case)
-                    .env("KRABB_LOG_FIXTURE_MODE", mode)
-                    .kill_on_drop(true);
-
-                if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-                    command.env("LLVM_PROFILE_FILE", profile);
-                }
+                    .env("KRABB_LOG_FIXTURE_MODE", mode);
 
                 let output = tokio::time::timeout(Duration::from_secs(10), command.output())
                     .await
