@@ -23504,7 +23504,7 @@ done
         service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: false })).unwrap();
 
         #[cfg(windows)]
-        secure(&path, super::service_text(&daemon_executable().unwrap(), &[]).as_bytes()).unwrap();
+        fs::write(&path, super::service_text(&daemon_executable().unwrap(), &[])).unwrap();
 
         assert!(path.is_file());
         assert!(

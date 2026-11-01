@@ -1936,8 +1936,7 @@ mod tests {
 
     #[test]
     fn updating_a_migrated_memory_removes_its_old_record() {
-        let root =
-            std::env::temp_dir().join(format!("krabb-memory-migration-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("kmm-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();

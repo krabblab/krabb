@@ -5465,7 +5465,7 @@ for line in sys.stdin:
     #[tokio::test]
     async fn uninstall_guards_use_live_state_without_recovering_the_catalog() {
         let mut state = state_at("uninstall-guard");
-        let root = std::env::temp_dir().join(format!("krabb-ug-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ug{}", std::process::id()));
         state.home = root.clone();
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();

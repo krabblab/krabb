@@ -705,10 +705,31 @@ async fn capture(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
+    #[cfg(windows)]
+    let job = group.then(krabb_process::TerminalJob::new).transpose()?;
+
+    #[cfg(windows)]
+    if group {
+        command.creation_flags(krabb_process::CREATE_SUSPENDED);
+    }
+
     command.kill_on_drop(true);
 
     let mut child = spawn(&mut command).await?;
     let process_id = child.id();
+
+    #[cfg(windows)]
+    if let Some(job) = &job {
+        let process_id = process_id.ok_or_else(|| invalid("Process has no ID."))?;
+
+        if let Err(error) = job.assign_and_resume(process_id) {
+            job.terminate();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+
+            return Err(error);
+        }
+    }
 
     #[cfg(unix)]
     let process_group = process_id.and_then(child_group);
@@ -746,8 +767,8 @@ async fn capture(
                 let status = status?;
 
                 #[cfg(windows)]
-                if group {
-                    terminate_process_tree(process_id).await;
+                if let Some(job) = &job {
+                    job.terminate();
                 }
 
                 let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
@@ -762,8 +783,8 @@ async fn capture(
                         let status = status?;
 
                         #[cfg(windows)]
-                        if group {
-                            terminate_process_tree(process_id).await;
+                        if let Some(job) = &job {
+                            job.terminate();
                         }
 
                         (status, stderr.await?)
@@ -774,8 +795,8 @@ async fn capture(
                         let status = status.await?;
 
                         #[cfg(windows)]
-                        if group {
-                            terminate_process_tree(process_id).await;
+                        if let Some(job) = &job {
+                            job.terminate();
                         }
 
                         (status, stderr)
@@ -792,8 +813,8 @@ async fn capture(
                         let status = status?;
 
                         #[cfg(windows)]
-                        if group {
-                            terminate_process_tree(process_id).await;
+                        if let Some(job) = &job {
+                            job.terminate();
                         }
 
                         (status, stdout.await?)
@@ -804,8 +825,8 @@ async fn capture(
                         let status = status.await?;
 
                         #[cfg(windows)]
-                        if group {
-                            terminate_process_tree(process_id).await;
+                        if let Some(job) = &job {
+                            job.terminate();
                         }
 
                         (status, stdout)
@@ -817,6 +838,11 @@ async fn capture(
         }
     })
     .await;
+
+    #[cfg(windows)]
+    if let Some(job) = &job {
+        job.terminate();
+    }
 
     match result {
         Ok(Ok(output)) => {
@@ -894,33 +920,21 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
     }
 
     #[cfg(windows)]
-    if group {
-        terminate_process_tree(process_id).await;
-    }
+    let _ = process_id;
 
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
 
-#[cfg(windows)]
-async fn terminate_process_tree(process_id: Option<u32>) {
-    let Some(process_id) = process_id else {
-        return;
-    };
-
-    let _ = Command::new("taskkill")
-        .args(["/PID", &process_id.to_string(), "/T", "/F"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
-}
-
 #[cfg(unix)]
 fn child_group(id: u32) -> Option<u32> {
     let child = Pid::from_raw(i32::try_from(id).ok()?)?;
-    (getpgid(Some(child)).ok()? == child).then_some(id)
+
+    let group = getpgid(Some(child)).ok()?;
+
+    let matches = group == child;
+
+    matches.then_some(id)
 }
 
 #[cfg(unix)]
