@@ -114,12 +114,20 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
 
 ## Change Rules
 
-- Record user-visible release behavior in `CHANGELOG.md`; omit refactors,
-  dependency updates, tests, CI work, and planned features.
-- Write one short line per entry, in plain English, naming the user value with
-  accurate capitalization and minimal detail.
-- Before the first release, keep `Unreleased` under `Added` only. Afterward,
-  use a category only when it has a user-visible entry; omit empty headings.
+- These changelog rules apply to human and agentic contributions.
+- Include only shipped changes that matter to end users. Omit refactors,
+  dependency updates, tests, CI work, and planned features, including platform
+  fixes that do not change user-visible behavior.
+- Write each entry as one physical line in plain English. Describe what users
+  can do or how their experience changes; omit implementation details, commit
+  history, and jargon when a simpler phrase is clear.
+- When preparing a release, review the shipped changes and user documentation;
+  use commit history as a checklist, not as release-note copy. Group related
+  changes and keep only the most valuable capabilities, especially for the
+  first release.
+- For `0.1.0`, include only an `Added` section. For later releases, keep
+  upcoming notes under `Unreleased` and use Keep a Changelog categories only
+  when they contain a user-visible entry. Omit empty headings.
 - Keep the core capability-free and provider-neutral.
 - Add provider or channel behavior only in its plugin.
 - Keep plugin stdout as protocol-only JSONL and logs on stderr.

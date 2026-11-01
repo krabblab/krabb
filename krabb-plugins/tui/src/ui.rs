@@ -350,12 +350,14 @@ struct PendingInteraction {
     input: String,
     output: String,
     system: bool,
+    user_message_persisted: bool,
 }
 
 struct SavedInteraction {
     session: String,
     input: String,
     output: String,
+    user_message_persisted: bool,
     user_message_id: String,
     assistant_message_id: String,
 }
@@ -417,7 +419,10 @@ where
 
     let statusline = preferences.statusline;
     let typewriter = preferences.typewriter;
-    let theme_enabled = std::env::var("KRABB_TUI_THEME").as_deref() != Ok("off");
+    let theme_enabled = std::env::var("KRABB_TUI_THEME").as_deref() != Ok("off")
+        && std::env::var_os("NO_COLOR").is_none()
+        && !std::env::var("TERM")
+            .is_ok_and(|term| matches!(term.as_str(), "dumb" | "mono" | "vt100"));
     let history_path = super::data::plugin_file(&home, "tui", "history.json");
     let history = super::data::load_history(&history_path);
 
@@ -818,15 +823,18 @@ where
         interaction.output.as_str()
     };
 
-    let entries = [
-        (
+    let mut entries = Vec::with_capacity(2);
+
+    if !interaction.user_message_persisted {
+        entries.push((
             interaction.user_message_id.as_str(),
             Role::User,
             Some("tui".to_owned()),
             interaction.input.as_str(),
-        ),
-        (interaction.assistant_message_id.as_str(), Role::Assistant, None, output),
-    ];
+        ));
+    }
+
+    entries.push((interaction.assistant_message_id.as_str(), Role::Assistant, None, output));
 
     for (id, role, sender, text) in entries {
         let text = bounded_interaction_text(text);
@@ -1153,7 +1161,10 @@ fn command_options(home: &str, has_model: bool) -> Vec<(&'static str, &'static s
     }
 
     if crate::has_capability(home, "store") {
-        commands.push(("/store <get|put|delete>", "Manage session-scoped SQLite values."));
+        commands.push((
+            "/data <operation>",
+            "Manage session-scoped SQLite values and structured data.",
+        ));
     }
 
     commands
@@ -1504,10 +1515,7 @@ where
                         return Ok(false);
                     }
 
-                    if line != "/clear"
-                        && ((line.starts_with('/') && line != "/quit" && line != "/exit")
-                            || !app.model_available)
-                    {
+                    if !matches!(line.as_str(), "/clear" | "/quit" | "/exit") {
                         app.begin_interaction(&line);
                     }
 
@@ -1625,6 +1633,7 @@ where
                             app.begin_compaction();
                         }
 
+                        app.mark_pending_user_message_persisted();
                         command_tx.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
                         command_tx.write_all(b"\n").await?;
 
@@ -1633,7 +1642,9 @@ where
                             app.reply_system = line.starts_with('/') || line.starts_with('!');
                         }
                     } else {
-                        app.push_bot("The session engine is no longer running.".into());
+                        let message = "The session engine is no longer running.";
+                        app.push_bot(format!("{message}\n"));
+                        app.complete_local_interaction(message.into());
                     }
                 }
 
@@ -2010,6 +2021,14 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     frame.render_widget(input, areas[4]);
     frame.render_widget(statusline, footer_areas[0]);
     frame.render_widget(footer, footer_areas[1]);
+
+    if !app.theme_enabled {
+        for cell in &mut frame.buffer_mut().content {
+            cell.fg = Color::Reset;
+            cell.bg = Color::Reset;
+            cell.underline_color = Color::Reset;
+        }
+    }
 
     let input_area = areas[4];
     app.input_area = Some(input_area);
@@ -2800,9 +2819,17 @@ fn wrap_transcript_line(line: &str, name: &str, width: usize) -> Vec<Line<'stati
         vec![(line.to_owned(), Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD))]
     } else if line == "System" || line.starts_with("System | ") {
         vec![(line.to_owned(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))]
+    } else if let Some((label, usage)) = line.split_once(": ")
+        && label == "Usage"
+    {
+        vec![
+            ("Usage: ".to_owned(), Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD)),
+            (usage.to_owned(), Style::default().add_modifier(Modifier::BOLD)),
+        ]
     } else if let Some((command, description)) = help_command_segments(line) {
         return wrap_help_command(command, description, width);
-    } else if line == "Commands:"
+    } else if is_help_heading(line)
+        || line == "Commands:"
         || line.starts_with("Conditional Commands")
         || line.starts_with("Conditional commands")
         || line == "Session commands:"
@@ -2833,6 +2860,20 @@ fn wrap_transcript_line(line: &str, name: &str, width: usize) -> Vec<Line<'stati
     };
 
     wrap_styled_segments(&segments, width)
+}
+
+fn is_help_heading(line: &str) -> bool {
+    matches!(
+        line,
+        "Commands:"
+            | "Options:"
+            | "Notes:"
+            | "Timing:"
+            | "History options:"
+            | "Session commands:"
+            | "Model commands:"
+            | "Input history commands:"
+    )
 }
 
 fn wrap_help_command(command: &str, description: &str, width: usize) -> Vec<Line<'static>> {
@@ -2889,22 +2930,20 @@ fn wrap_help_command(command: &str, description: &str, width: usize) -> Vec<Line
 
 fn help_command_segments(line: &str) -> Option<(&str, &str)> {
     let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
 
-    if !trimmed.starts_with('/') && !trimmed.starts_with("!<") {
+    if indent == 0 {
         return None;
     }
 
-    let indent = line.len() - trimmed.len();
+    if indent + 1 >= line.len() {
+        return None;
+    }
+
     let gap = line[indent + 1..]
         .match_indices("  ")
         .map(|(index, _)| indent + 1 + index)
-        .find(|index| *index > indent + 1)
-        .or_else(|| line.find("> ").map(|index| index + 1))
-        .or_else(|| {
-            line.starts_with("  /statusline ")
-                .then(|| line.find("] ").map(|index| index + 1))
-                .flatten()
-        })?;
+        .find(|index| *index > indent + 1)?;
 
     Some((&line[..gap], &line[gap..]))
 }
@@ -2971,7 +3010,10 @@ impl App {
         self.status = if interrupted { "Generation interrupted" } else { "Ready" }.into();
 
         if interrupted {
+            self.pending_interactions.clear();
             self.push_system("Generation interrupted.");
+        } else if !self.pending_interactions.is_empty() {
+            self.finish_streamed_interactions();
         }
     }
 
@@ -2983,10 +3025,14 @@ impl App {
         let interactions = std::mem::take(&mut self.completed_interactions);
 
         self.pending_snapshot_messages.extend(interactions.iter().flat_map(|interaction| {
-            [
-                (interaction.session.clone(), interaction.user_message_id.clone()),
-                (interaction.session.clone(), interaction.assistant_message_id.clone()),
-            ]
+            let mut messages = Vec::with_capacity(2);
+
+            if !interaction.user_message_persisted {
+                messages.push((interaction.session.clone(), interaction.user_message_id.clone()));
+            }
+
+            messages.push((interaction.session.clone(), interaction.assistant_message_id.clone()));
+            messages
         }));
 
         interactions
@@ -3011,7 +3057,14 @@ impl App {
             input: input.to_owned(),
             output: String::new(),
             system: input.starts_with('/') || input.starts_with('!'),
+            user_message_persisted: false,
         });
+    }
+
+    fn mark_pending_user_message_persisted(&mut self) {
+        if let Some(interaction) = self.pending_interactions.back_mut() {
+            interaction.user_message_persisted = true;
+        }
     }
 
     fn complete_local_interaction(&mut self, output: String) {
@@ -3095,6 +3148,7 @@ impl App {
             session: interaction.session,
             input: interaction.input,
             output: interaction.output.trim_matches('\n').to_owned(),
+            user_message_persisted: interaction.user_message_persisted,
             user_message_id: crate::message_id("interaction-user", self.interaction_sequence),
             assistant_message_id: crate::message_id(
                 &format!(
@@ -3472,7 +3526,14 @@ impl App {
                 "Input history cleared.".into()
             }
 
-            "help" => "Input history commands:\n  /history list   List saved inputs.\n  /history clear  Clear saved input history.\n  /history help   Show these commands.".into(),
+            "help" => format!(
+                "Manage saved input history.\n\nCommands:\n{}",
+                super::format_help_rows(&[
+                    ("/history list", "List saved inputs."),
+                    ("/history clear", "Clear saved input history."),
+                    ("/history help", "Show this help."),
+                ])
+            ),
             _ => "Usage: /history [list|clear|help].".into(),
         }
     }
@@ -3562,6 +3623,19 @@ mod tests {
     }
 
     #[test]
+    fn successful_unstreamed_reply_discards_the_temporary_interaction() {
+        let mut app = App { generation_active: true, ..App::default() };
+
+        app.begin_interaction("ping");
+        app.push_assistant_output("pong".into());
+        app.finish_generation(false);
+
+        assert!(app.pending_interactions.is_empty());
+        assert!(app.completed_interactions.is_empty());
+        assert!(app.transcript.contains("pong"));
+    }
+
+    #[test]
     fn failed_model_request_keeps_prompt_and_persists_system_error() {
         let mut app = App {
             name: "Krabb".into(),
@@ -3584,6 +3658,95 @@ mod tests {
         assert!(app.transcript.contains("ping"));
         assert!(app.transcript.contains("System |"));
         assert!(!app.transcript.contains("Krabb |"));
+    }
+
+    #[tokio::test]
+    async fn failed_regular_prompt_is_saved_when_a_model_was_available() {
+        let (mut command_tx, _command_rx) = tokio::io::duplex(1024);
+        let mut app = App {
+            name: "Krabb".into(),
+            session: "default".into(),
+            model_available: true,
+            input: "ping".chars().collect(),
+            cursor: 4,
+            ..App::default()
+        };
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        app.generation_active = true;
+        app.push_request_failure("Request failed: The selected model plugin is not running.");
+        app.finish_generation(false);
+        app.reveal_all();
+
+        let saved = app.take_persistable_interactions();
+
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].input, "ping");
+        assert_eq!(saved[0].output, "Request failed: The selected model plugin is not running.");
+        assert!(saved[0].user_message_persisted);
+        assert!(saved[0].assistant_message_id.starts_with("tui-system-interaction-assistant-"));
+
+        app.refresh_session(super::SessionView {
+            id: "default".into(),
+            model: "codex".into(),
+            workspace: None,
+            context_usage: None,
+            messages: Vec::new(),
+            working: false,
+        });
+
+        assert!(app.transcript.contains("Request failed"));
+
+        let nonce =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("krabb-tui-failed-prompt-{nonce}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let home = root.to_string_lossy().into_owned();
+
+        crate::local_aware(
+            home.clone(),
+            "session.ensure".into(),
+            serde_json::json!({"id": "default", "model": "codex"}),
+        )
+        .await
+        .unwrap();
+
+        let user = krabb_core::types::Message {
+            id: "reserved-user".into(),
+            session: "default".into(),
+            role: krabb_core::types::Role::User,
+            sender: Some("tui".into()),
+            content: vec![krabb_core::types::Content::Text { text: "ping".into() }],
+        };
+
+        crate::local_aware(
+            home.clone(),
+            "session.append".into(),
+            serde_json::json!({"id": "default", "message": user}),
+        )
+        .await
+        .unwrap();
+
+        super::persist_interaction(&home, saved.into_iter().next().unwrap(), crate::local_aware)
+            .await
+            .unwrap();
+
+        let session = crate::read_session(&home, "default", crate::local_aware).await.unwrap();
+
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.messages[0].role, krabb_core::types::Role::User);
+        assert_eq!(session.messages[1].role, krabb_core::types::Role::Assistant);
+        assert!(super::render_messages(&session.messages, "Krabb").contains("Request failed"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3984,10 +4147,12 @@ mod tests {
             "/drop <id>",
             "/schedule <list|add|remove>",
             "/memory <list|remember|forget>",
-            "/store <get|put|delete>",
+            "/data <operation>",
         ] {
             assert!(names.contains(&command), "missing command: {command}");
         }
+
+        assert!(!names.iter().any(|command| command.starts_with("/store")));
 
         let _ = std::fs::remove_dir_all(home);
     }
@@ -4248,6 +4413,7 @@ mod tests {
     #[test]
     fn interrupted_generation_is_reported_by_system() {
         let mut app = App { generation_active: true, reply_pending: true, ..App::default() };
+        app.begin_interaction("ping");
 
         app.finish_generation(true);
 
@@ -4255,6 +4421,7 @@ mod tests {
         assert!(app.transcript.contains("Generation interrupted."));
         assert!(!app.transcript.contains("Krabb | "));
         assert!(!app.reply_pending);
+        assert!(app.pending_interactions.is_empty());
     }
 
     #[test]
@@ -4814,6 +4981,26 @@ mod tests {
             span.style.fg.is_none()
                 && span.style.bg.is_none()
                 && span.style.underline_color.is_none()
+        }));
+    }
+
+    #[test]
+    fn monochrome_frame_preserves_help_without_emitting_colors() {
+        let mut app = App { theme_enabled: false, ..App::default() };
+        app.push_bot("Commands:\n  /history help  Show this help.\n".into());
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer.content().iter().map(|cell| cell.symbol()).collect::<String>();
+
+        assert!(rendered.contains("Commands:"));
+        assert!(rendered.contains("/history help"));
+        assert!(buffer.content().iter().all(|cell| {
+            cell.fg == Color::Reset
+                && cell.bg == Color::Reset
+                && cell.underline_color == Color::Reset
         }));
     }
 

@@ -22,7 +22,7 @@ use krabb_core::{
 #[cfg(unix)]
 use rustix::{
     fd::OwnedFd,
-    fs::{AtFlags, Dir, Mode, OFlags, openat, renameat, unlinkat},
+    fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, renameat, statat, unlinkat},
     process::{Pid, Signal, getpgid, getpgrp, kill_process, kill_process_group},
 };
 
@@ -57,9 +57,30 @@ static SEARCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static FETCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static TEMP_FILES: AtomicU64 = AtomicU64::new(0);
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    krabb_log::run_plugin("tools", plugin_main()).await
+fn main() -> std::process::ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+
+        Err(error) => {
+            eprintln!("Could not start tools plugin runtime: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    runtime.block_on(async {
+        match tokio::spawn(krabb_log::run_plugin("tools", plugin_main())).await {
+            Ok(code) => code,
+
+            Err(error) => {
+                eprintln!("Tools plugin task failed: {error}");
+                std::process::ExitCode::FAILURE
+            }
+        }
+    })
 }
 
 async fn plugin_main() -> krabb_core::Result<()> {
@@ -191,6 +212,12 @@ async fn call_with_sandbox(
         }
 
         "patch" => {
+            policy.shell(params["approve"].as_bool() == Some(true))?;
+
+            if sandbox.is_some() {
+                return Err(denied("Use the sandboxed shell tool for Git-backed patches"));
+            }
+
             if params["approve"].as_bool() != Some(true) {
                 return Err(denied("Patch approval is required"));
             }
@@ -225,6 +252,17 @@ async fn call_with_sandbox(
         }
 
         "git" => {
+            let approved = params["approve"].as_bool() == Some(true);
+            policy.shell(approved)?;
+
+            if sandbox.is_some() {
+                return Err(denied("Use the sandboxed shell tool for Git operations"));
+            }
+
+            if !approved {
+                return Err(denied("Git execution approval is required"));
+            }
+
             let args = params["args"]
                 .as_array()
                 .ok_or_else(|| denied("git.args is required"))?
@@ -294,8 +332,14 @@ fn tool_specs(shell_enabled: bool) -> Vec<ToolSpec> {
         ("search", "Search workspace text.", &["path", "text"][..]),
         ("fetch", "Fetch bounded text from a public HTTPS URL.", &["url"][..]),
         ("patch", "Apply an approved Git patch.", &["text"][..]),
-        ("git", "Inspect or manage approved Git worktrees.", &["args"][..]),
+        (
+            "git",
+            "Run approved Git operations; repository filters may execute programs.",
+            &["args"][..],
+        ),
     ];
+
+    definitions.retain(|(name, _, _)| shell_enabled || !matches!(*name, "git" | "patch"));
 
     if shell_enabled {
         definitions.push((
@@ -410,7 +454,7 @@ impl Sandbox {
             process.as_std_mut().process_group(0);
         }
 
-        process.arg("run");
+        process.arg("create");
 
         #[cfg(unix)]
         process.arg("--user").arg(format!(
@@ -421,7 +465,6 @@ impl Sandbox {
 
         process
             .args([
-                "--rm",
                 "--pull=never",
                 "--read-only",
                 "--network=none",
@@ -492,16 +535,23 @@ async fn shell_with(
     {
         let mut process = Command::new("cmd");
         process.args(["/C", command]).current_dir(root);
-        capture(process, None, true).await
+        Box::pin(capture(process, None, true)).await
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         let mut process = Command::new("sh");
         process.process_group(0).args(["-c", command]);
         process.current_dir(root);
+        krabb_process::restrict_process_group(process.as_std_mut());
         capture(process, None, true).await
     }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "Shell containment requires KRABB_SANDBOX_RUNTIME and KRABB_SANDBOX_IMAGE on this platform.",
+    ))
 }
 
 async fn sandbox_shell(
@@ -521,10 +571,30 @@ async fn sandbox_shell(
         }
     };
 
-    let result = capture(process, None, true).await;
-    let cleanup = if result.is_err() { sandbox.remove(&cidfile).await } else { Ok(()) };
+    // Creation cannot execute workspace code. The ID is recorded before start, so
+    // the host can remove a running container after terminating this plugin.
+    let result = async {
+        let created = capture(process, None, true).await?;
 
-    let remove_dir = std::fs::remove_dir_all(&cid_dir);
+        if !created.status.success() {
+            return Ok(created);
+        }
+
+        let id = std::fs::read_to_string(&cidfile)?;
+        let id = id.trim();
+
+        if !(12..=128).contains(&id.len()) || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(invalid("Container runtime returned an invalid container ID."));
+        }
+
+        let mut start = Command::new(&sandbox.runtime);
+        start.args(["start", "--attach", id]).current_dir(root);
+        capture(start, None, true).await
+    }
+    .await;
+
+    let cleanup = sandbox.remove(&cidfile).await;
+    let remove_dir = if cleanup.is_ok() { std::fs::remove_dir_all(&cid_dir) } else { Ok(()) };
 
     match (result, cleanup, remove_dir) {
         (Ok(output), Ok(()), Ok(())) => Ok(output),
@@ -547,7 +617,9 @@ async fn sandbox_shell(
 }
 
 fn cid_dir() -> std::io::Result<std::path::PathBuf> {
-    let parent = std::env::temp_dir();
+    let parent = std::env::var_os("KRABB_SANDBOX_TRACKING")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
 
     for _ in 0..16 {
         let nonce = TEMP_FILES.fetch_add(1, Ordering::Relaxed);
@@ -654,8 +726,31 @@ async fn capture(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
+    #[cfg(windows)]
+    let job = group.then(krabb_process::TerminalJob::new).transpose()?;
+
+    #[cfg(windows)]
+    if group {
+        command.creation_flags(krabb_process::CREATE_SUSPENDED);
+    }
+
+    command.kill_on_drop(true);
+
     let mut child = spawn(&mut command).await?;
     let process_id = child.id();
+
+    #[cfg(windows)]
+    if let Some(job) = &job {
+        let process_id = process_id.ok_or_else(|| invalid("Process has no ID."))?;
+
+        if let Err(error) = job.assign_and_resume(process_id) {
+            job.terminate();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+
+            return Err(error);
+        }
+    }
 
     #[cfg(unix)]
     let process_group = process_id.and_then(child_group);
@@ -683,11 +778,92 @@ async fn capture(
     let result = timeout(COMMAND_LIMIT, async {
         let stdout = limited(stdout);
         let stderr = limited(stderr);
+        tokio::pin!(stdout, stderr);
         let status = child.wait();
-        let (stdout, stderr, status) = tokio::try_join!(stdout, stderr, status)?;
-        Ok::<_, std::io::Error>(std::process::Output { status, stdout, stderr })
+
+        tokio::pin!(status);
+
+        tokio::select! {
+            status = &mut status => {
+                let status = status?;
+
+                #[cfg(windows)]
+                if let Some(job) = &job {
+                    job.terminate();
+                }
+
+                let (stdout, stderr) = tokio::try_join!(stdout, stderr)?;
+
+                Ok(std::process::Output { status, stdout, stderr })
+            }
+
+            stdout = &mut stdout => {
+                let stdout = stdout?;
+                let (status, stderr) = tokio::select! {
+                    status = &mut status => {
+                        let status = status?;
+
+                        #[cfg(windows)]
+                        if let Some(job) = &job {
+                            job.terminate();
+                        }
+
+                        (status, stderr.await?)
+                    }
+
+                    stderr = &mut stderr => {
+                        let stderr = stderr?;
+                        let status = status.await?;
+
+                        #[cfg(windows)]
+                        if let Some(job) = &job {
+                            job.terminate();
+                        }
+
+                        (status, stderr)
+                    }
+                };
+
+                Ok(std::process::Output { status, stdout, stderr })
+            }
+
+            stderr = &mut stderr => {
+                let stderr = stderr?;
+                let (status, stdout) = tokio::select! {
+                    status = &mut status => {
+                        let status = status?;
+
+                        #[cfg(windows)]
+                        if let Some(job) = &job {
+                            job.terminate();
+                        }
+
+                        (status, stdout.await?)
+                    }
+
+                    stdout = &mut stdout => {
+                        let stdout = stdout?;
+                        let status = status.await?;
+
+                        #[cfg(windows)]
+                        if let Some(job) = &job {
+                            job.terminate();
+                        }
+
+                        (status, stdout)
+                    }
+                };
+
+                Ok(std::process::Output { status, stdout, stderr })
+            }
+        }
     })
     .await;
+
+    #[cfg(windows)]
+    if let Some(job) = &job {
+        job.terminate();
+    }
 
     match result {
         Ok(Ok(output)) => {
@@ -765,9 +941,7 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
     }
 
     #[cfg(windows)]
-    if group && let Some(id) = process_id {
-        let _ = Command::new("taskkill").args(["/PID", &id.to_string(), "/T", "/F"]).status().await;
-    }
+    let _ = process_id;
 
     let _ = child.kill().await;
     let _ = child.wait().await;
@@ -776,7 +950,12 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
 #[cfg(unix)]
 fn child_group(id: u32) -> Option<u32> {
     let child = Pid::from_raw(i32::try_from(id).ok()?)?;
-    (getpgid(Some(child)).ok()? == child).then_some(id)
+
+    let group = getpgid(Some(child)).ok()?;
+
+    let matches = group == child;
+
+    matches.then_some(id)
 }
 
 #[cfg(unix)]
@@ -1110,6 +1289,8 @@ fn file_at(policy: &Policy, path: &str, workspace: Option<&Path>) -> krabb_core:
 }
 
 struct Confined {
+    #[cfg(windows)]
+    _guards: Vec<std::fs::File>,
     display: PathBuf,
     #[cfg(unix)]
     directory: OwnedFd,
@@ -1200,14 +1381,17 @@ fn confined(
         Ok(Confined { display, directory, name })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        if create && let Some(parent) = display.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| denied(format!("Path is unavailable: {error}")))?;
-        }
+        let guards = lock_parents(&display, create)
+            .map_err(|error| denied(format!("Path is unavailable: {error}")))?;
+        Ok(Confined { path: display.clone(), display, _guards: guards })
+    }
 
-        Ok(Confined { path: display.clone(), display })
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        let _ = (display, create);
+        Err(denied("Confined filesystem access is unsupported on this platform"))
     }
 }
 
@@ -1235,7 +1419,18 @@ impl Confined {
 #[cfg(not(unix))]
 impl Confined {
     fn child(&self, name: OsString) -> std::io::Result<Self> {
-        Ok(Self { display: self.display.join(&name), path: self.path.join(name) })
+        #[cfg(windows)]
+        {
+            let path = self.path.join(&name);
+            let guards = lock_parents(&path, false)?;
+            Ok(Self { display: path.clone(), path, _guards: guards })
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = name;
+            Err(std::io::Error::other("Confined filesystem access is unsupported"))
+        }
     }
 }
 
@@ -1261,6 +1456,24 @@ fn write_confined(path: &Confined, value: &str) -> std::io::Result<()> {
             ));
         };
 
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = match statat(&path.directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(metadata) => {
+                if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Write destination must be a regular file.",
+                    ));
+                }
+
+                Some(std::fs::Permissions::from_mode(unix_mode_bits(metadata.st_mode & 0o777)))
+            }
+
+            Err(error) if io_error(error).kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(io_error(error)),
+        };
+
         for _ in 0..100 {
             let number = TEMP_FILES.fetch_add(1, Ordering::Relaxed);
             let temporary = format!(".krabb-write-{}-{number}", std::process::id());
@@ -1280,7 +1493,15 @@ fn write_confined(path: &Confined, value: &str) -> std::io::Result<()> {
             };
 
             let mut file = std::fs::File::from(fd);
-            let result = file.write_all(value.as_bytes()).and_then(|()| file.sync_all());
+            let result = (|| {
+                file.write_all(value.as_bytes())?;
+
+                if let Some(permissions) = &permissions {
+                    file.set_permissions(permissions.clone())?;
+                }
+
+                file.sync_all()
+            })();
 
             if let Err(error) = result {
                 let _ = unlinkat(&path.directory, &temporary, AtFlags::empty());
@@ -1309,6 +1530,46 @@ fn write_confined(path: &Confined, value: &str) -> std::io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+fn unix_mode_bits(mode: impl Into<u32>) -> u32 {
+    mode.into()
+}
+
+#[cfg(windows)]
+fn lock_parents(path: &Path, create: bool) -> std::io::Result<Vec<std::fs::File>> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ,
+    };
+
+    let mut guards = Vec::new();
+    let parents = path.parent().ok_or_else(|| std::io::Error::other("Path has no parent"))?;
+
+    for parent in parents.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        if create && !parent.exists() {
+            std::fs::create_dir(parent)?;
+        }
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(parent)?;
+
+        let metadata = file.metadata()?;
+
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(std::io::Error::other("Reparse points are not allowed"));
+        }
+
+        guards.push(file);
+    }
+
+    Ok(guards)
+}
+
 #[cfg(windows)]
 fn open_confined(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
     use std::fs::OpenOptions;
@@ -1320,10 +1581,22 @@ fn open_confined(path: &Path, write: bool) -> std::io::Result<std::fs::File> {
     options.read(!write).write(write).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
 
     if write {
-        options.create(true).truncate(true);
+        options.create(true);
     }
 
-    options.open(path)
+    let file = options.open(path)?;
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::other("Reparse points are not allowed"));
+    }
+
+    if write {
+        file.set_len(0)?;
+    }
+
+    Ok(file)
 }
 
 #[cfg(all(not(unix), not(windows)))]
@@ -1365,6 +1638,9 @@ fn list_confined(path: &Confined) -> std::io::Result<Vec<String>> {
     #[cfg(not(unix))]
     {
         let mut names = Vec::new();
+
+        #[cfg(windows)]
+        let _guards = lock_parents(&path.path.join(".krabb-directory-lock"), false)?;
 
         for entry in std::fs::read_dir(&path.path)? {
             let entry = entry?;
@@ -1602,6 +1878,10 @@ fn search_confined(
         budget.visit(depth, metadata.is_dir())?;
 
         if metadata.is_dir() {
+            #[cfg(windows)]
+            let _guards = lock_parents(&path.path.join(".krabb-directory-lock"), false)
+                .map_err(|error| denied(format!("Search failed: {error}")))?;
+
             for entry in std::fs::read_dir(&path.path)
                 .map_err(|error| denied(format!("Search failed: {error}")))?
             {
@@ -1625,7 +1905,7 @@ fn search_confined(
             budget.read(metadata.len())?;
 
             if let Ok(text) = read_text(
-                std::fs::File::open(&path.path)
+                open_confined(&path.path, false)
                     .map_err(|error| denied(format!("Search failed: {error}")))?,
             ) {
                 for (line, value) in text.lines().enumerate() {
@@ -1701,6 +1981,19 @@ mod tests {
 
     fn policy(root: &Path) -> Policy {
         Policy { shell: Shell::Off, root: Some(root.to_path_buf()) }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_guards_prevent_parent_replacement() {
+        let root = test_root("windows-directory-guards");
+        std::fs::create_dir_all(root.join("parent")).unwrap();
+        let guards = super::lock_parents(&root.join("parent/note"), false).unwrap();
+
+        assert!(std::fs::rename(root.join("parent"), root.join("moved")).is_err());
+        drop(guards);
+        std::fs::rename(root.join("parent"), root.join("moved")).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1843,7 +2136,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             &runtime,
-            "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --cidfile) printf '%s\\n' 0123456789abcdef > \"$2\"; shift 2 ;;\n    -lc) shift; /bin/sh -c \"$1\"; exit $? ;;\n    *) shift ;;\n  esac\ndone\n",
+            "#!/bin/sh\ncase \"$1\" in\ncreate) while [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --cidfile) printf '%s\\n' 0123456789abcdef > \"$2\"; shift 2 ;;\n    -lc) shift; printf '%s' \"$1\" > script; exit 0 ;;\n    *) shift ;;\n  esac\ndone ;;\nstart) /bin/sh script ;;\nrm) exit 0 ;;\nesac\n",
         )
         .unwrap();
 
@@ -1881,6 +2174,47 @@ mod tests {
         release.join().unwrap();
 
         assert_eq!(String::from_utf8_lossy(&output.stdout), "launched");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn writes_preserve_ordinary_permissions_and_keep_new_files_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("write-permissions");
+        fs::create_dir_all(&root).unwrap();
+        let policy = policy(&root);
+        let path = root.join("script");
+
+        for mode in [None, Some(0o755), Some(0o640), Some(0o200), Some(0o6755)] {
+            if let Some(mode) = mode {
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            }
+
+            call(
+                &policy,
+                Request::call(
+                    1,
+                    "write",
+                    json!({
+                        "path": "script", "text": "#!/bin/sh\nexit 0\n", "approve": true
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+                mode.unwrap_or(0o600) & 0o777
+            );
+
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+            assert_eq!(fs::read_to_string(&path).unwrap(), "#!/bin/sh\nexit 0\n");
+        }
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2088,11 +2422,15 @@ mod tests {
 
         let output =
             call(&approved, Request::call(1, "shell", json!({"command": "pwd", "approve": true})))
-                .await
-                .unwrap()
-                .unwrap();
+                .await;
 
-        assert_eq!(output.result.unwrap()["status"], 0);
+        #[cfg(any(target_os = "linux", windows))]
+
+        assert_eq!(output.unwrap().unwrap().result.unwrap()["status"], 0);
+
+        #[cfg(not(any(target_os = "linux", windows)))]
+
+        assert!(output.unwrap_err().to_string().contains("Shell containment requires"));
 
         assert!(call(&approved, Request::call(2, "read", json!({}))).await.is_err());
         assert!(call(&approved, Request::call(3, "write", json!({"path": "x"}))).await.is_err());
@@ -2117,15 +2455,15 @@ mod tests {
             call(&approved, Request::call(6, "list", json!({"path": "missing"}))).await.is_err()
         );
 
-        let git = call(&approved, Request::call(7, "git", json!({"args": ["status"]})))
-            .await
-            .unwrap()
-            .unwrap();
+        let git =
+            call(&approved, Request::call(7, "git", json!({"args": ["status"], "approve": true})))
+                .await
+                .unwrap()
+                .unwrap();
 
         assert!(git.result.unwrap()["status"].is_number());
-        assert!(call(&approved, Request::call(7, "git", json!({"args": ["diff"]}))).await.is_ok());
         assert!(
-            call(&approved, Request::call(7, "git", json!({"args": ["worktree", "list"]})))
+            call(&approved, Request::call(7, "git", json!({"args": ["diff"], "approve": true})))
                 .await
                 .is_ok()
         );
@@ -2133,7 +2471,20 @@ mod tests {
         assert!(
             call(
                 &approved,
-                Request::call(7, "git", json!({"args": ["worktree", "add", "../copy"]}))
+                Request::call(7, "git", json!({"args": ["worktree", "list"], "approve": true}))
+            )
+            .await
+            .is_ok()
+        );
+
+        assert!(
+            call(
+                &approved,
+                Request::call(
+                    7,
+                    "git",
+                    json!({"args": ["worktree", "add", "../copy"], "approve": true})
+                )
             )
             .await
             .is_err()
@@ -2145,7 +2496,7 @@ mod tests {
                 Request::call(
                     7,
                     "git",
-                    json!({"args": ["worktree", "add", "--detach", "../copy"]})
+                    json!({"args": ["worktree", "add", "--detach", "../copy"], "approve": true})
                 )
             )
             .await
@@ -2155,7 +2506,11 @@ mod tests {
         assert!(
             call(
                 &approved,
-                Request::call(7, "git", json!({"args": ["worktree", "remove", "../copy"]}))
+                Request::call(
+                    7,
+                    "git",
+                    json!({"args": ["worktree", "remove", "../copy"], "approve": true})
+                )
             )
             .await
             .is_err()
@@ -2184,11 +2539,18 @@ mod tests {
         );
 
         assert!(
-            call(&approved, Request::call(7, "git", json!({"args": ["status", 1]}))).await.is_err()
+            call(
+                &approved,
+                Request::call(7, "git", json!({"args": ["status", 1], "approve": true}))
+            )
+            .await
+            .is_err()
         );
 
         assert!(
-            call(&approved, Request::call(8, "git", json!({"args": ["reset"]}))).await.is_err()
+            call(&approved, Request::call(8, "git", json!({"args": ["reset"], "approve": true})))
+                .await
+                .is_err()
         );
 
         assert!(call(&approved, Request::call(9, "unknown", json!({}))).await.unwrap().is_none());
@@ -2238,7 +2600,7 @@ mod tests {
 
         let target = root.join("copy");
         let result = call(
-            &Arc::new(policy(&root)),
+            &Arc::new(Policy { shell: Shell::On, ..policy(&root) }),
             Request::call(
                 1,
                 "git",
@@ -2271,8 +2633,20 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
+        #[cfg(any(target_os = "linux", windows))]
+
         assert!(shell("printf hello", &root).await.unwrap().status.success());
+
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let error = shell("touch marker", &root).await.unwrap_err();
+
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert!(!root.join("marker").exists());
+        }
+
         assert!(git(&["status".into()], &root).await.is_ok());
+
         assert!(denied("Already denied.").to_string().ends_with("Already denied."));
         assert!(
             file(&Policy { root: Some(root.join("missing")), shell: Shell::Off }, ".").is_err()
@@ -2328,7 +2702,7 @@ mod tests {
         let _ = fs::remove_file(outside_file);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", windows))]
     #[tokio::test]
     async fn shell_stops_background_processes_after_completion() {
         let root = test_root("krabb-tools-group");
@@ -2336,8 +2710,27 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
-        shell("(sleep 1; touch marker) >/dev/null 2>&1 &", &root).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        #[cfg(unix)]
+        let command = "(sleep 1; touch marker) >/dev/null 2>&1 &";
+
+        #[cfg(windows)]
+        let command = {
+            fs::write(
+                root.join("background.cmd"),
+                "@echo off\r\necho ready > ready\r\nping -n 20 127.0.0.1 > nul\r\necho leaked > marker\r\n",
+            )
+            .unwrap();
+            fs::write(
+                root.join("parent.cmd"),
+                "@echo off\r\nstart \"\" /b cmd /c background.cmd >nul 2>&1\r\n:wait\r\nif not exist ready goto wait\r\n",
+            )
+            .unwrap();
+
+            "parent.cmd"
+        };
+
+        assert!(shell(command, &root).await.unwrap().status.success());
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
 
         assert!(!marker.exists());
         let _ = fs::remove_dir_all(root);
@@ -2368,6 +2761,70 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_filters_require_shell_authorization_and_approval() {
+        let root = test_root("git-filter-authorization");
+        fs::create_dir_all(&root).unwrap();
+
+        for args in [vec!["init"], vec!["config", "filter.probe.clean", "touch filter-ran; cat"]] {
+            assert!(
+                git(&args.into_iter().map(str::to_owned).collect::<Vec<_>>(), &root)
+                    .await
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+
+        fs::write(root.join("note"), "before\n").unwrap();
+
+        assert!(git(&["add".into(), "note".into()], &root).await.unwrap().status.success());
+        fs::write(root.join(".gitattributes"), "note filter=probe\n").unwrap();
+        fs::write(root.join("note"), "after\n").unwrap();
+
+        for (shell, approved) in [(Shell::Off, true), (Shell::Ask, false), (Shell::On, false)] {
+            let policy = Policy { shell, ..policy(&root) };
+
+            assert!(
+                call(
+                    &policy,
+                    Request::call(1, "git", json!({"args": ["diff"], "approve": approved}))
+                )
+                .await
+                .is_err()
+            );
+
+            assert!(!root.join("filter-ran").exists());
+        }
+
+        let policy = Policy { shell: Shell::On, ..policy(&root) };
+        let sandbox = Sandbox { runtime: "unused".into(), image: "unused".into() };
+
+        for name in ["git", "patch"] {
+            assert!(
+                super::call_with_sandbox(
+                    &policy,
+                    Request::call(2, name, json!({"args": ["diff"], "approve": true})),
+                    Some(&sandbox),
+                )
+                .await
+                .is_err()
+            );
+
+            assert!(!root.join("filter-ran").exists());
+        }
+
+        assert!(
+            call(&policy, Request::call(2, "git", json!({"args": ["diff"], "approve": true})))
+                .await
+                .is_ok()
+        );
+
+        assert!(root.join("filter-ran").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn applies_approved_patches() {
         let root = test_root("krabb-tools-patch");
@@ -2380,7 +2837,7 @@ mod tests {
         let patch = "diff --git a/note.txt b/note.txt\nindex 8f6f5f0..9d5e3f4 100644\n--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-before\n+after\n";
 
         assert!(apply(&root, patch, true).await.unwrap().status.success());
-        let policy = Arc::new(policy(&root));
+        let policy = Arc::new(Policy { shell: Shell::On, ..policy(&root) });
 
         assert!(call(&policy, Request::call(1, "patch", json!({"text": patch}))).await.is_err());
         assert!(
