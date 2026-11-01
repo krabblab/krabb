@@ -27,7 +27,6 @@ permissions:
 jobs:
   krabb:
     name: Krabb (${{ matrix.name }})
-    if: matrix.os == 'windows'
     runs-on: ${{ matrix.runner }}
 
     strategy:
@@ -35,46 +34,6 @@ jobs:
 
       matrix:
         include:
-          - name: Linux x86_64
-            os: linux
-            arch: x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            coverage: true
-            coverage_profile: full
-            coverage_package_min: 80
-            coverage_runtime_min: 80
-
-          - name: Linux aarch64
-            os: linux
-            arch: aarch64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            coverage: true
-            coverage_profile: full
-            coverage_package_min: 80
-            coverage_runtime_min: 80
-
-          - name: macOS x86_64
-            os: macos
-            arch: x86_64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            coverage: true
-            coverage_profile: platform
-            coverage_package_min: 60
-            coverage_runtime_min: 40
-
-          - name: macOS aarch64
-            os: macos
-            arch: aarch64
-            runner: macos-15
-            target: aarch64-apple-darwin
-            coverage: true
-            coverage_profile: platform
-            coverage_package_min: 60
-            coverage_runtime_min: 40
-
           - name: Windows x86_64
             os: windows
             arch: x86_64
