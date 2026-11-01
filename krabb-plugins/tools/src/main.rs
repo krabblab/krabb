@@ -1467,7 +1467,7 @@ fn write_confined(path: &Confined, value: &str) -> std::io::Result<()> {
                     ));
                 }
 
-                Some(std::fs::Permissions::from_mode(metadata.st_mode & 0o777))
+                Some(std::fs::Permissions::from_mode(unix_mode_bits(metadata.st_mode & 0o777)))
             }
 
             Err(error) if io_error(error).kind() == std::io::ErrorKind::NotFound => None,
@@ -1528,6 +1528,11 @@ fn write_confined(path: &Confined, value: &str) -> std::io::Result<()> {
         file.write_all(value.as_bytes())?;
         file.sync_all()
     }
+}
+
+#[cfg(unix)]
+fn unix_mode_bits(mode: impl Into<u32>) -> u32 {
+    mode.into()
 }
 
 #[cfg(windows)]
