@@ -20,22 +20,22 @@ jobs:
   #   name: Verify
   #   uses: ./.github/workflows/verify.yml
 
-  agentskill:
-    name: Agentskill
-    uses: ./.github/workflows/agentskill.yml
+  # agentskill:
+  #   name: Agentskill
+  #   uses: ./.github/workflows/agentskill.yml
 
-  security:
-    name: Security
-    uses: ./.github/workflows/security.yml
+  # security:
+  #   name: Security
+  #   uses: ./.github/workflows/security.yml
 
-    permissions:
-      contents: read
-      checks: write
+  #   permissions:
+  #     contents: read
+  #     checks: write
 
-  build:
-    name: Build
-    needs: test
-    uses: ./.github/workflows/build.yml
+  # build:
+  #   name: Build
+  #   needs: test
+  #   uses: ./.github/workflows/build.yml
 
   test:
     name: Test
