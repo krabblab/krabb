@@ -57,9 +57,30 @@ static SEARCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static FETCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static TEMP_FILES: AtomicU64 = AtomicU64::new(0);
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    krabb_log::run_plugin("tools", plugin_main()).await
+fn main() -> std::process::ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+
+        Err(error) => {
+            eprintln!("Could not start tools plugin runtime: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    runtime.block_on(async {
+        match tokio::spawn(krabb_log::run_plugin("tools", plugin_main())).await {
+            Ok(code) => code,
+
+            Err(error) => {
+                eprintln!("Tools plugin task failed: {error}");
+                std::process::ExitCode::FAILURE
+            }
+        }
+    })
 }
 
 async fn plugin_main() -> krabb_core::Result<()> {
