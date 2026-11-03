@@ -166,10 +166,13 @@ The TUI is a local daemon client. Its `tools` and `shell` settings default to
 `false`; enable them under `[clients.tui]` for TUI turns. Global approval still
 controls mutating tools. Move legacy top-level `shell` settings here.
 
-Provider and channel plugins read declared secrets from their own environment
-variables or from the JSON file named by `KRABB_CREDENTIALS`. The file must
-be private to the current user. `KRABB_KEYRING=1` opts into the operating
-system keyring. Personal Codex
+The host resolves declared secrets from nonempty environment overrides first,
+then from the encrypted file named by `KRABB_CREDENTIALS`, defaulting to
+`credentials.json` in Krabb's home. `krabb plugin setup <id>` securely prompts
+and saves before the plugin is active. The random encryption key is stored in
+the OS keyring by default, or a protected key file when no keyring is available.
+See [credential storage](authentication.md#provider-credentials) for backend selection,
+custom paths, migration, and backups. Personal Codex
 authentication is managed by the Codex CLI app-server. Krabb never reads or
 forwards Codex access tokens. `KRABB_CODEX_HOME` selects the Codex profile
 directory and defaults to the standard `.codex` directory. Set
@@ -185,8 +188,9 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | --- | --- |
 | `KRABB_HOME` | Krabb state, plugins, and global agent workspace |
 | `KRABB_ROOT` | Override the default `KRABB_HOME/workspace` tool root |
-| `KRABB_CREDENTIALS` | Protected JSON credential file |
-| `KRABB_KEYRING` | Set to `1` to use the operating-system keyring |
+| `KRABB_CREDENTIALS` | Encrypted credential file; defaults to `credentials.json` in Krabb's home |
+| `KRABB_CREDENTIALS_KEY` | Fallback encryption key file; defaults to `credentials.key` in Krabb's home |
+| `KRABB_KEYRING` | Setup key storage: `auto` (default), `1` (require keyring), or `0` (protected key file) |
 | `KRABB_CHANNEL` | Default messaging plugin ID |
 | `KRABB_MODEL_PLUGIN` | Default intelligence plugin ID |
 | `KRABB_MODEL` | Default model identifier |

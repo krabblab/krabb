@@ -40,6 +40,7 @@ struct GatewayState {
     socket: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     interval: Duration,
     next_heartbeat: Instant,
+    heartbeat_pending: bool,
     sequence: Option<u64>,
     session_id: Option<String>,
     pending_sequence: Option<u64>,
@@ -85,6 +86,7 @@ impl Default for GatewayState {
             socket: None,
             interval: Duration::from_secs(45),
             next_heartbeat: Instant::now(),
+            heartbeat_pending: false,
             sequence,
             session_id,
             pending_sequence: None,
@@ -920,9 +922,12 @@ async fn gateway(
     }
 
     if state.socket.is_none() {
-        let (mut socket, _) = connect_async(&url).await.map_err(|error| {
-            krabb_core::Error::Denied(format!("Discord Gateway failed: {error}."))
-        })?;
+        let (mut socket, _) = timeout(Duration::from_secs(10), connect_async(&url))
+            .await
+            .map_err(|_| krabb_core::Error::Denied("Discord Gateway connection timed out.".into()))?
+            .map_err(|error| {
+                krabb_core::Error::Denied(format!("Discord Gateway failed: {error}."))
+            })?;
 
         let hello = timeout(Duration::from_secs(10), socket.next())
             .await
@@ -953,11 +958,13 @@ async fn gateway(
             krabb_core::Error::Denied(format!("Discord Gateway identify failed: {error}."))
         })?;
 
+        state.heartbeat_pending = false;
         state.next_heartbeat = Instant::now() + state.interval;
         state.socket = Some(socket);
     }
 
     let mut next_heartbeat = state.next_heartbeat;
+    let mut heartbeat_pending = state.heartbeat_pending;
     let interval = state.interval;
     let mut sequence = state.sequence;
     let committed_sequence = state.sequence;
@@ -982,6 +989,11 @@ async fn gateway(
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(next_heartbeat) => {
+                    if heartbeat_pending {
+                        return Err(krabb_core::Error::Denied("Discord Gateway heartbeat was not acknowledged.".into()));
+                    }
+
+                    heartbeat_pending = true;
                     socket.send(Message::Text(json!({"op": 1, "d": sequence}).to_string().into())).await
                         .map_err(|error| krabb_core::Error::Denied(format!("Discord Gateway heartbeat failed: {error}.")))?;
                     next_heartbeat = Instant::now() + interval;
@@ -995,6 +1007,10 @@ async fn gateway(
 
                     if value["t"] == "MESSAGE_CREATE" {
                         remember_attachments(&value["d"], &mut attachments);
+                    }
+
+                    if value["op"] == 11 {
+                        heartbeat_pending = false;
                     }
 
                     let pending_before_message = pending_sequence;
@@ -1046,6 +1062,7 @@ async fn gateway(
                         Action::Event(None) | Action::Ignore => {}
 
                         Action::Heartbeat(data) => {
+                            heartbeat_pending = true;
                             socket.send(Message::Text(json!({"op": 1, "d": sequence.or(data.as_u64())}).to_string().into())).await
                                 .map_err(|error| krabb_core::Error::Denied(format!("Discord Gateway heartbeat failed: {error}.")))?;
                             next_heartbeat = Instant::now() + interval;
@@ -1072,6 +1089,7 @@ async fn gateway(
 
     if let Ok(Err(error)) = result {
         state.queued_dispatches = queued_dispatches;
+        state.session_id = session_id;
         state.socket = None;
         return Err(error);
     }
@@ -1087,6 +1105,7 @@ async fn gateway(
     state.attachments = attachments;
     state.session_id = session_id;
     state.next_heartbeat = next_heartbeat;
+    state.heartbeat_pending = heartbeat_pending;
 
     if awaiting_acknowledgement && let Some(event) = state.pending_event.clone() {
         events.insert(0, event);
@@ -1946,6 +1965,7 @@ mod tests {
             socket: None,
             interval: Duration::from_secs(45),
             next_heartbeat: Instant::now(),
+            heartbeat_pending: false,
             sequence: Some(6),
             session_id: Some("session".into()),
             pending_sequence: Some(7),
@@ -2257,7 +2277,7 @@ mod tests {
             let mut socket: WebSocketStream<_> = accept_async(stream).await.unwrap();
             socket
                 .send(Message::Text(
-                    json!({"op":10,"d":{"heartbeat_interval":10}}).to_string().into(),
+                    json!({"op":10,"d":{"heartbeat_interval":100}}).to_string().into(),
                 ))
                 .await
                 .unwrap();
@@ -2269,6 +2289,8 @@ mod tests {
                 serde_json::from_str::<serde_json::Value>(heartbeat.to_text().unwrap()).unwrap()["op"],
                 1
             );
+
+            socket.send(Message::Text(json!({"op": 11}).to_string().into())).await.unwrap();
 
             socket
                 .send(Message::Text(
@@ -2467,6 +2489,7 @@ mod tests {
             socket: None,
             interval: Duration::from_secs(45),
             next_heartbeat: Instant::now(),
+            heartbeat_pending: false,
             sequence: None,
             session_id: None,
             pending_sequence: None,
@@ -2788,4 +2811,86 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn reconnects_when_gateway_heartbeats_are_not_acknowledged() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback required");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                json!({"op": 10, "d": {"heartbeat_interval": 20}}).to_string().into(),
+            ))
+            .await
+            .unwrap();
+        let _identify = socket.next().await.unwrap().unwrap();
+        let heartbeat = socket.next().await.unwrap().unwrap();
+
+        assert_eq!(serde_json::from_str::<Value>(heartbeat.to_text().unwrap()).unwrap()["op"], 1);
+        // Keep the connection open, but never acknowledge its heartbeat.
+        let _closed = socket.next().await;
+    });
+
+    let state = AsyncMutex::new(GatewayState::default());
+
+    let error = timeout(Duration::from_secs(3), gateway(&state, "fixture", 2, &base))
+        .await
+        .unwrap()
+        .unwrap_err();
+
+    assert!(error.to_string().contains("heartbeat was not acknowledged"));
+    assert!(state.lock().await.socket.is_none());
+
+    server.await.unwrap();
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn identifies_again_after_a_nonresumable_session_rejection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback required");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+
+    let server = tokio::spawn(async move {
+        for expected in [6, 2] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"op":10,"d":{"heartbeat_interval":45000}}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            let request = socket.next().await.unwrap().unwrap();
+
+            assert_eq!(
+                serde_json::from_str::<Value>(request.to_text().unwrap()).unwrap()["op"],
+                expected
+            );
+            socket.send(Message::Text(json!({"op":9,"d":false}).to_string().into())).await.unwrap();
+        }
+    });
+
+    let state = AsyncMutex::new(GatewayState {
+        session_id: Some("old_session".into()),
+        sequence: Some(1),
+        ..Default::default()
+    });
+
+    for _ in 0..2 {
+        assert!(
+            timeout(Duration::from_secs(3), gateway(&state, "fixture", 2, &base))
+                .await
+                .unwrap()
+                .is_err()
+        );
+
+        assert!(state.lock().await.session_id.is_none());
+    }
+
+    server.await.unwrap();
 }

@@ -12,8 +12,13 @@ collects no telemetry. This page summarizes the security model; see
 
 ## Security Model
 
-- **Credentials:** Plugins receive declared secrets from environment variables,
-  the protected `KRABB_CREDENTIALS` file, or the optional OS keyring. Codex
+- **Credentials:** Environment overrides take priority. Persistent credentials
+  use AES-256-GCM with a random key protected by the OS keyring, or a separate
+  restricted key file when the keyring is unavailable. The runtime passes only
+  declared secrets to each plugin. Protect and back up the key separately:
+  possession of both files defeats the encrypted-file protection. Missing keys
+  and authentication failures are rejected; no replacement key is generated for
+  an unreadable store. Legacy plaintext files migrate on the next setup. Codex
   authentication is delegated to Codex CLI; Krabb does not read its token files.
 - **Plugins:** Installed plugins are trusted executable code. Review their
   source, revision, permissions, and declared secrets before installation.

@@ -129,6 +129,16 @@ async fn call_with(
             normalize(updates)
         }
 
+        Operation::Typing { chat, thread } => {
+            let mut body = json!({"chat_id": chat, "action": "typing"});
+
+            if let Some(thread) = thread {
+                body["message_thread_id"] = json!(thread);
+            }
+
+            send(client, &format!("{base}/sendChatAction"), body).await?
+        }
+
         Operation::Send { chat, text, thread } => {
             let mut result = serde_json::Value::Null;
 
@@ -191,6 +201,7 @@ async fn call_with(
 enum Operation {
     Info,
     Poll(i64),
+    Typing { chat: i64, thread: Option<i64> },
     Send { chat: i64, text: String, thread: Option<String> },
     Edit { chat: i64, message: i64, text: String, thread: Option<String> },
     Approval { chat: i64, text: String, approve: String, deny: String, thread: Option<String> },
@@ -306,6 +317,28 @@ fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Opt
     match method {
         "info" => Ok(Some(Operation::Info)),
         "poll" => Ok(Some(Operation::Poll(params["offset"].as_i64().unwrap_or(0)))),
+
+        "typing" => {
+            let chat = params["chat"]
+                .as_i64()
+                .ok_or_else(|| krabb_core::Error::Denied("typing.chat is required.".into()))?;
+
+            let thread = params
+                .get("thread")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .and_then(|value| value.parse::<i64>().ok())
+                        .filter(|value| *value > 0)
+                        .ok_or_else(|| {
+                            krabb_core::Error::Denied("typing.thread is invalid.".into())
+                        })
+                })
+                .transpose()?;
+
+            Ok(Some(Operation::Typing { chat, thread }))
+        }
+
         "send" => Ok(Some(Operation::Send {
             chat: params["chat"]
                 .as_i64()
@@ -488,20 +521,37 @@ async fn send(
     url: &str,
     body: serde_json::Value,
 ) -> krabb_core::Result<serde_json::Value> {
-    let response = client
-        .post(url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|_| krabb_core::Error::Denied("Telegram request failed.".into()))?;
+    for attempt in 0..=2 {
+        let response = client.post(url).json(&body).send().await.map_err(|_| {
+            krabb_core::Error::Denied("Telegram request failed; delivery may be uncertain.".into())
+        })?;
+        let status = response.status();
+        let body = read(response).await?;
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|_| krabb_core::Error::Denied("Telegram response failed.".into()))?;
 
-    let status = response.status();
-    let body = read(response).await?;
+        if attempt < 2
+            && let Some(delay) = retry_delay(status, &value)
+        {
+            tokio::time::sleep(delay).await;
+            continue;
+        }
 
-    let value: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| krabb_core::Error::Denied("Telegram response failed.".into()))?;
+        return response_body(status, value);
+    }
 
-    response_body(status, value)
+    unreachable!("the final attempt returns its result")
+}
+
+fn retry_delay(status: reqwest::StatusCode, value: &serde_json::Value) -> Option<Duration> {
+    if value["ok"] == true || (status.as_u16() != 429 && value["error_code"] != 429) {
+        return None;
+    }
+
+    value["parameters"]["retry_after"]
+        .as_u64()
+        .filter(|seconds| *seconds <= 5)
+        .map(Duration::from_secs)
 }
 
 async fn read(response: reqwest::Response) -> krabb_core::Result<String> {
@@ -539,13 +589,19 @@ fn response_body(
     value: serde_json::Value,
 ) -> krabb_core::Result<serde_json::Value> {
     if !status.is_success() || value["ok"] != true {
+        let code = value["error_code"].as_u64().unwrap_or(u64::from(status.as_u16()));
+        let wait = value["parameters"]["retry_after"].as_u64();
+
         return Err(krabb_core::Error::Denied(format!(
-            "Telegram rejected the request: {}.",
-            value["description"].as_str().unwrap_or("unknown error")
+            "Telegram rejected the request (code {code}, retry_after={wait:?})."
         )));
     }
 
-    Ok(value["result"].clone())
+    value
+        .get("result")
+        .filter(|result| !result.is_null())
+        .cloned()
+        .ok_or_else(|| krabb_core::Error::Denied("Telegram response contained no result.".into()))
 }
 
 fn normalize(value: serde_json::Value) -> serde_json::Value {
@@ -938,10 +994,7 @@ mod tests {
                 .is_err()
         );
 
-        assert!(
-            response_body(reqwest::StatusCode::OK, json!({"ok":true})).unwrap()["missing"]
-                .is_null()
-        );
+        assert!(response_body(reqwest::StatusCode::OK, json!({"ok":true})).is_err());
     }
 
     #[test]
@@ -1171,6 +1224,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typing_uses_chat_action_and_preserves_topics() {
+        for params in [json!({"chat": 8}), json!({"chat": 8, "thread": "4"})] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let expected = params.clone();
+
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let (end, length) = loop {
+                    let mut chunk = [0; 1024];
+                    let count = socket.read(&mut chunk).await.unwrap();
+
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+
+                    assert!(request.len() < 16 * 1024);
+
+                    if let Some(end) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+
+                        assert!(headers.starts_with("POST /sendChatAction "));
+                        let length = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .unwrap()
+                            .1
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+
+                        if request.len() >= end + 4 + length {
+                            break (end + 4, length);
+                        }
+                    }
+                };
+
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request[end..end + length]).unwrap();
+                assert_eq!(body["chat_id"], 8);
+                assert_eq!(body["action"], "typing");
+
+                if expected.get("thread").is_some() {
+                    assert_eq!(body["message_thread_id"], 4);
+                } else {
+                    assert!(body.get("message_thread_id").is_none());
+                }
+
+                let body = r#"{"ok":true,"result":true}"#;
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap();
+
+            let response = call_with(&client, 1, "typing".into(), params, "fixture", &base)
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.result, Some(json!(true)));
+
+            server.await.unwrap();
+        }
+
+        for params in [
+            json!({}),
+            json!({"chat":"bad"}),
+            json!({"chat":8,"thread":"bad"}),
+            json!({"chat":8,"thread":"0"}),
+        ] {
+            assert!(operation("typing", &params).is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn executes_channel_operations_against_a_bounded_api() {
         let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
             Ok(listener) => listener,
@@ -1295,4 +1428,70 @@ mod tests {
         assert_eq!(super::chunks("𝄞𝄞𝄞", 4), vec!["𝄞𝄞", "𝄞"]);
         assert_eq!(super::chunks("", 4), vec![String::new()]);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn limits_rate_retries_and_rejects_malformed_success() {
+    let limited = json!({"ok": false, "error_code": 429, "parameters": {"retry_after": 2}});
+
+    assert_eq!(
+        retry_delay(reqwest::StatusCode::TOO_MANY_REQUESTS, &limited),
+        Some(Duration::from_secs(2))
+    );
+
+    assert_eq!(retry_delay(reqwest::StatusCode::OK, &limited), Some(Duration::from_secs(2)));
+
+    assert!(
+        retry_delay(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &json!({"parameters": {"retry_after": 600}})
+        )
+        .is_none()
+    );
+
+    assert!(retry_delay(reqwest::StatusCode::INTERNAL_SERVER_ERROR, &json!({})).is_none());
+    assert!(response_body(reqwest::StatusCode::OK, json!({"ok": true})).is_err());
+
+    let error = response_body(
+        reqwest::StatusCode::UNAUTHORIZED,
+        json!({"description": "private fixture detail"}),
+    )
+    .unwrap_err();
+
+    assert!(!error.to_string().contains("private fixture detail"));
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn retries_only_an_explicit_rate_rejection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback required");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+
+    let server = tokio::spawn(async move {
+        for (status, body) in [
+            (429, r#"{"ok":false,"error_code":429,"parameters":{"retry_after":0}}"#),
+            (200, r#"{"ok":true,"result":{"message_id":7}}"#),
+        ] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut input = [0; 4096];
+            let n = socket.read(&mut input).await.unwrap();
+
+            assert!(String::from_utf8_lossy(&input[..n]).contains("POST /sendMessage"));
+            socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+    });
+
+    let client =
+        reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
+
+    let result =
+        send(&client, &format!("{base}/sendMessage"), json!({"chat_id": 1, "text": "fixture"}))
+            .await
+            .unwrap();
+
+    assert_eq!(result["message_id"], 7);
+
+    server.await.unwrap();
 }

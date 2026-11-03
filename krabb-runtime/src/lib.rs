@@ -40,10 +40,12 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 pub(crate) mod approval;
+mod credentials;
 pub(crate) mod ipc;
 pub(crate) mod logging;
 mod media;
 mod process;
+mod setup;
 pub(crate) mod state;
 pub(crate) mod terminal;
 use process::Process;
@@ -955,6 +957,8 @@ struct KrabfileImport {
 
 #[derive(Debug, Subcommand)]
 enum PluginCommand {
+    #[command(about = "Securely configure an installed plugin's declared secrets.")]
+    Setup(setup::Options),
     #[command(about = "List installed plugins.")]
     List(ListOutput),
     #[command(about = "Install and activate one or more plugins.")]
@@ -1491,8 +1495,9 @@ struct Manifest {
     capabilities: Vec<String>,
     #[serde(default)]
     permissions: Vec<String>,
-    #[serde(default)]
-    secrets: Vec<String>,
+    /// Names of required environment variables, never credential values.
+    #[serde(default, rename = "secrets")]
+    variables: Vec<String>,
     #[serde(default)]
     commands: Vec<CommandSpec>,
 }
@@ -1562,15 +1567,15 @@ impl Manifest {
             return Err("Plugin commands must be named uniquely and described.".into());
         }
 
-        let mut secrets = self.secrets.clone();
-        secrets.sort();
-        secrets.dedup();
+        let mut variables = self.variables.clone();
+        variables.sort();
+        variables.dedup();
 
-        if secrets.len() != self.secrets.len()
-            || self.secrets.iter().any(|secret| {
-                secret.is_empty()
-                    || !secret.starts_with("KRABB_")
-                    || !secret.bytes().all(|byte| {
+        if variables.len() != self.variables.len()
+            || self.variables.iter().any(|name| {
+                name.is_empty()
+                    || !name.starts_with("KRABB_")
+                    || !name.bytes().all(|byte| {
                         byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
                     })
             })
@@ -1603,8 +1608,9 @@ struct Entry {
     capabilities: Vec<String>,
     #[serde(default)]
     permissions: Vec<String>,
-    #[serde(default)]
-    secrets: Vec<String>,
+    /// Names of required environment variables, never credential values.
+    #[serde(default, rename = "secrets")]
+    variables: Vec<String>,
     #[serde(default)]
     linked: bool,
     #[serde(default)]
@@ -1663,9 +1669,10 @@ pub async fn cli() -> ExitCode {
         Command::Data(command_args) => Some((command_args.args.as_slice(), false)),
 
         Command::External(args)
-            if args.first().is_some_and(|name| {
-                matches!(name.as_str(), "session" | "delivery" | "schedule")
-            }) =>
+            if setup::requested(args.get(1..).unwrap_or_default())
+                || args.first().is_some_and(|name| {
+                    matches!(name.as_str(), "session" | "delivery" | "schedule")
+                }) =>
         {
             Some((args.as_slice(), true))
         }
@@ -2085,21 +2092,11 @@ fn help_text_with_plugins(root: &Path) -> Result<String, PluginError> {
     let mut help = command.render_help().to_string();
     let commands = available_commands(root)?;
 
-    let conditional = commands
-        .iter()
-        .filter(|(_, owners)| {
-            owners.iter().all(|(owner, _)| owner.starts_with(RUNTIME_COMMAND_OWNER))
-        })
-        .map(|(name, owners)| (name.clone(), owners.clone()))
-        .collect::<BTreeMap<_, _>>();
-
-    let plugins = commands
-        .iter()
-        .filter(|(_, owners)| {
-            owners.iter().any(|(owner, _)| !owner.starts_with(RUNTIME_COMMAND_OWNER))
-        })
-        .map(|(name, owners)| (name.clone(), owners.clone()))
-        .collect::<BTreeMap<_, _>>();
+    let (conditional, plugins): (BTreeMap<_, _>, BTreeMap<_, _>) =
+        commands.into_iter().partition(|(name, owners)| {
+            native_command(name)
+                && owners.iter().all(|(owner, _)| owner.starts_with(RUNTIME_COMMAND_OWNER))
+        });
 
     let conditional_help = command_help_section("Conditional Commands", &conditional);
     let plugin_help = command_help_section("Plugin Commands", &plugins);
@@ -6828,7 +6825,7 @@ fn recover_plugins(root: &Path) -> std::io::Result<()> {
                     || manifest.protocol != committed.protocol
                     || manifest.capabilities != committed.capabilities
                     || manifest.permissions != committed.permissions
-                    || manifest.secrets != committed.secrets
+                    || manifest.variables != committed.variables
                     || manifest.commands != committed.commands
                 {
                     return false;
@@ -6940,7 +6937,7 @@ async fn launch(
     let mut process = Process::start_with_env(
         path,
         std::iter::empty::<&std::ffi::OsStr>(),
-        env_for(&manifest, config, root),
+        env_for(&manifest, config, root)?,
     )
     .await?;
 
@@ -7074,6 +7071,7 @@ fn native_command(name: &str) -> bool {
         name,
         "help"
             | "init"
+            | "config"
             | "doctor"
             | "status"
             | "version"
@@ -7131,6 +7129,21 @@ fn available_commands(
     let mut commands = BTreeMap::new();
 
     for (id, entry) in &lock.plugins {
+        if !entry.variables.is_empty()
+            && !native_command(id)
+            && !entry.commands.iter().any(|command| command.name == *id)
+            && binary_at(id, root).is_some()
+        {
+            commands.entry(id.clone()).or_insert_with(Vec::new).push((
+                format!("{RUNTIME_COMMAND_OWNER}setup:{id}"),
+                CommandSpec {
+                    name: id.clone(),
+                    description: format!("Set up {id} credentials."),
+                    interactive: true,
+                },
+            ));
+        }
+
         for command in &entry.commands {
             let krabb_owned = krabb_owned_plugin_command(&command.name, id);
 
@@ -7185,7 +7198,11 @@ fn available_commands(
     Ok(commands)
 }
 
-fn env_for(manifest: &Manifest, config: &Config, root: &Path) -> Vec<(String, String)> {
+fn env_for(
+    manifest: &Manifest,
+    config: &Config,
+    root: &Path,
+) -> Result<Vec<(String, String)>, PluginError> {
     const SAFE: &[&str] = &[
         "PATH",
         "TEMP",
@@ -7275,13 +7292,9 @@ fn env_for(manifest: &Manifest, config: &Config, root: &Path) -> Vec<(String, St
         }
     }
 
-    for name in &manifest.secrets {
-        if let Some(value) = secret(name) {
-            values.push((name.clone(), value));
-        }
-    }
+    values.extend(credentials::resolve(&manifest.variables, root)?);
 
-    values
+    Ok(values)
 }
 
 fn ensure_home(values: &mut Vec<(String, String)>, root: &Path) {
@@ -7309,90 +7322,81 @@ fn ensure_codex_home(values: &mut Vec<(String, String)>) {
     }
 }
 
-fn secret(name: &str) -> Option<String> {
-    if !name.starts_with("KRABB_") {
-        return None;
-    }
-
-    if let Ok(value) = std::env::var(name)
-        && !value.trim().is_empty()
-    {
-        return Some(value);
-    }
-
-    if let Some(path) = std::env::var_os("KRABB_CREDENTIALS")
-        && krabb_file::private(&path).is_ok()
-        && let Ok(text) = std::fs::read_to_string(path)
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-        && let Some(value) = value[name].as_str().filter(|value| !value.trim().is_empty())
-    {
-        return Some(value.to_owned());
-    }
-
-    None
-}
-
 fn ready(id: &str) -> bool {
-    let credentials = std::env::var_os("KRABB_CREDENTIALS").map(PathBuf::from);
-    ready_at(id, credentials.as_deref())
+    ready_at(id, Some(&setup::path(&home())), &credentials::key_path(&home()))
 }
 
-fn ready_at(id: &str, credentials: Option<&Path>) -> bool {
+fn ready_at(id: &str, credentials: Option<&Path>, key: &Path) -> bool {
+    ready_with(id, credentials, key, keyring_ready)
+}
+
+fn ready_with(
+    id: &str,
+    credentials: Option<&Path>,
+    key: &Path,
+    keyring: impl Fn(&str) -> bool,
+) -> bool {
     match id {
         "telegram" => {
             env_nonempty("KRABB_TELEGRAM_TOKEN")
-                || keyring_ready("telegram")
-                || file_credential_at(credentials, &["KRABB_TELEGRAM_TOKEN"])
+                || keyring("telegram")
+                || file_credential_at(credentials, key, &["KRABB_TELEGRAM_TOKEN"])
         }
 
         "discord" => {
             env_nonempty("KRABB_DISCORD_TOKEN")
-                || keyring_ready("discord")
-                || file_credential_at(credentials, &["KRABB_DISCORD_TOKEN"])
+                || keyring("discord")
+                || file_credential_at(credentials, key, &["KRABB_DISCORD_TOKEN"])
         }
 
         "codex" => {
             env_nonempty("KRABB_CODEX_KEY")
-                || keyring_ready("codex")
-                || file_credential_at(credentials, &["KRABB_CODEX_KEY"])
+                || keyring("codex")
+                || file_credential_at(credentials, key, &["KRABB_CODEX_KEY"])
                 || codex_auth()
         }
 
         "anthropic" => {
             env_nonempty("KRABB_ANTHROPIC_KEY")
-                || keyring_ready("anthropic")
-                || file_credential_at(credentials, &["KRABB_ANTHROPIC_KEY"])
+                || keyring("anthropic")
+                || file_credential_at(credentials, key, &["KRABB_ANTHROPIC_KEY"])
         }
 
         "ollama" => true,
 
+        "openai" => {
+            env_nonempty("KRABB_OPENAI_KEY")
+                || keyring("openai")
+                || file_credential_at(credentials, key, &["KRABB_OPENAI_KEY"])
+        }
+
         "openrouter" => {
             env_nonempty("KRABB_OPENROUTER_KEY")
-                || file_credential_at(credentials, &["KRABB_OPENROUTER_KEY"])
+                || file_credential_at(credentials, key, &["KRABB_OPENROUTER_KEY"])
         }
 
         "gemini" => {
             env_nonempty("KRABB_GEMINI_KEY")
-                || file_credential_at(credentials, &["KRABB_GEMINI_KEY"])
+                || file_credential_at(credentials, key, &["KRABB_GEMINI_KEY"])
         }
 
         "signal" => {
             env_nonempty("KRABB_SIGNAL_ACCOUNT")
-                || file_credential_at(credentials, &["KRABB_SIGNAL_ACCOUNT"])
+                || file_credential_at(credentials, key, &["KRABB_SIGNAL_ACCOUNT"])
         }
 
         "slack" => {
             env_nonempty("KRABB_SLACK_BOT_TOKEN")
-                || file_credential_at(credentials, &["KRABB_SLACK_BOT_TOKEN"])
+                || file_credential_at(credentials, key, &["KRABB_SLACK_BOT_TOKEN"])
         }
 
         "whatsapp" => {
             (env_nonempty("KRABB_WHATSAPP_TOKEN")
-                || file_credential_at(credentials, &["KRABB_WHATSAPP_TOKEN"]))
+                || file_credential_at(credentials, key, &["KRABB_WHATSAPP_TOKEN"]))
                 && (env_nonempty("KRABB_WHATSAPP_APP_SECRET")
-                    || file_credential_at(credentials, &["KRABB_WHATSAPP_APP_SECRET"]))
+                    || file_credential_at(credentials, key, &["KRABB_WHATSAPP_APP_SECRET"]))
                 && (env_nonempty("KRABB_WHATSAPP_VERIFY")
-                    || file_credential_at(credentials, &["KRABB_WHATSAPP_VERIFY"]))
+                    || file_credential_at(credentials, key, &["KRABB_WHATSAPP_VERIFY"]))
                 && env_nonempty("KRABB_WHATSAPP_PHONE")
                 && env_nonempty("KRABB_WHATSAPP_GRAPH_URL")
         }
@@ -7507,30 +7511,20 @@ fn keyring_ready(name: &str) -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
-fn file_credential_at(path: Option<&Path>, names: &[&str]) -> bool {
+fn file_credential_at(path: Option<&Path>, key: &Path, names: &[&str]) -> bool {
     let Some(path) = path else {
         return false;
     };
 
-    credential(path, names)
+    credential(path, key, names)
 }
 
-fn credential(path: impl AsRef<Path>, names: &[&str]) -> bool {
-    let path = path.as_ref();
-
-    if krabb_file::private(path).is_err() {
-        return false;
-    }
-
-    let Ok(text) = std::fs::read_to_string(path) else {
+fn credential(path: impl AsRef<Path>, key: &Path, names: &[&str]) -> bool {
+    let Ok(values) = credentials::read(path.as_ref(), key) else {
         return false;
     };
 
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
-    };
-
-    names.iter().any(|name| value[*name].as_str().is_some_and(|value| !value.trim().is_empty()))
+    names.iter().any(|name| values.get(*name).is_some_and(|value| !value.trim().is_empty()))
 }
 
 fn codex_auth() -> bool {
@@ -8369,6 +8363,12 @@ async fn bridge_with_media(
                 );
                 tokio::pin!(answer);
                 let mut output = StreamOutput::new();
+                let mut typing = true;
+                let mut activity = tokio::time::interval_at(
+                    tokio::time::Instant::now() + Duration::from_millis(500),
+                    Duration::from_secs(4),
+                );
+                activity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut ticker = tokio::time::interval_at(
                     tokio::time::Instant::now() + std::time::Duration::from_millis(500),
                     std::time::Duration::from_millis(500),
@@ -8429,6 +8429,15 @@ async fn bridge_with_media(
                                 warn!(error = %diagnostic(sentence(error.to_string())), "Channel streaming paused.");
                             }
                         }
+
+                        _ = activity.tick(), if typing && output.message_id.is_none() => {
+                            tokio::select! {
+                                biased;
+                                _ = stop.notified() => break Err("The turn was interrupted.".into()),
+                                _ = turn_cancel.cancelled() => break Err("The turn was cancelled.".into()),
+                                supported = indicate_typing(&channel, channel_id, &chat, thread.as_deref(), &mut stream_call) => typing = supported,
+                            }
+                        }
                     }
                 };
 
@@ -8487,6 +8496,7 @@ async fn bridge_with_media(
                     }
 
                     warn!(session = %session_name, error = %diagnostic(sentence(error.to_string())), "Model turn failed.");
+                    let rejected = error.is::<ModelRejection>();
                     let failure = Message {
                         id: format!("failure-{call}"),
                         session: session_name.clone(),
@@ -8498,7 +8508,7 @@ async fn bridge_with_media(
                     };
                     {
                         let mut store = sessions.lock().map_err(|_| "Session lock is poisoned.")?;
-                        let replay = store
+                        let safe = store
                             .sessions
                             .get(&session_name)
                             .is_none_or(|session| session.phase != "unsafe");
@@ -8531,7 +8541,7 @@ async fn bridge_with_media(
                             .into());
                         }
 
-                        if replay {
+                        if safe && !rejected {
                             if let Err(error) =
                                 store.queue_with_roles(&session_name, retry_message, roles)
                             {
@@ -8541,7 +8551,7 @@ async fn bridge_with_media(
                                     "Model retry could not be queued."
                                 );
                             }
-                        } else {
+                        } else if !safe {
                             warn!(
                                 session = %session_name,
                                 "Failed turn contained a mutating tool; it will not be retried."
@@ -8549,7 +8559,11 @@ async fn bridge_with_media(
                         }
                     }
 
-                    if !recover(&provider, &mut provider_failures, "model", stop.as_ref()).await? {
+                    if rejected {
+                        provider_failures = 0;
+                    } else if !recover(&provider, &mut provider_failures, "model", stop.as_ref())
+                        .await?
+                    {
                         return Ok(());
                     }
 
@@ -9582,6 +9596,31 @@ fn send_params(
     }
 
     Ok(value)
+}
+
+async fn indicate_typing(
+    channel: &Live,
+    channel_id: &str,
+    chat: &str,
+    thread: Option<&str>,
+    call: &mut u64,
+) -> bool {
+    let Ok(mut params) = send_params(channel_id, "", chat, "", thread) else {
+        return false;
+    };
+
+    if let Some(params) = params.as_object_mut() {
+        params.remove("text");
+        params.remove("delivery");
+    }
+
+    let request = Request::call(*call, "typing", params);
+    *call = call.saturating_add(1);
+
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), channel.call(request)).await,
+        Ok(Ok(response)) if response.error.is_none() && response.result == Some(serde_json::json!(true))
+    )
 }
 
 fn send_request(
@@ -10981,6 +11020,17 @@ enum StreamNotice {
     },
 }
 
+#[derive(Debug)]
+struct ModelRejection(String);
+
+impl std::fmt::Display for ModelRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Model request failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for ModelRejection {}
+
 struct StreamOutput {
     text: String,
     display: String,
@@ -11078,7 +11128,9 @@ async fn flush_stream(
     };
 
     let response = channel.call(request).await;
+
     *call = call.saturating_add(1);
+
     let response = match response {
         Ok(response) if response.error.is_none() => response,
 
@@ -11121,6 +11173,7 @@ async fn flush_stream(
             .lock()
             .map_err(|_| "Session lock is poisoned.")?
             .stream_started(delivery_id, message_id.clone())?;
+
         output.message_id = Some(message_id);
     } else {
         sessions.lock().map_err(|_| "Session lock is poisoned.")?.stream_updated(delivery_id)?;
@@ -11177,6 +11230,7 @@ async fn answer(
 ) -> Result<ModelReply, Box<dyn std::error::Error + Send + Sync>> {
     let registry = tool_registry(plugins, tools_enabled, shell_enabled).await?;
     let cleanup = registry.cleanup.clone();
+
     let result = answer_with_registry(
         provider,
         plugins,
@@ -11206,6 +11260,7 @@ async fn answer(
         registry,
     )
     .await;
+
     cleanup.finish().await?;
     result
 }
@@ -11247,6 +11302,7 @@ async fn answer_with_registry(
     }
 
     prepare_images(&mut messages, media_root);
+
     let mut tokens = 0_u64;
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let memory_plugin = plugins.find(Capability::Memory).await;
@@ -11263,6 +11319,7 @@ async fn answer_with_registry(
     }
 
     let mut specs = registry.specs.clone();
+
     let turn_id = format!("{session}:{}", *call);
     let mut streaming = false;
 
@@ -11424,7 +11481,7 @@ async fn answer_with_registry(
 
         let Some(value) = reply.result else {
             if let Some(error) = reply.error {
-                return Err(format!("Model request failed: {}", sentence(error.message)).into());
+                return Err(ModelRejection(sentence(error.message)).into());
             }
 
             return Err("Model returned an empty response.".into());
@@ -11802,6 +11859,7 @@ async fn forward_stream(
     let notice = match stream_event(note.clone()) {
         Some(Event::Text { text } | Event::Done { text }) => {
             delivered.push_str(&text);
+
             StreamNotice::Text(text)
         }
 
@@ -11907,11 +11965,13 @@ async fn tool_with_registry(
             .await
             .filter(|plugin| plugin.supports(Capability::Store))
             .ok_or("The SQLite data capability is not installed.")?;
+
         let serde_json::Value::Object(values) = &mut args else {
             return Err("Data tool arguments must be an object.".into());
         };
 
         values.insert("scope".into(), serde_json::Value::String(memory_scope.into()));
+
         let response = match registry
             .cleanup
             .call(Arc::clone(&plugin.process), Request::call(id, "data", args))
@@ -11930,6 +11990,7 @@ async fn tool_with_registry(
         }
 
         let value = response.result.ok_or("The SQLite plugin returned no data result.")?;
+
         return Ok(ToolResult::text(clip(value.to_string(), TEXT_LIMIT)));
     }
 
@@ -12213,6 +12274,7 @@ async fn tool_with_registry(
 
     let id_plugin =
         registry.owners.get(name).ok_or_else(|| format!("Tool `{name}` is not registered."))?;
+
     let plugin = plugins
         .get(id_plugin)
         .await
@@ -12260,6 +12322,7 @@ async fn tool_with_registry(
     }
 
     let value = response.result.ok_or("The tool returned no result.")?;
+
     decode_tool_result(value)
 }
 
@@ -12276,6 +12339,7 @@ async fn tool(
     failed_tool: &mut Option<String>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let registry = legacy_tool_registry(Some(name));
+
     let result = tool_with_registry(
         plugins,
         &registry,
@@ -12392,6 +12456,7 @@ async fn execute_tool(
     tool_call: usize,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let registry = legacy_tool_registry(Some(name));
+
     let result = execute_tool_with_registry(
         plugins,
         &registry,
@@ -12552,6 +12617,7 @@ async fn execute_tool_with_registry(
     }
 
     let changes = mutating(name, &args);
+
     let approve = match (changes, approval_mode) {
         (false, _) => false,
 
@@ -12626,6 +12692,7 @@ async fn execute_tool_with_registry(
         }
 
         let message = scheduled_message(&args)?;
+
         let Some(destination) = scheduled_destination else {
             return Err("This schedule has no authorized message destination.".into());
         };
@@ -12637,9 +12704,12 @@ async fn execute_tool_with_registry(
         if message.channel == "tui" {
             let run_id = schedule_run_id.ok_or("Scheduled run ID is missing.")?;
             let delivery_id = scheduled_delivery_id(session, run_id, tool_call);
+
             let message_id =
                 scheduled_tui_notice_id(session, unix_timestamp_millis(), run_id, tool_call);
+
             let mut store = sessions.lock().map_err(|_| "Session lock is poisoned.")?;
+
             store.ensure(&message.chat, model)?;
 
             if store.sessions[&message.chat]
@@ -12663,6 +12733,7 @@ async fn execute_tool_with_registry(
                     content: vec![Content::Text { text: message.text }],
                 },
             )?;
+
             info!(session = %message.chat, schedule = %session, "Scheduled message added to a TUI session.");
 
             return Ok(ToolResult::text(format!("Message added to TUI session {}.", message.chat)));
@@ -12673,9 +12744,12 @@ async fn execute_tool_with_registry(
             .await
             .filter(|plugin| plugin.supports(Capability::Channel))
             .ok_or_else(|| format!("Channel plugin {} is not available.", message.channel))?;
+
         drop(plugin);
+
         let run_id = schedule_run_id.ok_or("Scheduled run ID is missing.")?;
         let delivery_id = scheduled_delivery_id(session, run_id, tool_call);
+
         sessions.lock().map_err(|_| "Session lock is poisoned.")?.queue_delivery(
             delivery_id,
             &message.channel,
@@ -12684,6 +12758,7 @@ async fn execute_tool_with_registry(
             message.thread,
             &message.text,
         )?;
+
         info!(channel = %message.channel, schedule = %session, "Scheduled message queued for delivery.");
 
         return Ok(ToolResult::text(format!(
@@ -12723,13 +12798,16 @@ fn scheduled_message(args: &serde_json::Value) -> Result<ScheduledMessage, &'sta
         .as_str()
         .filter(|value| valid(value))
         .ok_or("A valid installed channel ID is required.")?;
+
     let chat = args["chat"]
         .as_str()
         .filter(|value| {
             !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
         })
         .ok_or("A recipient ID of at most 256 visible characters is required.")?;
+
     let private = args["private"].as_bool().ok_or("The recipient type must be specified.")?;
+
     let text = args["text"]
         .as_str()
         .map(str::trim)
@@ -12741,6 +12819,7 @@ fn scheduled_message(args: &serde_json::Value) -> Result<ScheduledMessage, &'sta
                 })
         })
         .ok_or("Message text is required and must fit within the message limit.")?;
+
     let thread =
         args["thread"].as_str().map(str::to_owned).filter(|value| !value.trim().is_empty());
 
@@ -12999,6 +13078,7 @@ async fn host_tool_with_registry(
     }
 
     let mut failed_tool = None;
+
     let output = match tokio::time::timeout_at(
         deadline,
         execute_tool_with_registry(
@@ -13101,6 +13181,7 @@ async fn restart_tool(plugins: &Plugins, id: &str) {
 
 fn installed_at(root: &Path) -> Vec<String> {
     let root = root.join("plugins");
+
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -13185,6 +13266,7 @@ fn doctor_at(
 
     if config_present {
         let config: Config = load_config_at(root)?;
+
         config.validate().map_err(|error| format!("Config is invalid: {error}"))?;
         config_valid = Some(true);
     }
@@ -13274,6 +13356,7 @@ fn doctor_at(
                 })
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
+
             println!("Repairs applied:\n{}", format_tree_list(&descriptions));
         }
     } else {
@@ -13296,6 +13379,7 @@ fn doctor_at(
         println!("KRAB.md instructions are {krab_status}.");
         println!("KLAW.md instructions are {klaw_status}.");
         println!("\n{} plugins are installed. Plugin integrity checks passed.", lock.plugins.len());
+
         println!(
             "The protocol version is {}.{}.",
             Protocol::CURRENT.major,
@@ -13452,34 +13536,34 @@ fn service_environment_from(
         values.push(("KRABB_CODEX_BINARY".into(), binary.display().to_string()));
     }
 
-    let configured = environment.get("KRABB_CREDENTIALS").map(PathBuf::from);
+    let configured = environment
+        .get("KRABB_CREDENTIALS")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            let path = root.join("credentials.json");
+            path.exists().then_some(path)
+        });
 
-    let mut credentials = serde_json::Map::new();
+    let key = environment
+        .get("KRABB_CREDENTIALS_KEY")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("credentials.key"));
+
+    let mut credentials = match configured.as_deref() {
+        Some(path) => credentials::read(path, &key)?,
+        None => BTreeMap::new(),
+    };
+
     let mut direct = false;
-
-    if let Some(path) = configured.as_deref()
-        && path.exists()
-    {
-        krabb_file::private(path).map_err(|error| {
-            std::io::Error::new(error.kind(), format!("Credential file is unavailable: {error}."))
-        })?;
-
-        let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
-        let object = value.as_object().ok_or("Credential file must contain a JSON object.")?;
-
-        for (name, value) in object {
-            if let Some(value) = value.as_str() {
-                credentials.insert(name.clone(), serde_json::Value::String(value.into()));
-            }
-        }
-    }
 
     let mut names = SERVICE_SECRETS.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
 
     if let Ok(entries) = std::fs::read_dir(root.join("plugins")) {
         for entry in entries.flatten() {
             if let Some(manifest) = read_manifest(&entry.path()) {
-                for name in manifest.secrets {
+                for name in manifest.variables {
                     if !names.contains(&name) {
                         names.push(name);
                     }
@@ -13493,17 +13577,24 @@ fn service_environment_from(
             && !value.trim().is_empty()
         {
             direct = true;
-            credentials.insert(name, serde_json::Value::String(value.clone()));
+            credentials.insert(name, value.clone());
         }
     }
 
     if direct {
         let path = service_credentials_path(path);
 
-        secure(&path, serde_json::to_vec_pretty(&credentials)?)?;
+        let preference =
+            credentials::preference_from(environment.get("KRABB_KEYRING").map(String::as_str))?;
+
+        credentials::save(&path, &key, credentials, preference)?;
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path)?));
-    } else if let Some(path) = configured {
-        values.push(("KRABB_CREDENTIALS".into(), service_path_value(path)?));
+    } else if let Some(path) = configured.as_ref() {
+        values.push(("KRABB_CREDENTIALS".into(), service_path_value(path.clone())?));
+    }
+
+    if direct || configured.is_some() {
+        values.push(("KRABB_CREDENTIALS_KEY".into(), service_path_value(key)?));
     }
 
     Ok(values)
@@ -13973,7 +14064,15 @@ fn windows_service_install(
 #[cfg(any(target_os = "windows", test))]
 fn windows_service_private(name: &str, path: &Path) -> Vec<PathBuf> {
     match name {
-        "KRABB_HOME" | "KRABB_CREDENTIALS" | "KRABB_TIMER" | "KRABB_CODEX_HOME" => {
+        name if [
+            "KRABB_HOME",
+            "KRABB_CREDENTIALS",
+            "KRABB_CREDENTIALS_KEY",
+            "KRABB_TIMER",
+            "KRABB_CODEX_HOME",
+        ]
+        .contains(&name) =>
+        {
             vec![path.to_path_buf()]
         }
 
@@ -14935,11 +15034,18 @@ async fn external_command(
     args: Vec<String>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    external_command_at(args, json, home()).await
+}
+
+async fn external_command_at(
+    args: Vec<String>,
+    json: bool,
+    root: PathBuf,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(name) = args.first() else {
         return Err("A plugin command is required.".into());
     };
 
-    let root = home();
     let commands = available_commands(&root)?;
     let Some(owners) = commands.get(name) else {
         print_help_with_plugins(&root)?;
@@ -14952,6 +15058,10 @@ async fn external_command(
 
     let (owner, _) =
         owners.first().cloned().ok_or_else(|| format!("Plugin command {name} was not found."))?;
+
+    if let Some(id) = owner.strip_prefix(&format!("{RUNTIME_COMMAND_OWNER}setup:")) {
+        return setup::command(&args[1..], id, &root, json).await;
+    }
 
     let plugin = if owner.starts_with(RUNTIME_COMMAND_OWNER) {
         match name.as_str() {
@@ -14966,10 +15076,25 @@ async fn external_command(
         owner
     };
 
+    let has_setup = name == &plugin
+        && load_lock_at(&root)?
+            .plugins
+            .get(&plugin)
+            .is_some_and(|entry| !entry.variables.is_empty());
+
+    if has_setup && setup::requested(&args[1..]) {
+        return setup::command(&args[1..], &plugin, &root, json).await;
+    }
+
     let help_requested = external_command_help_requested(name, &args);
 
     if help_requested && !matches!(name.as_str(), "memory" | "data") {
         println!("{}", style_cli_help(&external_command_help(name, &owners[0].1.description)));
+
+        if has_setup {
+            println!("\n  setup [--no-activate]  Securely configure declared API keys/secrets.");
+        }
+
         return Ok(());
     }
 
@@ -15241,7 +15366,7 @@ async fn tui_command(
             return Err(format!("Plugin {plugin} is not an intelligence plugin.").into());
         }
 
-        command.envs(env_for(&manifest, config, root));
+        command.envs(env_for(&manifest, config, root)?);
     }
 
     for name in ["KRABB_MODEL", "KRABB_ROOT"] {
@@ -16025,6 +16150,7 @@ async fn plugin(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match command {
+        PluginCommand::Setup(options) => setup::run(options, &home(), json).await?,
         PluginCommand::List(output) => list(output.page, output.json || json)?,
 
         PluginCommand::Install(install) => {
@@ -16925,7 +17051,7 @@ fn update_with_commit(
                     entry.protocol = manifest.protocol;
                     entry.capabilities = manifest.capabilities.clone();
                     entry.permissions = manifest.permissions.clone();
-                    entry.secrets = manifest.secrets.clone();
+                    entry.variables = manifest.variables.clone();
                     entry.commands = manifest.commands.clone();
                 }
 
@@ -17060,6 +17186,7 @@ fn preview_updates_at_inner(
             Ok(candidate) => candidate,
 
             Err(error) => {
+                warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "Plugin update check failed.");
                 errors.push(serde_json::json!({
                     "id": id,
                     "error": sentence(error.to_string())
@@ -17074,6 +17201,8 @@ fn preview_updates_at_inner(
 
         if changed {
             if let Err(error) = save_update_preview_at(home_root, id, entry, &candidate) {
+                warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "Plugin update preview failed.");
+
                 errors.push(serde_json::json!({
                     "id": id,
                     "error": sentence(error.to_string())
@@ -17165,7 +17294,7 @@ fn preview_updates_at_inner(
 
                 section.push(format_tree_entry(
                     &format!("{id} update check failed"),
-                    &[],
+                    &[diagnostic(error["error"].as_str().unwrap_or("Unknown update error."))],
                     index + 1 == errors.len(),
                 ));
             }
@@ -17335,7 +17464,7 @@ fn inspect_update(
 
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
-        || manifest.secrets != entry.secrets
+        || manifest.variables != entry.variables
         || manifest.commands != entry.commands
     {
         return Err(format!(
@@ -17467,7 +17596,7 @@ fn validate_update_candidate(
 
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
-        || manifest.secrets != entry.secrets
+        || manifest.variables != entry.variables
         || manifest.commands != entry.commands
     {
         return Err(format!(
@@ -17536,7 +17665,7 @@ fn update_one(
 
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
-        || manifest.secrets != entry.secrets
+        || manifest.variables != entry.variables
         || manifest.commands != entry.commands
     {
         return Err(format!(
@@ -17870,7 +17999,7 @@ fn link_at(
                 protocol: manifest.protocol,
                 capabilities: manifest.capabilities.clone(),
                 permissions: manifest.permissions.clone(),
-                secrets: manifest.secrets.clone(),
+                variables: manifest.variables.clone(),
                 commands: manifest.commands.clone(),
                 linked,
                 default: default_source,
@@ -18003,12 +18132,21 @@ fn resolve(
         return Err("Archive SHA-256 checksums must contain 64 hexadecimal characters.".into());
     }
 
-    let source_path = source.strip_prefix("file://").map(PathBuf::from);
+    let source_path = source.strip_prefix("file://").map(PathBuf::from).or_else(|| {
+        let path = Path::new(source);
+        (path.is_absolute() || source.starts_with("./") || source.starts_with("../"))
+            .then(|| path.to_path_buf())
+    });
 
     if let Some(path) =
         source_path.or_else(|| Path::new(source).exists().then(|| PathBuf::from(source)))
     {
-        let path = std::fs::canonicalize(path)?;
+        let path = std::fs::canonicalize(&path).map_err(|error| {
+            format!(
+                "Local plugin source {} is unavailable: {} Restore the source or reinstall the plugin with --yes from its new location.",
+                path.display(), sentence(error.to_string())
+            )
+        })?;
 
         if path.is_file() {
             if !archive(&path) {
@@ -18899,8 +19037,10 @@ fn plugin_summary(manifest: &Manifest, health: &str) -> Value {
         "protocol": manifest.protocol,
         "capabilities": manifest.capabilities,
         "permissions": manifest.permissions,
-        "secrets": manifest.secrets,
+        "secrets": manifest.variables,
         "commands": manifest.commands,
+        "setup_command": (!manifest.variables.is_empty())
+            .then(|| format!("krabb plugin setup {}", manifest.id)),
         "status": "installed",
         "health": health,
     })
@@ -18960,13 +19100,20 @@ fn format_plugin_list(items: &[Value], page: usize) -> Result<String, String> {
             format!("Permissions include {permissions}")
         };
 
-        let details = [
-            format!("Health is {health}"),
-            capabilities,
-            format!("Uses protocol version {protocol}"),
-            commands,
-            permissions,
-        ];
+        let binary = match health {
+            "ready" => "Binary is present (credentials not checked)".into(),
+            "missing" => "Binary is missing; reinstall the plugin from its source".into(),
+            _ => format!("Health is {health}"),
+        };
+
+        let mut details =
+            vec![binary, capabilities, format!("Uses protocol version {protocol}"), commands];
+
+        if let Some(command) = item["setup_command"].as_str() {
+            details.push(format!("Set up credentials with `{command}`"));
+        }
+
+        details.push(permissions);
 
         let separator = if index == 0 { "\n" } else { "\n\n" };
 
@@ -19262,6 +19409,9 @@ mod tests {
 
     #[cfg(unix)]
     mod approvals;
+
+    #[cfg(unix)]
+    mod channels;
 
     use super::{
         ARCHIVE_LIMIT, BANNER, Cancellation, Cli, Command, CommandSpec, CompletionShell, Config,
@@ -23110,7 +23260,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec!["tool".into()],
             permissions: vec!["filesystem".into()],
-            secrets: vec!["KRABB_TOOLS_KEY".into()],
+            variables: vec!["KRABB_TOOLS_KEY".into()],
             commands: Vec::new(),
         };
 
@@ -23157,15 +23307,15 @@ done
         assert!(invalid.validate().is_err());
 
         invalid.permissions.clear();
-        invalid.secrets = vec!["bad-name".into()];
+        invalid.variables = vec!["bad-name".into()];
 
         assert!(invalid.validate().is_err());
 
-        invalid.secrets = vec!["OPENAI_API_KEY".into()];
+        invalid.variables = vec!["OPENAI_API_KEY".into()];
 
         assert!(invalid.validate().is_err());
 
-        invalid.secrets = vec!["KRABB_TOOLS_KEY".into(), "KRABB_TOOLS_KEY".into()];
+        invalid.variables = vec!["KRABB_TOOLS_KEY".into(), "KRABB_TOOLS_KEY".into()];
 
         assert!(invalid.validate().is_err());
 
@@ -23178,12 +23328,13 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["tool".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
             },
             &Config::default(),
             test_home,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             values
@@ -23219,12 +23370,13 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["tool".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
             },
             &config,
             test_home,
-        );
+        )
+        .unwrap();
 
         assert!(values.iter().any(|(key, value)| key == "KRABB_SHELL" && value == "on"));
 
@@ -23235,12 +23387,13 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
             },
             &Config::default(),
             test_home,
-        );
+        )
+        .unwrap();
 
         if std::env::var_os("KRABB_HOME").is_none() {
             assert!(values.iter().any(|(key, value)| {
@@ -23517,7 +23670,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: Vec::new(),
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },
@@ -23898,8 +24051,10 @@ done
             name == "KRABB_CREDENTIALS" && value == &credential_path.display().to_string()
         }));
 
-        let credentials: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&credential_path).unwrap()).unwrap();
+        let credentials =
+            super::credentials::read(&credential_path, &root.join("credentials.key")).unwrap();
+
+        assert!(!fs::read_to_string(&credential_path).unwrap().contains("secret"));
 
         assert_eq!(credentials["KRABB_TELEGRAM_TOKEN"], "old");
         assert_eq!(credentials["KRABB_CODEX_KEY"], "secret");
@@ -24019,8 +24174,44 @@ done
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn manages_service_definition() {
+    #[tokio::test]
+    async fn manages_service_definition() {
+        if std::env::var_os("KRABB_SERVICE_FIXTURE").is_none() {
+            let root = test_root("service-environment");
+
+            fs::create_dir_all(&root).unwrap();
+
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+
+            command
+                .args(["--exact", "tests::manages_service_definition", "--nocapture"])
+                .env_clear()
+                .env("KRABB_SERVICE_FIXTURE", "1")
+                .env("KRABB_HOME", &root)
+                .kill_on_drop(true);
+
+            for name in ["SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"] {
+                if let Some(value) = std::env::var_os(name) {
+                    command.env(name, value);
+                }
+            }
+
+            let output = tokio::time::timeout(Duration::from_secs(10), command.output())
+                .await
+                .expect("Service fixture timed out")
+                .unwrap();
+
+            assert!(
+                output.status.success(),
+                "Service fixture failed: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+
         let path = std::env::temp_dir().join(format!("krabb-service-{}", std::process::id()));
         let _ = fs::remove_file(&path);
 
@@ -24345,7 +24536,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             commands: Vec::new(),
             linked: false,
         };
@@ -24382,7 +24573,7 @@ done
                     protocol: Protocol::CURRENT,
                     capabilities: Vec::new(),
                     permissions: Vec::new(),
-                    secrets: Vec::new(),
+                    variables: Vec::new(),
                     commands: Vec::new(),
                     linked: false,
                 }
@@ -24401,7 +24592,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             commands: Vec::new(),
         };
 
@@ -24438,7 +24629,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: Vec::new(),
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: vec![CommandSpec {
                     name: "login".into(),
                     description: "Log in.".into(),
@@ -24559,7 +24750,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 linked: false,
                 commands: vec![CommandSpec {
                     name: "model-console".into(),
@@ -24623,7 +24814,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["channel".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 linked: false,
                 commands: Vec::new(),
             },
@@ -24672,7 +24863,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["scheduler".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 linked: false,
                 commands: Vec::new(),
             },
@@ -24732,7 +24923,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec![capability.into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: vec![CommandSpec {
                 name: name.into(),
@@ -24843,7 +25034,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec![capability.into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -25704,8 +25895,30 @@ done
 
         assert_eq!(
             output,
-            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Health is ready\n   ├─ Capabilities include model, vision\n   ├─ Uses protocol version 0.1\n   ├─ Commands include codex\n   └─ Permissions include network, process"
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Binary is present (credentials not checked)\n   ├─ Capabilities include model, vision\n   ├─ Uses protocol version 0.1\n   ├─ Commands include codex\n   └─ Permissions include network, process"
         );
+    }
+
+    #[test]
+    fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
+        let manifest: super::Manifest = toml::from_str(
+            "id = 'telegram'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['channel']\nsecrets = ['KRABB_TELEGRAM_TOKEN']\n",
+        )
+        .unwrap();
+
+        let item = super::plugin_summary(&manifest, "ready");
+        let output = super::format_plugin_list(std::slice::from_ref(&item), 1).unwrap();
+
+        assert_eq!(item["setup_command"], "krabb plugin setup telegram");
+        assert!(output.contains("Binary is present (credentials not checked)"));
+        assert!(output.contains("Set up credentials with `krabb plugin setup telegram`"));
+        assert!(!output.contains("Health is ready"));
+        assert_eq!(item["commands"], serde_json::json!([]));
+
+        let item = super::plugin_summary(&manifest, "missing");
+        let output = super::format_plugin_list(&[item], 1).unwrap();
+
+        assert!(output.contains("Binary is missing; reinstall the plugin from its source"));
     }
 
     #[test]
@@ -27203,7 +27416,7 @@ done
 
         assert!(super::env_nonempty("PATH"));
         assert!(!super::env_nonempty("KRABB_TEST_MISSING"));
-        assert!(!super::file_credential_at(None, &["KRABB_TEST_MISSING"]));
+        assert!(!super::file_credential_at(None, Path::new("unused"), &["KRABB_TEST_MISSING"]));
 
         let credentials =
             std::env::temp_dir().join(format!("krabb-credentials-{}.json", std::process::id()));
@@ -27222,15 +27435,15 @@ done
             fs::set_permissions(&credentials, permissions).unwrap();
         }
 
-        assert!(super::credential(&credentials, &["KRABB_CODEX_KEY"]));
+        assert!(super::credential(&credentials, Path::new("unused"), &["KRABB_CODEX_KEY"]));
 
-        assert!(super::ready_at("signal", Some(&credentials)));
-        assert!(super::ready_at("slack", Some(&credentials)));
-        assert!(!super::credential(&credentials, &["MISSING"]));
+        assert!(super::ready_at("signal", Some(&credentials), Path::new("unused")));
+        assert!(super::ready_at("slack", Some(&credentials), Path::new("unused")));
+        assert!(!super::credential(&credentials, Path::new("unused"), &["MISSING"]));
 
         fs::write(&credentials, "broken").unwrap();
 
-        assert!(!super::credential(&credentials, &["KRABB_CODEX_KEY"]));
+        assert!(!super::credential(&credentials, Path::new("unused"), &["KRABB_CODEX_KEY"]));
 
         let _ = fs::remove_file(credentials);
 
@@ -27613,6 +27826,94 @@ done
 
         local_session(SessionCommand::List(super::ListOutput { page: 1, json: false }), &root)
             .unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_local_sources_are_not_treated_as_remote_git_urls() {
+        let root = test_root("missing-local-source");
+
+        for source in [
+            root.join("missing.git").display().to_string(),
+            format!("file://{}", root.join("missing").display()),
+            format!("./missing-plugin-source-{}/plugin", super::now()),
+            format!("../missing-plugin-source-{}/plugin", super::now()),
+        ] {
+            let error = resolve(&source, None).err().unwrap().to_string();
+
+            assert!(error.contains("Local plugin source"), "{error}");
+            assert!(error.contains("reinstall the plugin with --yes"), "{error}");
+            assert!(!error.contains("Git URL"), "{error}");
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn moved_linked_sources_can_be_reinstalled_without_resetting_configuration() {
+        let root = test_root("moved-plugin-source");
+        let source = root.join("source");
+        let moved = root.join("moved");
+        let binary = source.join("bin/krabb-plugin-memory");
+
+        fs::create_dir_all(source.join("bin")).unwrap();
+
+        fs::write(
+            source.join("krabb-plugin.toml"),
+            "id = 'memory'\nversion = '0.1.0'\ncapabilities = ['memory']\n\n[protocol]\nmajor = 0\nminor = 1\n",
+        )
+        .unwrap();
+
+        write_test_plugin(&binary, "memory", "memory", "0.1.0");
+        super::init_at(&root).unwrap();
+
+        let config = super::load_config_text(&root).unwrap();
+
+        let install = |path: &Path| {
+            super::link_at(
+                Source {
+                    id: "memory".into(),
+                    source: Some(path.display().to_string()),
+                    revision: None,
+                    yes: true,
+                },
+                true,
+                &root,
+            )
+            .unwrap();
+        };
+
+        install(&source);
+        fs::rename(&source, &moved).unwrap();
+
+        assert!(super::binary_at("memory", &root).is_none());
+
+        let lock = super::load_lock_at(&root).unwrap();
+
+        let error = super::inspect_update(&root, "memory", &lock.plugins["memory"])
+            .err()
+            .unwrap()
+            .to_string();
+
+        assert!(error.contains("Local plugin source"));
+        assert!(!super::preview_updates_at(&root, false).unwrap());
+
+        install(&moved);
+
+        let binary = super::binary_at("memory", &root).unwrap();
+        let lock = super::load_lock_at(&root).unwrap();
+
+        assert_eq!(
+            lock.plugins["memory"].source,
+            moved.canonicalize().unwrap().display().to_string()
+        );
+
+        assert!(lock.plugins["memory"].linked);
+        assert_eq!(super::load_config_text(&root).unwrap(), config);
+        assert!(super::verify_plugin_integrity(&root, "memory", &binary).is_ok());
+        assert!(!super::preview_updates_at(&root, false).unwrap());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -29369,7 +29670,7 @@ fn main() {
                 protocol: Protocol { major: 0, minor: 1 },
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },
@@ -29388,7 +29689,7 @@ fn main() {
                 protocol: Protocol { major: 0, minor: 1 },
                 capabilities: vec!["memory".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },

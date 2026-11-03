@@ -100,9 +100,11 @@ async fn request(
     host: &str,
     stream: bool,
 ) -> krabb_core::Result<Option<Response>> {
+    let key = credential();
+    let host = validate_host(host, key.is_some())?;
     let mut post = client.post(format!("{host}/api/chat"));
 
-    if let Some(key) = credential() {
+    if let Some(key) = key {
         post = post.bearer_auth(key);
     }
 
@@ -183,6 +185,7 @@ where
     let mut text = String::new();
     let mut pending = String::new();
     let mut emitted = 0_usize;
+    let mut complete = false;
     let mut tools = BTreeMap::<usize, ToolDelta>::new();
     let mut stop = "stop".to_string();
     let mut input_tokens = None;
@@ -220,6 +223,7 @@ where
                         &mut input_tokens,
                         &mut output_tokens,
                     )? {
+                        complete = true;
                         buffered.clear();
                         break 'stream;
                     }
@@ -237,7 +241,7 @@ where
     }
 
     if !buffered.is_empty() {
-        ollama_line(
+        complete = ollama_line(
             &buffered,
             &mut text,
             &mut pending,
@@ -246,6 +250,12 @@ where
             &mut input_tokens,
             &mut output_tokens,
         )?;
+    }
+
+    if !complete {
+        return Err(krabb_core::Error::Denied(
+            "Ollama stream ended before its completion marker.".into(),
+        ));
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;
@@ -377,6 +387,24 @@ async fn emit(
     Ok(())
 }
 
+fn validate_host(host: &str, authenticated: bool) -> krabb_core::Result<String> {
+    let url = reqwest::Url::parse(host)
+        .map_err(|_| krabb_core::Error::Denied("Ollama host is invalid.".into()))?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || authenticated && url.scheme() != "https" && !local
+    {
+        return Err(krabb_core::Error::Denied("Ollama credentials require HTTPS outside loopback; embedded credentials, query, and fragment are not allowed.".into()));
+    }
+
+    Ok(url.as_str().trim_end_matches('/').into())
+}
+
 fn credential() -> Option<String> {
     std::env::var("KRABB_OLLAMA_API_KEY")
         .ok()
@@ -413,10 +441,12 @@ async fn stream_request(
     host: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
+    let key = credential();
+    let host = validate_host(host, key.is_some())?;
     let mut post = client.post(format!("{host}/api/chat"));
     let messages = messages(&input)?;
 
-    if let Some(key) = credential() {
+    if let Some(key) = key {
         post = post.bearer_auth(key);
     }
 
@@ -451,16 +481,33 @@ fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<serde_json::Value>> 
 
             let mut text = Vec::new();
             let mut images = Vec::new();
+            let mut calls = Vec::new();
 
             for content in &message.content {
                 match content {
                     Content::Text { text: value } => text.push(value.clone()),
                     Content::Image { uri, .. } => images.push(image_data(uri)?),
+                    Content::ToolCall { name, args, .. }
+                        if message.role == krabb_core::types::Role::Assistant =>
+                    {
+                        calls.push(json!({"function": {"name": name, "arguments": args}}));
+                    }
+
                     content => text.push(content.render()),
                 }
             }
 
             let mut value = json!({"role": role, "content": text.join("\n")});
+
+            if !calls.is_empty() {
+                value["tool_calls"] = json!(calls);
+            }
+
+            if message.role == krabb_core::types::Role::Tool
+                && let Some(name) = &message.sender
+            {
+                value["tool_name"] = json!(name);
+            }
 
             if !images.is_empty() {
                 value["images"] = json!(images);
@@ -865,3 +912,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/hardening.rs"]
+mod hardening;

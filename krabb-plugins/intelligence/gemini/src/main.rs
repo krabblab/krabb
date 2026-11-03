@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+use krabb_core::plugin::Emitter;
+
+mod streaming;
+
 use krabb_core::types::{Content, Event, ModelReply, ModelRequest, Request, Response, Role};
 #[cfg(not(test))]
 use krabb_core::{
@@ -39,9 +43,9 @@ async fn plugin_main() -> krabb_core::Result<()> {
             capabilities: vec![Capability::Model, Capability::Vision],
             commands: Vec::new(),
         },
-        move |request, _emitter| {
+        move |request, mut emitter| {
             let client = client.clone();
-            async move { generate(&client, request).await }
+            async move { generate(&client, request, &mut emitter).await }
         },
     )
     .await
@@ -50,6 +54,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 async fn generate(
     client: &reqwest::Client,
     request: Request,
+    emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
     let (id, method, params) = match request {
         Request::Call { id, method, params, .. } => (id, method, params),
@@ -72,7 +77,13 @@ async fn generate(
     let base = std::env::var("KRABB_GEMINI_BASE_URL")
         .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/v1beta".into());
 
-    generate_configured(client, id, input, &key, &base).await
+    let base = validate_base(&base)?;
+
+    if input.stream {
+        streaming::generate(client, id, &input, &key, &base, emitter).await
+    } else {
+        generate_configured(client, id, input, &key, &base).await
+    }
 }
 
 async fn generate_configured(
@@ -82,18 +93,39 @@ async fn generate_configured(
     key: &str,
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
-    let base_url = reqwest::Url::parse(base)
+    let base = validate_base(base)?;
+
+    generate_at(client, id, input, key, &base).await
+}
+
+fn validate_base(base: &str) -> krabb_core::Result<String> {
+    let url = reqwest::Url::parse(base)
         .map_err(|_| krabb_core::Error::Denied("Gemini base URL is invalid.".into()))?;
 
-    if base_url.scheme() != "https"
-        && !matches!(base_url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+
+    if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
     {
-        return Err(krabb_core::Error::Denied(
-            "Gemini base URL must use HTTPS outside loopback.".into(),
-        ));
+        return Err(krabb_core::Error::Denied("Gemini base URL requires HTTPS outside loopback and no embedded credentials, query, or fragment.".into()));
     }
 
-    generate_at(client, id, input, key, base_url.as_str()).await
+    Ok(url.as_str().trim_end_matches('/').into())
+}
+
+fn model_name(input: &ModelRequest) -> krabb_core::Result<String> {
+    let model = effective_model(input);
+
+    if model.is_empty()
+        || !model.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+    {
+        return Err(krabb_core::Error::Denied("Gemini model name is invalid.".into()));
+    }
+
+    Ok(model)
 }
 
 async fn generate_at(
@@ -103,11 +135,11 @@ async fn generate_at(
     key: &str,
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
-    let model = effective_model(&input);
+    let model = model_name(&input)?;
 
     let response = client
         .post(format!("{}/models/{}:generateContent", base.trim_end_matches('/'), model))
-        .query(&[("key", key.to_owned())])
+        .header("x-goog-api-key", key)
         .json(&request_body(&input)?)
         .send()
         .await
@@ -128,20 +160,10 @@ async fn generate_at(
         )));
     }
 
-    let (text, events) = parse_reply(&value);
-    let stop = if events.is_empty() { "stop" } else { "tool" };
+    let mut reply = streaming::Reply::default();
 
-    Ok(Some(Response::ok(
-        id,
-        serde_json::to_value(ModelReply {
-            text,
-            stop: stop.into(),
-            input: None,
-            output: None,
-            context_usage: None,
-            events,
-        })?,
-    )))
+    reply.absorb(&value)?;
+    streaming::response(id, reply.finish(false)?)
 }
 
 async fn collect_response(mut response: reqwest::Response) -> krabb_core::Result<Vec<u8>> {
@@ -160,30 +182,6 @@ async fn collect_response(mut response: reqwest::Response) -> krabb_core::Result
     }
 
     Ok(body)
-}
-
-fn parse_reply(value: &Value) -> (String, Vec<Event>) {
-    let mut text = String::new();
-    let mut events = Vec::new();
-
-    for part in value["candidates"][0]["content"]["parts"].as_array().into_iter().flatten() {
-        if let Some(value) = part["text"].as_str() {
-            text.push_str(value);
-        }
-
-        if let Some(call) = part.get("functionCall")
-            && let Some(name) = call["name"].as_str()
-        {
-            events.push(Event::Tool {
-                name: name.into(),
-                args: call["args"].clone(),
-                id: call["id"].as_str().map(str::to_owned),
-                thought_signature: part["thoughtSignature"].as_str().map(str::to_owned),
-            });
-        }
-    }
-
-    (text, events)
 }
 
 fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {

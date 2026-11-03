@@ -510,9 +510,33 @@ async fn rejects_notes_and_unknown_calls_before_credentials() {
 
     let note = Request::Note { jsonrpc: "2.0".into(), method: "note".into(), params: json!({}) };
 
-    assert!(generate(&client, note).await.unwrap().is_none());
-    assert!(generate(&client, Request::call(1, "other", json!({}))).await.unwrap().is_none());
-    assert!(generate(&client, Request::call(1, "generate", json!("bad"))).await.is_err());
+    assert!(
+        generate(&client, note, &mut Emitter::new(tokio::sync::mpsc::channel(256).0))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    assert!(
+        generate(
+            &client,
+            Request::call(1, "other", json!({})),
+            &mut Emitter::new(tokio::sync::mpsc::channel(256).0)
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+
+    assert!(
+        generate(
+            &client,
+            Request::call(1, "generate", json!("bad")),
+            &mut Emitter::new(tokio::sync::mpsc::channel(256).0)
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -551,7 +575,11 @@ fn parses_text_and_function_calls() {
         ]}}]
     });
 
-    let (text, events) = parse_reply(&value);
+    let mut reply = streaming::Reply::default();
+
+    reply.absorb(&value).unwrap();
+
+    let ModelReply { text, events, .. } = reply.finish(false).unwrap();
 
     assert_eq!(text, "I will read it.");
     assert_eq!(events.len(), 1);
@@ -566,14 +594,14 @@ fn parses_text_and_function_calls() {
         }
     );
 
-    assert_eq!(parse_reply(&json!({})), (String::new(), Vec::new()));
+    assert!(streaming::Reply::default().finish(false).is_err());
 
-    assert_eq!(
-        parse_reply(&json!({"candidates": [{"content": {"parts": [
-            {"functionCall": {"args": {}}},
-            {}
-        ]}}]})),
-        (String::new(), Vec::new())
+    assert!(
+        streaming::Reply::default()
+            .absorb(&json!({"candidates": [{"content": {"parts": [
+                {"functionCall": {"args": {}}}
+            ]}}]}))
+            .is_err()
     );
 }
 
@@ -636,7 +664,7 @@ async fn uses_the_default_model_and_parses_tool_replies() {
         assert!(
             std::str::from_utf8(&request[..length])
                 .unwrap()
-                .contains("POST /models/gemini-3.8-flash:generateContent?key=key HTTP/1.1")
+                .contains("POST /models/gemini-3.8-flash:generateContent HTTP/1.1")
         );
 
         let body = br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"README.md"}}}]}}]}"#;
@@ -822,3 +850,6 @@ fn tool_results_preserve_pixels_with_current_and_legacy_calls() {
         }
     }
 }
+
+#[path = "tests/streaming.rs"]
+mod hardening;

@@ -15,3 +15,13 @@ channel boundary, and bounded downloads are stored under `KRABB_MEDIA`. Set
 `KRABB_SLACK_CHANNELS` to a comma-separated list of channel IDs. Inbound
 events and the per-channel history cursor are stored under `KRABB_HOME` and
 are removed only after the host acknowledges them.
+
+Use `krabb slack setup` for hidden credential entry and encrypted storage.
+Setup saves declared secrets; it does not register accounts, grant external app
+permissions, or configure channel authorization. Environment values override
+stored credentials. See [authentication](../../../krabb-docs/authentication.md#plugin-setup)
+and [deployment validation](../../../krabb-docs/providers.md#deployment-validation).
+
+Media storage reserves space before writing: 64 MiB, 256 files, and a 24-hour
+cache lifetime. Failed cleanup rejects the download instead of silently
+exceeding the limits; protected session images are preserved.

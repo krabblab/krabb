@@ -289,13 +289,18 @@ async fn generate_on(
     let config = server.call("config/read", json!({"includeLayers": false, "cwd": root})).await?;
     let mcp_servers = disabled_mcp(&config)?;
 
+    let model = match input.model.trim() {
+        "" | "unset" | "default" => None,
+        model => Some(model),
+    };
+
     let thread = server
         .call(
             "thread/start",
             json!({
                 "cwd": root.clone(),
                 "runtimeWorkspaceRoots": [root.clone()],
-                "model": input.model,
+                "model": model,
                 "ephemeral": true,
                 "approvalPolicy": "on-request",
                 "sandbox": "read-only",
@@ -328,7 +333,7 @@ async fn generate_on(
             "turn/start",
             json!({
                 "threadId": thread_id,
-                "model": input.model,
+                "model": model,
                 "input": input_items,
                 "approvalPolicy": "on-request",
                 "sandboxPolicy": {"type": "readOnly", "networkAccess": false},
@@ -1813,12 +1818,16 @@ done
         let (output, mut events) = mpsc::channel(8);
         let mut session = super::Session::new(binary.as_os_str().to_owned(), None);
 
-        for id in [9, 10] {
+        let models = ["codex-model", "unset", "default", "", "  "];
+
+        for (index, model) in models.iter().enumerate() {
+            let id = index as u64 + 9;
+
             let response = session
                 .generate(
                     id,
                     ModelRequest {
-                        model: "codex-model".into(),
+                        model: (*model).into(),
                         workspace: Some(root.display().to_string()),
                         messages: vec![Message {
                             id: "user".into(),
@@ -1871,7 +1880,7 @@ done
                 .unwrap()
                 .lines()
                 .count(),
-            2
+            models.len()
         );
 
         assert!(
@@ -1901,8 +1910,17 @@ done
         let reads: Vec<_> =
             requests.iter().filter(|request| request["method"] == "config/read").collect();
 
-        assert_eq!(reads.len(), 2);
+        assert_eq!(reads.len(), models.len());
         assert!(reads.iter().all(|request| request["params"]["cwd"] == root.display().to_string()));
+
+        for method in ["thread/start", "turn/start"] {
+            let starts: Vec<_> =
+                requests.iter().filter(|request| request["method"] == method).collect();
+
+            assert_eq!(starts.len(), models.len());
+            assert_eq!(starts[0]["params"]["model"], "codex-model");
+            assert!(starts[1..].iter().all(|request| request["params"]["model"].is_null()));
+        }
 
         assert_eq!(events.try_recv().unwrap()["params"]["event"]["text"], "Hello");
 

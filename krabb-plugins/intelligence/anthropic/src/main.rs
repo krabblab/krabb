@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod history;
+use history::messages;
+
 use krabb_core::{
     plugin::{Emitter, serve_events_concurrent},
     types::{
@@ -88,6 +91,24 @@ async fn generate_at(
     }
 }
 
+fn validate_base(base: &str) -> krabb_core::Result<String> {
+    let url = reqwest::Url::parse(base)
+        .map_err(|_| krabb_core::Error::Denied("Anthropic base URL is invalid.".into()))?;
+
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+
+    if !(url.scheme() == "https" || url.scheme() == "http" && local)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(krabb_core::Error::Denied("Anthropic base URL requires HTTPS outside loopback and no embedded credentials, query, or fragment.".into()));
+    }
+
+    Ok(url.as_str().trim_end_matches('/').into())
+}
+
 fn key(primary: Option<&str>) -> krabb_core::Result<String> {
     [primary]
         .into_iter()
@@ -144,6 +165,8 @@ async fn stream_request(
     base: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
+    let base = validate_base(base)?;
+
     let (system, messages) = messages(&input)?;
 
     let response = client
@@ -176,6 +199,7 @@ async fn request(
     base: &str,
     stream: bool,
 ) -> krabb_core::Result<Option<Response>> {
+    let base = validate_base(base)?;
     let (system, messages) = messages(&input)?;
 
     let response = client
@@ -238,6 +262,7 @@ where
 
 #[derive(Default)]
 struct ToolDelta {
+    id: Option<String>,
     name: String,
     arguments: String,
     input: serde_json::Value,
@@ -258,6 +283,7 @@ where
     let mut text = String::new();
     let mut pending = String::new();
     let mut emitted = 0_usize;
+    let mut complete = false;
     let mut tools = BTreeMap::<usize, ToolDelta>::new();
     let mut stop = "end_turn".to_string();
     let mut ticker = tokio::time::interval(Duration::from_millis(80));
@@ -285,6 +311,7 @@ where
                     let line = buffered.drain(..=end).collect::<Vec<_>>();
 
                     if anthropic_line(&line, &mut text, &mut pending, &mut tools, &mut stop)? {
+                        complete = true;
                         buffered.clear();
                         break 'stream;
                     }
@@ -302,7 +329,13 @@ where
     }
 
     if !buffered.is_empty() {
-        anthropic_line(&buffered, &mut text, &mut pending, &mut tools, &mut stop)?;
+        complete = anthropic_line(&buffered, &mut text, &mut pending, &mut tools, &mut stop)?;
+    }
+
+    if !complete {
+        return Err(krabb_core::Error::Denied(
+            "Anthropic stream ended before its completion marker.".into(),
+        ));
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;
@@ -326,7 +359,7 @@ where
                 })?
             };
 
-            Ok(Event::Tool { name: tool.name, args, id: None, thought_signature: None })
+            Ok(Event::Tool { name: tool.name, args, id: tool.id, thought_signature: None })
         })
         .collect::<krabb_core::Result<Vec<_>>>()?;
 
@@ -375,6 +408,7 @@ fn anthropic_line(
                 let tool = tools.entry(index).or_default();
                 tool.name = value["content_block"]["name"].as_str().unwrap_or_default().into();
                 tool.input = value["content_block"]["input"].clone();
+                tool.id = value["content_block"]["id"].as_str().map(str::to_owned);
             }
         }
 
@@ -443,72 +477,6 @@ async fn emit(
 
     pending.clear();
     Ok(())
-}
-
-fn messages(input: &ModelRequest) -> krabb_core::Result<(String, Vec<serde_json::Value>)> {
-    let mut system = Vec::new();
-    let mut messages = Vec::new();
-
-    for message in &input.messages {
-        let mut blocks = Vec::new();
-
-        for content in &message.content {
-            match content {
-                Content::Text { text } => blocks.push(json!({"type": "text", "text": text})),
-
-                Content::Image { uri, alt } if message.role != krabb_core::types::Role::System => {
-                    blocks.push(image_block(uri)?);
-
-                    if let Some(alt) = alt {
-                        blocks.push(json!({"type": "text", "text": alt}));
-                    }
-                }
-
-                Content::Image { alt, .. } => blocks.push(json!({
-                    "type": "text",
-                    "text": alt.as_deref().unwrap_or("[Image attachment.]"),
-                })),
-
-                content => blocks.push(json!({"type": "text", "text": content.render()})),
-            }
-        }
-
-        let has_image = blocks.iter().any(|block| block["type"] == "image");
-        let text =
-            blocks.iter().filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join("\n");
-
-        match message.role {
-            krabb_core::types::Role::System => system.push(text),
-            krabb_core::types::Role::User => messages.push(json!({
-                "role": "user",
-                "content": if has_image { json!(blocks) } else { json!(text) }
-            })),
-
-            krabb_core::types::Role::Assistant => messages.push(json!({
-                "role": "assistant",
-                "content": if has_image { json!(blocks) } else { json!(text) }
-            })),
-
-            krabb_core::types::Role::Tool => {
-                let prefix = format!(
-                    "[Tool result{}]",
-                    message.sender.as_deref().map_or(String::new(), |name| format!(" from {name}"))
-                );
-
-                let content = if has_image {
-                    let mut tool_blocks = vec![json!({"type": "text", "text": prefix})];
-                    tool_blocks.extend(blocks);
-                    json!(tool_blocks)
-                } else {
-                    json!(format!("{prefix}\n{text}"))
-                };
-
-                messages.push(json!({"role": "user", "content": content}));
-            }
-        }
-    }
-
-    Ok((system.join("\n"), messages))
 }
 
 fn image_block(uri: &str) -> krabb_core::Result<serde_json::Value> {
@@ -734,7 +702,7 @@ mod tests {
             "delta": {"type": "text_delta", "text": text}
         });
 
-        let body = format!("data: {delta}\n").repeat(300);
+        let body = format!("data: {delta}\n").repeat(300) + "data: {\"type\":\"message_stop\"}\n";
 
         let chunks =
             futures_util::stream::iter(vec![Ok::<_, std::io::Error>(body.as_bytes().to_vec())]);
@@ -1010,6 +978,7 @@ mod tests {
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n",
             "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Ready.\"}}\n",
             "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n",
+            "data: {\"type\":\"message_stop\"}\n",
         );
 
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(body.as_bytes().to_vec())]);
@@ -1029,3 +998,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/hardening.rs"]
+mod hardening;

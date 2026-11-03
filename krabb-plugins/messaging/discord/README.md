@@ -25,3 +25,13 @@ session image directory is preserved. The plugin
 supports attachment uploads, but the current daemon sends generated replies as
 text. Direct messages work by default; guild channels and threads require the
 daemon channel allowlist.
+
+Use `krabb discord setup` for hidden credential entry and encrypted storage.
+Setup saves declared secrets; it does not register accounts, grant external app
+permissions, or configure channel authorization. Environment values override
+stored credentials. See [authentication](../../../krabb-docs/authentication.md#plugin-setup)
+and [deployment validation](../../../krabb-docs/providers.md#deployment-validation).
+
+A missing heartbeat acknowledgement closes the Gateway connection so the next
+poll reconnects. A nonresumable session rejection clears the old session before
+identifying again. Gateway connection establishment has a ten-second deadline.

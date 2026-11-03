@@ -13,6 +13,8 @@ krabb status [--json]
 krabb version [--json]
 krabb completion <bash|fish|powershell|zsh>
 krabb plugin list [<page>] [--json]
+krabb plugin setup <id> [--no-activate] [--json]
+krabb <id> setup [--no-activate] [--json]
 krabb plugin install <id>... [--source <path-or-url>] [--revision <rev>] [--link] [-y|--yes] [--json]
 krabb plugin update [-y|--yes] [--json]
 krabb plugin uninstall <id>... [-y|--yes] [--force] [--json]
@@ -63,8 +65,9 @@ krabb <plugin-command> [arguments...]
   `memory`, `tui`, and `data` need their respective plugins. These commands
   expose a Krabb-managed capability and appear in help when usable; an
   underlying plugin may implement the capability.
-- **Plugin commands** are declared by a plugin and delegated to it. They appear
-  under Plugin Commands when installed, for example `codex`.
+- **Plugin commands** include plugin-declared commands such as `codex` and setup
+  shortcuts such as `telegram` and `anthropic`. They appear under Plugin Commands
+  when installed. Krabb handles secret setup; custom commands run in the plugin.
 - `krabb service` prints service help; use `krabb service status` for its
   current state. `krabb --version` and `krabb version` are equivalent.
 
@@ -73,6 +76,15 @@ if no model is ready. SQLite's `data` command is a first-party conditional
 command: runtime exposes it when SQLite is installed and routes its data
 operations to the plugin. The agent-facing data tool uses the same conditional
 capability.
+
+Installed plugins that declare secrets expose the host-owned `setup` subcommand:
+`krabb telegram setup`, `krabb anthropic setup`, and `krabb codex setup` all use
+the same secure prompt and credential-file workflow. Existing plugin commands,
+such as `krabb codex login`, keep their provider-specific behavior. The generic
+`krabb plugin setup <id>` command also works when the plugin ID cannot be exposed
+as a shortcut. Setup requires a terminal and accepts no token argument or piped
+secret. See [Plugin Setup](authentication.md#plugin-setup) for storage, activation,
+and service behavior.
 
 Command discovery waits up to five seconds for concurrent metadata access. If the
 metadata remains locked or cannot be read, the command exits with an error;
@@ -188,7 +200,9 @@ for local development builds. Installation validates each manifest and stages
 files before activation; a running daemon loads new plugins over local IPC.
 Interactive install, update, and import operations show an in-place spinner.
 Plugin results use one-line tree entries; failed installs and updates point to
-the current application log file.
+the current application log file. Update previews also show the failure reason.
+`plugin list` distinguishes present and missing binaries and shows credential
+setup commands. Binary presence does not mean a plugin is authenticated or active.
 
 `plugin update` previews changes, then replaces changed plugins after
 confirmation. Uninstall accepts multiple plugin IDs and confirms the batch once;

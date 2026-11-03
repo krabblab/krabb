@@ -9,6 +9,7 @@ vendor-specific fields inside the plugin process.
 - [Models](#models)
 - [Channels](#channels)
 - [Platform Setup](#platform-setup)
+- [Deployment Validation](#deployment-validation)
 - [Selection](#selection)
 - [Other Capabilities](#other-capabilities)
 - [Agent Interoperability](#agent-interoperability)
@@ -19,10 +20,10 @@ vendor-specific fields inside the plugin process.
 | --- | --- | --- |
 | `codex` | OpenAI-compatible chat completions or Codex app-server | `KRABB_CODEX_KEY` or Codex-managed sign-in; optional `KRABB_CODEX_BASE_URL` |
 | `openai` | OpenAI API | `KRABB_OPENAI_KEY`; optional `KRABB_OPENAI_MODEL` and `KRABB_OPENAI_BASE_URL` |
-| `anthropic` | Anthropic Messages | `KRABB_ANTHROPIC_KEY` or credential JSON; optional `KRABB_ANTHROPIC_BASE_URL` |
-| `gemini` | Gemini Developer API | `KRABB_GEMINI_KEY` or credential JSON |
-| `ollama` | Ollama local or cloud API | `KRABB_OLLAMA_HOST`, `KRABB_OLLAMA_API_KEY`, or credential JSON |
-| `openrouter` | OpenAI-compatible routed models | `KRABB_OPENROUTER_KEY`, `KRABB_OPENROUTER_MODEL`, or credential JSON |
+| `anthropic` | Anthropic Messages | `KRABB_ANTHROPIC_KEY` or encrypted credentials; optional `KRABB_ANTHROPIC_BASE_URL` |
+| `gemini` | Gemini Developer API | `KRABB_GEMINI_KEY` or encrypted credentials |
+| `ollama` | Ollama local or cloud API | `KRABB_OLLAMA_HOST`, `KRABB_OLLAMA_API_KEY`, or encrypted credentials |
+| `openrouter` | OpenAI-compatible routed models | `KRABB_OPENROUTER_KEY`, `KRABB_OPENROUTER_MODEL`, or encrypted credentials |
 
 The OpenAI API plugin is independent from Codex and uses OpenAI API credentials.
 Codex preserves the Codex app-server integration and optional compatible API
@@ -80,7 +81,8 @@ authorized; that decision belongs to the daemon policy.
 
 Create the provider account or application before installing its plugin:
 
-- Telegram: create a bot with BotFather and set its bot token.
+- Telegram: create a bot with BotFather, install the plugin, and run
+  `krabb telegram setup` to enter its bot token without echoing it.
 - Discord: create a bot application, enable the message content intent, invite
   it to the server, and set its token.
 - WhatsApp: create a Meta Cloud API application, configure the phone number,
@@ -92,6 +94,56 @@ Create the provider account or application before installing its plugin:
 Use the environment names in the channel table or the protected credentials
 file. Keep group channels out of the allowlist until sender and workspace
 policy have been reviewed.
+
+All plugins declaring secrets support `krabb plugin setup <id>` and, when their
+command namespace is available, `krabb <id> setup`. This includes intelligence
+plugins: `krabb codex setup` configures an API key, while `krabb codex login`
+continues to perform personal account sign-in. See
+[Plugin Setup](authentication.md#plugin-setup) for activation and service details.
+
+## Deployment Validation
+
+Setup configures credentials; a successful setup or handshake does not prove
+that an external account, model, or messaging app is ready. Local fixture tests
+cover protocol behavior and failure recovery. Record real installation results
+separately in [Compatibility](../COMPATIBILITY.md).
+
+Before enabling an integration for regular use:
+
+1. Install the plugin, run `krabb <id> setup`, and configure the model or channel
+   explicitly. Use `krabb doctor` to inspect local health. Confirm the account's
+   model access, app permissions, and channel allowlist.
+2. With a test account, complete a text turn, a two-step tool turn, and an image
+   turn when the selected model supports images. Check that repeated calls to
+   the same tool receive their own results and that streaming reaches completion.
+3. For a channel, verify receive/reply, long messages, thread routing, and permitted
+   media. Try an unauthorized sender and confirm no agent turn is started.
+4. Restart the daemon with an inbound event awaiting acknowledgement. Check
+   recovery and delivery state. Disconnect and reconnect the integration; ensure
+   it resumes without replaying a mutating tool or losing accepted messages.
+5. Run it under representative load and monitor errors, latency, memory, disk,
+   and queue depth. Record the model/service version, platform, duration, load,
+   and outcome; choose acceptance limits appropriate to the deployment.
+
+Automated tests use synthetic credentials and loopback HTTP/WebSocket or process
+fixtures. They never contact live providers. Live acceptance is an operator-run
+step and may incur provider charges. A passing local suite is not a live-service
+or cross-platform production certification.
+
+All five non-Codex model adapters retain structured tool history. Gemini now
+streams SSE responses as well; blocked or empty responses are errors. Streaming
+adapters reject premature connection closure instead of returning partial tool
+calls as a successful generation. Native tool history uses the existing protocol;
+legacy text-only history remains readable without inventing provider call IDs
+for old text markers.
+If a previous turn ended without recording a tool result, the next request marks
+its execution status as unknown. It does not replay the tool or report success.
+
+The daemon currently sends generated Discord and WhatsApp replies as text even
+though their adapters support media uploads. Signal requires an independently
+installed and registered `signal-cli`; Slack needs its external app configured;
+WhatsApp needs a public HTTPS webhook proxy. These are deployment prerequisites,
+not actions performed by `setup`.
 
 ## Selection
 

@@ -18,7 +18,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use tokio::{fs, net::TcpStream, sync::Mutex};
@@ -614,7 +614,7 @@ async fn api_at(
         )));
     }
 
-    if value["ok"] != true {
+    if !status.is_success() || value["ok"] != true {
         return Err(krabb_core::Error::Denied(
             value["error"].as_str().unwrap_or("Slack rejected the request.").into(),
         ));
@@ -1217,7 +1217,7 @@ async fn media_at(
     attachment: &Attachment,
     root: &Path,
 ) -> krabb_core::Result<Value> {
-    cleanup_media(root);
+    cleanup_media(root)?;
     fs::create_dir_all(root).await?;
     let name = safe_name(&attachment.name).unwrap_or_else(|| "attachment.bin".into());
     let path = root.join(format!("slack-{uri}-{name}"));
@@ -1253,11 +1253,13 @@ async fn media_at(
         bytes.extend_from_slice(&chunk);
     }
 
+    reserve_media(root, bytes.len() as u64)?;
+
     krabb_file::save(&path, bytes).map_err(|error| {
         krabb_core::Error::Denied(format!("Slack media storage failed: {error}."))
     })?;
 
-    cleanup_media(root);
+    cleanup_media(root)?;
     Ok(json!({"uri": format!("file://{}", path.display()), "mime": attachment.mime}))
 }
 
@@ -1266,49 +1268,21 @@ fn cached_media(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= MEDIA_LIMIT as u64)
 }
 
-fn cleanup_media(root: &Path) {
-    cleanup_media_with_limits(root, MEDIA_CACHE_LIMIT, MEDIA_CACHE_FILES);
+fn cleanup_media(root: &Path) -> krabb_core::Result<()> {
+    cleanup_media_with_limits(root, MEDIA_CACHE_LIMIT, MEDIA_CACHE_FILES)
 }
 
-fn cleanup_media_with_limits(root: &Path, limit: u64, file_limit: usize) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
+fn cleanup_media_with_limits(root: &Path, limit: u64, file_limit: usize) -> krabb_core::Result<()> {
+    krabb_file::trim(root, limit, file_limit, MEDIA_TTL)
+        .map_err(|_| krabb_core::Error::Denied("Slack media cache is unavailable.".into()))
+}
 
-    let cutoff = SystemTime::now().checked_sub(MEDIA_TTL).unwrap_or(SystemTime::UNIX_EPOCH);
-    let mut files = Vec::new();
-
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|value| value.is_file()) {
-            continue;
-        }
-
-        let Ok(metadata) = entry.metadata() else { continue };
-
-        if metadata.modified().is_ok_and(|value| value < cutoff) {
-            let _ = std::fs::remove_file(entry.path());
-            continue;
-        }
-
-        let Ok(modified) = metadata.modified() else { continue };
-
-        files.push((entry.path(), modified, metadata.len()));
-    }
-
-    files.sort_by_key(|(_, modified, _)| *modified);
-    let mut total = files.iter().map(|(_, _, size)| *size).sum::<u64>();
-    let mut count = files.len();
-
-    for (path, _, size) in files {
-        if total <= limit && count <= file_limit {
-            break;
-        }
-
-        if std::fs::remove_file(path).is_ok() {
-            total = total.saturating_sub(size);
-            count = count.saturating_sub(1);
-        }
-    }
+fn reserve_media(root: &Path, incoming: u64) -> krabb_core::Result<()> {
+    cleanup_media_with_limits(
+        root,
+        MEDIA_CACHE_LIMIT.saturating_sub(incoming),
+        MEDIA_CACHE_FILES - 1,
+    )
 }
 
 fn allowed_url(value: &str) -> bool {
@@ -1398,6 +1372,7 @@ async fn send_at(
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
     mod persistence;
 
     mod logging;
@@ -1523,7 +1498,7 @@ mod tests {
         let modified = SystemTime::now().checked_sub(MEDIA_TTL + Duration::from_secs(1)).unwrap();
         set_modified(&expired, modified);
 
-        cleanup_media(&root);
+        cleanup_media(&root).unwrap();
 
         assert!(!expired.exists());
         assert!(current.exists());
@@ -1548,12 +1523,12 @@ mod tests {
         set_modified(&current, now - Duration::from_secs(2));
         set_modified(&newest, now - Duration::from_secs(1));
 
-        cleanup_media_with_limits(&root, 5, 10);
+        cleanup_media_with_limits(&root, 5, 10).unwrap();
 
         assert!(!oldest.exists());
         assert!(current.exists());
         assert!(newest.exists());
-        cleanup_media_with_limits(&root, u64::MAX, 1);
+        cleanup_media_with_limits(&root, u64::MAX, 1).unwrap();
 
         assert!(!current.exists());
         assert!(newest.exists());
@@ -2303,4 +2278,66 @@ mod tests {
             .is_empty()
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn media_cache_reserves_space_and_fails_closed() {
+    krabb_test::cache::check(reserve_media);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn unsuccessful_http_status_cannot_acknowledge_delivery() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback required");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+
+        loop {
+            let mut chunk = [0; 1024];
+            let count = socket.read(&mut chunk).await.unwrap();
+
+            assert!(count > 0, "Request ended before its body");
+            request.extend_from_slice(&chunk[..count]);
+
+            assert!(request.len() <= 16 * 1024);
+
+            if let Some(end) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+
+        let body = r#"{"ok":true,"ts":"7"}"#;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 500 Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client =
+        reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
+    let error = send_at(&client, "fixture", &json!({"chat": "C1", "text": "fixture"}), &base)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("Slack rejected the request."));
+    server.await.unwrap();
 }

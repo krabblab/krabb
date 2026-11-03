@@ -7,6 +7,7 @@ use another language if they implement the JSON-RPC 2.0 protocol.
 ## Table Of Contents
 
 - [Manifest](#manifest)
+- [Credentials And Sign-In](#credentials-and-sign-in)
 - [Requests](#requests)
 - [Authoring](#authoring)
 - [Create A Custom Plugin](#create-a-custom-plugin)
@@ -54,6 +55,28 @@ fragment; remote archives require HTTPS. Krabb rejects embedded URL
 credentials, unsafe archive paths, and archive symbolic links. Release archives
 place plugin executables in `bin/` beside their manifest.
 
+## Credentials And Sign-In
+
+For simple tokens and API keys, list their environment-variable names in the
+manifest's `secrets` array. Krabb supplies `krabb plugin setup <id>` and
+`krabb <id> setup` automatically: no setup handler or credential storage code is
+needed in your plugin. The host prompts and saves before starting the plugin,
+then passes only its declared secrets into its environment. Every declared
+secret is prompted for, including optional ones.
+
+For a custom sign-in flow, declare a command named after your plugin and implement
+a subcommand such as `login`. Krabb delegates it to the plugin, as with
+`krabb codex login`. The plugin must be able to start without credentials to offer
+that flow. `setup` never redirects to `login`: a plugin may support both API-key
+setup and account sign-in.
+
+The host reserves `<id> setup` for secret configuration when secrets are declared.
+Other subcommands remain yours. Plugins without secrets get no generated setup
+shortcut; use `krabb plugin setup <id>` when an ID conflicts with another command.
+Document which route users should choose, any non-secret settings they need,
+and whether activation starts network activity. See
+[Plugin Setup](authentication.md#plugin-setup) for the user-facing behavior.
+
 ## Requests
 
 Model plugins that accept images declare the `vision` capability in both their
@@ -100,6 +123,11 @@ than by vendor wire formats. A model plugin implements `generate`; a channel
 plugin implements `poll`, `send`, and acknowledgement methods; a tool plugin
 implements only the operations it declares. Media-capable channels may expose
 `media` to resolve a normalized external reference into a bounded private file.
+Channels may implement `typing` with the same chat/channel and thread routing
+fields as `send`, without text or a delivery ID, and return `true` on success.
+The host refreshes it while waiting for the first streamed reply. Unsupported
+methods, failures, and a two-second timeout disable this hint for the current
+turn; they never fail or replay the turn.
 Do not add a direct dependency from one plugin to another.
 
 ### Tool Discovery And Results
@@ -233,6 +261,18 @@ Rebuilding and running the command again picks up local changes. `krabb plugin u
 repeats the process for locked entries and keeps installed files in place until
 each staged replacement passes validation.
 
+Linked plugins depend on the checkout staying at the same path. If you move it,
+build in the new checkout and run `krabb plugin install codex tui --link --yes`
+from its root, substituting the IDs you linked. This refreshes both executable
+links and recorded sources without resetting configuration or credentials.
+Running `make` installs the CLI and daemon; it does not relocate existing plugins.
+
+`plugin list` reports binary presence, not authentication or running health, and
+shows the credential setup command where available. Its JSON `health` field
+retains `ready`/`missing` for binary presence. Use `krabb doctor` for health checks.
+Update checks report unavailable local sources directly; restore the source or
+reinstall from its new location before updating.
+
 After `install` commits the plugin and lock entry, the CLI asks a
 running daemon to start it through authenticated local IPC. The plugin becomes
 available without restarting the daemon or reinstalling the core. When no
@@ -252,9 +292,11 @@ range, bump its version and update its README and release matrix. Keep explicit
 Git revisions pinned for reproducible deployments. Never place credentials in
 the manifest, source URL, archive name, or diagnostic output.
 
-Provider and channel plugins prefer their dedicated environment variables and
-fall back to secrets in the JSON file at `KRABB_CREDENTIALS`. Keep that file
-outside version control with owner-only permissions.
+The host honors dedicated environment variables first, then decrypts stored
+credentials using the keyring or the configured key file. Plugins receive only
+their declared secret values in their process environment; they do not need to
+implement encryption or access the master key. Keep credential and key files
+outside version control. See [credential storage](authentication.md#provider-credentials).
 
 The MCP plugin exposes bounded `stdio` and Streamable HTTP bridges. Stdio
 requests require an explicit `approved: true` flag because they start an

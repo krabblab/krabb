@@ -165,6 +165,7 @@ async fn handle(
 
     let response = match request.method.as_str() {
         "plugin.load" => load(&request, &state).await,
+        "plugin.setup" => setup(&request, &state).await,
         "plugin.unload" => unload(&request, &state).await,
         "plugin.uninstall" => uninstall(&request, &state).await,
         "plugin.active" => active(&request, &state).await,
@@ -1483,13 +1484,41 @@ async fn cancel(request: &IpcRequest, state: &State) -> IpcResponse {
     IpcResponse::ok(request.id, json!({"id": id, "status": "cancelled"}))
 }
 
+async fn setup(request: &IpcRequest, state: &State) -> IpcResponse {
+    let (Some(id), Some(path)) =
+        (request.params["id"].as_str(), request.params["credentials"].as_str())
+    else {
+        return IpcResponse::fail(
+            request.id,
+            -32602,
+            "Plugin ID and credential path are required.",
+        );
+    };
+
+    if let Err(error) = super::setup::activation(
+        &state.home,
+        id,
+        std::path::Path::new(path),
+        &state.channel,
+        &state.model,
+    ) {
+        return IpcResponse::fail(request.id, -32000, error.to_string());
+    }
+
+    load(request, state).await
+}
+
 async fn load(request: &IpcRequest, state: &State) -> IpcResponse {
     let Some(id) = request.params["id"].as_str() else {
         return IpcResponse::fail(request.id, -32602, "plugin.load.id is required.");
     };
 
     let capability = if id == state.channel {
-        if !super::ready(id) {
+        if !super::ready_at(
+            id,
+            Some(&super::setup::path(&state.home)),
+            &super::credentials::key_path(&state.home),
+        ) {
             return IpcResponse::fail(request.id, -32000, "Channel credentials are not ready.");
         }
 
@@ -4128,7 +4157,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["channel".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -4262,7 +4291,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["tool".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -4288,6 +4317,48 @@ for line in sys.stdin:
         let response = active(&request, &state).await;
 
         assert_eq!(response.result.unwrap()["items"], json!(["tools"]));
+
+        let request = IpcRequest::call(2, "secret", "plugin.setup", json!({"id": "tools"}));
+
+        assert_eq!(super::setup(&request, &state).await.error.unwrap().code, -32602);
+
+        let credentials = home.join("credentials.json");
+
+        crate::save_file(&credentials, br#"{"KRABB_SETUP_TEST":"synthetic"}"#).unwrap();
+
+        let request = IpcRequest::call(
+            2,
+            "secret",
+            "plugin.setup",
+            json!({"id": "tools", "credentials": home.join("different.json")}),
+        );
+
+        assert!(super::setup(&request, &state).await.error.is_some());
+
+        let mut manifest = crate::read_manifest_checked(&plugin).unwrap();
+
+        manifest.variables = vec!["KRABB_SETUP_TEST".into()];
+        std::fs::write(plugin.join("krabb-plugin.toml"), toml::to_string(&manifest).unwrap())
+            .unwrap();
+        let mut lock = crate::load_lock_at(&home).unwrap();
+
+        let entry = lock.plugins.get_mut("tools").unwrap();
+
+        entry.variables = manifest.variables;
+        entry.hash = crate::digest(&plugin.join("krabb-plugin.toml"), &binary).unwrap();
+        crate::save_lock_at(&home, &lock).unwrap();
+
+        let request = IpcRequest::call(
+            2,
+            "secret",
+            "plugin.setup",
+            json!({"id": "tools", "credentials": credentials.canonicalize().unwrap()}),
+        );
+
+        let response = super::setup(&request, &state).await;
+
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.result.unwrap()["loaded"], true);
 
         let request = IpcRequest::call(2, "secret", "plugin.unload", json!({"id": "tools"}));
         let response = unload(&request, &state).await;
@@ -4340,7 +4411,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -5614,7 +5685,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };

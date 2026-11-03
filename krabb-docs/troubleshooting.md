@@ -38,6 +38,11 @@ messages, verify the chat ID, mention filter, topic or thread filter, and the
 sender role. A channel may poll successfully while policy intentionally drops
 an unauthorized event.
 
+If the bot replies “I could not complete that turn,” delivery is working; check
+the daemon log for the model failure. Codex personal sign-in uses its configured
+default when no model is selected. Explicit provider rejections end the turn
+without automatic replay; correct the model or account settings before retrying.
+
 ## Tools Are Unavailable
 
 The default tool workspace is `KRABB_HOME/workspace`; set `KRABB_ROOT` to
