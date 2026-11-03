@@ -18,3 +18,16 @@ features requested by the turn.
 `KRABB_OPENROUTER_BASE_URL` is available for HTTPS-compatible gateways and
 loopback test fixtures. `KRABB_OPENROUTER_REFERER` and
 `KRABB_OPENROUTER_TITLE` optionally provide OpenRouter attribution headers.
+
+Run `krabb openrouter setup` to store credentials with hidden input and encrypted
+storage. Environment values override stored credentials; see
+[authentication](../../../krabb-docs/authentication.md#plugin-setup).
+
+Structured tool calls and their results retain the provider's native format
+across turns. Interrupted streams without the provider's completion marker
+fail the generation; partial tool calls are not returned for execution.
+Base URLs must use HTTPS outside loopback and cannot contain user credentials,
+a query, or a fragment. Select a model available to your account explicitly.
+
+See [deployment validation](../../../krabb-docs/providers.md#deployment-validation)
+before relying on this adapter in production.

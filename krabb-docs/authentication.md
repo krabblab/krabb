@@ -6,25 +6,84 @@ its provider and whether a channel sender can use a capability.
 ## Table Of Contents
 
 - [Provider Credentials](#provider-credentials)
+- [Plugin Setup](#plugin-setup)
 - [Codex Compatibility](#codex-compatibility)
 - [Channel Trust](#channel-trust)
 - [Service Credentials](#service-credentials)
 
 ## Provider Credentials
 
-Plugins prefer their declared environment variables. The host can also pass a
-secret from the JSON file named by `KRABB_CREDENTIALS`:
+Use `krabb <id> setup` for persistent credentials. Nonempty plugin environment
+variables, such as `KRABB_TELEGRAM_TOKEN`, always override stored values.
 
-```json
-{
-  "KRABB_CODEX_KEY": "...",
-  "KRABB_TELEGRAM_TOKEN": "..."
-}
-```
+Krabb encrypts credentials in `credentials.json` under its home directory
+(usually `~/.config/krabb`). A new store gets a cryptographically random 256-bit
+key. By default, the OS keyring holds that key when available. Otherwise Krabb
+creates a separate, protected `credentials.key` file. No passphrase needs to be
+invented, typed, or saved in shell history.
 
-Keep the file outside version control with owner-only permissions. Set
-`KRABB_KEYRING=1` to use the operating-system keyring. Credential values are
-never written to manifests, logs, session transcripts, or plugin lock entries.
+| Setting | Effect |
+| --- | --- |
+| `KRABB_CREDENTIALS` | Choose a different encrypted credentials file. |
+| `KRABB_CREDENTIALS_KEY` | Choose a different fallback key file; default: `credentials.key` in Krabb's home. |
+| `KRABB_KEYRING=auto` (default) | Prefer the keyring for a new store; otherwise use the protected key file. |
+| `KRABB_KEYRING=1` | Require keyring storage during setup or service credential capture. |
+| `KRABB_KEYRING=0` | Use a protected key file during setup or service credential capture. |
+
+An existing store remembers where its key lives. Temporary keyring failures
+do not silently switch credentials. Running setup with an explicit `0` or `1`
+can move a readable store to that key backend. The daemon must be able to access
+the same keyring or key file. On a headless server without a usable keyring,
+the encrypted file works without an interactive unlock after a restart.
+
+Keep both files private and outside version control. Back up the fallback key
+securely: losing it makes the encrypted credentials unrecoverable. Moving only
+the credentials file does not move its key. Encryption protects a copied
+credentials file, but someone who obtains both files—or controls the running
+account—can still recover the secrets. Place the key separately when useful;
+Krabb does not claim protection against a complete host compromise.
+
+Legacy protected plaintext JSON files remain readable for compatibility. The
+next setup migrates their contents to encryption and preserves unrelated keys.
+Old key files and keyring entries are retained for other stores and backups.
+Credential values are never written to manifests, logs, transcripts, or plugin locks.
+
+## Plugin Setup
+
+Use `setup` for a token or API key you already have. Use the plugin's own command
+for an interactive account sign-in:
+
+| You want to… | Run after installing the plugin | What happens |
+| --- | --- | --- |
+| Enter a Telegram bot token | `krabb telegram setup` | Krabb prompts and saves it securely. |
+| Enter an Anthropic API key | `krabb anthropic setup` | The same secure setup workflow. |
+| Enter a Codex API key | `krabb codex setup` | Krabb stores the API key. |
+| Sign in to a personal Codex account | `krabb codex login` | The plugin runs its account sign-in flow. |
+
+`krabb plugin setup <id>` is the full form of `krabb <id> setup`. Both configure
+the plugin's declared secrets; neither invokes custom login flows. Plugins
+without declared secrets do not gain a setup shortcut. See
+[the plugin author guide](plugins.md#credentials-and-sign-in) when creating a plugin.
+
+Setup works before the plugin is active. It prompts for every declared secret,
+including optional ones, without echoing input. A terminal is required, even
+with `--json`; tokens cannot be arguments or piped input. Escape or Ctrl-C cancels
+without saving. Empty, multiline, and oversized values are rejected.
+
+Setup replaces the entered secrets and preserves others using locked, crash-safe
+encrypted writes. Its output identifies whether the encryption key is in the
+keyring or a file. Unusable files, missing keys, and decryption errors are rejected.
+
+Setup then asks the running daemon to load or reload the plugin. Use
+`--no-activate` to save only. If activation stays pending, start or restart the
+runtime with the same credential file and access to its key, no overriding secret
+environment variables, and the desired channel/model selected. Older daemons need a restart. Run
+`krabb doctor` for readiness checks. JSON results report `saved` and `active`
+separately; a successful save does not guarantee activation.
+
+For Telegram, create a token with BotFather first. Setup does not check it with
+Telegram; activation starts normal channel operation. Configure a working model
+and review channel policy before testing messages.
 
 ## Codex Compatibility
 
@@ -63,7 +122,18 @@ workspace.
 
 ## Service Credentials
 
-`krabb service install` materializes declared provider variables into a
-protected service credential file and references it from the native service
-definition. Inspect the generated definition with `krabb service status` and
+`krabb service install` materializes declared provider variables into an
+encrypted service credential file using the same keyring preference as setup.
+The service definition records the credential path and custom fallback key path.
+Use `KRABB_KEYRING=0` when the service account cannot access a keyring. Inspect the
+generated definition with `krabb service status` and
 uninstall it with `krabb service uninstall -y` when rotating credentials.
+Service installation also recognizes an existing default credentials file.
+For an already installed service with its own credential file, point
+`KRABB_CREDENTIALS` at that file when running setup; changing another file will
+not rotate the service's credentials. Remove overriding secret variables from
+the service environment and restart it when needed.
+For a custom fallback key location, set `KRABB_CREDENTIALS_KEY` during installation
+and setup. A service running under a different account may not be able to access
+your login keyring; configure its credential store under the service account or
+use the encrypted-file backend. Do not assume a desktop login unlocks a system service.

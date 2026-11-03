@@ -12,6 +12,7 @@ publish = false
 base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
+crossterm.workspace = true
 krabb-process = { path = "../krabb-libs/process" }
 krabb-log.workspace = true
 krabb-core = { path = "../krabb-core" }

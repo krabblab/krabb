@@ -23,3 +23,13 @@ Inbound text, images, voice messages, and text files are normalized. The plugin
 can send all four content types, while the current daemon response path sends
 generated replies as text. Verified webhook events are stored under
 `KRABB_HOME` until the host acknowledges them.
+
+Use `krabb whatsapp setup` for hidden credential entry and encrypted storage.
+Setup saves declared secrets; it does not register accounts, grant external app
+permissions, or configure channel authorization. Environment values override
+stored credentials. See [authentication](../../../krabb-docs/authentication.md#plugin-setup)
+and [deployment validation](../../../krabb-docs/providers.md#deployment-validation).
+
+Media storage reserves space before writing: 64 MiB, 256 files, and a 24-hour
+cache lifetime. Failed cleanup rejects the download instead of silently
+exceeding the limits; protected session images are preserved.

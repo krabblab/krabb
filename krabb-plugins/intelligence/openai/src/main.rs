@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod history;
+use history::messages;
+
 use krabb_core::{
     plugin::{Emitter, serve_events_concurrent},
     types::{
@@ -91,9 +94,14 @@ fn validate_base_url(value: &str) -> krabb_core::Result<String> {
     let url = reqwest::Url::parse(value)
         .map_err(|_| krabb_core::Error::Denied("OpenAI base URL is invalid.".into()))?;
 
-    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
 
-    if url.scheme() != "https" && !local {
+    if !(url.scheme() == "https" || url.scheme() == "http" && local)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return Err(krabb_core::Error::Denied(
             "OpenAI base URL must use HTTPS outside loopback.".into(),
         ));
@@ -184,36 +192,6 @@ where
     Ok(bytes)
 }
 
-fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
-    input.messages.iter().map(|message| {
-        let role = match message.role { Role::System => "system", Role::User => "user", Role::Assistant => "assistant", Role::Tool => "user" };
-        let mut parts = Vec::new();
-
-        if message.role == Role::Tool {
-            parts.push(json!({"type":"text","text":"[Tool result]"}));
-        }
-
-        for item in &message.content {
-            match item {
-                Content::Text { text } => parts.push(json!({"type":"text","text":text})),
-
-                Content::Image { uri, .. } if message.role != Role::System => {
-                    parts.push(json!({"type":"image_url","image_url":{"url":image(uri)?}}));
-                }
-
-                Content::Image { alt, .. } => parts.push(json!({"type":"text","text":alt.as_deref().unwrap_or("[Image attachment.]")})),
-                item => parts.push(json!({"type":"text","text":item.render()})),
-            }
-        }
-
-        let content = if parts.iter().all(|part| part["type"] == "text") {
-            Value::String(parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n"))
-        } else { Value::Array(parts) };
-
-        Ok(json!({"role":role,"content":content}))
-    }).collect()
-}
-
 fn image(uri: &str) -> krabb_core::Result<&str> {
     if uri.starts_with("https://") || uri.starts_with("data:image/") {
         Ok(uri)
@@ -253,9 +231,10 @@ where
 
     let mut text = String::new();
     let mut pending = String::new();
-    let mut calls = BTreeMap::<usize, (String, String)>::new();
+    let mut calls = BTreeMap::<usize, (String, String, String)>::new();
     let mut bytes: usize = 0;
     let mut emitted = 0;
+    let mut complete = false;
 
     'stream: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
@@ -276,6 +255,7 @@ where
             let line = buffer.drain(..=end).collect::<Vec<_>>();
 
             if stream_line(&line, &mut text, &mut pending, &mut calls)? {
+                complete = true;
                 buffer.clear();
                 break 'stream;
             }
@@ -287,18 +267,39 @@ where
     }
 
     if !buffer.is_empty() {
-        stream_line(&buffer, &mut text, &mut pending, &mut calls)?;
+        complete = stream_line(&buffer, &mut text, &mut pending, &mut calls)?;
+    }
+
+    if !complete {
+        return Err(krabb_core::Error::Denied(
+            "OpenAI stream ended before its completion marker.".into(),
+        ));
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;
     let events = calls
         .into_values()
-        .map(|(name, args)| {
+        .map(|(name, args, call_id)| {
             let args = if args.is_empty() { json!({}) } else { serde_json::from_str(&args)? };
 
-            Ok(Event::Tool { name, args, id: None, thought_signature: None })
+            if name.is_empty() || !args.is_object() {
+                return Err(krabb_core::Error::Denied(
+                    "OpenAI returned an invalid tool call.".into(),
+                ));
+            }
+
+            Ok(Event::Tool {
+                name,
+                args,
+                id: (!call_id.is_empty()).then_some(call_id),
+                thought_signature: None,
+            })
         })
         .collect::<krabb_core::Result<Vec<_>>>()?;
+
+    if text.is_empty() && events.is_empty() {
+        return Err(krabb_core::Error::Denied("OpenAI stream contained no text or tools.".into()));
+    }
 
     response(
         id,
@@ -317,7 +318,7 @@ fn stream_line(
     line: &[u8],
     text: &mut String,
     pending: &mut String,
-    calls: &mut BTreeMap<usize, (String, String)>,
+    calls: &mut BTreeMap<usize, (String, String, String)>,
 ) -> krabb_core::Result<bool> {
     let line = std::str::from_utf8(line)
         .map_err(|_| krabb_core::Error::Denied("OpenAI stream was not UTF-8.".into()))?;
@@ -331,6 +332,11 @@ fn stream_line(
     }
 
     let value: Value = serde_json::from_str(data)?;
+
+    if value.get("error").is_some() {
+        return Err(krabb_core::Error::Denied("OpenAI stream returned an error event.".into()));
+    }
+
     let delta = &value["choices"][0]["delta"];
 
     if let Some(value) = delta["content"].as_str() {
@@ -348,7 +354,12 @@ fn stream_line(
                     krabb_core::Error::Denied("OpenAI stream exceeded the tool-call limit.".into())
                 })?;
 
-            let entry = calls.entry(index).or_insert_with(|| (String::new(), String::new()));
+            let entry =
+                calls.entry(index).or_insert_with(|| (String::new(), String::new(), String::new()));
+
+            if let Some(id) = value["id"].as_str() {
+                entry.2.push_str(id);
+            }
 
             if let Some(value) = value["function"]["name"].as_str() {
                 entry.0.push_str(value);
@@ -395,22 +406,30 @@ fn response_body(
         .ok_or_else(|| krabb_core::Error::Denied("OpenAI response contained no choices.".into()))?;
 
     let text = choice["message"]["content"].as_str().unwrap_or_default().to_owned();
-    let events: Vec<Event> = choice["message"]["tool_calls"]
-        .as_array()
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| {
-                    let name = value["function"]["name"].as_str()?.to_owned();
-                    let args = value["function"]["arguments"]
-                        .as_str()
-                        .and_then(|value| serde_json::from_str(value).ok())
-                        .unwrap_or_else(|| value["function"]["arguments"].clone());
-                    Some(Event::Tool { name, args, id: None, thought_signature: None })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut events = Vec::new();
+
+    for value in choice["message"]["tool_calls"].as_array().into_iter().flatten() {
+        let name = value["function"]["name"].as_str().filter(|name| !name.is_empty()).ok_or_else(
+            || krabb_core::Error::Denied("OpenAI returned a tool call without a name.".into()),
+        )?;
+        let args = match value["function"]["arguments"].as_str() {
+            Some(args) => serde_json::from_str(args)?,
+            None => value["function"]["arguments"].clone(),
+        };
+
+        if !args.is_object() || events.len() >= TOOL_CALLS {
+            return Err(krabb_core::Error::Denied(
+                "OpenAI returned invalid or too many tool calls.".into(),
+            ));
+        }
+
+        events.push(Event::Tool {
+            name: name.into(),
+            args,
+            id: value["id"].as_str().map(str::to_owned),
+            thought_signature: None,
+        });
+    }
 
     if text.is_empty() && events.is_empty() {
         return Err(krabb_core::Error::Denied(
@@ -715,15 +734,12 @@ mod tests {
         assert_eq!(response.result.as_ref().unwrap()["events"][0]["name"], "read");
         assert!(response_body(1, reqwest::StatusCode::UNAUTHORIZED, json!({})).is_err());
         assert!(response_body(1, reqwest::StatusCode::OK, json!({})).is_err());
-        let fallback = response_body(
+        assert!(response_body(
             1,
             reqwest::StatusCode::OK,
             json!({"choices":[{"message":{"tool_calls":[{"function":{"name":"read","arguments":"not-json"}}]}}]}),
-        )
-        .unwrap()
-        .unwrap();
+        ).is_err());
 
-        assert_eq!(fallback.result.unwrap()["events"][0]["args"], "not-json");
         assert!(
             response_body(1, reqwest::StatusCode::OK, json!({"choices":[{"message":{}}]})).is_err()
         );
@@ -758,7 +774,9 @@ mod tests {
         let (output, _) = tokio::sync::mpsc::channel(1);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
         let incomplete = stream::iter(vec![Ok::<_, std::io::Error>(
-            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}"#.to_vec(),
+            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}
+data: [DONE]
+"#.to_vec(),
         )]);
 
         assert!(stream_body(3, incomplete, &mut emitter).await.is_err());
@@ -769,8 +787,11 @@ mod tests {
         for (fragment, count) in [("x".to_owned(), 600), ("x".repeat(128), 300)] {
             let line = format!("data: {}\n", json!({"choices":[{"delta":{"content":fragment}}]}));
 
-            let chunks =
-                stream::iter((0..count).map(|_| Ok::<_, std::io::Error>(line.as_bytes().to_vec())));
+            let chunks = stream::iter(
+                (0..count)
+                    .map(|_| Ok::<_, std::io::Error>(line.as_bytes().to_vec()))
+                    .chain(std::iter::once(Ok(b"data: [DONE]\n".to_vec()))),
+            );
 
             let (output, mut events) = tokio::sync::mpsc::channel(256);
             let mut emitter = krabb_core::plugin::Emitter::new(output);
@@ -865,7 +886,9 @@ mod tests {
         let (output, _) = tokio::sync::mpsc::channel(4);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(
-            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":"{\"path\":\"x\"}"}}]}}]}"#.to_vec(),
+            br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":"{\"path\":\"x\"}"}}]}}]}
+data: [DONE]
+"#.to_vec(),
         )]);
         let response = stream_body(3, chunks, &mut emitter).await.unwrap().unwrap();
 
@@ -1014,3 +1037,7 @@ mod tests {
         assert!(credential().is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "tests/hardening.rs"]
+mod hardening;

@@ -17,3 +17,16 @@ bounded to 64 MiB and 256 files. Oldest files are evicted before storage, and cl
 failures reject storage; protected session images are preserved. Local attachment files
 are confined there before they are
 sent. Outgoing replies use the standard Krabb delivery contract.
+
+Use `krabb signal setup` for hidden credential entry and encrypted storage.
+Setup saves declared secrets; it does not register accounts, grant external app
+permissions, or configure channel authorization. Environment values override
+stored credentials. See [authentication](../../../krabb-docs/authentication.md#plugin-setup)
+and [deployment validation](../../../krabb-docs/providers.md#deployment-validation).
+
+The adapter uses the global `--output json` option for receive, as specified by
+the [signal-cli manual](https://github.com/AsamK/signal-cli/blob/master/man/signal-cli.1.adoc).
+Direct recipients are separated from options with `--`, including when sending
+attachments. Invalid recipients, oversized text, and more than eight content items
+are rejected before starting the process. Failed commands report an exit code;
+raw stderr is not forwarded into Krabb messages or logs.

@@ -312,9 +312,10 @@ async fn run_with(command: &str, args: &[String]) -> krabb_core::Result<Value> {
     }
 
     if !output.status.success() {
-        return Err(krabb_core::Error::Denied(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
+        return Err(krabb_core::Error::Denied(format!(
+            "signal-cli exited unsuccessfully (code {:?}).",
+            output.status.code()
+        )));
     }
 
     let text = String::from_utf8(output.stdout)
@@ -536,8 +537,9 @@ fn receive_args(account: &str, prefix: &[String]) -> Vec<String> {
     args.extend([
         "-a".into(),
         account.into(),
+        "--output".into(),
+        "json".into(),
         "receive".into(),
-        "--json".into(),
         "--ignore-attachments".into(),
         "--max-messages".into(),
         RECEIVE_LIMIT.to_string(),
@@ -662,9 +664,10 @@ async fn receive_to_spool(
     if !output.status.success() {
         let _ = fs::remove_file(&temporary);
 
-        return Err(krabb_core::Error::Denied(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
+        return Err(krabb_core::Error::Denied(format!(
+            "signal-cli exited unsuccessfully (code {:?}).",
+            output.status.code()
+        )));
     }
 
     let metadata = fs::metadata(&temporary).map_err(|error| {
@@ -788,9 +791,10 @@ async fn run_jsonl_with(command: &str, args: &[String]) -> krabb_core::Result<Ve
     }
 
     if !output.status.success() {
-        return Err(krabb_core::Error::Denied(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
+        return Err(krabb_core::Error::Denied(format!(
+            "signal-cli exited unsuccessfully (code {:?}).",
+            output.status.code()
+        )));
     }
 
     let text = String::from_utf8(output.stdout)
@@ -945,12 +949,27 @@ async fn send_with(
         .as_str()
         .ok_or_else(|| krabb_core::Error::Denied("Signal send requires text.".into()))?;
 
+    if chat.is_empty()
+        || chat.len() > 256
+        || chat.starts_with('-')
+        || chat.chars().any(char::is_control)
+        || text.len() > 256 * 1024
+    {
+        return Err(krabb_core::Error::Denied("Signal recipient or message is invalid.".into()));
+    }
+
     let mut args = prefix.to_vec();
 
     args.extend(["-a".into(), account.into(), "send".into(), "-m".into(), text.into()]);
 
     if let Some(values) = params["content"].as_array() {
-        for value in values.iter().take(8) {
+        if values.len() > 8 {
+            return Err(krabb_core::Error::Denied(
+                "Signal attachment count exceeded the limit.".into(),
+            ));
+        }
+
+        for value in values {
             let Some(uri) = value["uri"].as_str() else { continue };
 
             let path = local_media(uri)?;
@@ -962,7 +981,7 @@ async fn send_with(
     if params["private"] == false {
         args.extend(["--group-id".into(), chat.into()]);
     } else {
-        args.push(chat.into());
+        args.extend(["--".into(), chat.into()]);
     }
 
     run_with(command, &args).await
@@ -1073,9 +1092,10 @@ async fn get_attachment(
     }
 
     if !output.status.success() {
-        return Err(krabb_core::Error::Denied(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
+        return Err(krabb_core::Error::Denied(format!(
+            "signal-cli exited unsuccessfully (code {:?}).",
+            output.status.code()
+        )));
     }
 
     let text = String::from_utf8(output.stdout)
@@ -1282,8 +1302,9 @@ mod tests {
             vec![
                 "-a",
                 "+1000",
+                "--output",
+                "json",
                 "receive",
-                "--json",
                 "--ignore-attachments",
                 "--max-messages",
                 "32"
@@ -1689,4 +1710,31 @@ mod tests {
         let _ = std::fs::remove_file(outside);
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn rejects_invalid_delivery_before_spawning_a_process() {
+    for params in [
+        json!({"chat": "--note-to-self", "text": "hello"}),
+        json!({"chat": "", "text": "hello"}),
+        json!({"chat": "+1000", "text": "x".repeat(256 * 1024 + 1)}),
+        json!({"chat": "+1000", "text": "hello", "content": vec![json!({"uri": "file:///fixture"}); 9]}),
+    ] {
+        let error = send_with("+1000", &params, "/nonexistent/fixture", &[]).await.unwrap_err();
+
+        assert!(!error.to_string().contains("No such file"));
+    }
+}
+
+#[cfg(all(test, unix))]
+#[tokio::test]
+async fn external_process_errors_do_not_disclose_stderr() {
+    let error = run_with("sh", &["-c".into(), "printf 'private fixture text' >&2; exit 3".into()])
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("code Some(3)"));
+    assert!(!error.contains("private fixture text"));
 }

@@ -17,7 +17,6 @@ use std::{
     net::IpAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::SystemTime,
 };
 
 use tokio::{
@@ -911,7 +910,7 @@ async fn graph(app: &App, url: &str, token: &str, body: Value) -> krabb_core::Re
         krabb_core::Error::Denied(format!("WhatsApp response failed: {error}."))
     })?;
 
-    if !status.is_success() {
+    if !status.is_success() || body.get("error").is_some() {
         return Err(krabb_core::Error::Denied("WhatsApp rejected the request.".into()));
     }
 
@@ -945,7 +944,7 @@ async fn media_at(
     root: &std::path::Path,
     allow: fn(&str) -> bool,
 ) -> krabb_core::Result<Value> {
-    cleanup_media(root);
+    cleanup_media(root)?;
 
     let lookup = app.client.get(format!("{base}/{id}")).bearer_auth(token).send().await.map_err(
         |error| krabb_core::Error::Denied(format!("WhatsApp media lookup failed: {error}.")),
@@ -982,60 +981,32 @@ async fn media_at(
 
     let path = root.join(format!("{id}.bin"));
 
+    reserve_media(root, bytes.len() as u64)?;
+
     krabb_file::save(&path, bytes).map_err(|error| {
         krabb_core::Error::Denied(format!("WhatsApp media storage failed: {error}."))
     })?;
 
-    cleanup_media(root);
+    cleanup_media(root)?;
 
     Ok(json!({"uri":format!("file://{}", path.display())}))
 }
 
-fn cleanup_media(root: &Path) {
-    cleanup_media_with_limits(root, MEDIA_CACHE_LIMIT, MEDIA_CACHE_FILES);
+fn cleanup_media(root: &Path) -> krabb_core::Result<()> {
+    cleanup_media_with_limits(root, MEDIA_CACHE_LIMIT, MEDIA_CACHE_FILES)
 }
 
-fn cleanup_media_with_limits(root: &Path, limit: u64, file_limit: usize) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
+fn cleanup_media_with_limits(root: &Path, limit: u64, file_limit: usize) -> krabb_core::Result<()> {
+    krabb_file::trim(root, limit, file_limit, MEDIA_TTL)
+        .map_err(|_| krabb_core::Error::Denied("Whatsapp media cache is unavailable.".into()))
+}
 
-    let cutoff = SystemTime::now().checked_sub(MEDIA_TTL).unwrap_or(SystemTime::UNIX_EPOCH);
-    let mut files = Vec::new();
-
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|value| value.is_file()) {
-            continue;
-        }
-
-        let Ok(metadata) = entry.metadata() else { continue };
-
-        if metadata.modified().is_ok_and(|value| value < cutoff) {
-            let _ = fs::remove_file(entry.path());
-
-            continue;
-        }
-
-        let Ok(modified) = metadata.modified() else { continue };
-
-        files.push((entry.path(), modified, metadata.len()));
-    }
-
-    files.sort_by_key(|(_, modified, _)| *modified);
-
-    let mut total = files.iter().map(|(_, _, size)| *size).sum::<u64>();
-    let mut count = files.len();
-
-    for (path, _, size) in files {
-        if total <= limit && count <= file_limit {
-            break;
-        }
-
-        if fs::remove_file(path).is_ok() {
-            total = total.saturating_sub(size);
-            count = count.saturating_sub(1);
-        }
-    }
+fn reserve_media(root: &Path, incoming: u64) -> krabb_core::Result<()> {
+    cleanup_media_with_limits(
+        root,
+        MEDIA_CACHE_LIMIT.saturating_sub(incoming),
+        MEDIA_CACHE_FILES - 1,
+    )
 }
 
 async fn collect<S, C>(mut stream: S, limit: usize, label: &str) -> krabb_core::Result<Vec<u8>>
@@ -1123,16 +1094,20 @@ fn phone() -> krabb_core::Result<String> {
 
 fn graph_url() -> krabb_core::Result<String> {
     let value = env("KRABB_WHATSAPP_GRAPH_URL")?;
+
     validate_graph_url(&value)
 }
 
 fn validate_graph_url(value: &str) -> krabb_core::Result<String> {
     let url = reqwest::Url::parse(value)
         .map_err(|_| krabb_core::Error::Denied("KRABB_WHATSAPP_GRAPH_URL is invalid.".into()))?;
+
     let host = url.host_str().ok_or_else(|| {
         krabb_core::Error::Denied("KRABB_WHATSAPP_GRAPH_URL must include a host.".into())
     })?;
+
     let host = host.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(host);
+
     let loopback =
         host == "localhost" || host.parse::<IpAddr>().is_ok_and(|address| address.is_loopback());
 
@@ -1222,6 +1197,7 @@ mod tests {
     #[test]
     fn normalizes_supported_messages() {
         let value = json!({"entry":[{"changes":[{"value":{"messages":[{"id":"m1","from":"1","type":"text","text":{"body":"hello"}},{"id":"m2","from":"1","type":"audio","audio":{"id":"a1","mime_type":"audio/ogg"}},{"id":"m3","from":"1","type":"image","image":{"id":"i1","caption":"diagram"}},{"id":"m4","from":"1","type":"document","document":{"id":"d1","filename":"note.txt","mime_type":"text/plain","caption":"note"}}]}}]}]});
+
         let events = normalize(&value);
 
         assert_eq!(events.len(), 4);
@@ -1282,6 +1258,7 @@ mod tests {
         assert!(
             challenge_with("GET /hook?hub.mode=subscribe&hub.verify_token=bad", "secret").is_err()
         );
+
         let body = b"payload";
         let key = hmac::Key::new(hmac::HMAC_SHA256, b"secret");
         let signature = format!("sha256={}", super::hex(hmac::sign(&key, body).as_ref()));
@@ -1337,6 +1314,7 @@ mod tests {
     fn stages_message_ids_idempotently_before_capacity_checks() {
         let mut inbox =
             Inbox::with_events((0..QUEUE_LIMIT).map(|id| json!({"id": format!("message-{id}")})));
+
         inbox.stage([json!({"id": "message-1"})]).unwrap();
 
         assert_eq!(inbox.pending.len(), QUEUE_LIMIT);
@@ -1347,6 +1325,7 @@ mod tests {
     fn retains_message_ids_after_acknowledgement() {
         let mut inbox = Inbox::default();
         let event = json!({"id": "message"});
+
         inbox.stage([event.clone()]).unwrap();
         inbox.acknowledge(1).unwrap();
         inbox.stage([event]).unwrap();
@@ -1359,9 +1338,11 @@ mod tests {
         let small = stream::iter(vec![Ok::<_, reqwest::Error>(b"ok".to_vec())]);
 
         assert_eq!(collect(small, MEDIA_LIMIT, "media").await.unwrap(), b"ok");
+
         let large = stream::iter(vec![Ok::<_, reqwest::Error>(vec![b'x'; MEDIA_LIMIT + 1])]);
 
         assert!(collect(large, MEDIA_LIMIT, "media").await.is_err());
+
         let body = stream::iter(vec![Ok::<_, reqwest::Error>(vec![b'x'; BODY_LIMIT + 1])]);
 
         assert!(collect(body, BODY_LIMIT, "response").await.is_err());
@@ -1371,26 +1352,34 @@ mod tests {
     fn cleans_expired_media_without_touching_pinned() {
         let root =
             std::env::temp_dir().join(format!("krabb-whatsapp-cleanup-{}", std::process::id()));
+
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(root.join("pinned")).unwrap();
+
         let expired = root.join("expired.bin");
         let current = root.join("current.bin");
         let pinned = root.join("pinned").join("image.bin");
+
         fs::write(&expired, b"expired").unwrap();
         fs::write(&current, b"current").unwrap();
         fs::write(&pinned, b"pinned").unwrap();
+
         let modified = SystemTime::now().checked_sub(MEDIA_TTL + Duration::from_secs(1)).unwrap();
+
         fs::File::options()
             .write(true)
             .open(&expired)
             .unwrap()
             .set_times(fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        cleanup_media(&root);
+
+        cleanup_media(&root).unwrap();
 
         assert!(!expired.exists());
         assert!(current.exists());
         assert!(pinned.exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1398,44 +1387,55 @@ mod tests {
     fn bounds_media_cache_without_removing_pinned_files() {
         let root =
             std::env::temp_dir().join(format!("krabb-whatsapp-quota-{}", std::process::id()));
+
         let _ = fs::remove_dir_all(&root);
+
         fs::create_dir_all(root.join("pinned")).unwrap();
+
         let oldest = root.join("oldest.bin");
         let current = root.join("current.bin");
         let newest = root.join("newest.bin");
+
         fs::write(&oldest, b"old").unwrap();
         fs::write(&current, b"now").unwrap();
         fs::write(&newest, b"n").unwrap();
         fs::write(root.join("pinned/image.bin"), vec![b'x'; 100]).unwrap();
+
         let now = SystemTime::now();
+
         fs::File::options()
             .write(true)
             .open(&oldest)
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(now - Duration::from_secs(3)))
             .unwrap();
+
         fs::File::options()
             .write(true)
             .open(&current)
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(now - Duration::from_secs(2)))
             .unwrap();
+
         fs::File::options()
             .write(true)
             .open(&newest)
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(now - Duration::from_secs(1)))
             .unwrap();
-        cleanup_media_with_limits(&root, 5, 10);
+
+        cleanup_media_with_limits(&root, 5, 10).unwrap();
 
         assert!(!oldest.exists());
         assert!(current.exists());
         assert!(newest.exists());
-        cleanup_media_with_limits(&root, u64::MAX, 1);
+
+        cleanup_media_with_limits(&root, u64::MAX, 1).unwrap();
 
         assert!(!current.exists());
         assert!(newest.exists());
         assert!(root.join("pinned/image.bin").exists());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1446,6 +1446,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let app = App {
             client: test_client(),
             queue: std::sync::Arc::new(tokio::sync::Mutex::new(Inbox::default())),
@@ -1455,6 +1456,7 @@ mod tests {
         let key = hmac::Key::new(hmac::HMAC_SHA256, b"secret");
         let signature = format!("sha256={}", super::hex(hmac::sign(&key, body).as_ref()));
         let server_app = app.clone();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             handle_http_with(&mut stream, &server_app, Some("secret"), Some("verify"))
@@ -1463,6 +1465,7 @@ mod tests {
         });
 
         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+
         let request = format!(
             "POST /webhook HTTP/1.1\r\ncontent-length: {}\r\nx-hub-signature-256: {}\r\n\r\n",
             body.len(),
@@ -1481,12 +1484,14 @@ mod tests {
 
         let address = listener.local_addr().unwrap();
         let app = app.clone();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             handle_http_with(&mut stream, &app, Some("secret"), Some("verify")).await
         });
 
         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+
         client.write_all(b"PUT / HTTP/1.1\r\nContent-Length: 0\r\n\r\n").await.unwrap();
 
         assert!(server.await.unwrap().is_err());
@@ -1499,6 +1504,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let app = App {
             client: test_client(),
             queue: std::sync::Arc::new(tokio::sync::Mutex::new(Inbox::default())),
@@ -1510,16 +1516,20 @@ mod tests {
         });
 
         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+
         let request =
             format!("POST /webhook HTTP/1.1\r\nX-Filler: {}\r\n\r\n", "x".repeat(HEADER_LIMIT));
+
         client.write_all(request.as_bytes()).await.unwrap();
 
         assert_eq!(http_error_response(server.await.unwrap().unwrap_err()).0, 400);
+
         let Some(listener) = loopback_listener().await else {
             return;
         };
 
         let address = listener.local_addr().unwrap();
+
         let app = App {
             client: test_client(),
             queue: std::sync::Arc::new(tokio::sync::Mutex::new(Inbox::default())),
@@ -1532,6 +1542,7 @@ mod tests {
 
         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
         let request = format!("POST /webhook HTTP/1.1\r\nContent-Length: {}\r\n\r\n", BODY_LIMIT);
+
         client.write_all(request.as_bytes()).await.unwrap();
 
         assert_eq!(http_error_response(server.await.unwrap().unwrap_err()).0, 400);
@@ -1544,6 +1555,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let app = App {
             client: test_client(),
             queue: std::sync::Arc::new(tokio::sync::Mutex::new(Inbox::with_events(
@@ -1555,19 +1567,23 @@ mod tests {
         let key = hmac::Key::new(hmac::HMAC_SHA256, b"secret");
         let signature = format!("sha256={}", super::hex(hmac::sign(&key, body).as_ref()));
         let server_app = app.clone();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             handle_http_with(&mut stream, &server_app, Some("secret"), Some("verify")).await
         });
 
         let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+
         let request = format!(
             "POST /webhook HTTP/1.1\r\nContent-Length: {}\r\nX-Hub-Signature-256: {}\r\n\r\n",
             body.len(),
             signature
         );
+
         client.write_all(request.as_bytes()).await.unwrap();
         client.write_all(body).await.unwrap();
+
         let response = server.await.unwrap().unwrap_err();
 
         assert_eq!(http_error_response(response).0, 503);
@@ -1593,6 +1609,7 @@ mod tests {
         let mut inbox = Inbox::with_events([json!({"id": "m1"})]);
 
         assert_eq!(inbox.events(1).unwrap()[0]["gateway_sequence"], 1);
+
         inbox.acknowledge(1).unwrap();
         inbox.acknowledge(1).unwrap();
 
@@ -1614,6 +1631,7 @@ mod tests {
         assert!(serde_json::to_vec(&response).unwrap().len() < krabb_core::jsonl::MAX);
         assert_eq!(response.result.unwrap()["events"].as_array().unwrap().len(), 1);
         assert_eq!(app.queue.lock().await.pending.len(), 2);
+
         let app = App {
             client: test_client(),
             queue: std::sync::Arc::new(tokio::sync::Mutex::new(Inbox::with_events([
@@ -1635,6 +1653,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
@@ -1658,6 +1677,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(value["messages"][0]["id"], "1");
+
         server.await.unwrap();
     }
 
@@ -1677,6 +1697,7 @@ mod tests {
     #[test]
     fn rejects_malformed_challenges_and_urls() {
         assert!(challenge_with("GET / HTTP/1.1", "secret").is_err());
+
         assert!(
             challenge_with("GET /?hub.mode=subscribe&hub.verify_token=secret", "secret").is_ok()
         );
@@ -1693,6 +1714,7 @@ mod tests {
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let body = br#"{"error":"nope"}"#;
@@ -1710,6 +1732,7 @@ mod tests {
         };
 
         assert!(graph(&app, &format!("http://{address}"), "token", json!({})).await.is_err());
+
         server.await.unwrap();
     }
 
@@ -1719,14 +1742,19 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-whatsapp-media-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
+
         let path = root.join("note.txt");
+
         std::fs::write(&path, b"note").unwrap();
+
         let Some(listener) = loopback_listener().await else {
             return;
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             for body in
                 [br#"{"id":"media-1"}"#.as_slice(), br#"{"messages":[{"id":"sent"}]}"#.as_slice()]
@@ -1764,7 +1792,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(value["messages"][0]["id"], "sent");
+
         server.await.unwrap();
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1774,6 +1804,7 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-whatsapp-download-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
 
         let Some(graph_listener) = loopback_listener().await else {
@@ -1829,7 +1860,79 @@ mod tests {
         let path = value["uri"].as_str().unwrap().strip_prefix("file://").unwrap();
 
         assert_eq!(std::fs::read(path).unwrap(), b"voice");
+
         server.await.unwrap();
+
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn media_cache_reserves_space_and_fails_closed() {
+    krabb_test::cache::check(reserve_media);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn graph_error_cannot_acknowledge_delivery_on_http_success() {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback required");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+
+        loop {
+            let mut chunk = [0; 1024];
+            let count = socket.read(&mut chunk).await.unwrap();
+
+            assert!(count > 0, "Request ended before its body");
+            request.extend_from_slice(&chunk[..count]);
+
+            assert!(request.len() <= 16 * 1024);
+
+            if let Some(end) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+
+        let body = r#"{"error":{"message":"private upstream detail"}}"#;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let app = App {
+        client: reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap(),
+        queue: Arc::new(Mutex::new(Inbox::default())),
+    };
+
+    let error = graph(&app, &base, "fixture", json!({})).await.unwrap_err().to_string();
+
+    assert!(error.contains("WhatsApp rejected the request."));
+    assert!(!error.contains("private upstream detail"));
+
+    server.await.unwrap();
 }

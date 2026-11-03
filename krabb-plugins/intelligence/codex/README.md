@@ -26,6 +26,9 @@ Discover the available operations with `krabb codex --help`. Use
 `krabb codex logout` to manage sign-in, and `krabb codex models` to list
 account models. In the TUI, `/model help` shows model controls and
 `/model list` lists Codex models; select one with `/model set <id>`.
+With personal ChatGPT sign-in, an unspecified model (including Krabb's `unset`
+placeholder) uses the Codex profile's default. Explicit model IDs are preserved.
+The API-key route still requires an explicit model.
 
 The plugin advertises image-request support during its handshake. The HTTP
 adapter sends inline image inputs using the OpenAI-compatible chat completions

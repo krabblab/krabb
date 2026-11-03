@@ -14,6 +14,25 @@ This guide explains Krabb’s process boundaries, runtime, and plugin protocol.
 
 ## Architecture Style
 
+Plugin secret onboarding is host-owned. `krabb plugin setup <id>` and the
+`krabb <id> setup` shortcuts read installed secret declarations without launching
+the plugin. The host saves protected credentials and requests authenticated
+`plugin.setup` IPC with only the ID and credential path. The daemon checks its
+credential source and provider selection before invoking the existing loader.
+An older daemon rejects the new method, leaving activation pending. Provider
+account flows such as Codex login remain plugin commands; the plugin protocol
+and capability-free core are unchanged.
+
+The runtime encrypts persisted secrets with AES-256-GCM using a CSPRNG-generated
+256-bit key and a fresh 96-bit nonce per write. Versioned envelopes authenticate
+their format, key backend, and key identifier. The OS keyring holds the key when
+available; the fallback key file has restricted permissions and an independent
+path. Existing envelopes pin their key backend. Environment values override
+storage; decryption errors prevent plugin launch rather than becoming missing
+credentials. Service installation captures environment secrets into encrypted
+storage, and plugins receive only their declared values through the existing
+process environment. Neither plugin manifests nor the core protocol change.
+
 Krabb uses a layered, hexagonal host/plugin architecture with a
 microkernel-style core, isolated JSON-RPC plugins, and a client–daemon runtime.
 The Core defines provider-neutral contracts, the Runtime provides host adapters
@@ -162,6 +181,9 @@ into general Krabb requests.
    tool transitions appear as progress updates. Each model step drains buffered deltas and
    emits any missing suffix from its completed text before running tools or returning, so
    earlier tool preambles cannot suppress the final answer.
+   Before streaming begins, optional bounded typing hints provide channel
+   feedback. Explicit model rejections finish the failed turn without replay;
+   transport recovery remains separate.
 5. Tool results and the model reply are persisted with the transcript before
    the channel acknowledgement is committed. Delivery uses a durable outbox
    with stable IDs and explicit `pending`, `sending`, `streaming`, and
