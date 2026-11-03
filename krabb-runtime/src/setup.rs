@@ -83,15 +83,15 @@ fn names(root: &Path, id: &str) -> Result<Vec<String>, Error> {
     let entry = lock.plugins.get(id).ok_or("Install the plugin before running setup.")?;
     let manifest = super::read_manifest_checked(&root.join("plugins").join(id))?;
 
-    if manifest.id != id || manifest.secrets != entry.secrets {
+    if manifest.id != id || manifest.variables != entry.variables {
         return Err("Plugin secrets changed; review and reinstall the plugin before setup.".into());
     }
 
-    if entry.secrets.is_empty() {
+    if entry.variables.is_empty() {
         return Err("This plugin declares no secrets; use its own authentication flow.".into());
     }
 
-    Ok(entry.secrets.clone())
+    Ok(entry.variables.clone())
 }
 
 pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(), Error> {

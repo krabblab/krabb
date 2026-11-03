@@ -2,7 +2,7 @@ use super::*;
 use crossterm::event::{KeyEvent, KeyEventState};
 use std::fs;
 
-fn fixture(id: &str, secrets: &[&str], commands: Vec<krabb_core::types::CommandSpec>) -> PathBuf {
+fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::CommandSpec>) -> PathBuf {
     let root = crate::tests::test_root("setup");
     let plugin = root.join("plugins").join(id);
 
@@ -15,7 +15,7 @@ fn fixture(id: &str, secrets: &[&str], commands: Vec<krabb_core::types::CommandS
         protocol: krabb_core::types::Protocol::CURRENT,
         capabilities: vec!["channel".into()],
         permissions: vec![],
-        secrets: secrets.iter().map(|name| (*name).into()).collect(),
+        variables: variables.iter().map(|name| (*name).into()).collect(),
         commands: commands.clone(),
     };
 
@@ -31,7 +31,7 @@ fn fixture(id: &str, secrets: &[&str], commands: Vec<krabb_core::types::CommandS
         protocol: manifest.protocol,
         capabilities: manifest.capabilities,
         permissions: vec![],
-        secrets: manifest.secrets,
+        variables: manifest.variables,
         linked: false,
         commands,
     };
@@ -203,8 +203,19 @@ fn concurrent_setup_merges_under_a_shared_file_lock() {
 #[test]
 fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
     let root = fixture("telegram", &["KRABB_SETUP_A"], vec![]);
+    let manifest = crate::read_manifest_checked(&root.join("plugins/telegram")).unwrap();
+    let lock = crate::load_lock_at(&root).unwrap();
+
+    for metadata in [
+        serde_json::to_value(&manifest).unwrap(),
+        serde_json::to_value(&lock.plugins["telegram"]).unwrap(),
+    ] {
+        assert_eq!(metadata["secrets"], json!(["KRABB_SETUP_A"]));
+        assert!(metadata.get("variables").is_none());
+    }
 
     assert_eq!(names(&root, "telegram").unwrap(), ["KRABB_SETUP_A"]);
+
     assert!(names(&root, "../escape").is_err());
     assert!(names(&root, "missing").is_err());
 
@@ -250,7 +261,7 @@ fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
 
     let mut lock = crate::load_lock_at(&root).unwrap();
 
-    lock.plugins.get_mut("telegram").unwrap().secrets.clear();
+    lock.plugins.get_mut("telegram").unwrap().variables.clear();
     crate::save_lock_at(&root, &lock).unwrap();
 
     assert!(names(&root, "telegram").unwrap_err().to_string().contains("changed"));

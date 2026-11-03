@@ -379,7 +379,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec![],
             permissions: vec![],
-            secrets: vec![name.into()],
+            variables: vec![name.into()],
             commands: vec![],
         };
 
@@ -402,7 +402,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
         protocol: krabb_core::types::Protocol::CURRENT,
         capabilities: vec![],
         permissions: vec![],
-        secrets: vec!["KRABB_SETUP_TEST".into()],
+        variables: vec!["KRABB_SETUP_TEST".into()],
         commands: vec![],
     };
 

@@ -1495,8 +1495,9 @@ struct Manifest {
     capabilities: Vec<String>,
     #[serde(default)]
     permissions: Vec<String>,
-    #[serde(default)]
-    secrets: Vec<String>,
+    /// Names of required environment variables, never credential values.
+    #[serde(default, rename = "secrets")]
+    variables: Vec<String>,
     #[serde(default)]
     commands: Vec<CommandSpec>,
 }
@@ -1566,15 +1567,15 @@ impl Manifest {
             return Err("Plugin commands must be named uniquely and described.".into());
         }
 
-        let mut secrets = self.secrets.clone();
-        secrets.sort();
-        secrets.dedup();
+        let mut variables = self.variables.clone();
+        variables.sort();
+        variables.dedup();
 
-        if secrets.len() != self.secrets.len()
-            || self.secrets.iter().any(|secret| {
-                secret.is_empty()
-                    || !secret.starts_with("KRABB_")
-                    || !secret.bytes().all(|byte| {
+        if variables.len() != self.variables.len()
+            || self.variables.iter().any(|name| {
+                name.is_empty()
+                    || !name.starts_with("KRABB_")
+                    || !name.bytes().all(|byte| {
                         byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
                     })
             })
@@ -1607,8 +1608,9 @@ struct Entry {
     capabilities: Vec<String>,
     #[serde(default)]
     permissions: Vec<String>,
-    #[serde(default)]
-    secrets: Vec<String>,
+    /// Names of required environment variables, never credential values.
+    #[serde(default, rename = "secrets")]
+    variables: Vec<String>,
     #[serde(default)]
     linked: bool,
     #[serde(default)]
@@ -6823,7 +6825,7 @@ fn recover_plugins(root: &Path) -> std::io::Result<()> {
                     || manifest.protocol != committed.protocol
                     || manifest.capabilities != committed.capabilities
                     || manifest.permissions != committed.permissions
-                    || manifest.secrets != committed.secrets
+                    || manifest.variables != committed.variables
                     || manifest.commands != committed.commands
                 {
                     return false;
@@ -7127,7 +7129,7 @@ fn available_commands(
     let mut commands = BTreeMap::new();
 
     for (id, entry) in &lock.plugins {
-        if !entry.secrets.is_empty()
+        if !entry.variables.is_empty()
             && !native_command(id)
             && !entry.commands.iter().any(|command| command.name == *id)
             && binary_at(id, root).is_some()
@@ -7290,7 +7292,7 @@ fn env_for(
         }
     }
 
-    values.extend(credentials::resolve(&manifest.secrets, root)?);
+    values.extend(credentials::resolve(&manifest.variables, root)?);
 
     Ok(values)
 }
@@ -13561,7 +13563,7 @@ fn service_environment_from(
     if let Ok(entries) = std::fs::read_dir(root.join("plugins")) {
         for entry in entries.flatten() {
             if let Some(manifest) = read_manifest(&entry.path()) {
-                for name in manifest.secrets {
+                for name in manifest.variables {
                     if !names.contains(&name) {
                         names.push(name);
                     }
@@ -15075,7 +15077,10 @@ async fn external_command_at(
     };
 
     let has_setup = name == &plugin
-        && load_lock_at(&root)?.plugins.get(&plugin).is_some_and(|entry| !entry.secrets.is_empty());
+        && load_lock_at(&root)?
+            .plugins
+            .get(&plugin)
+            .is_some_and(|entry| !entry.variables.is_empty());
 
     if has_setup && setup::requested(&args[1..]) {
         return setup::command(&args[1..], &plugin, &root, json).await;
@@ -17046,7 +17051,7 @@ fn update_with_commit(
                     entry.protocol = manifest.protocol;
                     entry.capabilities = manifest.capabilities.clone();
                     entry.permissions = manifest.permissions.clone();
-                    entry.secrets = manifest.secrets.clone();
+                    entry.variables = manifest.variables.clone();
                     entry.commands = manifest.commands.clone();
                 }
 
@@ -17459,7 +17464,7 @@ fn inspect_update(
 
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
-        || manifest.secrets != entry.secrets
+        || manifest.variables != entry.variables
         || manifest.commands != entry.commands
     {
         return Err(format!(
@@ -17591,7 +17596,7 @@ fn validate_update_candidate(
 
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
-        || manifest.secrets != entry.secrets
+        || manifest.variables != entry.variables
         || manifest.commands != entry.commands
     {
         return Err(format!(
@@ -17660,7 +17665,7 @@ fn update_one(
 
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
-        || manifest.secrets != entry.secrets
+        || manifest.variables != entry.variables
         || manifest.commands != entry.commands
     {
         return Err(format!(
@@ -17994,7 +17999,7 @@ fn link_at(
                 protocol: manifest.protocol,
                 capabilities: manifest.capabilities.clone(),
                 permissions: manifest.permissions.clone(),
-                secrets: manifest.secrets.clone(),
+                variables: manifest.variables.clone(),
                 commands: manifest.commands.clone(),
                 linked,
                 default: default_source,
@@ -19032,9 +19037,9 @@ fn plugin_summary(manifest: &Manifest, health: &str) -> Value {
         "protocol": manifest.protocol,
         "capabilities": manifest.capabilities,
         "permissions": manifest.permissions,
-        "secrets": manifest.secrets,
+        "secrets": manifest.variables,
         "commands": manifest.commands,
-        "setup_command": (!manifest.secrets.is_empty())
+        "setup_command": (!manifest.variables.is_empty())
             .then(|| format!("krabb plugin setup {}", manifest.id)),
         "status": "installed",
         "health": health,
@@ -23255,7 +23260,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec!["tool".into()],
             permissions: vec!["filesystem".into()],
-            secrets: vec!["KRABB_TOOLS_KEY".into()],
+            variables: vec!["KRABB_TOOLS_KEY".into()],
             commands: Vec::new(),
         };
 
@@ -23302,15 +23307,15 @@ done
         assert!(invalid.validate().is_err());
 
         invalid.permissions.clear();
-        invalid.secrets = vec!["bad-name".into()];
+        invalid.variables = vec!["bad-name".into()];
 
         assert!(invalid.validate().is_err());
 
-        invalid.secrets = vec!["OPENAI_API_KEY".into()];
+        invalid.variables = vec!["OPENAI_API_KEY".into()];
 
         assert!(invalid.validate().is_err());
 
-        invalid.secrets = vec!["KRABB_TOOLS_KEY".into(), "KRABB_TOOLS_KEY".into()];
+        invalid.variables = vec!["KRABB_TOOLS_KEY".into(), "KRABB_TOOLS_KEY".into()];
 
         assert!(invalid.validate().is_err());
 
@@ -23323,7 +23328,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["tool".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
             },
             &Config::default(),
@@ -23365,7 +23370,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["tool".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
             },
             &config,
@@ -23382,7 +23387,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
             },
             &Config::default(),
@@ -23665,7 +23670,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: Vec::new(),
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },
@@ -24531,7 +24536,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             commands: Vec::new(),
             linked: false,
         };
@@ -24568,7 +24573,7 @@ done
                     protocol: Protocol::CURRENT,
                     capabilities: Vec::new(),
                     permissions: Vec::new(),
-                    secrets: Vec::new(),
+                    variables: Vec::new(),
                     commands: Vec::new(),
                     linked: false,
                 }
@@ -24587,7 +24592,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             commands: Vec::new(),
         };
 
@@ -24624,7 +24629,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: Vec::new(),
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: vec![CommandSpec {
                     name: "login".into(),
                     description: "Log in.".into(),
@@ -24745,7 +24750,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 linked: false,
                 commands: vec![CommandSpec {
                     name: "model-console".into(),
@@ -24809,7 +24814,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["channel".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 linked: false,
                 commands: Vec::new(),
             },
@@ -24858,7 +24863,7 @@ done
                 protocol: Protocol::CURRENT,
                 capabilities: vec!["scheduler".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 linked: false,
                 commands: Vec::new(),
             },
@@ -24918,7 +24923,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec![capability.into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: vec![CommandSpec {
                 name: name.into(),
@@ -25029,7 +25034,7 @@ done
             protocol: Protocol::CURRENT,
             capabilities: vec![capability.into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -29665,7 +29670,7 @@ fn main() {
                 protocol: Protocol { major: 0, minor: 1 },
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },
@@ -29684,7 +29689,7 @@ fn main() {
                 protocol: Protocol { major: 0, minor: 1 },
                 capabilities: vec!["memory".into()],
                 permissions: Vec::new(),
-                secrets: Vec::new(),
+                variables: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },

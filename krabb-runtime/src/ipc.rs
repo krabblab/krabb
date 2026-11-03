@@ -4157,7 +4157,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["channel".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -4291,7 +4291,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["tool".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -4337,14 +4337,14 @@ for line in sys.stdin:
 
         let mut manifest = crate::read_manifest_checked(&plugin).unwrap();
 
-        manifest.secrets = vec!["KRABB_SETUP_TEST".into()];
+        manifest.variables = vec!["KRABB_SETUP_TEST".into()];
         std::fs::write(plugin.join("krabb-plugin.toml"), toml::to_string(&manifest).unwrap())
             .unwrap();
         let mut lock = crate::load_lock_at(&home).unwrap();
 
         let entry = lock.plugins.get_mut("tools").unwrap();
 
-        entry.secrets = manifest.secrets;
+        entry.variables = manifest.variables;
         entry.hash = crate::digest(&plugin.join("krabb-plugin.toml"), &binary).unwrap();
         crate::save_lock_at(&home, &lock).unwrap();
 
@@ -4411,7 +4411,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -5685,7 +5685,7 @@ for line in sys.stdin:
             protocol: krabb_core::types::Protocol::CURRENT,
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
-            secrets: Vec::new(),
+            variables: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };

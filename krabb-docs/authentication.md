@@ -69,6 +69,7 @@ Setup works before the plugin is active. It prompts for every declared secret,
 including optional ones, without echoing input. A terminal is required, even
 with `--json`; tokens cannot be arguments or piped input. Escape or Ctrl-C cancels
 without saving. Empty, multiline, and oversized values are rejected.
+Prompt labels show the declared environment variable names, never stored credential values.
 
 Setup replaces the entered secrets and preserves others using locked, crash-safe
 encrypted writes. Its output identifies whether the encryption key is in the
