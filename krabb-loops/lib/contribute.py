@@ -374,7 +374,7 @@ class Contribution:
             self.stable()
 
             pr = gh('pr', 'view', number, '--repo', self.repo, '--json',
-                    'headRefOid,statusCheckRollup,mergeable,state,url')
+                    'headRefOid,statusCheckRollup,mergeable,state,url,isDraft')
 
             workflows = gh('run', 'list', '--repo', self.repo, '--commit', self.sha,
                            '--event', 'pull_request', '--workflow', 'main.yml', '--limit', '1',
@@ -389,7 +389,10 @@ class Contribution:
                 if git('status', '--porcelain'):
                     raise RuntimeError('working tree changed while CI ran; rerun the loop')
 
-                run('gh', 'pr', 'ready', number, '--repo', self.repo)
+                if pr['isDraft']:
+                    run('gh', 'pr', 'ready', number, '--repo', self.repo)
+                    time.sleep(2)
+                    continue
 
                 return None
 

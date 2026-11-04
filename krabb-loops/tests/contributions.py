@@ -19,7 +19,7 @@ SPEC.loader.exec_module(MODULE)
 
 def status():
     return {
-        'headRefOid': 'abc', 'state': 'OPEN', 'mergeable': 'MERGEABLE',
+        'headRefOid': 'abc', 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'isDraft': True,
         'statusCheckRollup': [
             {'__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'},
             {'__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'SKIPPED'},
@@ -172,11 +172,29 @@ class Contributions(unittest.TestCase):
         pr, workflow = status()
         pr['url'] = 'https://github.com/owner/repo/pull/42'
 
-        with patch.object(MODULE, 'gh', side_effect=[pr, [workflow]]):
+        ready = dict(pr, isDraft=False)
+
+        with patch.object(MODULE, 'gh', side_effect=[pr, [workflow], ready, [workflow]]):
             with patch.object(MODULE, 'git', return_value=''):
-                with patch.object(MODULE, 'run') as run:
+                with patch.object(MODULE, 'run') as run, patch.object(MODULE.time, 'sleep'):
                     self.assertIsNone(loop.wait('42'))
                     run.assert_called_once_with('gh', 'pr', 'ready', '42', '--repo', 'owner/repo')
+
+    def test_ready_command_success_is_not_readiness_confirmation(self):
+        loop = self.contribution()
+        loop.stable = Mock()
+        pr, workflow = status()
+        pr['url'] = 'https://github.com/owner/repo/pull/42'
+        replies = [pr, [workflow], pr, [workflow]]
+
+        with patch.object(MODULE, 'gh', side_effect=replies):
+            with patch.object(MODULE, 'git', return_value=''):
+                with patch.object(MODULE, 'run') as run, patch.object(MODULE.time, 'sleep'):
+                    with patch.object(MODULE.time, 'monotonic', side_effect=[0, 0, 0, 2]):
+                        with self.assertRaisesRegex(RuntimeError, 'deadline'):
+                            loop.wait('42')
+
+                    self.assertEqual(run.call_count, 2)
 
     def test_failed_ci_preserves_logs_without_marking_ready(self):
         loop = self.contribution()
