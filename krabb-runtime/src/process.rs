@@ -359,8 +359,20 @@ for line in sys.stdin:
         fs::write(
             &runtime,
             r#"#!/usr/bin/env python3
-import os, pathlib, signal, sys
+import os, pathlib, signal, sys, time
+if sys.argv[1] == 'ps':
+    pid = sys.argv[-1].split('=', 1)[1]
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        pass
+    else:
+        print(pid)
+    sys.exit(0)
 if not pathlib.Path(__file__).with_name('allow-removal').exists():
+    pathlib.Path(__file__).with_name('removal-rejected').touch()
+    while not pathlib.Path(__file__).with_name('allow-removal').exists():
+        time.sleep(0.01)
     sys.exit(1)
 if sys.argv[1] == 'rm':
     try:
@@ -437,6 +449,20 @@ if sys.argv[1] == 'rm':
         let finished = cleanup.finish();
 
         tokio::pin!(finished);
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = &mut finished => panic!("cleanup finished early: {result:?}"),
+
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if root.join("removal-rejected").exists() { break; }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
 
         assert!(timeout(Duration::from_millis(250), &mut finished).await.is_err());
         assert!(process.try_lock().is_err());
