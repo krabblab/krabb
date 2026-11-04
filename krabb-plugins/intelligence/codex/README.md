@@ -30,6 +30,11 @@ With personal ChatGPT sign-in, an unspecified model (including Krabb's `unset`
 placeholder) uses the Codex profile's default. Explicit model IDs are preserved.
 The API-key route still requires an explicit model.
 
+Sign-in turns explicitly use live web search, overriding the cached-search default
+of a read-only Codex session. Provider-hosted web search is separate from local
+sandbox network access and Krabb's `fetch` tool. The API-key route does not expose
+built-in web search. A search or cache miss does not prove that a URL is missing.
+
 The plugin advertises image-request support during its handshake. The HTTP
 adapter sends inline image inputs using the OpenAI-compatible chat completions
 format. The Codex adapter sends inline image inputs through the app-server

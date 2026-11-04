@@ -242,6 +242,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     serve_with(
         Hello {
+            formats: vec!["markdown".into()],
             protocol: Protocol::CURRENT,
             id: "signal".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -949,6 +950,11 @@ async fn send_with(
         .as_str()
         .ok_or_else(|| krabb_core::Error::Denied("Signal send requires text.".into()))?;
 
+    let formatted =
+        (params["format"] == "markdown").then(|| krabb_text::Document::parse(text, false));
+
+    let text = formatted.as_ref().map_or(text, |doc| doc.text.as_str());
+
     if chat.is_empty()
         || chat.len() > 256
         || chat.starts_with('-')
@@ -961,6 +967,15 @@ async fn send_with(
     let mut args = prefix.to_vec();
 
     args.extend(["-a".into(), account.into(), "send".into(), "-m".into(), text.into()]);
+
+    if let Some(doc) = formatted {
+        let styles = text_styles(&doc);
+
+        if !styles.is_empty() {
+            args.push("--text-style".into());
+            args.extend(styles);
+        }
+    }
 
     if let Some(values) = params["content"].as_array() {
         if values.len() > 8 {
@@ -985,6 +1000,27 @@ async fn send_with(
     }
 
     run_with(command, &args).await
+}
+
+fn text_styles(doc: &krabb_text::Document) -> Vec<String> {
+    use krabb_text::Style;
+
+    doc.spans
+        .iter()
+        .filter_map(|span| {
+            let style = match span.style {
+                Style::Bold | Style::Heading(_) => "BOLD",
+                Style::Italic => "ITALIC",
+                Style::Strike => "STRIKETHROUGH",
+                Style::Code | Style::Pre(_) => "MONOSPACE",
+                _ => return None,
+            };
+
+            let (start, length) = doc.utf16(span);
+
+            Some(format!("{start}:{length}:{style}"))
+        })
+        .collect()
 }
 
 async fn media(account: &str, params: &Value) -> krabb_core::Result<Value> {
@@ -1549,6 +1585,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(sent["output"], "-a\n+1000\nsend\n-m\nhello\n--group-id\ngroup\n");
+
+        let sent = send_with(
+            "+1000",
+            &json!({"chat":"+2000","format":"markdown","text":"👋 **bold** *italic* ~~old~~ `code` [repo](https://example.com)\n\n> quote"}),
+            "sh",
+            &["-c".into(), "printf '%s\\n' \"$@\"".into(), "signal-cli".into()],
+        ).await.unwrap();
+
+        let output = sent["output"].as_str().unwrap();
+
+        assert!(output.contains("👋 bold italic old code repo (https://example.com)"));
+
+        assert!(
+            output
+                .contains("--text-style\n3:4:BOLD\n8:6:ITALIC\n15:3:STRIKETHROUGH\n19:4:MONOSPACE")
+        );
+
+        assert!(output.ends_with("--\n+2000\n"));
     }
 
     #[cfg(unix)]

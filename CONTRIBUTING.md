@@ -169,6 +169,15 @@ for repository maintenance.
 
 ## Pull Requests
 
+Run `make contribloop` to verify all current changes, create a feature branch,
+commit conventionally without a scope, push to `origin`, and prepare a PR using
+the template and recent merged PR conventions. It assigns the authenticated
+GitHub user and adds the relevant existing label. The PR remains a draft while
+CI runs; failed checks trigger repairs, verification, another commit and push.
+Success means the current PR commit has green CI and is ready for review.
+See [Contribution Loop](krabb-docs/loops.md#contribution-loop) for prerequisites,
+resuming, limits, and publication authorization.
+
 Keep one logical change per pull request. Describe the behavior, security and
 platform impact, test commands, documentation updates, and release-note entry.
 Explain the fix or feature, not only the symptom that motivated it. Keep

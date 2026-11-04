@@ -130,6 +130,28 @@ methods, failures, and a two-second timeout disable this hint for the current
 turn; they never fail or replay the turn.
 Do not add a direct dependency from one plugin to another.
 
+### Channel Formatting
+
+The optional `hello.formats` array advertises accepted text input formats. A channel
+that accepts portable CommonMark with GFM strikethrough, tasks and tables returns
+`"formats": ["markdown"]`. The host then sends `"format": "markdown"` alongside the
+original `text` in `send` and `edit`. The adapter owns rendering to its platform's
+supported markup, entities, or rich-text blocks, including safe escaping, Unicode
+offset conversion, and chunking. Unsupported structures must remain readable and
+link destinations must not disappear. Literal code is preserved.
+
+Omitting `formats`, or advertising only unknown formats, preserves the legacy
+contract: the host converts Markdown to plain text and omits `format`. An absent
+`format` always retains the adapter's existing text semantics. This is an additive
+protocol 0.1 extension; older hosts ignore the optional handshake field. New
+platforms opt in through their handshake without changing a host platform list.
+
+Streaming sends/edits may include `"draft": true`. A rich adapter sends or edits
+only its first rendered chunk for such previews. The final call omits `draft`, edits
+the preview, and sends overflow chunks once. Never retry an uncertain delivery just
+to fall back to another format. Outbox records retain original Markdown so retries
+and scheduled deliveries negotiate against the currently loaded channel adapter.
+
 ### Tool Discovery And Results
 
 A plugin advertising the `tool` capability can expose its model-callable tools

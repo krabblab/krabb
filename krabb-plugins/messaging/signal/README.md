@@ -30,3 +30,11 @@ Direct recipients are separated from options with `--`, including when sending
 attachments. Invalid recipients, oversized text, and more than eight content items
 are rejected before starting the process. Failed commands report an exit code;
 raw stderr is not forwarded into Krabb messages or logs.
+
+## Formatting
+
+The handshake advertises `formats: ["markdown"]`. Requests with
+`format: "markdown"` are rendered as signal-cli text styles with UTF-16 ranges for bold, italic, strikethrough and monospace; link targets remain visible.
+Requests without this field keep their existing text semantics. Unsupported
+Markdown structures remain readable text. The runtime preserves source Markdown
+for scheduled deliveries and retries.

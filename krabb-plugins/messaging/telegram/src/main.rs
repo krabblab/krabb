@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod formatting;
+
 use krabb_core::{
     plugin::serve_with,
     types::{Capability, Hello, Protocol, Request, Response},
@@ -25,6 +27,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     serve_with(
         Hello {
+            formats: vec!["markdown".into()],
             protocol: Protocol::CURRENT,
             id: "telegram".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -142,8 +145,14 @@ async fn call_with(
         Operation::Send { chat, text, thread } => {
             let mut result = serde_json::Value::Null;
 
-            for part in chunks(&text, 4_096) {
-                let mut body = json!({"chat_id": chat, "text": part});
+            let parts = if params["format"] == "markdown" {
+                formatting::parts(&text, params["draft"] == true)
+            } else {
+                chunks(&text, 4_096).into_iter().map(|text| json!({"text": text})).collect()
+            };
+
+            for mut body in parts {
+                body["chat_id"] = json!(chat);
 
                 if let Some(thread) = &thread {
                     body["message_thread_id"] = json!(thread.parse::<i64>().map_err(|_| {
@@ -159,8 +168,20 @@ async fn call_with(
 
         Operation::Edit { chat, message, text, thread } => {
             let mut results = Vec::new();
+            let requests = if params["format"] == "markdown" {
+                formatting::edits(
+                    base,
+                    chat,
+                    message,
+                    &text,
+                    thread.as_deref(),
+                    params["draft"] == true,
+                )?
+            } else {
+                edit_requests(base, chat, message, &text, thread.as_deref())?
+            };
 
-            for (url, body) in edit_requests(base, chat, message, &text, thread.as_deref())? {
+            for (url, body) in requests {
                 results.push(send(client, &url, body).await?);
             }
 
@@ -526,9 +547,22 @@ async fn send(
             krabb_core::Error::Denied("Telegram request failed; delivery may be uncertain.".into())
         })?;
         let status = response.status();
-        let body = read(response).await?;
-        let value: serde_json::Value = serde_json::from_str(&body)
+        let response_text = read(response).await?;
+        let value: serde_json::Value = serde_json::from_str(&response_text)
             .map_err(|_| krabb_core::Error::Denied("Telegram response failed.".into()))?;
+
+        if url.ends_with("/editMessageText")
+            && status == reqwest::StatusCode::BAD_REQUEST
+            && value["ok"] == false
+            && value["error_code"] == 400
+            && body["message_id"].is_i64()
+            && value["description"].as_str().is_some_and(|description| {
+                description == "Bad Request: message is not modified"
+                    || description.starts_with("Bad Request: message is not modified:")
+            })
+        {
+            return Ok(json!({"message_id": body["message_id"], "unchanged": true}));
+        }
 
         if attempt < 2
             && let Some(delay) = retry_delay(status, &value)
@@ -1314,19 +1348,55 @@ mod tests {
         let address = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            for _ in 0..5 {
+            for _ in 0..6 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 4096];
-                let _ = stream.read(&mut request).await.unwrap();
-                let body = br#"{"ok":true,"result":{"message_id":1}}"#;
+                let mut reader = tokio::io::BufReader::new(&mut stream);
+                let mut header = String::new();
+                let mut length = 0;
+
+                loop {
+                    let mut line = String::new();
+                    tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.unwrap();
+
+                    if line == "\r\n" {
+                        break;
+                    }
+
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+
+                    header.push_str(&line);
+                }
+
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).await.unwrap();
+                let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                drop(reader);
+
+                if (header.contains("sendMessage") || header.contains("editMessageText"))
+                    && payload["text"] != "Approve?"
+                {
+                    assert_eq!(payload["entities"][0]["type"], "bold");
+                    assert!(!payload["text"].as_str().unwrap().contains("**"));
+                }
+
+                let (status, body) = if header.contains("editMessageText") {
+                    (
+                        400,
+                        r#"{"ok":false,"error_code":400,"description":"Bad Request: message is not modified: specified new message content and reply markup are exactly the same"}"#,
+                    )
+                } else {
+                    (200, r#"{"ok":true,"result":{"message_id":1}}"#)
+                };
 
                 let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
 
                 stream.write_all(header.as_bytes()).await.unwrap();
-                stream.write_all(body).await.unwrap();
+                stream.write_all(body.as_bytes()).await.unwrap();
             }
         });
 
@@ -1345,7 +1415,7 @@ mod tests {
                 &client,
                 2,
                 "send".into(),
-                json!({"chat": 8, "text": "hello", "thread": "4"}),
+                json!({"chat": 8, "text": "**hello**", "format": "markdown", "thread": "4"}),
                 "token",
                 &base,
             )
@@ -1359,7 +1429,7 @@ mod tests {
                 &client,
                 3,
                 "edit".into(),
-                json!({"chat": 8, "message": 1, "text": "updated"}),
+                json!({"chat": 8, "message": 1, "text": format!("**{}**", "x".repeat(5000)), "format": "markdown"}),
                 "token",
                 &base,
             )

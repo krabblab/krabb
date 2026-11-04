@@ -4,7 +4,7 @@ COVERAGE_PROFILE ?= full
 comma := ,
 .DEFAULT_GOAL := all
 .PHONY: all help install hooks fmt spacing clippy check test coverage build release metrics ci \
-        revloop secloop testloop loops verify
+        revloop secloop testloop contribloop loops verify
 
 all: build
 	$(MAKE) install
@@ -27,6 +27,7 @@ help:
 	@printf '%s\n' '  revloop   Run independent reviews until verified clean'
 	@printf '%s\n' '  secloop   Audit and remediate validated security weaknesses'
 	@printf '%s\n' '  testloop  Protect behavioral contracts and repair confirmed flaky tests'
+	@printf '%s\n' '  contribloop  Commit, open a PR, and repair until CI is green'
 	@printf '%s\n' '  loops     Check loop scripts and run deterministic loop fixtures'
 	@printf '%s\n' '  verify    Run the complete local quality workflow'
 
@@ -77,6 +78,9 @@ secloop:
 
 testloop:
 	bash krabb-loops/testloop.sh $(subst $(comma), ,$(TESTLOOP_ARGS))
+
+contribloop:
+	bash krabb-loops/contribloop.sh $(subst $(comma), ,$(CONTRIBLOOP_ARGS))
 
 loops:
 	bash krabb-loops/lib/syntax.sh "$(CURDIR)"

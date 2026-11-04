@@ -103,6 +103,11 @@ conditional on that plugin being installed.
 
 ## Product Behavior
 
+- Messaging channels negotiate Markdown input and preserve supported formatting through
+  their adapters for sends, streaming edits, and scheduled delivery. Plugins without
+  formatting support receive readable plain text with visible source URLs.
+  Terminal formatting is unchanged. Research guidance prioritizes exact supplied
+  URLs and factual tool-result reporting. Codex sign-in explicitly uses live search.
 - Persistent daemon with authenticated local IPC, opt-in OS keyring
   credentials, protected-file fallback, and systemd-user, launchd-agent, and
   Windows Service support.

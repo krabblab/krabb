@@ -44,6 +44,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
 fn hello() -> Hello {
     Hello {
+        formats: vec![],
         protocol: Protocol::CURRENT,
         id: "mcp".into(),
         version: env!("CARGO_PKG_VERSION").into(),

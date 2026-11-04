@@ -33,3 +33,11 @@ and [deployment validation](../../../krabb-docs/providers.md#deployment-validati
 Media storage reserves space before writing: 64 MiB, 256 files, and a 24-hour
 cache lifetime. Failed cleanup rejects the download instead of silently
 exceeding the limits; protected session images are preserved.
+
+## Formatting
+
+The handshake advertises `formats: ["markdown"]`. Requests with
+`format: "markdown"` are rendered as WhatsApp markup for bold, italic, strikethrough, monospace and quotes; link targets remain visible.
+Requests without this field keep their existing text semantics. Unsupported
+Markdown structures remain readable text. The runtime preserves source Markdown
+for scheduled deliveries and retries.

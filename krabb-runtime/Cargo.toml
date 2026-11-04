@@ -21,6 +21,7 @@ krabb-file = { path = "../krabb-libs/file" }
 getrandom.workspace = true
 jiff.workspace = true
 keyring.workspace = true
+krabb-text.workspace = true
 ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true

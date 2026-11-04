@@ -1,0 +1,11 @@
+[package]
+name = "krabb-text"
+description = "Bounded text parsing and formatting primitives for Krabb channels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }

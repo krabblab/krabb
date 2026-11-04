@@ -34,6 +34,9 @@ pub enum Capability {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Hello {
+    /// Optional input formats understood by channel send/edit handlers; omitted means plain text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<String>,
     pub protocol: Protocol,
     pub id: String,
     pub version: String,
@@ -330,6 +333,23 @@ mod tests {
         assert!(!Protocol::CURRENT.compatible(Protocol { major: 1, minor: 0 }));
 
         assert!(!Protocol::CURRENT.compatible(Protocol { major: 0, minor: 2 }));
+    }
+
+    #[test]
+    fn channel_formats_are_optional_and_forward_compatible() {
+        let legacy = serde_json::json!({"protocol":{"major":0,"minor":1},"id":"channel","version":"1","capabilities":["channel"]});
+        let hello: super::Hello = serde_json::from_value(legacy.clone()).unwrap();
+
+        assert!(hello.formats.is_empty());
+        assert!(serde_json::to_value(hello).unwrap().get("formats").is_none());
+
+        let mut modern = legacy;
+
+        modern["formats"] = serde_json::json!(["markdown", "future-format"]);
+
+        let hello: super::Hello = serde_json::from_value(modern).unwrap();
+
+        assert_eq!(hello.formats, ["markdown", "future-format"]);
     }
 
     #[test]

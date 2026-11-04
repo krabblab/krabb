@@ -205,6 +205,7 @@ async fn stop(child: &mut Child) {
 
 fn hello() -> Hello {
     Hello {
+        formats: vec![],
         protocol: Protocol::CURRENT,
         id: "whisper".into(),
         version: env!("CARGO_PKG_VERSION").into(),

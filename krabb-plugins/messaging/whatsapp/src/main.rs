@@ -383,6 +383,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     serve_with(
         Hello {
+            formats: vec!["markdown".into()],
             protocol: Protocol::CURRENT,
             id: "whatsapp".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -734,7 +735,10 @@ async fn send(app: &App, params: &Value) -> krabb_core::Result<Value> {
     let base = graph_url()?;
     let mut result = Value::Null;
 
-    for part in chunks(text, 4_000) {
+    let parts =
+        if params["format"] == "markdown" { formatted_parts(text) } else { chunks(text, 4_000) };
+
+    for part in parts {
         if part.is_empty() {
             continue;
         }
@@ -1048,6 +1052,20 @@ fn local_media_at(uri: &str, root: &std::path::Path) -> krabb_core::Result<PathB
     }
 
     Ok(path)
+}
+
+fn formatted_parts(source: &str) -> Vec<String> {
+    let syntax = krabb_text::Syntax {
+        bold: "*",
+        italic: "_",
+        strike: "~",
+        escape: false,
+        links: false,
+        headings: false,
+        language: false,
+    };
+
+    syntax.chunks(&krabb_text::Document::parse(source, false), 4000)
 }
 
 fn chunks(value: &str, limit: usize) -> Vec<String> {
@@ -1692,6 +1710,24 @@ mod tests {
         assert!(call(&app, Request::call(2, "send", json!({"chat":"1"}))).await.is_err());
         assert!(call(&app, Request::call(3, "media", json!({"uri":"file://bad"}))).await.is_err());
         assert!(call(&app, Request::call(4, "media", json!({}))).await.is_err());
+    }
+
+    #[test]
+    fn translates_common_markdown_to_whatsapp_formatting() {
+        let source = "**bold** *italic* ~~old~~ `code` [repo](https://example.com)";
+
+        assert_eq!(
+            super::formatted_parts(source),
+            ["*bold* _italic_ ~old~ `code` repo (https://example.com)"]
+        );
+
+        let parts = super::formatted_parts(&format!("**{}**", "🦀".repeat(5000)));
+
+        assert!(parts.len() > 1);
+
+        assert!(parts.iter().all(|part| part.chars().count() <= 4000
+            && part.starts_with('*')
+            && part.ends_with('*')));
     }
 
     #[test]

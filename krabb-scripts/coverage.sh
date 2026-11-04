@@ -5,6 +5,7 @@ packages=(
     krabb
     krabb-core
     krabb-date
+    krabb-text
     krabb-file
     krabb-process
     krabb-runtime

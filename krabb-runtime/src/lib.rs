@@ -44,6 +44,7 @@ mod credentials;
 pub(crate) mod ipc;
 pub(crate) mod logging;
 mod media;
+mod messaging;
 mod process;
 mod setup;
 pub(crate) mod state;
@@ -258,6 +259,7 @@ impl Live {
     }
 
     async fn call(&self, request: Request) -> krabb_core::Result<Response> {
+        let request = messaging::prepare(request, &self.hello.formats);
         let cancel = request.id().map(|id| CancelPluginCall::new(Arc::clone(&self.process), id));
         let result = {
             let mut process = self.process.lock().await;
@@ -9572,11 +9574,13 @@ fn send_params(
     thread: Option<&str>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
     if channel_id == "discord" {
-        return Ok(serde_json::json!({"delivery": delivery_id, "channel": chat, "text": text}));
+        return Ok(
+            serde_json::json!({"delivery": delivery_id, "channel": chat, "format": "markdown", "text": text}),
+        );
     }
 
     if channel_id != "telegram" {
-        let mut value = serde_json::json!({"delivery": delivery_id, "chat": chat, "text": text});
+        let mut value = serde_json::json!({"delivery": delivery_id, "chat": chat, "format": "markdown", "text": text});
 
         if let Some(thread) = thread {
             value["thread"] = serde_json::Value::String(thread.into());
@@ -9588,7 +9592,7 @@ fn send_params(
     let mut value = serde_json::json!({
         "chat": chat.parse::<i64>().map_err(|_| "Telegram chat ID was invalid.")?,
         "delivery": delivery_id,
-        "text": text
+        "format": "markdown", "text": text
     });
 
     if let Some(thread) = thread {
@@ -9611,6 +9615,7 @@ async fn indicate_typing(
 
     if let Some(params) = params.as_object_mut() {
         params.remove("text");
+        params.remove("format");
         params.remove("delivery");
     }
 
@@ -9685,7 +9690,7 @@ fn edit_params(
             "delivery": delivery,
             "channel": chat,
             "message": message,
-            "text": text,
+            "format": "markdown", "text": text,
         }));
     }
 
@@ -9697,7 +9702,7 @@ fn edit_params(
         "delivery": delivery,
         "chat": chat.parse::<i64>().map_err(|_| "Telegram chat ID was invalid.")?,
         "message": message.parse::<i64>().map_err(|_| "Telegram message ID was invalid.")?,
-        "text": text,
+        "format": "markdown", "text": text,
     });
 
     if let Some(thread) = thread {
@@ -11098,7 +11103,7 @@ async fn flush_stream(
         return Ok(());
     }
 
-    let request = if let Some(message_id) = output.message_id.as_deref() {
+    let mut request = if let Some(message_id) = output.message_id.as_deref() {
         sessions
             .lock()
             .map_err(|_| "Session lock is poisoned.")?
@@ -11126,6 +11131,10 @@ async fn flush_stream(
         )?;
         send_request(channel_id, *call, delivery_id, chat, private, &output.display, thread)?
     };
+
+    if let Request::Call { params, .. } = &mut request {
+        params["draft"] = serde_json::json!(true);
+    }
 
     let response = channel.call(request).await;
 
@@ -11185,6 +11194,8 @@ async fn flush_stream(
 }
 
 fn stream_fits(channel: &str, text: &str) -> bool {
+    let text = messaging::render(channel, text);
+
     match channel {
         "telegram" => text.encode_utf16().count() <= 4_096,
         "discord" => text.chars().count() <= 2_000,
@@ -11350,9 +11361,14 @@ async fn answer_with_registry(
         specs.extend(scheduled_message_tools(plugins, scheduled_destination.as_ref()).await);
     }
 
+    let destination = scheduled_destination.as_ref().map_or(channel, |value| &value.channel);
+
+    messages.insert(0, messaging::context(session, destination));
+
     for step in 0..=TOOL_STEPS {
         let request =
             model_request(*call, model, &messages, &specs, workspace, provider.hello.protocol)?;
+
         let mut notes = Vec::new();
         let mut delivered = String::new();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
@@ -11376,6 +11392,7 @@ async fn answer_with_registry(
         let host_registry = registry.clone();
         let host_turn_id = turn_id.clone();
         let host_scheduled_destination = scheduled_destination.clone();
+
         let request_stream = registry.cleanup.call_full_async(
             Arc::clone(&provider.process),
             request,
@@ -11437,7 +11454,9 @@ async fn answer_with_registry(
         );
 
         tokio::pin!(request_stream);
+
         let mut receiver_closed = false;
+
         let reply = loop {
             tokio::select! {
                 biased;
@@ -11488,6 +11507,7 @@ async fn answer_with_registry(
         };
 
         let mut parsed: ModelReply = serde_json::from_value(value)?;
+
         merge_stream(&mut parsed, notes);
         keep_one_mutation(&mut parsed.events);
         parsed.text = clip(parsed.text, TEXT_LIMIT);
@@ -11512,6 +11532,7 @@ async fn answer_with_registry(
         }
 
         tokens = tokens.saturating_add(parsed.input.unwrap_or_default());
+
         tokens = tokens.saturating_add(parsed.output.unwrap_or_default());
 
         if tokens > TOKEN_LIMIT {
@@ -11634,6 +11655,7 @@ async fn answer_with_registry(
             };
 
             *call += 1;
+
             let mut content: Vec<Content> = output
                 .content
                 .into_iter()
@@ -11662,6 +11684,7 @@ async fn answer_with_registry(
             };
 
             messages.push(message.clone());
+
             let mut persisted = message;
 
             for item in &mut persisted.content {
@@ -23765,7 +23788,7 @@ done
 
         assert_eq!(
             send_params("matrix", "delivery", "room", "hello", Some("topic")).unwrap(),
-            serde_json::json!({"delivery": "delivery", "chat": "room", "text": "hello", "thread": "topic"})
+            serde_json::json!({"delivery": "delivery", "chat": "room", "format": "markdown", "text": "hello", "thread": "topic"})
         );
 
         let store = super::state::Store::default();

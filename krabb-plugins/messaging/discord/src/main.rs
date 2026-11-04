@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod formatting;
+
 use krabb_core::types::{Content, Request, Response};
 #[cfg(not(test))]
 use krabb_core::{
@@ -117,6 +119,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     serve_with(
         Hello {
+            formats: vec!["markdown".into()],
             protocol: Protocol::CURRENT,
             id: "discord".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -229,7 +232,30 @@ async fn call_with_state(
 
     let result = match operation {
         Operation::Send { channel, text, content } => {
-            send_content(client, &channel, &text, &content, token, base).await?
+            if params["format"] == "markdown" {
+                let mut result = Value::Null;
+
+                for body in formatting::parts(&text, params["draft"] == true) {
+                    if body["content"] != "" {
+                        result = message(
+                            client,
+                            reqwest::Method::POST,
+                            format!("{base}/channels/{channel}/messages"),
+                            token,
+                            body,
+                        )
+                        .await?;
+                    }
+                }
+
+                if !content.is_empty() {
+                    result = send_content(client, &channel, "", &content, token, base).await?;
+                }
+
+                result
+            } else {
+                send_content(client, &channel, &text, &content, token, base).await?
+            }
         }
 
         Operation::Approval { channel, text, approve, deny } => {
@@ -247,7 +273,31 @@ async fn call_with_state(
         Operation::Edit { channel, message_id, text } => {
             let mut results = Vec::new();
 
-            for (method, url, body) in edit_requests(base, &channel, &message_id, &text)? {
+            let requests = if params["format"] == "markdown" {
+                formatting::parts(&text, params["draft"] == true)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, body)| {
+                        if index == 0 {
+                            (
+                                reqwest::Method::PATCH,
+                                format!("{base}/channels/{channel}/messages/{message_id}"),
+                                body,
+                            )
+                        } else {
+                            (
+                                reqwest::Method::POST,
+                                format!("{base}/channels/{channel}/messages"),
+                                body,
+                            )
+                        }
+                    })
+                    .collect()
+            } else {
+                edit_requests(base, &channel, &message_id, &text)?
+            };
+
+            for (method, url, body) in requests {
                 results.push(message(client, method, url, token, body).await?);
             }
 
@@ -2405,8 +2455,35 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 4096];
-                let _ = stream.read(&mut request).await.unwrap();
+                let mut reader = tokio::io::BufReader::new(&mut stream);
+                let mut header = String::new();
+                let mut length = 0;
+
+                loop {
+                    let mut line = String::new();
+                    tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.unwrap();
+
+                    if line == "\r\n" {
+                        break;
+                    }
+
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+
+                    header.push_str(&line);
+                }
+
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).await.unwrap();
+                let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                drop(reader);
+
+                if payload.get("components").is_none() {
+                    assert!(payload["content"].as_str().unwrap().starts_with("**"));
+                    assert_eq!(payload["allowed_mentions"]["parse"], json!([]));
+                }
+
                 let body = br#"{"id":"1","ok":true}"#;
                 let header = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -2424,7 +2501,7 @@ mod tests {
             &client,
             1,
             "send".into(),
-            json!({"channel":"1","text":"hello"}),
+            json!({"channel":"1","text":"**hello**","format":"markdown"}),
             "token",
             &base,
         )
@@ -2438,7 +2515,7 @@ mod tests {
             &client,
             2,
             "edit".into(),
-            json!({"channel":"1","message":"2","text":"updated"}),
+            json!({"channel":"1","message":"2","text":"**updated**","format":"markdown"}),
             "token",
             &base,
         )

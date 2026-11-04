@@ -37,6 +37,14 @@ The adapter validates app-server responses and fails closed if required
 operations are incompatible. Run `krabb codex login` or
 `krabb codex login --device` to authenticate.
 
+Codex sign-in turns explicitly request live web search rather than inheriting
+Codex's cached-search default. This is provider-hosted retrieval, separate from
+Krabb's optional `fetch` tool and local sandbox network access. API-key adapters
+do not gain built-in web search from this setting. When the tools plugin is
+installed and channel tools are enabled, the agent is instructed to prefer
+`fetch` for an exact HTTPS URL. Missing search results and cache misses are
+retrieval limitations, not evidence that a repository does not exist.
+
 OpenAI and OpenRouter send the full tool catalog supplied by the host. The
 runtime permits up to 16 tool invocations per turn, counted once each across
 model steps. OpenAI, OpenRouter, Anthropic, Ollama, and the Codex API-key adapter
@@ -76,6 +84,19 @@ inline screenshot pixels alongside function responses and legacy tool history.
 Channel plugins own polling cursors, provider limits, message chunking and
 edits, and attachment normalization. They never decide whether a sender is
 authorized; that decision belongs to the daemon policy.
+
+Messaging turns use portable Markdown. Channel plugins advertise accepted input
+formats in their handshake and render supported formatting at the platform boundary.
+Telegram uses native message entities, Signal uses signal-cli text styles, Slack
+uses structured rich-text blocks, and Discord and WhatsApp receive their own markup.
+Emphasis, links, code, lists, headings, and quotes retain their supported presentation;
+unsupported structures remain readable text. Signal and WhatsApp expose link targets
+as visible URLs. Plugins without Markdown support receive a plain-text fallback.
+
+Formatting applies to sends, streamed edits, scheduled messages, and delivery retries.
+The original Markdown stays in transcripts and the outbox. Rich-text chunks keep
+styles valid and obey platform limits; streaming drafts update only the first chunk,
+with overflow sent once during final delivery. TUI and CLI formatting remain unchanged.
 
 ## Platform Setup
 

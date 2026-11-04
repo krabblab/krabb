@@ -45,12 +45,13 @@ for line in sys.stdin:
                               'version': '0.1.0', 'capabilities': ['model']}
     elif method == 'generate':
         generated += 1
+        (root / 'model.json').write_text(json.dumps(request))
         (root / 'generated').write_text(str(generated))
         time.sleep(0.8)
         if generated == 1:
             response['error'] = {'code': -32000, 'message': 'Unsupported model: synthetic'}
         else:
-            response['result'] = {'text': 'Recovered', 'stop': 'stop'}
+            response['result'] = {'text': '**Recovered**', 'stop': 'stop'}
     else:
         response['result'] = {}
     print(json.dumps(response), flush=True)
@@ -64,6 +65,63 @@ fn requests(root: &Path) -> Vec<serde_json::Value> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
+}
+
+#[test]
+fn sends_edits_and_queued_deliveries_negotiate_formatting() {
+    let text = "**Krabb**: [repository](https://github.com/krabblab/krabb)";
+
+    let expected = "Krabb: repository (https://github.com/krabblab/krabb)";
+
+    for channel in ["telegram", "discord", "signal", "slack", "whatsapp", "custom"] {
+        let params = crate::send_params(channel, "delivery", "7", text, Some("4")).unwrap();
+
+        assert_eq!(params["text"], text);
+        assert_eq!(params["format"], "markdown");
+
+        let request = crate::messaging::prepare(Request::call(1, "send", params.clone()), &[]);
+        let Request::Call { params: fallback, .. } = request else { panic!() };
+
+        assert_eq!(fallback["text"], expected);
+        assert!(fallback.get("format").is_none());
+
+        let request = crate::messaging::prepare(
+            Request::call(1, "send", params.clone()),
+            &["markdown".into()],
+        );
+
+        let Request::Call { params: rich, .. } = request else { panic!() };
+
+        assert_eq!(rich, params);
+    }
+
+    for channel in ["telegram", "discord"] {
+        let params = crate::edit_params(channel, "delivery", "7", "42", text, Some("4")).unwrap();
+
+        assert_eq!(params["text"], text);
+        assert_eq!(params["format"], "markdown");
+    }
+
+    let mut store = crate::state::Store::default();
+
+    store.queue_delivery("queued", "telegram", "7", true, Some("4".into()), text).unwrap();
+
+    let Request::Call { params, .. } =
+        crate::delivery_request("telegram", 1, &store.outbox[0]).unwrap()
+    else {
+        panic!()
+    };
+
+    assert_eq!(params["text"], text);
+    assert_eq!(params["format"], "markdown");
+    assert_eq!(params["thread"], "4");
+    assert_eq!(store.outbox[0].text, text);
+
+    let references =
+        format!("{}\n\n[s]: https://example.com/{}", "[s][s] ".repeat(50), "x".repeat(100));
+
+    assert!(references.len() < 4096);
+    assert!(!crate::stream_fits("telegram", &references));
 }
 
 #[tokio::test]
@@ -128,6 +186,11 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
     stop_registry(&plugins).await;
 
     assert_eq!(fs::read_to_string(root.join("generated")).unwrap(), "2");
+
+    let request = fs::read_to_string(root.join("model.json")).unwrap();
+
+    assert!(request.contains("portable Markdown"));
+    assert!(request.contains("exact URL supplied by the user"));
 
     let calls = requests(&root);
     let typing: Vec<_> = calls.iter().filter(|value| value["method"] == "typing").collect();

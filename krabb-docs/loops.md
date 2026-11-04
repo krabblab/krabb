@@ -1,6 +1,6 @@
 # Engineering Loops
 
-Each loop alternates a fresh independent reviewer with a worker that investigates,
+The review loops alternate a fresh independent reviewer with a worker that investigates,
 fixes, and tests findings. Only independent reviews and host verification establish success.
 
 | Loop | Purpose |
@@ -16,7 +16,7 @@ make testloop TESTLOOP_ARGS="--agent,codex"
 ```
 
 Make arguments are comma-separated. Direct scripts accept ordinary shell arguments:
-`bash krabb-loops/testloop.sh --global --agent codex`. All loops support `--global`,
+`bash krabb-loops/testloop.sh --global --agent codex`. Review loops support `--global`,
 `--clean`, `--verbose`, `--fast`, `--no-fast`, `--agent`, and `--help`.
 The legacy `krabb-scripts/revloop.sh` delegates to the shared implementation.
 
@@ -25,7 +25,7 @@ The legacy `krabb-scripts/revloop.sh` delegates to the shared implementation.
 Default scope is uncommitted changes, otherwise the branch diff against local `main`
 or `origin/main`, otherwise the latest commit. `--global` reviews the whole repository.
 Workers preserve unrelated changes and establish a defect before changing production code.
-All loops follow the shared [Rust conventions](../krabb-loops/prompts/rust.md) and
+Review loops follow the shared [Rust conventions](../krabb-loops/prompts/rust.md) and
 [test organization](architecture.md#test-organization).
 
 Loops run until three consecutive independent reviews have no blocking findings or
@@ -42,7 +42,49 @@ then repeat affected tests under the relevant conditions. Blind retries, sleeps,
 tests, weakened assertions, and coverage-only changes do not establish success.
 
 Execution failures, missing prerequisites, interruptions, and explicit cycle budgets return
-non-success. They never count as clean convergence. Loops do not commit, push, or publish.
+non-success. They never count as clean convergence. Review loops do not commit, push, or publish.
+
+## Contribution Loop
+
+`make contribloop` handles the contribution after implementation: run `make verify`,
+repair failures, create a branch, commit with a lowercase conventional title without a
+scope, push to `origin`, and create a draft PR. It reads recent merged PRs for writing
+style and fills the repository template while preserving its guidance comments. The PR
+title summarizes the complete change; the authenticated GitHub user becomes its assignee,
+and the change type selects an existing label. It does not invent linked issues,
+milestones or reviewers; those remain available for a maintainer to add.
+
+Invoking this command authorizes staging and committing **all uncommitted changes**,
+pushing the feature branch and creating or updating its PR. Run it in a dedicated
+working tree without concurrent edits. It never force-pushes or merges. New branches
+default to `contrib-<timestamp>`; an existing open PR on the current branch is resumed.
+To choose a name, use `make contribloop CONTRIBLOOP_ARGS="--branch,rt"`, or
+`bash krabb-loops/contribloop.sh --branch rt`. An existing named branch must already be
+checked out. A branch whose tree matches the fetched default branch starts from that
+default branch, avoiding duplicate commits after a squash merge.
+
+The host waits for the `main.yml` pull-request workflow for the exact pushed commit
+and every reported PR check. Missing or pending checks cannot count as success. A failed
+CI run is saved as evidence for a restricted worker, followed by local verification,
+a repair commit, another push, and another CI wait. This repeats until green. Only then
+does the host mark the PR ready for review and exit successfully. Skipped conditional
+jobs are permitted only inside a successful workflow. Merge conflicts, external head
+changes, a repair that changes no code, missing credentials or other blockers return
+nonzero and preserve the evidence; they never produce a ready result. Green describes
+the checked commit at completion, not future pushes or future changes to the base branch.
+
+The contribution loop requires the same Linux process supervision and authenticated
+Codex or Claude backend as the review loops, plus authenticated `gh` and push access
+to the GitHub `origin`. Agents reuse the existing restricted runner; only the host
+runs verification and Git/GitHub mutations. Configure the backend with
+`KRABB_CONTRIBLOOP_AGENT=codex` or `claude` and the shared `KRABB_LOOP_*` model settings.
+Agent timeout defaults to 60 minutes and each local verification has 30 minutes.
+`--max-repairs N` optionally limits repair attempts (default zero means unlimited);
+`--ci-timeout SECONDS` limits each CI wait (default 3600). The contribution script
+has its own options, shown by `--help`; review-loop flags such as `--global` do not apply.
+Artifacts live under ignored `.krabb/loops/contrib/<timestamp>/`. Reinvoke the command
+on the same feature branch to resume after resolving a blocker. A per-worktree lock
+rejects a concurrent contribution loop.
 
 ## Requirements And Backends
 

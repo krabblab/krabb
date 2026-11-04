@@ -27,6 +27,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     serve_events(
         Hello {
+            formats: vec![],
             protocol: Protocol::CURRENT,
             id: "a2a".into(),
             version: env!("CARGO_PKG_VERSION").into(),
