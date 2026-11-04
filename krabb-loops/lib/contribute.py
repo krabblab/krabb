@@ -396,10 +396,23 @@ class Contribution:
             if status == 'failed':
                 evidence = self.state / f'ci-{self.sha}.log'
 
-                logs = run('gh', 'run', 'view', str(workflow['databaseId']),
-                           '--repo', self.repo, '--log-failed', check=False)
+                failures = gh('run', 'list', '--repo', self.repo, '--commit', self.sha,
+                              '--limit', '100', '--json',
+                              'headSha,status,conclusion,databaseId,workflowName')
 
-                evidence.write_text(json.dumps(pr, indent=2) + '\n' + logs.stdout + logs.stderr)
+                reports = [json.dumps(pr, indent=2)]
+
+                for failure in failures:
+                    if (failure['headSha'] != self.sha or failure['status'] != 'completed'
+                            or failure['conclusion'] in ('success', 'skipped', 'neutral')):
+                        continue
+
+                    logs = run('gh', 'run', 'view', str(failure['databaseId']),
+                               '--repo', self.repo, '--log-failed', check=False)
+
+                    reports.extend([json.dumps(failure), logs.stdout, logs.stderr])
+
+                evidence.write_text('\n'.join(reports))
 
                 return evidence
 

@@ -189,7 +189,7 @@ class Contributions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             loop.state = Path(directory)
 
-            with patch.object(MODULE, 'gh', side_effect=[pr, [workflow]]):
+            with patch.object(MODULE, 'gh', side_effect=[pr, [workflow], [workflow]]):
                 result = Mock(stdout='failure', stderr='')
 
                 with patch.object(MODULE, 'run', return_value=result) as run:
@@ -197,6 +197,35 @@ class Contributions(unittest.TestCase):
 
                     self.assertIn('failure', evidence.read_text())
                     self.assertEqual(run.call_args.args[1:3], ('run', 'view'))
+
+    def test_external_workflow_failure_supplies_its_own_logs(self):
+        loop = self.contribution()
+        loop.stable = Mock()
+        pr, workflow = status()
+        pr['url'] = 'https://github.com/owner/repo/pull/42'
+
+        pr['statusCheckRollup'].append({
+            '__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'FAILURE',
+        })
+
+        external = dict(workflow, conclusion='failure', databaseId=456, workflowName='CodeQL')
+        stale = dict(external, headSha='old', databaseId=789)
+
+        with tempfile.TemporaryDirectory() as directory:
+            loop.state = Path(directory)
+
+            with patch.object(MODULE, 'gh', side_effect=[pr, [workflow], [external, stale]]):
+                result = Mock(stdout='analysis evidence', stderr='')
+
+                with patch.object(MODULE, 'run', return_value=result) as run:
+                    evidence = loop.wait('42')
+
+                    self.assertIn('analysis evidence', evidence.read_text())
+                    self.assertIn('CodeQL', evidence.read_text())
+
+                    run.assert_called_once_with('gh', 'run', 'view', '456',
+                                                '--repo', 'owner/repo',
+                                                '--log-failed', check=False)
 
     def test_ci_timeout_cannot_mark_ready(self):
         loop = self.contribution()
