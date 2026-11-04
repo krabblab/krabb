@@ -309,6 +309,7 @@ async fn generate_on(
                     "{tool_guidance}\n\n{instructions}"
                 ),
                 "config": {
+                    "web_search": "live",
                     "features": {
                         "shell_tool": false,
                         "browser_use": false,
@@ -1897,6 +1898,8 @@ done
             requests.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
 
         for thread in requests.iter().filter(|request| request["method"] == "thread/start") {
+            assert_eq!(thread["params"]["config"]["web_search"], "live");
+
             assert_eq!(
                 thread["params"]["config"]["mcp_servers"],
                 json!({

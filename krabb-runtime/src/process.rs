@@ -334,40 +334,46 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let plugin = root.join("plugin");
         let runtime = root.join("docker");
-        fs::write(&plugin, r#"#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
-root = pathlib.Path(os.environ['KRABB_ROOT'])
-for line in sys.stdin:
-    request = json.loads(line)
-    method = request['method']
-    if method == 'hello':
-        result = {'id': 'tools', 'version': '0.1.0', 'protocol': {'major': 0, 'minor': 1}, 'capabilities': ['tool']}
-    elif method == 'shell':
-        directory = pathlib.Path(os.environ['KRABB_SANDBOX_TRACKING']) / 'active'
-        directory.mkdir()
-        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], cwd=root, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        (directory / 'id').write_text(f'{child.pid:012d}')
-        (root / 'ready').touch()
-        continue
-    elif method == 'shutdown':
-        break
-    else:
-        result = {'ok': True}
-    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+        fs::write(&plugin, r#"#!/bin/sh
+set -eu
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"hello"'*)
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"id":"tools","version":"0.1.0","protocol":{"major":0,"minor":1},"capabilities":["tool"]}}'
+            ;;
+        *'"method":"shell"'*)
+            mkdir "$KRABB_SANDBOX_TRACKING/active"
+            IFS= read -r pid < "$KRABB_ROOT/child"
+            printf '%s\n' "$pid" > "$KRABB_SANDBOX_TRACKING/active/id"
+            : > "$KRABB_ROOT/ready"
+            ;;
+        *'"method":"shutdown"'*) exit 0 ;;
+        *) exit 2 ;;
+    esac
+done
 "#).unwrap();
 
         fs::write(
             &runtime,
-            r#"#!/usr/bin/env python3
-import os, pathlib, signal, sys
-if not pathlib.Path(__file__).with_name('allow-removal').exists():
-    sys.exit(1)
-if sys.argv[1] == 'rm':
-    try:
-        os.kill(int(sys.argv[3]), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    pathlib.Path(__file__).with_name('stopped').touch()
+            r#"#!/bin/sh
+set -eu
+PATH=/usr/bin:/bin
+export PATH
+root=${0%/*}
+if [ "$1" = ps ]; then
+    pid=${5#id=}
+    if kill -0 "$pid" 2>/dev/null; then printf '%s\n' "$pid"; fi
+    exit 0
+fi
+if [ ! -f "$root/allow-removal" ]; then
+    : > "$root/removal-rejected"
+    while [ ! -f "$root/allow-removal" ]; do sleep 0.01; done
+    exit 1
+fi
+if [ "$1" = rm ]; then
+    kill -9 "$3" 2>/dev/null || true
+    : > "$root/stopped"
+fi
 "#,
         )
         .unwrap();
@@ -375,6 +381,8 @@ if sys.argv[1] == 'rm':
         for path in [&plugin, &runtime] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         }
+
+        let mut child = container(&root);
 
         let mut process = Process::start_with_env(
             &plugin,
@@ -438,28 +446,59 @@ if sys.argv[1] == 'rm':
 
         tokio::pin!(finished);
 
+        timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = &mut finished => panic!("cleanup finished early: {result:?}"),
+
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if root.join("removal-rejected").exists() { break; }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+
         assert!(timeout(Duration::from_millis(250), &mut finished).await.is_err());
         assert!(process.try_lock().is_err());
         assert!(directory.join("active/id").exists());
+        assert!(child.try_wait().unwrap().is_none());
 
         fs::write(root.join("allow-removal"), "").unwrap();
         timeout(Duration::from_secs(5), finished).await.unwrap().unwrap();
 
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
         assert!(root.join("stopped").exists());
+        assert!(!timeout(Duration::from_secs(5), child.wait()).await.unwrap().unwrap().success());
 
         fs::remove_file(root.join("ready")).unwrap();
         fs::remove_file(root.join("stopped")).unwrap();
 
         let mut process = process.lock().await.take().unwrap();
+        let mut child = container(&root);
 
         start_shell(&mut process, &root).await;
         process.stop().await.unwrap();
 
         assert!(root.join("stopped").exists());
         assert!(!directory.exists());
+        assert!(!timeout(Duration::from_secs(5), child.wait()).await.unwrap().unwrap().success());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn container(root: &Path) -> tokio::process::Child {
+        // The runtime owns a process outside the plugin's session, like a container daemon.
+        let mut command = std::process::Command::new("/bin/sleep");
+
+        command.arg("60").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        krabb_process::isolate_session(&mut command);
+
+        let child = Command::from(command).kill_on_drop(true).spawn().unwrap();
+
+        fs::write(root.join("child"), format!("{:012}\n", child.id().unwrap())).unwrap();
+        child
     }
 
     async fn start_shell(process: &mut Process, root: &Path) {

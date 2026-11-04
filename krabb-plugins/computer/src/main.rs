@@ -68,6 +68,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     let result = serve_events_concurrent(
         Hello {
+            formats: vec![],
             protocol: Protocol::CURRENT,
             id: "computer".into(),
             version: env!("CARGO_PKG_VERSION").into(),

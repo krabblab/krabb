@@ -1439,6 +1439,7 @@ mod tests {
 
     fn hello() -> Hello {
         Hello {
+            formats: vec![],
             protocol: Protocol::CURRENT,
             id: "test".into(),
             version: "0.1.0".into(),

@@ -50,6 +50,15 @@ in the session's protected media area.
 
 ## Replies
 
+The handshake advertises `formats: ["markdown"]`. Markdown sends and edits render
+as plain text plus Telegram message entities, retaining bold, italic, strikethrough,
+links, inline code, preformatted code, and quotes. No parse mode is needed. Entity
+ranges use UTF-16 units and are clipped and rebased when messages split. Requests
+without `format: "markdown"` retain their existing plain-text semantics. Streaming
+`draft` requests render only the first chunk; final delivery sends overflow once.
+An explicit Telegram “message is not modified” response counts as an unchanged
+edit, allowing final overflow delivery to continue without replaying the edit.
+
 Outgoing text is split at Telegram's message limit. An `edit` updates the first
 message and sends any remaining chunks in the same topic.
 While waiting for the first reply, Krabb sends a best-effort typing indicator

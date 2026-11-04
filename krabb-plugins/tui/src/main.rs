@@ -95,6 +95,7 @@ fn cli_error_message(error: &krabb_core::Error) -> String {
 
 fn hello() -> Hello {
     Hello {
+        formats: vec![],
         protocol: Protocol::CURRENT,
         id: "tui".into(),
         version: env!("CARGO_PKG_VERSION").into(),

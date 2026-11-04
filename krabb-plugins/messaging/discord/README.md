@@ -35,3 +35,11 @@ and [deployment validation](../../../krabb-docs/providers.md#deployment-validati
 A missing heartbeat acknowledgement closes the Gateway connection so the next
 poll reconnects. A nonresumable session rejection clears the old session before
 identifying again. Gateway connection establishment has a ten-second deadline.
+
+## Formatting
+
+The handshake advertises `formats: ["markdown"]`. Requests with
+`format: "markdown"` are rendered as Discord Markdown, escaping literal punctuation, retaining links and code fences, and disabling generated mentions.
+Requests without this field keep their existing text semantics. Unsupported
+Markdown structures remain readable text. The runtime preserves source Markdown
+for scheduled deliveries and retries.

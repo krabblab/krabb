@@ -1900,6 +1900,7 @@ dependencies = [
  "krabb-file",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "reqwest",
  "serde",
  "serde_json",
@@ -2012,6 +2013,7 @@ dependencies = [
  "krabb-file",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "serde",
  "serde_json",
  "tokio",
@@ -2026,6 +2028,7 @@ dependencies = [
  "krabb-file",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "reqwest",
  "serde",
  "serde_json",
@@ -2055,6 +2058,7 @@ dependencies = [
  "krabb-file",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "reqwest",
  "serde_json",
  "tokio",
@@ -2103,6 +2107,7 @@ dependencies = [
  "krabb-file",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "reqwest",
  "ring",
  "serde",
@@ -2144,6 +2149,7 @@ dependencies = [
  "krabb-file",
  "krabb-log",
  "krabb-process",
+ "krabb-text",
  "ring",
  "rustix 1.1.5",
  "serde",
@@ -2165,6 +2171,13 @@ dependencies = [
  "krabb-log",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "krabb-text"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
 ]
 
 [[package]]
@@ -3015,6 +3028,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
+dependencies = [
+ "bitflags 2.13.2",
+ "memchr",
+ "unicase",
 ]
 
 [[package]]

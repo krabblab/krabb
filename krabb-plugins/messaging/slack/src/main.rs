@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod formatting;
+
 #[cfg(not(test))]
 use krabb_core::types::{Request, Response};
 #[cfg(not(test))]
@@ -497,6 +499,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     serve_with(
         Hello {
+            formats: vec!["markdown".into()],
             protocol: Protocol::CURRENT,
             id: "slack".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -1360,6 +1363,16 @@ async fn send_at(
         .as_str()
         .ok_or_else(|| krabb_core::Error::Denied("Slack send requires text.".into()))?;
 
+    if params["format"] == "markdown" {
+        let mut result = Value::Null;
+
+        for body in formatting::bodies(channel, text, &params["thread"]) {
+            result = api_at(client, token, "chat.postMessage", body, base).await?;
+        }
+
+        return Ok(result);
+    }
+
     api_at(
         client,
         token,
@@ -1883,6 +1896,14 @@ mod tests {
                     .starts_with("POST /api/chat.postMessage HTTP/1.1\r\n")
             );
 
+            let encoded = String::from_utf8_lossy(&request);
+            let payload: serde_json::Value =
+                serde_json::from_str(encoded.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+
+            assert_eq!(payload["blocks"][0]["type"], "rich_text");
+            assert_eq!(payload["blocks"][0]["elements"][0]["elements"][0]["style"]["bold"], true);
+            assert_eq!(payload["text"], "hello");
+
             let body = br#"{"ok":true,"ts":"1"}"#;
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1895,7 +1916,7 @@ mod tests {
         let value = send_at(
             &test_client(),
             "xoxb-test",
-            &json!({"chat":"C1","text":"hello"}),
+            &json!({"chat":"C1","text":"**hello**","format":"markdown"}),
             &format!("http://{address}/api/"),
         )
         .await

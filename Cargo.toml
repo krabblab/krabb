@@ -2,6 +2,7 @@
 members = [
     "krabb-core",
     "krabb-libs/date",
+    "krabb-libs/text",
     "krabb-libs/logging",
     "krabb-libs/file",
     "krabb-libs/process",
@@ -47,6 +48,7 @@ readme = "README.md"
 publish = false
 
 [workspace.dependencies]
+krabb-text = { path = "krabb-libs/text" }
 krabb-test = { path = "krabb-libs/test" }
 base64 = "0.23"
 krabb-date = { path = "krabb-libs/date" }

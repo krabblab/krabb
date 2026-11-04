@@ -55,6 +55,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
     serve_with(
         Hello {
+            formats: vec![],
             protocol: Protocol::CURRENT,
             id: "sqlite".into(),
             version: env!("CARGO_PKG_VERSION").into(),

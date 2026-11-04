@@ -162,6 +162,16 @@ concurrent request handlers before waiting for the output channel to close.
 
 ## Turn Flow
 
+Before generation, the runtime supplies portable-Markdown communication guidance
+for messaging destinations. The channel handshake advertises accepted text formats;
+the host forwards Markdown to capable adapters and converts it to readable plain
+text for legacy channels. Platform rendering and chunking belong to each adapter,
+using shared bounded parsing primitives from `krabb-text`. Persisted deliveries keep
+the original source and negotiate again at delivery, so a plugin change does not
+lose formatting. Streaming previews carry `draft: true` and render only the first
+chunk; final delivery edits it and sends overflow once. Provider-independent research
+guidance requires checking the exact supplied URL and reporting actual tool results.
+
 The host reads `KRABB_HOME/workspace/KRAB.md` and `KLAW.md` as bounded system
 context at the start of each turn. It appends the session's bounded transcript
 after that context; the instruction text is not stored in the transcript, so
