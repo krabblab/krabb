@@ -57,7 +57,12 @@ Krabb is organized into six layers:
    process contracts. It does not depend on the runtime.
 5. `krabb-plugins/` contains optional capabilities. Plugins are separate
    processes that communicate with the runtime through bounded JSON-RPC 2.0
-   messages.
+   messages. Intelligence providers live under `intelligence/`, channels under
+   `channels/`, and clients such as TUI under `clients/`. These folders do not
+   change plugin IDs, capabilities, configuration, or protocol contracts. Local
+   discovery still accepts the former `messaging/` and top-level TUI layouts;
+   saved local sources using those paths resolve to the new locations when the
+   old directories are absent.
 6. `krabb-libs/` contains shared libraries for dates, logging, files, and
    process management. Consumers link only the libraries they need; these are
    not plugin processes or agent capabilities.

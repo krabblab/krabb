@@ -7,7 +7,7 @@ Semantic Versioning.
 
 ### Added
 
-- Add plugin attach/detach, start/stop and add/remove aliases, explicit forced cleanup, and bulk delivery dropping without historical records blocking removal.
+- Add plugin attach/detach mechanism for plugins for safe enabling/disabling.
 - Support concurrent channels with isolated queues and approvals, plus global and per-channel/client provider/model defaults.
 - Run Krabb from the command line, as a daemon, or in an interactive terminal chat.
 - Use hosted and local models from Codex, Anthropic, OpenAI, Gemini, Ollama, or OpenRouter.

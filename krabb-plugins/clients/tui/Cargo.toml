@@ -10,8 +10,8 @@ publish = false
 krabb-date.workspace = true
 krabb-log.workspace = true
 crossterm.workspace = true
-krabb-core = { path = "../../krabb-core" }
-krabb-file = { path = "../../krabb-libs/file" }
+krabb-core = { path = "../../../krabb-core" }
+krabb-file = { path = "../../../krabb-libs/file" }
 getrandom.workspace = true
 jiff.workspace = true
 ratatui.workspace = true

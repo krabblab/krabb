@@ -47,7 +47,7 @@ Use `/help` for commands available in the current session. Common commands:
 - `/compact` summarizes older turns; `/clear` clears an idle session.
 
 The TUI stores its command exchanges and completed model turns in the shared
-session history. See [Commands](../../krabb-docs/commands.md) for CLI
+session history. See [Commands](../../../krabb-docs/commands.md) for CLI
 operations and plugin guides for detailed schedule and memory behavior.
 
 ## Tools And Safety
@@ -86,4 +86,4 @@ The TUI uses `--plugin` / `--model` first, then `KRABB_MODEL_PLUGIN` /
 by the intelligence plugin to its small model. Existing sessions retain their
 model; `--model <id>` or `/model set <id>` changes it. Sessions saved as `unset`
 can also generate using the provider default. See
-[selection precedence](../../krabb-docs/configuration.md#provider-and-model-precedence).
+[selection precedence](../../../krabb-docs/configuration.md#provider-and-model-precedence).

@@ -186,7 +186,7 @@ The TUI supports `/help`, `/status`, `/model`, `/session`, `/workspace`,
 the commands available in the current session. `/data value` manages simple
 session-scoped values; `/data database`, `/data table`, and `/data column`
 manage structured records. `/store` remains as a compatibility alias. See the
-[TUI guide](../krabb-plugins/tui/README.md) for controls, sessions, and client
+[TUI guide](../krabb-plugins/clients/tui/README.md) for controls, sessions, and client
 commands.
 
 Typed `!command` shell execution requires `clients.tui.shell` and is supported on Linux

@@ -58,9 +58,9 @@ run it in the background.
 | Terminal Client | Provides an interactive terminal interface to the daemon. | TUI |
 
 All plugins are optional. Intelligence plugins live in
-`krabb-plugins/intelligence/`; messaging plugins live in
-`krabb-plugins/messaging/`. Plugin manifests declare capabilities and
-permissions.
+`krabb-plugins/intelligence/`; channel plugins live in
+`krabb-plugins/channels/`; client plugins, including TUI, live in
+`krabb-plugins/clients/`. Plugin manifests declare capabilities and permissions.
 
 ## Documentation
 

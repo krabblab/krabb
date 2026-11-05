@@ -36,7 +36,7 @@ tools = false
 
 [[plugins]]
 id = "telegram"
-source = "krabb-plugins/messaging/telegram"
+source = "krabb-plugins/channels/telegram"
 revision = "local"
 version = "0.1.0"
 capabilities = ["channel"]

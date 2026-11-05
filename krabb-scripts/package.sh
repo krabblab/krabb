@@ -88,6 +88,8 @@ for plugin in "${plugins[@]}"; do
     if [[ "$plugin" != core ]]; then
         manifest="$repo_root/krabb-plugins/$plugin/krabb-plugin.toml"
         [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/intelligence/$plugin/krabb-plugin.toml"
+        [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/channels/$plugin/krabb-plugin.toml"
+        [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/clients/$plugin/krabb-plugin.toml"
         [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/messaging/$plugin/krabb-plugin.toml"
         [[ -f "$manifest" ]] || die "Plugin manifest is missing: $manifest."
         cp "$manifest" "$package_dir/"
