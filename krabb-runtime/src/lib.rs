@@ -15495,6 +15495,7 @@ fn verify_plugin_binary(
         let metadata = std::fs::symlink_metadata(binary)?;
         let source = entry.source.strip_prefix("file://").unwrap_or(&entry.source);
         let source = source.split('#').next().unwrap_or(source);
+        let source = relocated_plugin_source(Path::new(source)).unwrap_or_else(|| source.into());
         let source_root = std::fs::canonicalize(source)?;
         let expected = plugin_binary(&source_root, id, entry.default)
             .ok_or_else(|| format!("Linked plugin source is unavailable: {id}."))?;
@@ -17915,7 +17916,7 @@ fn default_plugin_source(
         return Ok(direct);
     }
 
-    for group in ["intelligence", "messaging"] {
+    for group in ["intelligence", "channels", "clients", "messaging"] {
         let grouped = plugins_root.join(group).join(id);
 
         if grouped.is_dir() {
@@ -18173,6 +18174,27 @@ fn revision(path: impl AsRef<Path>) -> String {
         .map_or_else(|| "local".into(), |value| value.trim().into())
 }
 
+fn relocated_plugin_source(path: &Path) -> Option<PathBuf> {
+    if path.exists() {
+        return None;
+    }
+
+    let parent = path.parent()?;
+    let name = path.file_name()?;
+
+    let (plugins, relative) = if parent.ends_with("krabb-plugins/messaging") {
+        (parent.parent()?, Path::new("channels").join(name))
+    } else if parent.file_name()? == "krabb-plugins" && name == "tui" {
+        (parent, PathBuf::from("clients/tui"))
+    } else {
+        return None;
+    };
+
+    let relocated = plugins.join(relative);
+
+    relocated.is_dir().then_some(relocated)
+}
+
 fn resolve(
     source: &str,
     wanted: Option<&str>,
@@ -18192,9 +18214,12 @@ fn resolve(
             .then(|| path.to_path_buf())
     });
 
-    if let Some(path) =
-        source_path.or_else(|| Path::new(source).exists().then(|| PathBuf::from(source)))
+    if let Some(path) = source_path
+        .or_else(|| Path::new(source).exists().then(|| PathBuf::from(source)))
+        .or_else(|| relocated_plugin_source(Path::new(source)))
     {
+        let path = relocated_plugin_source(&path).unwrap_or(path);
+
         let path = std::fs::canonicalize(&path).map_err(|error| {
             format!(
                 "Local plugin source {} is unavailable: {} Restore the source or reinstall the plugin with --yes from its new location.",
@@ -18213,11 +18238,13 @@ fn resolve(
 
             if let Err(error) = verify_archive(&path, expected) {
                 let _ = std::fs::remove_dir_all(&temp);
+
                 return Err(error);
             }
 
             if let Err(error) = unpack(&path, &temp) {
                 let _ = std::fs::remove_dir_all(&temp);
+
                 return Err(error);
             }
 
@@ -18394,7 +18421,9 @@ fn canonical_source(source: &str) -> String {
     let path = base
         .strip_prefix("file://")
         .map(PathBuf::from)
-        .or_else(|| Path::new(base).exists().then(|| PathBuf::from(base)));
+        .or_else(|| Path::new(base).exists().then(|| PathBuf::from(base)))
+        .or_else(|| relocated_plugin_source(Path::new(base)))
+        .map(|path| relocated_plugin_source(&path).unwrap_or(path));
 
     let base = path.and_then(|path| std::fs::canonicalize(path).ok()).map_or_else(
         || base.to_owned(),
@@ -24530,6 +24559,108 @@ done
     }
 
     #[test]
+    fn plugin_discovery_supports_channel_client_and_legacy_layouts() {
+        let root = test_root("plugin-layouts");
+        let plugins = root.join("krabb-plugins");
+
+        for (id, relative) in [
+            ("codex", "intelligence/codex"),
+            ("telegram", "channels/telegram"),
+            ("tui", "clients/tui"),
+            ("slack", "messaging/slack"),
+            ("memory", "memory"),
+        ] {
+            let source = plugins.join(relative);
+            let binary = root.join("target/debug").join(super::plugin_name(id));
+
+            fs::create_dir_all(&source).unwrap();
+            fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            fs::write(&binary, "fixture").unwrap();
+
+            assert_eq!(super::default_plugin_source(&plugins, id).unwrap(), source);
+            assert_eq!(plugin_binary(&source, id, true), Some(binary));
+
+            let sources =
+                [super::Source { id: id.into(), source: None, revision: None, yes: true }];
+
+            super::ensure_linkable_sources(true, &sources, &root).unwrap();
+        }
+
+        fs::create_dir_all(plugins.join("messaging/telegram")).unwrap();
+
+        assert_eq!(
+            super::default_plugin_source(&plugins, "telegram").unwrap(),
+            plugins.join("channels/telegram")
+        );
+
+        fs::create_dir_all(plugins.join("tui")).unwrap();
+
+        assert_eq!(super::default_plugin_source(&plugins, "tui").unwrap(), plugins.join("tui"));
+        assert!(super::default_plugin_source(&plugins, "missing").is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_local_plugin_sources_follow_relocations_only_when_missing() {
+        let root =
+            PathBuf::from(format!(".krabb-relocation-{}-{}", std::process::id(), super::now()));
+
+        for (legacy, current) in [
+            ("krabb-plugins/messaging/telegram", "krabb-plugins/channels/telegram"),
+            ("krabb-plugins/tui", "krabb-plugins/clients/tui"),
+        ] {
+            let old = root.join(legacy);
+            let new = root.join(current);
+
+            fs::create_dir_all(&new).unwrap();
+
+            let expected = fs::canonicalize(&new).unwrap();
+            let absolute = std::env::current_dir().unwrap().join(&old);
+
+            for source in [
+                old.display().to_string(),
+                format!("./{}", old.display()),
+                absolute.display().to_string(),
+                format!("file://{}", absolute.display()),
+            ] {
+                let resolved = resolve(&source, Some("local")).unwrap();
+
+                assert_eq!(resolved.path, expected);
+                assert!(resolved.temp.is_none());
+
+                let canonical = if source.starts_with("file://") {
+                    format!("file://{}", expected.display())
+                } else {
+                    expected.display().to_string()
+                };
+
+                assert_eq!(super::canonical_source(&source), canonical);
+                assert!(resolve(&source, Some("wrong-revision")).is_err());
+            }
+
+            fs::create_dir_all(&old).unwrap();
+
+            assert_eq!(
+                resolve(&old.display().to_string(), None).unwrap().path,
+                fs::canonicalize(&old).unwrap()
+            );
+
+            assert!(super::relocated_plugin_source(&old).is_none());
+        }
+
+        assert!(
+            super::relocated_plugin_source(&root.join("krabb-plugins/messaging/missing")).is_none()
+        );
+
+        assert!(super::relocated_plugin_source(&root.join("krabb-plugins/missing")).is_none());
+        assert!(super::relocated_plugin_source(&root.join("other/messaging/telegram")).is_none());
+        assert!(super::relocated_plugin_source(Path::new("missing")).is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn discovers_plugins_and_detects_source_changes() {
         let root = std::env::temp_dir().join(format!("krabb-discovery-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -27990,6 +28121,58 @@ done
         assert_eq!(super::load_config_text(&root).unwrap(), config);
         assert!(super::verify_plugin_integrity(&root, "memory", &binary).is_ok());
         assert!(!super::preview_updates_at(&root, false).unwrap());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_plugin_integrity_survives_source_relocation() {
+        let root = test_root("linked-plugin-relocation");
+
+        for (id, legacy, current) in
+            [("telegram", "messaging/telegram", "channels/telegram"), ("tui", "tui", "clients/tui")]
+        {
+            let source = root.join("krabb-plugins").join(legacy);
+            let relocated = root.join("krabb-plugins").join(current);
+            let binary = root.join("target/debug").join(super::plugin_name(id));
+            let installed = root.join("plugins").join(id);
+
+            fs::create_dir_all(&source).unwrap();
+            fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            fs::create_dir_all(installed.join("bin")).unwrap();
+            fs::create_dir_all(relocated.parent().unwrap()).unwrap();
+            fs::write(&binary, "binary").unwrap();
+            fs::write(source.join("krabb-plugin.toml"), "manifest").unwrap();
+            fs::write(installed.join("krabb-plugin.toml"), "manifest").unwrap();
+
+            let link = installed.join("bin").join(super::plugin_name(id));
+            let entry: super::Entry = serde_json::from_value(serde_json::json!({
+                "source": source.display().to_string(),
+                "default": true,
+                "linked": true,
+                "version": "0.1.0",
+                "protocol": {"major": 0, "minor": 1},
+                "capabilities": []
+            }))
+            .unwrap();
+
+            super::link_binary(&binary, &link).unwrap();
+            fs::rename(&source, &relocated).unwrap();
+            super::verify_plugin_binary(id, &entry, &installed.join("krabb-plugin.toml"), &link)
+                .unwrap();
+            fs::write(relocated.join("krabb-plugin.toml"), "changed").unwrap();
+
+            assert!(
+                super::verify_plugin_binary(
+                    id,
+                    &entry,
+                    &installed.join("krabb-plugin.toml"),
+                    &link
+                )
+                .is_err()
+            );
+        }
 
         let _ = fs::remove_dir_all(root);
     }

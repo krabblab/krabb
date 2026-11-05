@@ -16,7 +16,7 @@ turn loop. `krabb-runtime` owns host orchestration, daemon state, authenticated
 IPC, and plugin lifecycle, while `krabb` and `krabb-daemon` are thin
 entrypoints. `krabb-libs/file` owns shared filesystem primitives. Plugin
 crate directories under `krabb-plugins` are process boundaries; `krabb-plugins/intelligence/`
-and `krabb-plugins/messaging/` only group plugins. Manifests declare capabilities.
+and `krabb-plugins/channels/` only group plugins. Manifests declare capabilities.
 `krabb-docs` is the user-facing source of truth; `krabb-scripts` contains
 release, metrics, verification, and review helpers.
 

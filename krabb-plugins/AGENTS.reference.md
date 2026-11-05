@@ -12,7 +12,7 @@
 ## Boundary
 
 Child plugin IDs and manifests define installation and capability discovery.
-The `intelligence/` and `messaging/` paths are organizational groupings,
+The `intelligence/` and `channels/` paths are organizational groupings,
 not capability boundaries. Each process uses `krabb_core::plugin::serve` or
 `serve_with`, emits only JSON-RPC protocol frames on stdout, and negotiates
 protocol `0.1`.

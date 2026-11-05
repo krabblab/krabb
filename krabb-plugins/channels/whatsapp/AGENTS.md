@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Path: krabb-plugins/messaging/whatsapp
+- Path: krabb-plugins/channels/whatsapp
 - Parent: krabb-plugins
 - Inheritance: additive
 

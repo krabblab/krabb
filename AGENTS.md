@@ -9,7 +9,7 @@ protocol.
 - `krabb-runtime` owns host orchestration, daemon state, IPC, and plugin
   lifecycle; `krabb` and `krabb-daemon` are thin entrypoints.
 - `krabb-libs/file` owns shared crash-safe filesystem primitives.
-- `krabb-plugins` owns process integrations. `krabb-plugins/intelligence/` and `krabb-plugins/messaging/`
+- `krabb-plugins` owns process integrations. `krabb-plugins/intelligence/` and `krabb-plugins/channels/`
   group providers and channels; manifests declare capabilities. A2A, ACP,
   AG-UI, MCP, memory, stores, tools, scheduler, speech, and TUI are plugins.
 - `krabb-docs/`, `krabb-scripts/`, `.github/`, and release files own user guidance,

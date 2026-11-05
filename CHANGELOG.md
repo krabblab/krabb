@@ -7,7 +7,7 @@ Semantic Versioning.
 
 ### Added
 
-- Add plugin attach/detach, start/stop and add/remove aliases, explicit forced cleanup, and bulk delivery dropping without historical records blocking removal.
+- Add plugin attach/detach mechanism for plugins for safe enabling/disabling.
 - Support concurrent channels with isolated queues and approvals, plus global and per-channel/client provider/model defaults.
 - Run Krabb from the command line, as a daemon, or in an interactive terminal chat.
 - Use hosted and local models from Codex, Anthropic, OpenAI, Gemini, Ollama, or OpenRouter.
@@ -21,4 +21,5 @@ Semantic Versioning.
 - Send images to supported models and transcribe voice locally.
 - Add loops for speeding up development and improving robustness.
 - Make contribloop recover from stale verification, commit-hook failures, and invalid PR metadata until checks pass.
+- Poll pending contribution CI every five minutes by default, configurable with `--ci-interval`.
 - Infer concise, single-word contribution branch names from the changes.

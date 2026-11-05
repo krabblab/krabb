@@ -126,7 +126,7 @@ class Contributions(unittest.TestCase):
         loop.sha = 'abc'
         loop.sequence = 0
         loop.attempt = 0
-        loop.args = argparse.Namespace(max_repairs=0, ci_timeout=1)
+        loop.args = argparse.Namespace(max_repairs=0, ci_timeout=1, ci_interval=300)
 
         return loop
 
@@ -148,14 +148,39 @@ class Contributions(unittest.TestCase):
 
         self.assertEqual(loop.wait.call_count, 2)
 
-    def test_no_change_repair_is_a_blocker(self):
+    def test_no_change_repair_retries_with_feedback(self):
         loop = self.contribution()
         loop.state = Path('/evidence')
-        loop.agent = Mock()
+        loop.stable = Mock()
+        loop.agent = Mock(side_effect=['Guidance edits were prohibited.', 'Corrected the paths.'])
 
-        with patch.object(MODULE, 'fingerprint', return_value='same'):
-            with self.assertRaisesRegex(RuntimeError, 'no repair'):
-                loop.repair('failure.log')
+        with patch.object(MODULE, 'fingerprint', side_effect=['same', 'same', 'same', 'fixed']):
+            loop.repair('failure.log')
+
+        self.assertEqual(loop.agent.call_count, 2)
+        self.assertEqual(loop.attempt, 1)
+        self.assertIn('Guidance edits were prohibited.', loop.agent.call_args.args[0])
+        self.assertIn('failure.log', loop.agent.call_args.args[0])
+
+    def test_no_change_ci_repair_continues_to_verified_green_pr(self):
+        loop = self.contribution()
+        loop.state = Path('/evidence')
+        loop.stable = Mock()
+        loop.prepare = Mock()
+        loop.describe = Mock(return_value=('refactor: relocation', 'body', ''))
+        loop.wait = Mock(side_effect=['ci-failure.log', None])
+        loop.agent = Mock(side_effect=['Guidance edits were prohibited.', 'Updated scope paths.'])
+        events = []
+        loop.verify = lambda: events.append('verify') or 'verified'
+        loop.publish = lambda *args: events.append(('publish', args[-1])) or '42'
+
+        with patch.object(MODULE, 'fingerprint', side_effect=['same', 'same', 'same', 'fixed']):
+            loop.execute()
+
+        self.assertEqual(events, ['verify', ('publish', False), 'verify', ('publish', True)])
+        self.assertEqual(loop.agent.call_count, 2)
+        self.assertEqual([call.args for call in loop.wait.call_args_list], [('42',), ('42',)])
+        self.assertEqual(loop.attempt, 2)
 
     def test_publish_stops_before_staging_if_verification_is_stale(self):
         loop = self.contribution()
@@ -256,6 +281,37 @@ class Contributions(unittest.TestCase):
                     loop.wait('42')
 
                 run.assert_not_called()
+
+    def test_pending_ci_polling_respects_interval_and_remaining_deadline(self):
+        for interval, timeout, expected in [
+            (300, 1000, 300),
+            (180, 1000, 180),
+            (300, 45, 35),
+            (300, 5, None),
+        ]:
+            with self.subTest(interval=interval, timeout=timeout):
+                loop = self.contribution()
+                loop.args.ci_interval = interval
+                loop.args.ci_timeout = timeout
+                loop.stable = Mock()
+                pr, workflow = status()
+                pr['url'] = 'https://github.com/owner/repo/pull/42'
+
+                workflow.update(status='in_progress', conclusion=None)
+
+                with patch.object(MODULE, 'gh', side_effect=[pr, [workflow]]) as gh:
+                    with patch.object(MODULE.time, 'sleep') as sleep:
+                        with patch.object(MODULE.time, 'monotonic',
+                                          side_effect=[0, 0, 10, timeout]):
+                            with self.assertRaisesRegex(RuntimeError, 'deadline'):
+                                loop.wait('42')
+
+                        if expected is None:
+                            sleep.assert_not_called()
+                        else:
+                            sleep.assert_called_once_with(expected)
+
+                    self.assertEqual(gh.call_count, 2)
 
     def test_publish_creates_and_repairs_real_git_branch(self):
         with tempfile.TemporaryDirectory() as directory:

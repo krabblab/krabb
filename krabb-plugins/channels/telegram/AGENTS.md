@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Path: krabb-plugins/messaging/telegram
+- Path: krabb-plugins/channels/telegram
 - Parent: krabb-plugins
 - Inheritance: additive
 

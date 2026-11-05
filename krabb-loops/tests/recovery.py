@@ -268,6 +268,55 @@ class Recovery(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'repair limit'):
                 self.loop.recover('commit hook changed content')
 
+    def test_no_change_repair_honors_budget_and_displays_worker_explanation(self):
+        self.loop.args.max_repairs = 1
+        self.loop.agent = Mock(return_value='Missing credentials prevent the repair.')
+
+        with patch.object(MODULE, 'ROOT', self.root), patch('builtins.print') as output:
+            with self.assertRaisesRegex(RuntimeError, 'repair limit'):
+                self.loop.recover('CI failed', self.root / 'ci.log')
+
+        self.loop.agent.assert_called_once()
+
+        self.assertTrue(any('Missing credentials prevent the repair.' in str(call)
+                            for call in output.call_args_list))
+
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.loop.sha)
+
+    def test_guidance_failure_is_repaired_before_running_workspace_verification(self):
+        guidance = self.root / 'AGENTS.md'
+
+        guidance.write_text('stale path')
+
+        events = []
+
+        def verify(command, **kwargs):
+            if 'agentskill' in command:
+                events.append('guidance')
+                kwargs['stdout'].write('guidance validation result\n')
+
+                return Mock(returncode=int(guidance.read_text() == 'stale path'))
+
+            events.append('make verify')
+
+            return Mock(returncode=0)
+
+        def repair(evidence):
+            self.assertIn('guidance validation result', evidence.read_text())
+
+            events.append('repair')
+            guidance.write_text('current path')
+
+        self.loop.repair = repair
+
+        with patch.object(MODULE, 'ROOT', self.root), patch.object(self.loop, 'stable'):
+            with patch.object(MODULE, 'fingerprint', return_value='snapshot'):
+                with patch.object(MODULE.shutil, 'which', return_value='/bin/agentskill'):
+                    with patch.object(MODULE.subprocess, 'run', side_effect=verify):
+                        self.assertEqual(self.loop.verify(), 'snapshot')
+
+        self.assertEqual(events, ['guidance', 'repair', 'guidance', 'make verify'])
+
     def test_external_head_changes_remain_blockers(self):
         loop = self.execute()
         loop.verify = Mock(side_effect=MODULE.Reverify('content changed'))
