@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Path: krabb-plugins/tui
+- Path: krabb-plugins/clients/tui
 - Parent: krabb-plugins
 - Inheritance: additive
 

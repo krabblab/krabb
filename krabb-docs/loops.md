@@ -73,7 +73,7 @@ CI run is saved as evidence for a restricted worker, followed by local verificat
 a repair commit, another push, and another CI wait. This repeats until green. Only then
 does the host mark the PR ready for review and exit successfully. Skipped conditional
 jobs are permitted only inside a successful workflow. Merge conflicts, external head
-changes, a repair that changes no code, missing credentials or other blockers return
+changes, missing credentials or other host-operation blockers return
 nonzero and preserve the evidence; they never produce a ready result. Green describes
 the checked commit at completion, not future pushes or future changes to the base branch.
 
@@ -82,9 +82,16 @@ verification fingerprint. Content changes during verification, metadata preparat
 staging, commit hooks or the CI wait trigger fresh verification before publication.
 Failed commit hooks retain logs for the repair worker; hooks that already changed files
 trigger verification of those changes first. Invalid PR metadata is regenerated with
-validation feedback. These recovery cycles share the optional repair budget with local
-test and CI repairs. Branch changes, external commits and agent index mutations remain
+validation feedback. A worker that makes no changes prints its explanation and retries
+with that feedback and the original evidence, using the same repair budget. No-change
+responses cannot mark the PR ready. These recovery cycles share the optional repair budget
+with local test and CI repairs. Branch changes, external commits and agent index mutations remain
 blockers; recovery never bypasses verification or publishes stale content.
+
+When Agentskill is installed, local verification first runs
+`agentskill validate . --signature auto`. Contribution workers may correct factual paths,
+links and scope metadata in managed guidance files when validation fails; policies,
+restrictions and signatures must remain intact. CI guidance validation remains required.
 
 The contribution loop requires the same Linux process supervision and authenticated
 Codex or Claude backend as the review loops, plus authenticated `gh` and push access
@@ -93,8 +100,11 @@ runs verification and Git/GitHub mutations. Configure the backend with
 `KRABB_CONTRIBLOOP_AGENT=codex` or `claude` and the shared `KRABB_LOOP_*` model settings.
 Agent timeout defaults to 60 minutes and each local verification has 30 minutes.
 `--max-repairs N` optionally limits recovery cycles across all phases (zero means unlimited);
-`--ci-timeout SECONDS` limits each CI wait (default 3600). The contribution script
-has its own options, shown by `--help`; review-loop flags such as `--global` do not apply.
+`--ci-timeout SECONDS` limits each CI wait (default 3600). Pending CI is checked immediately,
+then every five minutes. Use `--ci-interval SECONDS` to adjust that interval (default 300),
+for example `make contribloop CONTRIBLOOP_ARGS="--ci-interval,180"` for three minutes.
+Polling sleeps are capped at the remaining CI timeout. The contribution script has its
+own options, shown by `--help`; review-loop flags such as `--global` do not apply.
 Artifacts live under ignored `.krabb/loops/contrib/<timestamp>/`. Reinvoke the command
 on the same feature branch to resume after resolving a blocker. A per-worktree lock
 rejects a concurrent contribution loop.

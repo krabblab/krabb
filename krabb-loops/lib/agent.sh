@@ -101,7 +101,11 @@ agent_run() {
     local status=0 tier=default raw="${output%.*}.jsonl" tools_list='Read,Glob,Grep'
     local command=()
     local settings='{"disableAllHooks":true,"permissions":{"deny":['
-    settings+='"Edit(.git)","Edit(.git/**)","Edit(AGENTS.md)","Edit(.krabb/loops/**)"]}}'
+    settings+='"Edit(.git)","Edit(.git/**)","Edit(.krabb/loops/**)"'
+    if [[ "${LOOP:-rev}:$role" != contrib:worker ]]; then
+        settings+=',"Edit(AGENTS.md)"'
+    fi
+    settings+=']}}'
 
     case "$role:$mode" in
         orchestrator:read-only|worker:workspace-write) ;;

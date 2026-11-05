@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Path: krabb-plugins/messaging/slack
+- Path: krabb-plugins/channels/slack
 - Parent: krabb-plugins
 - Inheritance: additive
 

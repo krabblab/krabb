@@ -9,7 +9,7 @@
 ## Mission And Repository Map
 
 Each plugin crate is one process with a manifest, README, and binary. The
-`intelligence/` and `messaging/` directories group provider and channel
+`intelligence/` and `channels/` directories group provider and channel
 plugins; manifests, not folder names, declare each plugin capability. The
 runtime loads plugins through the public core JSON-RPC contract.
 

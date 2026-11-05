@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Path: krabb-plugins/messaging/signal
+- Path: krabb-plugins/channels/signal
 - Parent: krabb-plugins
 - Inheritance: additive
 

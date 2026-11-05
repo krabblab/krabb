@@ -389,6 +389,35 @@ class LegacyContract(unittest.TestCase):
             self.assertNotIn('Bash', tools)
             self.assertEqual('Write' in tools, index == 1)
 
+            settings = json.loads(args[args.index('--settings') + 1])
+
+            self.assertIn('Edit(AGENTS.md)', settings['permissions']['deny'])
+
+    def test_contribution_worker_allows_guidance_maintenance_with_restricted_tools(self):
+        self.env['KRABB_LOOP_AGENT'] = 'claude'
+        prompt = self.fixture / 'repair.prompt'
+        output = self.fixture / 'repair.response'
+        log = self.fixture / 'repair.log'
+
+        prompt.write_text('Correct the stale scope path in AGENTS.md.')
+
+        result = subprocess.run(
+            ['bash', str(self.root / 'krabb-loops/lib/contribute.sh'), 'worker',
+             str(self.root), str(prompt), 'workspace-write', str(output), str(log)],
+            cwd=self.root, env=self.env, text=True, capture_output=True, timeout=20,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        args = self.calls('claude')[0]
+        settings = json.loads(args[args.index('--settings') + 1])
+        denied = settings['permissions']['deny']
+
+        self.assertNotIn('Edit(AGENTS.md)', denied)
+        self.assertIn('Edit(.git/**)', denied)
+        self.assertIn('Edit(.krabb/loops/**)', denied)
+        self.assertNotIn('Bash', args[args.index('--tools') + 1])
+
     def test_claude_streams_use_jsonl_and_reports_use_json(self):
         self.env['KRABB_LOOP_AGENT'] = 'claude'
         result = self.run_loop()

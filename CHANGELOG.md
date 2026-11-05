@@ -21,4 +21,5 @@ Semantic Versioning.
 - Send images to supported models and transcribe voice locally.
 - Add loops for speeding up development and improving robustness.
 - Make contribloop recover from stale verification, commit-hook failures, and invalid PR metadata until checks pass.
+- Poll pending contribution CI every five minutes by default, configurable with `--ci-interval`.
 - Infer concise, single-word contribution branch names from the changes.

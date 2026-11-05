@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Path: krabb-plugins/messaging/discord
+- Path: krabb-plugins/channels/discord
 - Parent: krabb-plugins
 - Inheritance: additive
 
