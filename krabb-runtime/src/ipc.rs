@@ -43,6 +43,10 @@ const COMPACT_BATCH_BYTES: usize = 48 * 1024;
 #[cfg(test)]
 const CLIENTS: usize = 64;
 
+#[cfg(all(test, unix))]
+#[path = "tests/controls.rs"]
+mod controls;
+
 pub fn token() -> io::Result<String> {
     let mut bytes = [0_u8; 32];
 
@@ -141,6 +145,9 @@ async fn handle(
     let _lifecycle = if matches!(
         request.method.as_str(),
         "plugin.uninstall"
+            | "plugin.unload"
+            | "plugin.detach"
+            | "delivery.drop"
             | "session.cancel"
             | "approval.resolve"
             | "approval.list"
@@ -165,10 +172,12 @@ async fn handle(
 
     let response = match request.method.as_str() {
         "plugin.load" => load(&request, &state).await,
+        "plugin.attach" => attach(&request, &state).await,
         "plugin.setup" => setup(&request, &state).await,
-        "plugin.unload" => unload(&request, &state).await,
+        "plugin.unload" | "plugin.detach" => unload(&request, &state).await,
         "plugin.uninstall" => uninstall(&request, &state).await,
         "plugin.active" => active(&request, &state).await,
+        "delivery.drop" => drop_deliveries(&request, &state).await,
         "capability.call" => capability_call(&request, &state).await,
         "model.list" => model_list(&request, &state).await,
         "approval.list" => approval_list(&request, &state).await,
@@ -1534,10 +1543,46 @@ async fn load(request: &IpcRequest, state: &State) -> IpcResponse {
     }
 }
 
+async fn attach(request: &IpcRequest, state: &State) -> IpcResponse {
+    if let Some(id) = request.params["id"].as_str()
+        && state.plugins.get(id).await.is_some()
+    {
+        state.plugins.detached.write().await.remove(id);
+        return IpcResponse::ok(request.id, json!({"id": id, "loaded": true}));
+    }
+
+    load(request, state).await
+}
+
+async fn drop_deliveries(request: &IpcRequest, state: &State) -> IpcResponse {
+    let Ok(_lifecycle) = timeout(CANCEL_WAIT, state.plugins.lifecycle.write()).await else {
+        return IpcResponse::fail(
+            request.id,
+            -32000,
+            "Active work did not settle for delivery drop.",
+        );
+    };
+
+    dispatch(request, state)
+        .unwrap_or_else(|error| IpcResponse::fail(request.id, -32000, error.to_string()))
+}
+
 async fn unload(request: &IpcRequest, state: &State) -> IpcResponse {
-    let Some(id) = request.params["id"].as_str() else {
+    let Some(id) = request.params["id"].as_str().filter(|id| super::valid(id)) else {
         return IpcResponse::fail(request.id, -32602, "plugin.unload.id is required.");
     };
+
+    let Ok(_lifecycle) = timeout(CANCEL_WAIT, state.plugins.lifecycle.write()).await else {
+        return IpcResponse::fail(
+            request.id,
+            -32000,
+            "Active work did not settle for plugin detach.",
+        );
+    };
+
+    if request.method == "plugin.detach" {
+        state.plugins.detached.write().await.insert(id.into());
+    }
 
     match super::unload_plugin(id, &state.plugins).await {
         Ok(unloaded) => IpcResponse::ok(request.id, json!({"id": id, "unloaded": unloaded})),
@@ -1632,7 +1677,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let sessions = state.sessions.lock().map_err(lock)?;
             json!({
                 "sessions": !sessions.sessions.is_empty(),
-                "deliveries": !sessions.outbox.is_empty() || !sessions.dead.is_empty(),
+                "deliveries": !sessions.outbox.is_empty(),
             })
         }
 
@@ -1735,13 +1780,9 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 ));
             }
 
-            let id = request.params["id"]
-                .as_str()
-                .ok_or_else(|| invalid("delivery.drop.id is required."))?;
             let mut sessions = state.sessions.lock().map_err(lock)?;
 
-            sessions.drop_delivery(id)?;
-            json!({"id": id, "status": "dropped"})
+            super::delivery::apply(&mut sessions, &request.params)?
         }
 
         "session.get" => {
@@ -2771,7 +2812,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&state.home);
     }
 
-    fn state_at(label: &str) -> State {
+    pub(super) fn state_at(label: &str) -> State {
         let path = test_store_path(label);
         let thread = std::thread::current()
             .name()

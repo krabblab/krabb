@@ -18,6 +18,8 @@ krabb <id> setup [--no-activate] [--json]
 krabb plugin install <id>... [--source <path-or-url>] [--revision <rev>] [--link] [-y|--yes] [--json]
 krabb plugin update [-y|--yes] [--json]
 krabb plugin uninstall <id>... [-y|--yes] [--force] [--json]
+krabb plugin detach <id> [--json]
+krabb plugin attach <id> [--json]
 krabb memory <status|search|list|show|remember|edit|forget|audit|converge|learning|help> [arguments...]
 krabb session new <id> [--model <name>] [--json]
 krabb session list [<page>] [--json]
@@ -29,6 +31,7 @@ krabb session delete <id> [-y|--yes] [--json]
 krabb delivery list [<page>] [--json]
 krabb delivery retry <id> [-y|--yes] [--json]
 krabb delivery drop <id> [-y|--yes] [--json]
+krabb delivery drop --all [--channel <id>] [-y|--yes] [--json]
 krabb export [PATH] [--path <PATH>] [--force] [--json]
 krabb validate [--path <PATH>] [--json]
 krabb import [--path <PATH>] [-y|--yes] [--force] [--json]
@@ -198,6 +201,8 @@ krabb plugin list [page]
 krabb plugin install <id>... [--source <path-or-url>] [--revision <rev>] [--link]
 krabb plugin update
 krabb plugin uninstall <id>...
+krabb plugin detach <id>
+krabb plugin attach <id>
 ```
 
 Install accepts official IDs or one explicit source. Sources may be local
@@ -217,6 +222,21 @@ checks, process unloading, and file removal. Removing
 the last model or messaging plugin can require deleting dependent session or
 delivery state; `--force` with confirmation performs that purge. See
 [Plugins](plugins.md) for manifests, permissions, and update behavior.
+
+Use `plugin install` (alias `add`) to install and activate a plugin, and
+`plugin uninstall` (alias `remove`) to remove it. Installing does not require a
+separate attach step.
+
+For maintenance, `plugin detach <id>` (alias `stop`) waits for active work to finish
+and disconnects the plugin from the runtime, keeping its files, credentials and data.
+Use `plugin attach <id>` (alias `start`) to bring it back. Updates preserve detachment;
+restarting the daemon or explicitly activating the plugin loads it again. These commands
+control daemon-managed plugins, not separately launched CLI clients.
+
+`plugin uninstall telegram --force` also deletes delivery state when Telegram is the
+last messaging plugin. Removing the last intelligence plugin with `--force` can delete
+sessions. The command confirms this cleanup; `-y` skips the prompt. Dropped delivery
+history does not block ordinary uninstall.
 
 ## Memory
 
@@ -257,12 +277,18 @@ krabb session delete <id> [--yes]
 krabb delivery list [page]
 krabb delivery retry <id> [--yes]
 krabb delivery drop <id> [--yes]
+krabb delivery drop --all [--channel <id>] [--yes]
 ```
 
 Lists are paginated; `--json` returns structured state. `session show` displays
 one transcript. Cancellation waits for the turn to stop. An uncertain delivery
 may already have reached its destination; retry only when a duplicate is
 acceptable. See [Concepts](concepts.md) for session and delivery state.
+
+`delivery drop --all` clears the queue across all pages after one confirmation.
+Add `--channel telegram` to clear only Telegram deliveries. Dropping retains bounded
+history and cannot retract messages already sent. Detach the channel first to keep new
+messages from entering the queue. JSON mode requires `--yes` for cleanup.
 
 ## Scheduling
 

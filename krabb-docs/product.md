@@ -155,6 +155,11 @@ and model flags; saved conversations retain their model selection.
   runs per session; later messages queue; stop cancels. Bounds cover steps,
   time, and tokens. Crashes interrupt turns and mutating tools are never
   replayed.
+- Plugin attach/detach controls runtime membership without uninstalling; start/stop and
+  add/remove alias attach/detach and install/uninstall. Force cleanup is explicit.
+  Delivery dropping supports all pages and exact
+  channel filtering, with one confirmation and a durable batch update. Terminal dropped
+  history does not block uninstall.
 - `KRABB_HOME/workspace/KRAB.md` defines Krabb's identity and communication
   style; `KLAW.md` defines behavioral guidance and workflows. Both are loaded
   into every model turn alongside the bounded session transcript. Krabb does

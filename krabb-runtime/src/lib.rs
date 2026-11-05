@@ -42,7 +42,9 @@ use tracing::{debug, error, info, warn};
 pub(crate) mod approval;
 mod channels;
 mod credentials;
+mod delivery;
 pub(crate) mod ipc;
+mod lifecycle;
 pub(crate) mod logging;
 mod media;
 mod messaging;
@@ -171,6 +173,7 @@ impl Cancellation {
 #[derive(Clone)]
 pub(crate) struct Plugins {
     items: Arc<RwLock<BTreeMap<String, Arc<Live>>>>,
+    detached: Arc<RwLock<BTreeSet<String>>>,
     loading: Arc<AsyncMutex<()>>,
     changed: Arc<Notify>,
     lifecycle: Arc<RwLock<()>>,
@@ -187,6 +190,7 @@ impl Default for Plugins {
     fn default() -> Self {
         Self {
             items: Arc::new(RwLock::new(BTreeMap::new())),
+            detached: Arc::new(RwLock::new(BTreeSet::new())),
             loading: Arc::new(AsyncMutex::new(())),
             changed: Arc::new(Notify::new()),
             lifecycle: Arc::new(RwLock::new(())),
@@ -967,11 +971,22 @@ enum PluginCommand {
     Setup(setup::Options),
     #[command(about = "List installed plugins.")]
     List(ListOutput),
-    #[command(about = "Install and activate one or more plugins.")]
+    #[command(visible_alias = "add", about = "Install and activate one or more plugins.")]
     Install(PluginInstall),
     #[command(about = "Review available plugin updates; pass -y to apply them.")]
     Update(PluginUpdate),
-    #[command(name = "uninstall", about = "Uninstall one or more plugins.")]
+    #[command(
+        visible_alias = "stop",
+        about = "Detach a plugin from the runtime without uninstalling it."
+    )]
+    Detach(Id),
+    #[command(visible_alias = "start", about = "Attach an installed plugin to the running daemon.")]
+    Attach(Id),
+    #[command(
+        name = "uninstall",
+        visible_alias = "remove",
+        about = "Uninstall one or more plugins."
+    )]
     Remove(PluginUninstall),
 }
 
@@ -999,8 +1014,8 @@ enum DeliveryCommand {
     List(ListOutput),
     #[command(about = "Retry a delivery explicitly.")]
     Retry(Name),
-    #[command(about = "Drop a delivery without retrying it.")]
-    Drop(Name),
+    #[command(about = "Drop one delivery or all matching deliveries without retrying them.")]
+    Drop(delivery::Drop),
 }
 
 #[derive(Debug, Parser)]
@@ -1289,7 +1304,10 @@ struct PluginUninstall {
     ids: Vec<String>,
     #[arg(short, long, help = "Skip the confirmation prompt.")]
     yes: bool,
-    #[arg(long, help = "Purge state owned by the last capability plugin.")]
+    #[arg(
+        long,
+        help = "Purge session/delivery state when removing the last provider or channel plugin."
+    )]
     force: bool,
 }
 
@@ -4022,47 +4040,7 @@ async fn delivery_at_json(
             }
         }
 
-        DeliveryCommand::Drop(args) => {
-            if !confirm_action(args.yes, json, &format!("Drop delivery {}?", args.id))? {
-                print_cancelled("Drop", json);
-                return Ok(());
-            }
-
-            let id = args.id.clone();
-
-            if let Some(value) =
-                control_at("delivery.drop", serde_json::json!({"id": id, "yes": true}), root)
-                    .await?
-            {
-                info!(operation = "delivery.drop", source = "daemon", "Delivery dropped.");
-
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&value)?);
-                } else {
-                    println!("Dropped delivery {}.", value["id"].as_str().unwrap_or_default());
-                }
-
-                return Ok(());
-            }
-
-            let _offline_lock = offline_lock(root)?;
-            let mut store = sessions_at(root)?;
-            store.drop_delivery(&args.id)?;
-            info!(operation = "delivery.drop", source = "offline", "Delivery dropped.");
-
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "action": "drop",
-                        "id": args.id,
-                        "status": "dropped"
-                    }))?
-                );
-            } else {
-                println!("Dropped delivery {}.", args.id);
-            }
-        }
+        DeliveryCommand::Drop(args) => delivery::drop(args, root, json).await?,
     }
 
     Ok(())
@@ -6243,6 +6221,13 @@ async fn execute_scheduled_task(
     let context = &task["context"];
     let provider_id = context["provider"].as_str().unwrap_or(default_provider);
     let model = context["model"].as_str().unwrap_or(default_model);
+
+    if plugins.detached.read().await.contains(provider_id) {
+        return Err(format!(
+            "PAUSED: Configured model provider {provider_id} is detached. Use `krabb plugin attach {provider_id}` to resume."
+        ).into());
+    }
+
     let provider = match plugins.get(provider_id).await {
         Some(provider) => provider,
 
@@ -7055,6 +7040,7 @@ pub(crate) async fn load_plugin(
     }
 
     info!(plugin = %hello.id, version = %hello.version, "Plugin loaded.");
+    plugins.detached.write().await.remove(id);
     Ok(hello)
 }
 
@@ -16210,6 +16196,8 @@ async fn plugin(
     match command {
         PluginCommand::Setup(options) => setup::run(options, &home(), json).await?,
         PluginCommand::List(output) => list(output.page, output.json || json)?,
+        PluginCommand::Detach(args) => lifecycle::run(&home(), &args.id, false, json).await?,
+        PluginCommand::Attach(args) => lifecycle::run(&home(), &args.id, true, json).await?,
 
         PluginCommand::Install(install) => {
             let (linked, mut sources) = plugin_sources(install)?;
@@ -16366,11 +16354,17 @@ async fn plugin(
         PluginCommand::Remove(name) => {
             let ids = plugin_uninstall_ids(name.ids)?;
 
-            let prompt = if ids.len() == 1 {
+            let mut prompt = if ids.len() == 1 {
                 format!("Uninstall plugin {}?", ids[0])
             } else {
                 format!("Uninstall plugins {}?", ids.join(", "))
             };
+
+            if name.force {
+                prompt.push_str(
+                    " --force purges session/delivery state for the last provider/channel.",
+                );
+            }
 
             if !confirm_action(name.yes, json, &prompt)? {
                 print_cancelled("Uninstall", json);
@@ -16662,7 +16656,8 @@ fn check_plugin_state(
     if model && sessions {
         return Err(concat!(
             "Cannot uninstall the last intelligence plugin while sessions exist. ",
-            "Delete the sessions with `krabb session delete` first."
+            "Delete the sessions with `krabb session delete` first, or use ",
+            "`krabb plugin uninstall <id> --force` to delete blocking state."
         )
         .into());
     }
@@ -16670,7 +16665,8 @@ fn check_plugin_state(
     if channel && deliveries {
         return Err(concat!(
             "Cannot uninstall the last messaging plugin while deliveries are pending or ",
-            "uncertain. Manage them with `krabb delivery` first."
+            "uncertain. Use `krabb delivery drop --all`, or ",
+            "`krabb plugin uninstall <id> --force` to delete blocking delivery records."
         )
         .into());
     }
@@ -18936,7 +18932,7 @@ fn ensure_no_orphaned_plugin_state(
         home_root,
         &serde_json::json!({
             "sessions": !store.sessions.is_empty(),
-            "deliveries": !store.outbox.is_empty() || !store.dead.is_empty(),
+            "deliveries": !store.outbox.is_empty(),
         }),
     )
 }
@@ -25297,7 +25293,13 @@ done
             } if ids == ["codex", "telegram"]
         ));
 
-        assert!(Cli::try_parse_from(["krabb", "plugin", "remove", "tools", "-y"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["krabb", "plugin", "remove", "tools", "-y"]).unwrap().command,
+            Command::Plugin { command: super::PluginCommand::Remove(super::PluginUninstall {
+                ids, yes: true, force: false,
+            }) } if ids == ["tools"]
+        ));
+
         assert!(Cli::try_parse_from(["krabb", "service", "remove", "-y"]).is_err());
 
         let cli = Cli::try_parse_from([
@@ -28098,14 +28100,28 @@ done
             .unwrap();
 
         assert!(
-            delivery_at(DeliveryCommand::Drop(Name { id: "missing".into(), yes: true }), &root)
-                .await
-                .is_err()
+            delivery_at(
+                DeliveryCommand::Drop(super::delivery::Drop {
+                    id: Some("missing".into()),
+                    yes: true,
+                    ..Default::default()
+                }),
+                &root
+            )
+            .await
+            .is_err()
         );
 
-        delivery_at(DeliveryCommand::Drop(Name { id: "delivery".into(), yes: true }), &root)
-            .await
-            .unwrap();
+        delivery_at(
+            DeliveryCommand::Drop(super::delivery::Drop {
+                id: Some("delivery".into()),
+                yes: true,
+                ..Default::default()
+            }),
+            &root,
+        )
+        .await
+        .unwrap();
 
         let krabfile = root.join("Krabfile");
 

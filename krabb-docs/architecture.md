@@ -126,6 +126,15 @@ credentials are ready. `plugin update` unloads active plugin processes before re
 their files, then reloads the same active set; inactive plugins stay inactive
 and the daemon process remains running.
 
+`plugin detach` uses authenticated `plugin.detach` with the same exclusive lifecycle
+reservation, retaining installation and durable state. `plugin attach` loads an inactive
+plugin and preserves an already active instance. The channel supervisor stops workers
+whose plugins leave the registry; scheduled tasks respect explicit provider detachment.
+`delivery.drop` also reserves the lifecycle before
+mutating the queue, so a concurrent send settles first. Bulk drops optionally match an
+exact channel ID and persist the batch in one store change with rollback on save failure.
+Dropped history is terminal and is excluded from uninstall's pending-delivery guard.
+
 On Windows, the daemon's service entrypoint connects to SCM through the shared
 process library. The runtime reports readiness after plugin startup and IPC
 publication, maintains progress while starting or stopping, and routes SCM stop
