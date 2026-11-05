@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod model;
+
 mod history;
 use history::messages;
 
@@ -67,13 +69,7 @@ async fn generate(
     let key = credential()?;
     let base = base_url()?;
 
-    let model = if input.model.trim().is_empty() || input.model == "default" {
-        std::env::var("KRABB_OPENAI_MODEL").map_err(|_| {
-            krabb_core::Error::Denied("KRABB_OPENAI_MODEL is not configured.".into())
-        })?
-    } else {
-        input.model.clone()
-    };
+    let model = model::resolve(&input.model, std::env::var("KRABB_OPENAI_MODEL").ok().as_deref());
 
     let request = ModelRequest { model, ..input };
 
@@ -111,6 +107,19 @@ fn validate_base_url(value: &str) -> krabb_core::Result<String> {
     Ok(value.trim_end_matches('/').into())
 }
 
+fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_json::Value> {
+    let mut body = json!({
+        "model": model::resolve(&input.model, None),
+        "messages": messages(input)?,
+        "stream": stream,
+        "tools": tools(input),
+    });
+
+    model::configure(&mut body);
+
+    Ok(body)
+}
+
 async fn complete(
     client: &reqwest::Client,
     id: u64,
@@ -121,12 +130,7 @@ async fn complete(
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
-        .json(&json!({
-            "model": input.model,
-            "messages": messages(&input)?,
-            "stream": false,
-            "tools": tools(&input)
-        }))
+        .json(&request_body(&input, false)?)
         .send()
         .await
         .map_err(|error| krabb_core::Error::Denied(format!("OpenAI request failed: {error}.")))?;
@@ -148,12 +152,7 @@ async fn stream(
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
-        .json(&json!({
-            "model": input.model,
-            "messages": messages(&input)?,
-            "stream": true,
-            "tools": tools(&input)
-        }))
+        .json(&request_body(&input, true)?)
         .send()
         .await
         .map_err(|error| krabb_core::Error::Denied(format!("OpenAI stream failed: {error}.")))?;
@@ -1042,3 +1041,6 @@ data: [DONE]
 #[cfg(test)]
 #[path = "tests/hardening.rs"]
 mod hardening;
+
+#[cfg(test)]
+mod defaults;

@@ -7,6 +7,7 @@ Semantic Versioning.
 
 ### Added
 
+- Support concurrent channels with isolated queues and approvals, plus global and per-channel/client provider/model defaults.
 - Run Krabb from the command line, as a daemon, or in an interactive terminal chat.
 - Use hosted and local models from Codex, Anthropic, OpenAI, Gemini, Ollama, or OpenRouter.
 - Connect Telegram, Discord, WhatsApp, Signal, and Slack to your agents.
@@ -18,3 +19,5 @@ Semantic Versioning.
 - Schedule agent tasks and send their results to chat channels.
 - Send images to supported models and transcribe voice locally.
 - Add loops for speeding up development and improving robustness.
+- Make contribloop recover from stale verification, commit-hook failures, and invalid PR metadata until checks pass.
+- Infer concise, single-word contribution branch names from the changes.

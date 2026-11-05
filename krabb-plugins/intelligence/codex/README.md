@@ -26,9 +26,11 @@ Discover the available operations with `krabb codex --help`. Use
 `krabb codex logout` to manage sign-in, and `krabb codex models` to list
 account models. In the TUI, `/model help` shows model controls and
 `/model list` lists Codex models; select one with `/model set <id>`.
-With personal ChatGPT sign-in, an unspecified model (including Krabb's `unset`
-placeholder) uses the Codex profile's default. Explicit model IDs are preserved.
-The API-key route still requires an explicit model.
+Both API-key and personal ChatGPT sign-in routes use `gpt-6-luna` for an
+unspecified, `default`, legacy `unset`, or blank model. The sign-in route does not
+inherit the Codex profile's model default. Explicit model IDs are preserved.
+See [default models](../../../krabb-docs/providers.md#default-models) for verified
+catalog sources and generation limits. Unavailable models fail without substitution.
 
 Sign-in turns explicitly use live web search, overriding the cached-search default
 of a read-only Codex session. Provider-hosted web search is separate from local

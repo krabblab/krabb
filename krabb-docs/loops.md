@@ -57,7 +57,11 @@ milestones or reviewers; those remain available for a maintainer to add.
 Invoking this command authorizes staging and committing **all uncommitted changes**,
 pushing the feature branch and creating or updating its PR. Run it in a dedicated
 working tree without concurrent edits. It never force-pushes or merges. New branches
-default to `contrib-<timestamp>`; an existing open PR on the current branch is resumed.
+use a short, single-word name inferred from the full contribution diff, such as
+`multiprovider`. The read-only naming agent considers staged, unstaged and untracked
+changes. Names contain only lowercase letters; invalid or occupied names trigger another
+inference, using the shared recovery budget. Local and remote branch names are reserved,
+including names used as branch prefixes. An existing open PR on the current branch is resumed.
 To choose a name, use `make contribloop CONTRIBLOOP_ARGS="--branch,rt"`, or
 `bash krabb-loops/contribloop.sh --branch rt`. An existing named branch must already be
 checked out. A branch whose tree matches the fetched default branch starts from that
@@ -73,13 +77,22 @@ changes, a repair that changes no code, missing credentials or other blockers re
 nonzero and preserve the evidence; they never produce a ready result. Green describes
 the checked commit at completion, not future pushes or future changes to the base branch.
 
+Recoverable local failures also stay inside the loop. Staging new files preserves their
+verification fingerprint. Content changes during verification, metadata preparation,
+staging, commit hooks or the CI wait trigger fresh verification before publication.
+Failed commit hooks retain logs for the repair worker; hooks that already changed files
+trigger verification of those changes first. Invalid PR metadata is regenerated with
+validation feedback. These recovery cycles share the optional repair budget with local
+test and CI repairs. Branch changes, external commits and agent index mutations remain
+blockers; recovery never bypasses verification or publishes stale content.
+
 The contribution loop requires the same Linux process supervision and authenticated
 Codex or Claude backend as the review loops, plus authenticated `gh` and push access
 to the GitHub `origin`. Agents reuse the existing restricted runner; only the host
 runs verification and Git/GitHub mutations. Configure the backend with
 `KRABB_CONTRIBLOOP_AGENT=codex` or `claude` and the shared `KRABB_LOOP_*` model settings.
 Agent timeout defaults to 60 minutes and each local verification has 30 minutes.
-`--max-repairs N` optionally limits repair attempts (default zero means unlimited);
+`--max-repairs N` optionally limits recovery cycles across all phases (zero means unlimited);
 `--ci-timeout SECONDS` limits each CI wait (default 3600). The contribution script
 has its own options, shown by `--help`; review-loop flags such as `--global` do not apply.
 Artifacts live under ignored `.krabb/loops/contrib/<timestamp>/`. Reinvoke the command

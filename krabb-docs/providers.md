@@ -25,6 +25,53 @@ vendor-specific fields inside the plugin process.
 | `ollama` | Ollama local or cloud API | `KRABB_OLLAMA_HOST`, `KRABB_OLLAMA_API_KEY`, or encrypted credentials |
 | `openrouter` | OpenAI-compatible routed models | `KRABB_OPENROUTER_KEY`, `KRABB_OPENROUTER_MODEL`, or encrypted credentials |
 
+### Default models
+
+An omitted model first inherits the host's
+[argument, environment, and TOML defaults](configuration.md#provider-and-model-precedence).
+`default`, the legacy `unset` value, and blank values resolve inside the selected
+adapter. Explicit model names take precedence. OpenAI and
+OpenRouter also honor their existing `KRABB_OPENAI_MODEL` and
+`KRABB_OPENROUTER_MODEL` overrides before the built-in defaults.
+
+These small/efficient defaults were verified against official catalogs on **2026-11-05**:
+
+| Plugin / route | Default | Official source |
+| --- | --- | --- |
+| OpenAI | `gpt-6-luna` | [Model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna) |
+| Codex API key and ChatGPT sign-in | `gpt-6-luna` | [Codex models](https://learn.chatgpt.com/docs/models) |
+| Anthropic | `claude-haiku-5-5` | [Haiku overview](https://platform.claude.com/docs/en/models/haiku-5-5/overview) |
+| Gemini | `gemini-3.5-flash-lite` | [Flash-Lite documentation](https://aistudio.google.com/docs/models/gemini-3.5-flash-lite) |
+| OpenRouter | `deepseek/deepseek-v4.1-flash` | [OpenRouter model](https://openrouter.ai/deepseek/deepseek-v4.1-flash) |
+| Ollama local / other hosts | `qwen3.5:4b` | [Local model](https://ollama.com/library/qwen3.5:4b) |
+| Ollama Cloud (`https://ollama.com`) | `deepseek-v4.1-flash` | [Live cloud catalog](https://ollama.com/api/tags) |
+
+Qwen 3.5 4B is the selected small local Qwen model and must already be installed.
+Qwen 3.6/3.8 have larger local tags; the checked Ollama cloud catalog does not list
+Qwen 3.8 27B. DeepSeek V4.1 Flash is the selected efficient cloud model, verified
+in both [Ollama's catalog](https://ollama.com/api/tags) and
+[OpenRouter's catalog](https://openrouter.ai/deepseek/deepseek-v4.1-flash).
+These Qwen and DeepSeek models support images and tools. Cloud API names omit
+the CLI's `-cloud` suffix. Ollama Cloud requires an account and API key; a local
+daemon proxying cloud models needs an explicit cloud model name. Krabb never pulls
+models automatically.
+
+Defaults are pinned in plugin releases, not discovered or upgraded at request time.
+Unavailable defaults produce an error rather than falling back to a larger or older
+model. Review the catalogs when updating these pins. Existing explicit session model
+selections remain unchanged; saved `unset` sessions use these adapter defaults.
+Codex sign-in now pins Luna instead of inheriting the account's model default.
+
+Luna Chat Completions requests disable reasoning (required for tool calling) and cap
+completion tokens at 4096. Ollama's selected default models disable thinking and
+cap generation at 4096 tokens. OpenRouter's DeepSeek default disables reasoning
+and caps output at 4096 tokens. Anthropic retains its 4096-token output limit.
+These choices reduce incidental usage; they are not an aggregate spending limit.
+Gemini's default stays on the current Flash-Lite even for old transcripts. Historical
+tool calls missing thought signatures are rendered as text context, without replaying
+tools or downgrading the model. Explicit Gemini 2.x selection retains the legacy
+transcript compatibility path.
+
 The OpenAI API plugin is independent from Codex and uses OpenAI API credentials.
 Codex preserves the Codex app-server integration and optional compatible API
 key route. Model plugins accept normalized messages and return a bounded `ModelReply`.
@@ -54,8 +101,8 @@ the response size limit, including text received after notifications stop.
 Codex API-key and Ollama streams complete at their terminal marker without waiting
 for transport closure. Trailing data cannot change the completed reply or invalidate
 it, including when it shares a transport chunk with the marker.
-OpenRouter uses `KRABB_OPENROUTER_MODEL` for new daemon sessions when `KRABB_MODEL`
-is absent, as well as for empty or `default` model requests. Explicit models take precedence.
+OpenRouter resolves implicit selections using `KRABB_OPENROUTER_MODEL`, then its
+built-in DeepSeek V4.1 Flash default. Explicit model names take precedence.
 
 Telegram images are inlined only after the host confines and bounds their
 cached files. Codex-compatible chat completions use image URL content parts;
@@ -169,6 +216,12 @@ not actions performed by `setup`.
 ## Selection
 
 Use `krabb plugin list` and `krabb doctor` to inspect installed providers.
+All loaded channel plugins receive messages concurrently. Set `provider` and
+`model` under `[channels.<id>]` to route different channels to different intelligence
+plugins; see [channel configuration](configuration.md#channel-policy).
+The global provider/model remains the fallback, and TUI sessions can choose their
+provider independently. Requests to distinct provider processes can run concurrently;
+requests to the same process are serialized.
 
 ## Other Capabilities
 
@@ -199,4 +252,5 @@ workspace confined to `KRABB_ROOT` and writes subject to the approval mode.
 The daemon reports a missing or incompatible capability instead of silently
 substituting another provider. Select a model for a session with
 `krabb session model <id> <model>`. When a model plugin is installed, use
-`krabb ask --provider <id> --model <model> <prompt...>` for a one-shot request.
+`krabb ask [--provider <id>] [--model <model>] <prompt...>` for a one-shot request.
+Omitted flags inherit the configured defaults using the precedence described above.

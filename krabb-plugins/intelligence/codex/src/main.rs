@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod model;
+
 use krabb_core::{
     plugin::{Emitter, serve_events_concurrent},
     types::{
@@ -110,6 +112,19 @@ async fn generate_at(
     }
 }
 
+fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_json::Value> {
+    let mut body = json!({
+        "model": model::resolve(&input.model),
+        "messages": messages(input)?,
+        "stream": stream,
+        "tools": tools(input),
+    });
+
+    model::configure(&mut body);
+
+    Ok(body)
+}
+
 async fn generate_request(
     client: &reqwest::Client,
     id: u64,
@@ -117,17 +132,13 @@ async fn generate_request(
     key: &str,
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
-    let messages = messages(&input)?;
-
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
-        .json(&json!({"model": input.model, "messages": messages, "stream": false, "tools": tools(&input)}))
+        .json(&request_body(&input, false)?)
         .send()
         .await
-        .map_err(|error| {
-            krabb_core::Error::Denied(format!("OpenAI request failed: {error}."))
-        })?;
+        .map_err(|error| krabb_core::Error::Denied(format!("OpenAI request failed: {error}.")))?;
 
     let status = response.status();
     let body = read(response, "OpenAI").await?;
@@ -146,12 +157,10 @@ async fn stream_request(
     base: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
-    let messages = messages(&input)?;
-
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
-        .json(&json!({"model": input.model, "messages": messages, "stream": true, "tools": tools(&input)}))
+        .json(&request_body(&input, true)?)
         .send()
         .await
         .map_err(|error| krabb_core::Error::Denied(format!("OpenAI stream failed: {error}.")))?;
@@ -972,3 +981,6 @@ mod tests {
         assert_eq!(result.result.unwrap()["events"][0]["name"], "read");
     }
 }
+
+#[cfg(test)]
+mod defaults;

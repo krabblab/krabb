@@ -17,8 +17,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 const BODY_LIMIT: usize = krabb_core::jsonl::MAX / 2;
-const DEFAULT_MODEL: &str = "gemini-3.8-flash";
-const LEGACY_MODEL: &str = "gemini-2.5-flash";
+const DEFAULT_MODEL: &str = "gemini-3.5-flash-lite";
 const HOST_DEFAULT_MODEL: &str = "gpt-6-luna";
 
 #[cfg(not(test))]
@@ -296,66 +295,11 @@ fn requires_thought_signature(model: &str) -> bool {
 }
 
 fn effective_model(input: &ModelRequest) -> String {
-    if input.model.trim().is_empty()
-        || input.model == "default"
-        || input.model == "unset"
-        || input.model == HOST_DEFAULT_MODEL
-    {
-        if has_legacy_tool_history(input) {
-            return LEGACY_MODEL.into();
-        }
-
+    if matches!(input.model.trim(), "" | "default" | "unset" | HOST_DEFAULT_MODEL) {
         return DEFAULT_MODEL.into();
     }
 
     input.model.clone()
-}
-
-fn has_legacy_tool_history(input: &ModelRequest) -> bool {
-    input.messages.iter().any(|message| {
-        if message.role != Role::Assistant {
-            return false;
-        }
-
-        let mut saw_tool_call = false;
-
-        for content in &message.content {
-            match content {
-                Content::ToolCall { thought_signature, .. } => {
-                    if thought_signature.is_none() && !saw_tool_call {
-                        return true;
-                    }
-
-                    saw_tool_call = true;
-                }
-
-                Content::Text { text } => {
-                    for line in text.split_inclusive('\n') {
-                        let candidate = line.strip_suffix('\n').unwrap_or(line);
-                        let is_tool_call = candidate
-                            .strip_prefix("[Tool call ")
-                            .and_then(|value| {
-                                let (_, args) = value.split_once("]: ")?;
-                                serde_json::from_str::<Value>(args).ok()
-                            })
-                            .is_some();
-
-                        if is_tool_call {
-                            if !saw_tool_call {
-                                return true;
-                            }
-
-                            saw_tool_call = true;
-                        }
-                    }
-                }
-
-                _ => {}
-            }
-        }
-
-        false
-    })
 }
 
 #[derive(Debug)]

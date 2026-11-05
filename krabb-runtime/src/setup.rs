@@ -248,13 +248,7 @@ fn input(mut next: impl FnMut() -> io::Result<Event>) -> Result<String, Error> {
     }
 }
 
-pub(super) fn activation(
-    root: &Path,
-    id: &str,
-    destination: &Path,
-    channel: &str,
-    model: &str,
-) -> Result<(), Error> {
+pub(super) fn activation(root: &Path, id: &str, destination: &Path) -> Result<(), Error> {
     if path(root).canonicalize()? != destination {
         return Err("The daemon uses a different credential file.".into());
     }
@@ -267,13 +261,7 @@ pub(super) fn activation(
         return Err("The daemon has overriding secret environment variables; restart it.".into());
     }
 
-    let entry = super::load_lock_at(root)?.plugins.remove(id).ok_or("Plugin is not installed.")?;
-
-    if (entry.capabilities.iter().any(|capability| capability == "channel") && id != channel)
-        || (entry.capabilities.iter().any(|capability| capability == "model") && id != model)
-    {
-        return Err("Select this channel/model in the runtime environment and restart it.".into());
-    }
+    super::load_lock_at(root)?.plugins.remove(id).ok_or("Plugin is not installed.")?;
 
     Ok(())
 }

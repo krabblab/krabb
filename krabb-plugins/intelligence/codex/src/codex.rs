@@ -289,10 +289,7 @@ async fn generate_on(
     let config = server.call("config/read", json!({"includeLayers": false, "cwd": root})).await?;
     let mcp_servers = disabled_mcp(&config)?;
 
-    let model = match input.model.trim() {
-        "" | "unset" | "default" => None,
-        model => Some(model),
-    };
+    let model = crate::model::resolve(&input.model);
 
     let thread = server
         .call(
@@ -1922,7 +1919,7 @@ done
 
             assert_eq!(starts.len(), models.len());
             assert_eq!(starts[0]["params"]["model"], "codex-model");
-            assert!(starts[1..].iter().all(|request| request["params"]["model"].is_null()));
+            assert!(starts[1..].iter().all(|request| request["params"]["model"] == "gpt-6-luna"));
         }
 
         assert_eq!(events.try_recv().unwrap()["params"]["event"]["text"], "Hello");

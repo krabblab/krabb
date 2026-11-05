@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod model;
+
 mod history;
 use history::messages;
 
@@ -174,7 +176,7 @@ async fn stream_request(
         .post(format!("{base}/v1/messages"))
         .header("x-api-key", key)
         .header("anthropic-version", "2023-06-01")
-        .json(&json!({"model": input.model, "max_tokens": 4096, "system": system, "messages": messages, "tools": tools(&input), "stream": true}))
+        .json(&json!({"model": model::resolve(&input.model), "max_tokens": 4096, "system": system, "messages": messages, "tools": tools(&input), "stream": true}))
         .send()
         .await
         .map_err(|error| {
@@ -207,7 +209,7 @@ async fn request(
         .post(format!("{base}/v1/messages"))
         .header("x-api-key", key)
         .header("anthropic-version", "2023-06-01")
-        .json(&json!({"model": input.model, "max_tokens": 4096, "system": system, "messages": messages, "tools": tools(&input), "stream": stream}))
+        .json(&json!({"model": model::resolve(&input.model), "max_tokens": 4096, "system": system, "messages": messages, "tools": tools(&input), "stream": stream}))
         .send()
         .await
         .map_err(|error| {
@@ -1003,3 +1005,6 @@ mod tests {
 #[cfg(test)]
 #[path = "tests/hardening.rs"]
 mod hardening;
+
+#[cfg(test)]
+mod defaults;

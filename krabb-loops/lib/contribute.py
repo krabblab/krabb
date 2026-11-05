@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -130,17 +131,52 @@ def checks(pr, workflow, sha):
     return 'pending' if pending else 'passed'
 
 
-def fingerprint():
+class Reverify(RuntimeError):
+    """Recoverable local failure requiring fresh verification before publication."""
+
+    def __init__(self, message, evidence=None):
+        super().__init__(message)
+
+        self.evidence = evidence
+
+
+def fingerprint(root=None):
+    root = ROOT if root is None else root
     digest = hashlib.sha256()
 
-    digest.update(run('git', 'diff', '--binary', 'HEAD', '--').stdout.encode())
+    names = run('git', '-C', str(root), 'ls-files', '--cached', '--others',
+                '--exclude-standard', '-z').stdout.split('\0')
 
-    for name in run('git', 'ls-files', '--others', '--exclude-standard', '-z').stdout.split('\0'):
-        if name:
-            path = ROOT / name
+    for name in sorted({name.rstrip('/') for name in names} - {''}):
+        path = root / name
 
-            digest.update(name.encode())
-            digest.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
+        # Replacing a tracked directory with a symlink must not follow its old children.
+        if any(parent.is_symlink() for parent in path.parents if parent != root):
+            continue
+
+        try:
+            mode = path.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+
+        if stat.S_ISLNK(mode):
+            kind, content = 'link', os.fsencode(os.readlink(path))
+        elif stat.S_ISREG(mode):
+            kind = 'executable' if mode & stat.S_IXUSR else 'file'
+            content = path.read_bytes()
+        elif stat.S_ISDIR(mode):
+            # Gitlinks include the nested HEAD and worktree, independently of its index.
+            kind = 'repository'
+            content = b'uninitialized'
+
+            if (path / '.git').exists():
+                content = (run('git', '-C', str(path), 'rev-parse', 'HEAD').stdout
+                           + fingerprint(path)).encode()
+        else:
+            raise RuntimeError(f'unsupported contribution file: {name}')
+
+        digest.update(os.fsencode(name) + b'\0' + kind.encode() + b'\0')
+        digest.update(hashlib.sha256(content).digest())
 
     return digest.hexdigest()
 
@@ -153,6 +189,7 @@ class Contribution:
         self.base = info['defaultBranchRef']['name']
         self.branch = ''
         self.sequence = 0
+        self.attempt = 0
         self.state = ROOT / '.krabb/loops/contrib' / time.strftime('%Y%m%dT%H%M%S')
 
         self.state.mkdir(parents=True, exist_ok=False)
@@ -196,7 +233,7 @@ class Contribution:
             raise RuntimeError('agent changed the index; stopping')
 
         if not repair and fingerprint() != before:
-            raise RuntimeError('working tree changed while preparing metadata')
+            raise Reverify('working tree changed while preparing metadata')
 
         return output.read_text()
 
@@ -212,13 +249,11 @@ class Contribution:
             raise RuntimeError(f'no repair was made; inspect the evidence in {self.state}')
 
     def verify(self):
-        attempt = 0
-
         while True:
             self.stable()
 
             before = fingerprint()
-            log = self.state / f'verify-{self.sequence}-{attempt}.log'
+            log = self.state / f'verify-{self.sequence}-{self.attempt}.log'
 
             print(f'[INFO] Running make verify; log: {log}', flush=True)
 
@@ -230,18 +265,64 @@ class Contribution:
             self.stable()
 
             if before != fingerprint():
-                raise RuntimeError('working tree changed during verification; rerun the loop')
+                self.recover('working tree changed during verification')
+                continue
 
             if result.returncode == 0:
                 return before
 
-            attempt += 1
-            self.limit(attempt)
-            self.repair(log)
+            self.recover('local verification failed', log)
+
+    def recover(self, reason, evidence=None):
+        self.stable()
+        self.attempt += 1
+        self.limit(self.attempt)
+
+        print(f'[INFO] Recovery {self.attempt}: {reason}; retrying toward a verified PR',
+              flush=True)
+
+        if evidence is not None:
+            self.repair(evidence)
 
     def limit(self, attempt):
         if self.args.max_repairs and attempt > self.args.max_repairs:
             raise RuntimeError('repair limit reached; PR is not ready')
+
+    def name(self):
+        local = git('for-each-ref', '--format=%(refname:strip=2)', 'refs/heads').splitlines()
+        remote = git('ls-remote', '--heads', 'origin').splitlines()
+        occupied = {name.split('/')[0] for name in local}
+
+        occupied.update(line.split('\trefs/heads/', 1)[1].split('/')[0] for line in remote)
+        occupied.add(self.base)
+
+        task = (
+            f'Inspect the full contribution diff against origin/{self.base}, including staged, '
+            'unstaged and untracked files. Infer one short word describing its main purpose, '
+            'such as multiprovider, routing or approvals. Return only that word, using 1 to 32 '
+            'lowercase ASCII letters. Do not include prefixes, separators, numbers, timestamps, '
+            'quotes or explanations. Do not change files or create the branch.\n'
+            f'Reserved names and branch prefixes: {json.dumps(sorted(occupied))}')
+
+        feedback = ''
+
+        while True:
+            try:
+                name = self.agent(task + feedback).strip()
+            except Reverify as error:
+                self.recover(str(error))
+                continue
+
+            if not re.fullmatch(r'[a-z]{1,32}', name):
+                reason = 'branch name must be one word of 1 to 32 lowercase ASCII letters'
+            elif name in occupied:
+                reason = f'branch name {name!r} is already reserved locally or on origin'
+            else:
+                return name
+
+            self.recover(reason)
+
+            feedback = f'\nPrevious response rejected: {reason}. Choose another suitable word.'
 
     def prepare(self):
         git('fetch', 'origin')
@@ -261,23 +342,26 @@ class Contribution:
         existing = gh('pr', 'list', '--repo', self.repo, '--head', current,
                       '--base', self.base, '--state', 'open', '--json', 'number')
 
-        self.branch = self.args.branch or (current if existing else
-                                           'contrib-' + time.strftime('%Y%m%d-%H%M%S'))
+        # The naming agent must observe the original branch until the host switches it.
+        self.branch = current
+        selected = self.args.branch or (current if existing else self.name())
 
-        if self.branch == self.base:
+        if selected == self.base:
             raise ValueError('contributions must use a feature branch')
 
-        git('check-ref-format', '--branch', self.branch)
+        git('check-ref-format', '--branch', selected)
 
-        if self.branch != current:
+        if selected != current:
             start = 'HEAD'
 
             if git('rev-parse', 'HEAD^{tree}') == git('rev-parse', f'origin/{self.base}^{{tree}}'):
                 start = f'origin/{self.base}'
 
-            git('switch', '-c', self.branch, start)
+            git('switch', '-c', selected, start)
 
             self.sha = git('rev-parse', 'HEAD')
+
+        self.branch = selected
 
         print(f'[INFO] Contribution: {self.repo}:{self.branch}; evidence: {self.state}', flush=True)
 
@@ -289,7 +373,7 @@ class Contribution:
 
         history_file.write_text(json.dumps(history, indent=2))
 
-        response = self.agent(
+        task = (
             f'Read the full contribution diff against origin/{self.base}, including untracked '
             'files. Inspect .github/PULL_REQUEST_TEMPLATE.md, CONTRIBUTING.md and the merged '
             f'PR history at {history_file}. Return only a JSON object with title and solution. '
@@ -298,35 +382,62 @@ class Contribution:
             'single-line descriptions of the behavior, relevant risks and validation coverage. '
             'Keep the style of the recent human PRs. Do not invent linked issues or test results.')
 
-        return metadata(response, (ROOT / '.github/PULL_REQUEST_TEMPLATE.md').read_text())
+        template = (ROOT / '.github/PULL_REQUEST_TEMPLATE.md').read_text()
+        feedback = ''
+
+        # A broken template needs a repository change, not repeated metadata generation.
+        for kind in TYPES:
+            metadata(json.dumps({'title': f'{kind}: contribution', 'solution': ['Change.']}),
+                     template)
+
+        while True:
+            response = self.agent(task + feedback)
+
+            try:
+                return metadata(response, template)
+            except (ValueError, KeyError, TypeError, AttributeError) as error:
+                self.recover(f'invalid contribution metadata: {error}')
+
+                feedback = f'\nYour previous response was invalid: {error}. Correct the JSON.'
 
     def publish(self, title, body, label, verified, repair):
         self.stable()
 
         if fingerprint() != verified:
-            raise RuntimeError('working tree changed since verification')
+            raise Reverify('working tree changed since verification')
 
         git('add', '--all')
 
         tree = git('write-tree')
 
         if fingerprint() != verified:
-            raise RuntimeError('working tree changed while staging; rerun verification')
+            raise Reverify('working tree changed while staging')
 
         if tree != git('rev-parse', 'HEAD^{tree}'):
             message = 'fix: repair contribution checks' if repair else title
 
             # Hooks may run the workspace checks; supervise them without a short API timeout.
-            result = subprocess.run([sys.executable, str(LIB / 'process.py'), '30m',
-                                     'git', 'commit', '-m', message], cwd=ROOT)
+            log = self.state / f'commit-{self.sequence}-{self.attempt}.log'
+
+            print(f'[INFO] Committing contribution; log: {log}', flush=True)
+
+            with log.open('w') as sink:
+                result = subprocess.run([sys.executable, str(LIB / 'process.py'), '30m',
+                                         'git', 'commit', '-m', message], cwd=ROOT,
+                                        stdout=sink, stderr=subprocess.STDOUT)
 
             if result.returncode:
-                raise RuntimeError('commit or commit hooks failed; changes remain on the branch')
+                self.stable()
+
+                unchanged = fingerprint() == verified and git('write-tree') == tree
+                evidence = log if unchanged else None
+
+                raise Reverify(f'commit or commit hooks failed; inspect {log}', evidence)
 
             self.sha = git('rev-parse', 'HEAD')
 
         if git('status', '--porcelain') or git('rev-parse', 'HEAD^{tree}') != tree:
-            raise RuntimeError('commit hooks changed verified content; rerun verification')
+            raise Reverify('commit hooks changed verified content')
 
         if not git('log', '--format=%H', f'origin/{self.base}..HEAD'):
             raise RuntimeError('there is no contribution to publish')
@@ -387,7 +498,7 @@ class Contribution:
 
             if status == 'passed':
                 if git('status', '--porcelain'):
-                    raise RuntimeError('working tree changed while CI ran; rerun the loop')
+                    raise Reverify('working tree changed while CI ran')
 
                 if pr['isDraft']:
                     run('gh', 'pr', 'ready', number, '--repo', self.repo)
@@ -426,13 +537,18 @@ class Contribution:
     def execute(self):
         self.prepare()
 
-        attempt = 0
+        published = False
 
         while True:
-            verified = self.verify()
-            title, body, label = self.describe()
-            number = self.publish(title, body, label, verified, attempt > 0)
-            failure = self.wait(number)
+            try:
+                verified = self.verify()
+                title, body, label = self.describe()
+                number = self.publish(title, body, label, verified, published)
+                published = True
+                failure = self.wait(number)
+            except Reverify as error:
+                self.recover(str(error), error.evidence)
+                continue
 
             if failure is None:
                 print(f'[INFO] Ready for review: https://github.com/{self.repo}/pull/{number}',
@@ -440,15 +556,15 @@ class Contribution:
 
                 return
 
-            attempt += 1
-            self.limit(attempt)
-            self.repair(failure)
+            self.recover('CI checks failed', failure)
 
 
 def main():
     parser = argparse.ArgumentParser(description='Publish and repair until the PR has green CI.')
 
-    parser.add_argument('--branch', help='new branch name, or current branch to resume')
+    parser.add_argument('--branch',
+                        help='override the inferred name, or use current branch to resume')
+
     parser.add_argument('--max-repairs', type=int, default=0, help='repair limit; 0 is unlimited')
     parser.add_argument('--ci-timeout', type=int, default=3600, help='seconds per pushed commit')
 

@@ -1495,13 +1495,7 @@ async fn setup(request: &IpcRequest, state: &State) -> IpcResponse {
         );
     };
 
-    if let Err(error) = super::setup::activation(
-        &state.home,
-        id,
-        std::path::Path::new(path),
-        &state.channel,
-        &state.model,
-    ) {
+    if let Err(error) = super::setup::activation(&state.home, id, std::path::Path::new(path)) {
         return IpcResponse::fail(request.id, -32000, error.to_string());
     }
 

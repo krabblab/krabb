@@ -39,7 +39,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-const DEFAULT_MODEL: &str = "unset";
+const DEFAULT_MODEL: &str = "default";
 const DEFAULT_NAME: &str = "Krabb";
 const DEFAULT_SESSION_ID: &str = "default";
 const SESSION_LIST_PAGE_SIZE: usize = 5;
@@ -1208,24 +1208,6 @@ where
             if terminal_command.is_some_and(|command| command.trim().is_empty()) {
                 output.write_all(b"Usage: !<shell command>\n> ").await?;
                 output.flush().await?;
-                continue;
-            }
-
-            if model == "unset" && terminal_command.is_none() {
-                let message = "No model is selected. Use /model list, then /model set <id>.";
-
-                if let Some(events) = &engine_events {
-                    let _ = events.send(EngineEvent::SystemNotice(message.into()));
-                } else {
-                    output.write_all(format!("{message}\n> ").as_bytes()).await?;
-                }
-
-                output.flush().await?;
-
-                if stop_after_generation {
-                    break;
-                }
-
                 continue;
             }
 
@@ -5270,7 +5252,7 @@ mod tests {
 
     #[test]
     fn does_not_assume_a_provider_model_by_default() {
-        assert_eq!(super::DEFAULT_MODEL, "unset");
+        assert_eq!(super::DEFAULT_MODEL, "default");
     }
 
     #[test]
@@ -7008,14 +6990,14 @@ done
         crate::local_aware(
             root.display().to_string(),
             "session.ensure".into(),
-            serde_json::json!({"id": "default", "model": "gpt-test"}),
+            serde_json::json!({"id": "default", "model": "unset"}),
         )
         .await
         .unwrap();
 
         let (mut input_tx, input_rx) = duplex(1024);
 
-        input_tx.write_all(b"first\nsecond\n/quit\n").await.unwrap();
+        input_tx.write_all(b"first\n/model set default\nsecond\n/quit\n").await.unwrap();
         drop(input_tx);
 
         let (output_tx, mut output_rx) = duplex(16 * 1024);
@@ -7029,7 +7011,7 @@ done
             super::EngineConfig {
                 home: root.display().to_string(),
                 plugin: "codex".into(),
-                model: "gpt-test".into(),
+                model: "unset".into(),
                 model_override: None,
                 session: "default".into(),
             },
@@ -7053,6 +7035,7 @@ done
                 .unwrap();
 
         assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.model, "default");
 
         let _ = fs::remove_dir_all(root);
     }

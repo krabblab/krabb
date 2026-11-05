@@ -40,12 +40,14 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 pub(crate) mod approval;
+mod channels;
 mod credentials;
 pub(crate) mod ipc;
 pub(crate) mod logging;
 mod media;
 mod messaging;
 mod process;
+mod selection;
 mod setup;
 pub(crate) mod state;
 pub(crate) mod terminal;
@@ -306,6 +308,7 @@ impl Plugins {
 
     async fn insert(&self, plugin: Live) -> Option<Arc<Live>> {
         let old = self.items.write().await.insert(plugin.hello.id.clone(), Arc::new(plugin));
+        self.changed.notify_waiters();
         self.changed.notify_one();
         old
     }
@@ -314,6 +317,7 @@ impl Plugins {
         let plugin = self.items.write().await.remove(id);
 
         if plugin.is_some() {
+            self.changed.notify_waiters();
             self.changed.notify_one();
         }
 
@@ -1302,16 +1306,11 @@ struct Id {
 
 #[derive(Debug, Args)]
 struct Ask {
-    #[arg(long, required = true, help = "Installed intelligence provider identifier.")]
-    provider: String,
-    #[arg(long, required = true, help = "Model identifier.")]
-    model: String,
-    #[arg(
-        required = true,
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        help = "Prompt words."
-    )]
+    #[arg(long, help = "Intelligence provider (overrides environment and config).")]
+    provider: Option<String>,
+    #[arg(long, help = "Model identifier (overrides environment and config).")]
+    model: Option<String>,
+    #[arg(required = true, trailing_var_arg = true, help = "Prompt words.")]
     prompt: Vec<String>,
 }
 
@@ -1319,6 +1318,8 @@ struct Ask {
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
+    provider: Option<String>,
+    model: Option<String>,
     name: String,
     update: String,
     #[serde(default, rename = "shell", skip_serializing)]
@@ -1335,6 +1336,8 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            provider: None,
+            model: None,
             name: "Krabb".into(),
             update: "prompt".into(),
             legacy_shell: false,
@@ -1368,6 +1371,8 @@ fn skip_missed() -> String {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ClientConfig {
+    provider: Option<String>,
+    model: Option<String>,
     #[serde(default)]
     tools: bool,
     shell: Option<bool>,
@@ -1377,7 +1382,7 @@ struct ClientConfig {
 
 impl Default for ClientConfig {
     fn default() -> Self {
-        Self { tools: false, shell: None, theme: true }
+        Self { provider: None, model: None, tools: false, shell: None, theme: true }
     }
 }
 
@@ -1391,6 +1396,22 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), String> {
+        selection::validate(self.provider.as_deref(), self.model.as_deref())?;
+
+        for (id, channel) in &self.channels {
+            if !valid(id) {
+                return Err(
+                    "Channel IDs must contain lowercase letters, digits, or hyphens.".into()
+                );
+            }
+
+            selection::validate(channel.provider.as_deref(), channel.model.as_deref())?;
+        }
+
+        for client in self.clients.values() {
+            selection::validate(client.provider.as_deref(), client.model.as_deref())?;
+        }
+
         if self.clients.keys().any(|id| !valid(id)) {
             return Err("Client IDs must contain lowercase letters, digits, or hyphens.".into());
         }
@@ -1448,6 +1469,8 @@ impl ApprovalMode {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ChannelConfig {
+    provider: Option<String>,
+    model: Option<String>,
     #[serde(default)]
     allow: Vec<String>,
     mention: Option<String>,
@@ -1475,6 +1498,8 @@ fn worktree() -> bool {
 impl Default for ChannelConfig {
     fn default() -> Self {
         Self {
+            provider: None,
+            model: None,
             allow: Vec::new(),
             mention: None,
             owner: None,
@@ -2467,8 +2492,7 @@ fn krabfile_output_path(
 }
 
 async fn ask_at(ask: Ask, root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let provider = model_plugin_at(root, &ask.provider)?;
-    let text = generate_at(Ask { provider, ..ask }, root, "cli").await?;
+    let text = generate_at(ask, root, "cli").await?;
 
     println!("{text}");
     Ok(())
@@ -2508,12 +2532,12 @@ fn model_plugin_available(id: &str, entry: &Entry, root: &Path) -> bool {
         && binary_at(id, root).is_some()
 }
 
-fn model_selection(provider: Option<String>, model: Option<String>) -> (String, String) {
-    (provider.unwrap_or_else(|| "codex".into()), model.unwrap_or_else(|| "unset".into()))
-}
+fn session_model(model: Option<String>, root: &Path) -> Result<String, PluginError> {
+    let config = load_config_at(root)?;
 
-fn session_model(model: Option<String>) -> String {
-    model.unwrap_or_else(|| std::env::var("KRABB_MODEL").unwrap_or_else(|_| "unset".into()))
+    config.validate()?;
+
+    Ok(selection::client(&config, "cli", (None, model.as_deref())).1)
 }
 
 fn capture_model_selection(
@@ -2535,6 +2559,11 @@ async fn generate_at(
     root: &Path,
     session: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let config = load_config_at(root)?;
+    config.validate()?;
+    let (provider, model) =
+        selection::client(&config, "cli", (ask.provider.as_deref(), ask.model.as_deref()));
+    let plugin = model_plugin_at(root, &provider)?;
     let prompt = ask.prompt.join(" ");
     let message = Message {
         id: "user".into(),
@@ -2544,7 +2573,6 @@ async fn generate_at(
         content: vec![Content::Text { text: prompt }],
     };
 
-    let plugin = ask.provider;
     let mut messages = context_at("cli", &root.join("workspace"));
     messages.push(message);
 
@@ -2555,7 +2583,7 @@ async fn generate_at(
         );
     }
 
-    Ok(model_at(plugin, ask.model, root, messages).await?.text)
+    Ok(model_at(plugin, model, root, messages).await?.text)
 }
 
 async fn append_installed_memory_context(
@@ -4056,7 +4084,7 @@ async fn session_at_json(
     match command {
         SessionCommand::New(args) => {
             let id = args.id.clone();
-            let model = session_model(args.model.clone());
+            let model = session_model(args.model.clone(), root)?;
 
             if let Some(value) =
                 control_at("session.new", serde_json::json!({"id": id, "model": model}), root)
@@ -4264,7 +4292,7 @@ fn local_session_json(
     match command {
         SessionCommand::New(args) => {
             let id = args.id.clone();
-            let model = session_model(args.model);
+            let model = session_model(args.model, root)?;
             store.create(id.clone(), model.clone())?;
             info!(operation = "session.create", source = "offline", "Session created.");
 
@@ -5052,10 +5080,9 @@ async fn serve_controlled(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let channel_id = std::env::var("KRABB_CHANNEL").unwrap_or_else(|_| "telegram".into());
 
-    let (model_id, model) = model_selection(
-        std::env::var("KRABB_MODEL_PLUGIN").ok(),
-        std::env::var("KRABB_MODEL").ok(),
-    );
+    let config = load_config_at(root)?;
+    config.validate()?;
+    let (model_id, model) = selection::current(&config, (None, None), (None, None));
 
     serve_inner(root, &channel_id, &model_id, &model, false, stop, on_ready).await
 }
@@ -5172,21 +5199,19 @@ async fn serve_inner(
     let approval_mode = config.approval_mode();
     let outcome = match on_ready() {
         Ok(()) => {
-            bridge_with_media(
-                &plugins,
-                channel_id,
-                model_id,
-                model,
-                Arc::clone(&sessions),
-                Arc::clone(&stop),
-                Arc::clone(&cancels),
-                config.channels,
+            channels::run(channels::Context {
+                plugins: plugins.clone(),
+                sessions: Arc::clone(&sessions),
+                stop: Arc::clone(&stop),
+                cancels: Arc::clone(&cancels),
+                policies: selection::channels(&config),
+                provider: model_id.to_owned(),
+                model: model.to_owned(),
                 approval_mode,
-                false,
-                root.to_owned(),
-                media_root_at(root),
-                pending,
-            )
+                home: root.to_owned(),
+                media: media_root_at(root),
+                approvals: pending,
+            })
             .await
         }
 
@@ -7270,6 +7295,10 @@ fn env_for(
     values.retain(|(name, _)| name != "KRABB_NAME");
     values.push(("KRABB_NAME".into(), config.name.clone()));
     ensure_codex_home(&mut values);
+    let (provider, model) = selection::current(config, (None, None), (None, None));
+    values.retain(|(name, _)| !matches!(name.as_str(), "KRABB_MODEL_PLUGIN" | "KRABB_MODEL"));
+    values.push(("KRABB_MODEL_PLUGIN".into(), provider));
+    values.push(("KRABB_MODEL".into(), model));
 
     if manifest.id == "scheduler" {
         values.retain(|(name, _)| name != "KRABB_HOME");
@@ -7604,6 +7633,7 @@ async fn bridge(
         home.clone(),
         media_root_at(&home),
         Arc::new(AsyncMutex::new(approval::Gate::new()?)),
+        10,
     )
     .await
 }
@@ -7627,32 +7657,38 @@ async fn bridge_with_media(
     home_root: PathBuf,
     media_root: PathBuf,
     approvals: Arc<AsyncMutex<approval::Gate>>,
+    mut call: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut offset = sessions.lock().map_err(|_| "Session lock is poisoned.")?.offset(channel_id);
     sessions.lock().map_err(|_| "Session lock is poisoned.")?.media_root = Some(media_root.clone());
-    let mut call = 10_u64;
     let mut channel_failures = 0_u32;
     let mut provider_failures = 0_u32;
 
     loop {
         let lifecycle = plugins.lifecycle.read().await;
-        let Some(channel) = plugins.get(channel_id).await else {
+        let Some(channel) =
+            plugins.get(channel_id).await.filter(|plugin| plugin.supports(Capability::Channel))
+        else {
             drop(lifecycle);
             tokio::select! {
                 biased;
                 _ = tokio::signal::ctrl_c() => return Ok(()),
                 _ = stop.notified() => return Ok(()),
                 _ = plugins.changed.notified() => continue,
+                _ = tokio::time::sleep(Duration::from_millis(250)) => continue,
             }
         };
 
-        let Some(provider) = plugins.get(model_id).await else {
+        let Some(provider) =
+            plugins.get(model_id).await.filter(|plugin| plugin.supports(Capability::Model))
+        else {
             drop(lifecycle);
             tokio::select! {
                 biased;
                 _ = tokio::signal::ctrl_c() => return Ok(()),
                 _ = stop.notified() => return Ok(()),
                 _ = plugins.changed.notified() => continue,
+                _ = tokio::time::sleep(Duration::from_millis(250)) => continue,
             }
         };
 
@@ -7662,16 +7698,23 @@ async fn bridge_with_media(
             .into_iter()
             .filter(|(_, plugin)| plugin.supports(Capability::Channel))
             .collect::<Vec<_>>();
-        let pending = sessions
-            .lock()
-            .map_err(|_| "Session lock is poisoned.")?
-            .outbox
-            .iter()
-            .find(|delivery| {
-                delivery.status == state::DeliveryStatus::Pending
-                    && delivery_channels.iter().any(|(id, _)| id == &delivery.channel)
-            })
-            .cloned();
+        let pending = {
+            let mut store = sessions.lock().map_err(|_| "Session lock is poisoned.")?;
+            let delivery = store
+                .outbox
+                .iter()
+                .find(|delivery| {
+                    delivery.status == state::DeliveryStatus::Pending
+                        && delivery_channels.iter().any(|(id, _)| id == &delivery.channel)
+                })
+                .cloned();
+
+            if let Some(delivery) = &delivery {
+                store.sending(&delivery.id)?;
+            }
+
+            delivery
+        };
 
         if let Some(delivery) = pending {
             let Some((delivery_channel_id, delivery_channel)) =
@@ -7680,7 +7723,6 @@ async fn bridge_with_media(
                 continue;
             };
 
-            sessions.lock().map_err(|_| "Session lock is poisoned.")?.sending(&delivery.id)?;
             let sent = tokio::select! {
                 biased;
                 _ = tokio::signal::ctrl_c() => return Ok(()),
@@ -7739,28 +7781,20 @@ async fn bridge_with_media(
                 .sessions
                 .values()
                 .filter(|session| {
-                    session.id.starts_with(&format!("{channel_id}-"))
+                    session.channel.as_deref() == Some(channel_id)
+                        && session.chat.is_some()
                         && session.status != "cancelled"
                         && !session.has_live_tui_reservation()
                         && !session.queued.is_empty()
                 })
                 .find_map(|session| {
-                    session.queued.first().cloned().map(|message| {
+                    session.queued.first().cloned().map(|mut message| {
+                        message.session = session.id.clone();
                         let roles =
                             session.queue_roles.get(&message.id).cloned().unwrap_or_default();
                         (
                             message,
-                            session
-                                .chat
-                                .clone()
-                                .or_else(|| {
-                                    session
-                                        .id
-                                        .strip_prefix(&format!("{channel_id}-"))
-                                        .and_then(|value| value.split("-thread-").next())
-                                        .map(str::to_owned)
-                                })
-                                .unwrap_or_default(),
+                            session.chat.clone().unwrap_or_default(),
                             session.thread.clone(),
                             session.private,
                             roles,
@@ -8045,7 +8079,10 @@ async fn bridge_with_media(
                 continue;
             }
 
-            let session_name = session_id(channel_id, &chat, thread.as_deref());
+            let session_name = queued.as_ref().filter(|_| queued_event).map_or_else(
+                || session_id(channel_id, &chat, thread.as_deref()),
+                |(message, ..)| message.session.clone(),
+            );
 
             if !valid(&session_name) {
                 warn!(channel = channel_id, event = %event_key, "Message has invalid routing metadata.");
@@ -10247,6 +10284,10 @@ async fn wait_approval(
     cancel: &Cancellation,
     stop: &Stop,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(mut completion) = approvals.lock().await.subscribe(approve) else {
+        return Ok(());
+    };
+
     let params = approval_params(channel_id, chat, thread, text, approve, deny)?;
     let sent = channel.call(Request::call(*call, "approval", params)).await;
     *call = (*call).saturating_add(1);
@@ -10272,10 +10313,6 @@ async fn wait_approval(
     }
 
     loop {
-        if !approvals.lock().await.has_pending() {
-            return Ok(());
-        }
-
         let poll =
             channel.call(Request::call(*call, "poll", serde_json::json!({"offset": *offset})));
 
@@ -10296,6 +10333,8 @@ async fn wait_approval(
                 approvals.lock().await.cancel(approve);
                 return Err("The turn was cancelled.".into());
             }
+
+            _ = completion.changed() => return Ok(()),
 
             result = tokio::time::timeout_at(deadline, poll) => result,
         };
@@ -10356,6 +10395,7 @@ async fn wait_approval(
                 _ = tokio::signal::ctrl_c() => return Err("The turn was interrupted.".into()),
                 _ = stop.notified() => return Err("The turn was interrupted.".into()),
                 _ = cancel.cancelled() => return Err("The turn was cancelled.".into()),
+                _ = completion.changed() => return Ok(()),
 
                 _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
             }
@@ -14913,7 +14953,8 @@ async fn status_command(json: bool) -> Result<(), Box<dyn std::error::Error + Se
 
     let lock = load_lock_at(&root)?;
     let installed = lock.plugins.len();
-    let model = std::env::var("KRABB_MODEL_PLUGIN").unwrap_or_else(|_| "codex".into());
+    let config = load_config_at(&root).unwrap_or_default();
+    let (model, _) = selection::current(&config, (None, None), (None, None));
     let channel = std::env::var("KRABB_CHANNEL").unwrap_or_else(|_| "telegram".into());
     let model_ready = lock.plugins.get(&model).is_some_and(|entry| {
         entry.capabilities.iter().any(|capability| capability == "model") && ready(&model)
@@ -15155,7 +15196,7 @@ async fn external_command_at(
 
     let result = if matches!(name.as_str(), "code" | "acp") {
         let model = if name == "code" {
-            let model_id = std::env::var("KRABB_MODEL_PLUGIN").unwrap_or_else(|_| "codex".into());
+            let (model_id, _) = selection::current(&config, (None, None), (None, None));
             let model_path = binary_at(&model_id, &root).ok_or_else(|| {
                 format!("The configured intelligence plugin {model_id} is not installed.")
             })?;
@@ -15218,7 +15259,7 @@ async fn external_command_at(
             )
             .await
     } else if name == "ag-ui" {
-        let model_id = std::env::var("KRABB_MODEL_PLUGIN").unwrap_or_else(|_| "codex".into());
+        let (model_id, _) = selection::current(&config, (None, None), (None, None));
         let model_path = binary_at(&model_id, &root).ok_or_else(|| {
             format!("The configured intelligence plugin {model_id} is not installed.")
         })?;
@@ -15357,12 +15398,8 @@ async fn tui_command(
         );
     }
 
-    let plugin = args
-        .windows(2)
-        .find(|pair| pair[0] == "--plugin")
-        .map(|pair| pair[1].clone())
-        .or_else(|| std::env::var("KRABB_MODEL_PLUGIN").ok())
-        .unwrap_or_else(|| "codex".into());
+    config.validate()?;
+    let (plugin, model) = selection::tui(config, args);
 
     let plugin_path = binary_at(&plugin, root);
     let launch_directory = std::env::current_dir()?;
@@ -15392,13 +15429,11 @@ async fn tui_command(
         command.envs(env_for(&manifest, config, root)?);
     }
 
-    for name in ["KRABB_MODEL", "KRABB_ROOT"] {
-        if let Ok(value) = std::env::var(name) {
-            command.env(name, value);
-        }
+    if let Ok(value) = std::env::var("KRABB_ROOT") {
+        command.env("KRABB_ROOT", value);
     }
 
-    command.env("KRABB_MODEL_PLUGIN", &plugin);
+    command.env("KRABB_MODEL_PLUGIN", &plugin).env("KRABB_MODEL", model);
 
     let status = command.status().await?;
 
@@ -15581,7 +15616,7 @@ fn cli_help_row_gap(line: &str) -> Option<usize> {
 fn external_command_help(name: &str, description: &str) -> String {
     if name == "tui" {
         return format!(
-            "{description}\n\nUsage: krabb tui [OPTIONS]\n\nOptions:\n  --once <prompt>   Send one prompt without opening the full-screen interface\n  --session <id>    Select a session (default: tui)\n  --model <name>    Select the model (default: KRABB_MODEL or unset)\n  --plugin <id>     Select the intelligence plugin (default: KRABB_MODEL_PLUGIN or codex)\n  -h, --help        Print help"
+            "{description}\n\nUsage: krabb tui [OPTIONS]\n\nOptions:\n  --once <prompt>   Send one prompt without opening the full-screen interface\n  --session <id>    Select a session (default: tui)\n  --model <name>    Select the model (default: environment, config, or default)\n  --plugin <id>     Select the intelligence plugin (default: environment, config, or codex)\n  -h, --help        Print help"
         );
     }
 
@@ -19436,6 +19471,9 @@ mod tests {
     #[cfg(unix)]
     mod channels;
 
+    #[cfg(unix)]
+    mod isolation;
+
     use super::{
         ARCHIVE_LIMIT, BANNER, Cancellation, Cli, Command, CommandSpec, CompletionShell, Config,
         DeliveryCli, DeliveryCommand, DoctorArgs, Fork, Id, InitArgs, KRABFILE_VERSION,
@@ -20417,6 +20455,7 @@ done
                 root.clone(),
                 root.join("media"),
                 Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap())),
+                10,
             ),
         )
         .await
@@ -22005,10 +22044,12 @@ done
 
     #[test]
     fn session_model_uses_the_requested_or_configured_model() {
-        let configured = std::env::var("KRABB_MODEL").unwrap_or_else(|_| "unset".into());
+        let configured = std::env::var("KRABB_MODEL").unwrap_or_else(|_| "default".into());
 
-        assert_eq!(super::session_model(None), configured);
-        assert_eq!(super::session_model(Some("explicit".into())), "explicit");
+        let root = test_root("session-defaults");
+
+        assert_eq!(super::session_model(None, &root).unwrap(), configured);
+        assert_eq!(super::session_model(Some("explicit".into()), &root).unwrap(), "explicit");
     }
 
     #[test]
@@ -25320,7 +25361,7 @@ done
         assert!(tui_help.contains("Usage: krabb tui [OPTIONS]"));
         assert!(tui_help.contains("daemon must be running"));
         assert!(tui_help.contains("--once <prompt>"));
-        assert!(tui_help.contains("KRABB_MODEL or unset"));
+        assert!(tui_help.contains("environment, config, or default"));
         assert!(super::external_command_help_requested("tui", &["tui".into(), "help".into()]));
         assert!(super::external_command_help_requested("tui", &["tui".into(), "--help".into()]));
         assert!(!super::external_command_help_requested("codex", &["codex".into(), "help".into()]));
@@ -25826,12 +25867,23 @@ done
         assert!(matches!(
             cli.command,
             Command::Ask(super::Ask { prompt, provider, .. })
-                if prompt == ["hello", "world"] && provider == "local"
+                if prompt == ["hello", "world"] && provider.as_deref() == Some("local")
         ));
 
         assert!(Cli::try_parse_from(["krabb", "ask", "--provider", "local"]).is_err());
-        assert!(Cli::try_parse_from(["krabb", "ask", "--provider", "local", "hello"]).is_err());
+        assert!(Cli::try_parse_from(["krabb", "ask", "--provider", "local", "hello"]).is_ok());
+        assert!(Cli::try_parse_from(["krabb", "ask", "hello"]).is_ok());
         assert!(Cli::try_parse_from(["krabb", "ask", "--plugin", "local", "hello"]).is_err());
+
+        for args in [
+            vec!["krabb", "ask", "hello", "--model", "literal"],
+            vec!["krabb", "ask", "--", "--model", "literal"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+
+            assert!(matches!(cli.command, Command::Ask(super::Ask { prompt, model: None, .. })
+                if prompt.ends_with(&["--model".into(), "literal".into()])));
+        }
 
         let help = Cli::command().find_subcommand("ask").unwrap().clone().render_help().to_string();
 
@@ -29723,8 +29775,8 @@ fn main() {
         assert_eq!(
             super::generate_at(
                 super::Ask {
-                    provider: "fake".into(),
-                    model: "test".into(),
+                    provider: Some("fake".into()),
+                    model: Some("test".into()),
                     prompt: vec!["greet".into(), "world".into()],
                 },
                 &root,
@@ -29747,8 +29799,8 @@ fn main() {
         assert_eq!(
             super::generate_at(
                 super::Ask {
-                    provider: "fake".into(),
-                    model: "test".into(),
+                    provider: Some("fake".into()),
+                    model: Some("test".into()),
                     prompt: vec!["still".into(), "works".into()],
                 },
                 &root,
@@ -29767,8 +29819,8 @@ fn main() {
         assert!(
             super::ask_at(
                 super::Ask {
-                    provider: "fake".into(),
-                    model: "test".into(),
+                    provider: Some("fake".into()),
+                    model: Some("test".into()),
                     prompt: vec!["again".into()],
                 },
                 &root,
@@ -30179,6 +30231,7 @@ for line in sys.stdin:
         {
             let mut store = sessions.lock().unwrap();
             store.create("telegram-7", "test").unwrap();
+            store.route("telegram-7", "telegram", "7", None, true).unwrap();
             store
                 .queue(
                     "telegram-7",

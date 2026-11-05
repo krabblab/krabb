@@ -247,17 +247,9 @@ fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
             .contains(&("KRABB_SETUP_A".into(), "synthetic".into()))
     );
 
-    assert!(
-        activation(&root, "telegram", &destination.canonicalize().unwrap(), "telegram", "codex")
-            .is_ok()
-    );
+    assert!(activation(&root, "telegram", &destination.canonicalize().unwrap()).is_ok());
 
-    assert!(activation(&root, "telegram", Path::new("/different"), "telegram", "codex").is_err());
-
-    assert!(
-        activation(&root, "telegram", &destination.canonicalize().unwrap(), "discord", "codex")
-            .is_err()
-    );
+    assert!(activation(&root, "telegram", Path::new("/different")).is_err());
 
     let mut lock = crate::load_lock_at(&root).unwrap();
 

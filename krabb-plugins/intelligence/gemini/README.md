@@ -7,16 +7,16 @@ Install it with:
 curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh -s -- gemini
 ```
 
-Set `KRABB_GEMINI_KEY` and select a model with `KRABB_MODEL` or the normal
-session model setting. Requests without a model, or with model `default` or the
-host's `unset` sentinel, use the supported `gemini-3.8-flash` model. The older
-host fallback `gpt-6-luna` is treated the same way when Gemini is selected. Gemini 3 tool calls
-preserve the provider's thought signatures across turns; legacy marker
-transcripts using these defaults temporarily use `gemini-2.5-flash`, and explicitly selected Gemini
-2.x models remain supported through the legacy marker compatibility layer. That
-layer can be removed after Gemini 2.x support is retired. The default API
-endpoint is HTTPS and can be replaced with `KRABB_GEMINI_BASE_URL` for a
-loopback test fixture.
+Set `KRABB_GEMINI_KEY` and optionally select a model with `KRABB_MODEL` or the
+session model setting. Blank, `default`, and legacy `unset` requests use
+`gemini-3.5-flash-lite`. The historical host fallback `gpt-6-luna` is still treated
+as an implicit selection for compatibility. Explicit Gemini model names are preserved.
+
+Gemini 3 tool calls retain thought signatures across turns. Old transcripts missing
+those signatures are rendered as text history without replaying tool calls or selecting
+an older model. Explicit Gemini 2.x models retain legacy marker transcript compatibility.
+The default API endpoint is HTTPS; `KRABB_GEMINI_BASE_URL` permits a loopback test
+fixture. See [default models](../../../krabb-docs/providers.md#default-models).
 
 Run `krabb gemini setup` to store credentials with hidden input and encrypted
 storage. Environment values override stored credentials; see

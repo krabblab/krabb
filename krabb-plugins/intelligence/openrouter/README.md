@@ -27,7 +27,12 @@ Structured tool calls and their results retain the provider's native format
 across turns. Interrupted streams without the provider's completion marker
 fail the generation; partial tool calls are not returned for execution.
 Base URLs must use HTTPS outside loopback and cannot contain user credentials,
-a query, or a fragment. Select a model available to your account explicitly.
+a query, or a fragment. The selected model must be available to your account.
 
 See [deployment validation](../../../krabb-docs/providers.md#deployment-validation)
 before relying on this adapter in production.
+
+
+Implicit selections (`default`, legacy `unset`, or blank) use `deepseek/deepseek-v4.1-flash`.
+Explicit model names take precedence. See [default models](../../../krabb-docs/providers.md#default-models)
+for the verification date, catalog sources, and usage limits.
