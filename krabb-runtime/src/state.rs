@@ -1784,6 +1784,36 @@ impl Store {
         self.dead(id)
     }
 
+    pub fn drop_deliveries(&mut self, channel: Option<&str>) -> std::io::Result<usize> {
+        let count = self
+            .outbox
+            .iter()
+            .filter(|item| channel.is_none_or(|channel| item.channel == channel))
+            .count();
+
+        if count == 0 {
+            return Ok(0);
+        }
+
+        self.change(|store| {
+            let deliveries = std::mem::take(&mut store.outbox);
+
+            for delivery in deliveries {
+                if channel.is_none_or(|channel| delivery.channel == channel) {
+                    store.dead.push(delivery);
+                } else {
+                    store.outbox.push(delivery);
+                }
+            }
+
+            if store.dead.len() > LIMIT {
+                store.dead.drain(..store.dead.len() - LIMIT);
+            }
+        })?;
+
+        Ok(count)
+    }
+
     pub fn dead(&mut self, id: &str) -> std::io::Result<()> {
         if !self.outbox.iter().any(|delivery| delivery.id == id) {
             return Ok(());
