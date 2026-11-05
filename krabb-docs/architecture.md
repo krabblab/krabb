@@ -18,7 +18,8 @@ Plugin secret onboarding is host-owned. `krabb plugin setup <id>` and the
 `krabb <id> setup` shortcuts read installed secret declarations without launching
 the plugin. The host saves protected credentials and requests authenticated
 `plugin.setup` IPC with only the ID and credential path. The daemon checks its
-credential source and provider selection before invoking the existing loader.
+credential source before invoking the existing loader. Additional channels and
+providers can activate without replacing the defaults.
 An older daemon rejects the new method, leaving activation pending. Provider
 account flows such as Codex login remain plugin commands; the plugin protocol
 and capability-free core are unchanged.
@@ -118,7 +119,7 @@ its files while holding the reservation. New dependent work waits until removal 
 restoration finishes; cancellation, approval replies, and reservation-checked approval
 history writes remain available. Offline
 purge, guard checks, and removal hold the daemon lock throughout. The bridge wakes
-when a configured channel or model is added, so a daemon need not restart to
+when a channel or model is added, so a daemon need not restart to
 discover it. Selected model plugins load when installed; their own request
 handling reports missing authentication. Channels still load only when their
 credentials are ready. `plugin update` unloads active plugin processes before replacing
@@ -340,3 +341,18 @@ into named child modules under its tests directory. Crate-level `tests/` contain
 public-API and executable integration tests; `tests/support/mod.rs` supplies local fixtures.
 The unpublished `krabb-libs/test` crate shares stream, cache, inbox and logging contracts through
 dev-dependencies and explicit adapters. It adds no runtime or provider capability to the core.
+
+The channel supervisor runs one cancellable bridge per loaded channel, up to 64.
+It reconciles plugin additions and removals every 250 milliseconds. Each bridge
+uses its channel's provider/model policy with the global selection as fallback;
+a missing provider pauses only the affected bridge. Worker request ID ranges are
+separate so cancellation cannot target another channel's requests. Shutdown signals
+and joins every bridge before stopping plugins. Outbox selection and the transition
+to sending occur under one store lock, preventing concurrent duplicate claims.
+Inbound queues are selected by their persisted channel identity and chat, never
+by a session-name prefix. Queued turns preserve the owning session ID, including
+renamed sessions; queues with incomplete routing metadata are retained.
+Approval waiters subscribe to the completion of their individual challenge.
+Resolution, cancellation, or expiry closes that subscription, allowing an approved
+turn to resume even while other channels have pending approvals or a channel poll
+is blocked. Each wait still observes its turn deadline and cancellation signals.

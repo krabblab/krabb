@@ -103,6 +103,30 @@ conditional on that plugin being installed.
 
 ## Product Behavior
 
+Messaging channels run concurrently, with independent sessions and optional provider/model
+selection per channel. Additional channels and intelligence providers activate without
+replacing existing ones. Local concurrency fixtures verify provider overlap, separate
+cursors, plugin activation/removal, and single claims of queued replies.
+Queued messages use exact persisted channel routes, including after session
+renaming. Legacy queues without channel or chat metadata remain intact until
+their route is established. Each approval resumes its own turn independently
+of pending approvals on other channels.
+
+The AOS is a shared platform: conversation history and delivery state are separate,
+while global memories, instructions, and workspace resources are intentionally shared.
+Agent-owned memories, context, instructions, and workspaces belong to the planned
+multi-agent runtime. Channel separation does not create an independent agent.
+
+Intelligence adapters resolve implicit model selections to verified small/efficient
+models, including separate local and cloud Ollama defaults. Explicit selections are
+preserved. Defaults never trigger automatic model downloads or fallback upgrades.
+
+Global and per-channel/client intelligence defaults are configurable in TOML.
+CLI arguments take precedence over environment variables, which take precedence
+over scoped and global TOML defaults. One-shot CLI requests can omit provider
+and model flags; saved conversations retain their model selection.
+
+
 - Messaging channels negotiate Markdown input and preserve supported formatting through
   their adapters for sends, streaming edits, and scheduled delivery. Plugins without
   formatting support receive readable plain text with visible source URLs.

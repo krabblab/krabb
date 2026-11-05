@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod model;
+
 mod history;
 use history::messages;
 
@@ -68,11 +70,8 @@ async fn generate(
     let input: ModelRequest = serde_json::from_value(params)?;
     let key = credential()?;
 
-    let model = resolve_model(&input.model, || {
-        std::env::var("KRABB_OPENROUTER_MODEL").map_err(|_| {
-            krabb_core::Error::Denied("KRABB_OPENROUTER_MODEL is not configured.".into())
-        })
-    })?;
+    let model =
+        model::resolve(&input.model, std::env::var("KRABB_OPENROUTER_MODEL").ok().as_deref());
 
     let base = base_url()?;
     let request = ModelRequest { model, ..input };
@@ -82,13 +81,6 @@ async fn generate(
     } else {
         complete(client, id, request, &key, &base).await
     }
-}
-
-fn resolve_model(
-    model: &str,
-    default: impl FnOnce() -> krabb_core::Result<String>,
-) -> krabb_core::Result<String> {
-    if matches!(model.trim(), "" | "default" | "unset") { default() } else { Ok(model.to_owned()) }
 }
 
 fn base_url() -> krabb_core::Result<String> {
@@ -118,6 +110,19 @@ fn validate_base_url(value: &str) -> krabb_core::Result<String> {
     Ok(value.trim_end_matches('/').into())
 }
 
+fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_json::Value> {
+    let mut body = json!({
+        "model": model::resolve(&input.model, None),
+        "messages": messages(input)?,
+        "stream": stream,
+        "tools": tools(input),
+    });
+
+    model::configure(&mut body);
+
+    Ok(body)
+}
+
 async fn complete(
     client: &reqwest::Client,
     id: u64,
@@ -129,12 +134,7 @@ async fn complete(
         .post(format!("{base}/chat/completions"))
         .headers(headers()?)
         .bearer_auth(key)
-        .json(&json!({
-            "model": input.model,
-            "messages": messages(&input)?,
-            "stream": false,
-            "tools": tools(&input)
-        }))
+        .json(&request_body(&input, false)?)
         .send()
         .await
         .map_err(|error| {
@@ -159,12 +159,7 @@ async fn stream(
         .post(format!("{base}/chat/completions"))
         .headers(headers()?)
         .bearer_auth(key)
-        .json(&json!({
-            "model": input.model,
-            "messages": messages(&input)?,
-            "stream": true,
-            "tools": tools(&input)
-        }))
+        .json(&request_body(&input, true)?)
         .send()
         .await
         .map_err(|error| {
@@ -527,7 +522,6 @@ fn credential() -> krabb_core::Result<String> {
 mod tests {
     mod streaming;
 
-    use super::resolve_model;
     use super::{
         BODY_LIMIT, TOOL_CALLS, base_url, collect, credential, generate, headers, headers_with,
         image, messages, response, response_body, stream_body, stream_line, tools,
@@ -577,31 +571,6 @@ mod tests {
                 schema: json!({"type":"object"}),
             }],
         }
-    }
-
-    #[test]
-    fn resolves_daemon_model_sentinels_without_overriding_explicit_models() {
-        for sentinel in ["unset", "default", "", "  "] {
-            let mut request = model();
-            request.model = sentinel.into();
-
-            assert_eq!(
-                resolve_model(&request.model, || Ok("configured/model".into())).unwrap(),
-                "configured/model"
-            );
-
-            assert!(
-                resolve_model(&request.model, || Err(krabb_core::Error::Denied(
-                    "Model is not configured.".into()
-                )))
-                .is_err()
-            );
-        }
-
-        assert_eq!(
-            resolve_model("explicit/model", || panic!("unexpected default")).unwrap(),
-            "explicit/model"
-        );
     }
 
     #[test]
@@ -1104,3 +1073,6 @@ data: [DONE]
 #[cfg(test)]
 #[path = "tests/hardening.rs"]
 mod hardening;
+
+#[cfg(test)]
+mod defaults;

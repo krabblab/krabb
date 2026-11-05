@@ -495,6 +495,7 @@ for line in sys.stdin:
             fixture.0.clone(),
             fixture.media(),
             Arc::new(AsyncMutex::new(approval::Gate::new().unwrap())),
+            10,
         );
 
         let (result, completed) = tokio::join!(bridge, monitor);

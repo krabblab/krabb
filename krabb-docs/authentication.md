@@ -78,7 +78,8 @@ keyring or a file. Unusable files, missing keys, and decryption errors are rejec
 Setup then asks the running daemon to load or reload the plugin. Use
 `--no-activate` to save only. If activation stays pending, start or restart the
 runtime with the same credential file and access to its key, no overriding secret
-environment variables, and the desired channel/model selected. Older daemons need a restart. Run
+environment variables. Additional channels and providers activate alongside existing
+ones. Older daemons need a restart. Run
 `krabb doctor` for readiness checks. JSON results report `saved` and `active`
 separately; a successful save does not guarantee activation.
 

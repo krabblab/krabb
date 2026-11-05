@@ -419,7 +419,7 @@ fn migrates_legacy_tool_history_for_explicit_gemini_three() {
 }
 
 #[test]
-fn routes_default_legacy_transcripts_to_gemini_two() {
+fn preserves_default_legacy_transcripts_without_downgrading() {
     let request = ModelRequest {
         model: "default".into(),
         workspace: None,
@@ -436,18 +436,29 @@ fn routes_default_legacy_transcripts_to_gemini_two() {
         tools: Vec::new(),
     };
 
-    assert_eq!(effective_model(&request), LEGACY_MODEL);
+    assert_eq!(effective_model(&request), DEFAULT_MODEL);
 
     let mut request = request;
 
     request.model = "unset".into();
 
-    assert_eq!(effective_model(&request), LEGACY_MODEL);
+    assert_eq!(effective_model(&request), DEFAULT_MODEL);
 
     let body = request_body(&request).unwrap();
 
-    assert_eq!(body["contents"][0]["parts"][1]["functionCall"]["name"], "read");
-    assert!(body["contents"][0]["parts"][1].get("thoughtSignature").is_none());
+    assert!(
+        body["contents"][0]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|part| part.get("functionCall").is_none())
+    );
+
+    assert!(body.to_string().contains("Tool call read"));
+
+    request.model = "gemini-2.5-flash".into();
+
+    assert!(request_body(&request).is_ok());
 }
 
 #[test]
@@ -470,7 +481,7 @@ fn routes_the_host_default_model_to_gemini_default() {
 }
 
 #[test]
-fn routes_default_signatureless_tool_history_to_gemini_two() {
+fn preserves_default_signatureless_tool_history_without_downgrading() {
     let request = ModelRequest {
         model: "default".into(),
         workspace: None,
@@ -490,18 +501,29 @@ fn routes_default_signatureless_tool_history_to_gemini_two() {
         tools: Vec::new(),
     };
 
-    assert_eq!(effective_model(&request), LEGACY_MODEL);
+    assert_eq!(effective_model(&request), DEFAULT_MODEL);
 
     let mut request = request;
 
     request.model = "unset".into();
 
-    assert_eq!(effective_model(&request), LEGACY_MODEL);
+    assert_eq!(effective_model(&request), DEFAULT_MODEL);
 
     let body = request_body(&request).unwrap();
 
-    assert_eq!(body["contents"][0]["parts"][0]["functionCall"]["name"], "read");
-    assert!(body["contents"][0]["parts"][0].get("thoughtSignature").is_none());
+    assert!(
+        body["contents"][0]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|part| part.get("functionCall").is_none())
+    );
+
+    assert!(body.to_string().contains("Tool call read"));
+
+    request.model = "gemini-2.5-flash".into();
+
+    assert!(request_body(&request).is_ok());
 }
 
 #[tokio::test]
@@ -664,7 +686,7 @@ async fn uses_the_default_model_and_parses_tool_replies() {
         assert!(
             std::str::from_utf8(&request[..length])
                 .unwrap()
-                .contains("POST /models/gemini-3.8-flash:generateContent HTTP/1.1")
+                .contains("POST /models/gemini-3.5-flash-lite:generateContent HTTP/1.1")
         );
 
         let body = br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"README.md"}}}]}}]}"#;

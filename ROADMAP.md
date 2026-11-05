@@ -45,10 +45,47 @@ clearer for adopters and contributors.
 - Add deterministic onboarding and command-output tests.
 - Preserve protocol and plugin compatibility.
 
+### Composable Components
+
+Give clients, intelligence providers, and messaging channels distinct public
+identities and setup workflows while keeping them optional, independently
+installable components backed by shared infrastructure.
+
+- Introduce `krabb-clients/`, `krabb-intelligence/`, and `krabb-channels/` in
+  the monorepo. Promote the TUI into `krabb-clients/tui/`; add desktop, mobile,
+  and web clients as they are developed rather than creating empty scaffolding.
+- Keep `krabb-plugins/` for additional capabilities such as tools, memory,
+  speech, and external integrations. Preserve a capability-free core.
+- Add category-specific CLI entry points: `krabb clients`,
+  `krabb intelligence`, and `krabb channels`, with discovery, installation,
+  setup, updates, and removal using the same underlying lifecycle machinery.
+- Tailor setup to each category: local installation or device pairing for
+  clients, authentication and model selection for intelligence providers, and
+  account linking or webhook configuration for channels. Support client pairing
+  and revocation without assuming every client application is distributed
+  through the CLI.
+- Reuse manifests, compatibility and integrity checks, process supervision,
+  updates, and rollback across categories. Declare categories through manifest
+  capabilities rather than directory names; support components with multiple
+  capabilities and third-party components outside this monorepo.
+- Define a shared, versioned client API for sessions, model selection, tools,
+  approvals, and platform state. Retain local IPC for the TUI and provide
+  authenticated transports suitable for desktop, mobile, and web clients.
+  Keep runtime orchestration and shared AOS state owned by the daemon.
+- Preserve global provider/model defaults and scoped `[clients.<id>]` and
+  `[channels.<id>]` configuration with documented argument, environment, and
+  TOML precedence.
+- Migrate the repository layout and public commands incrementally, reusing the
+  existing process integration where useful. Preserve installed components,
+  configuration, and existing `krabb plugin` workflows through a documented
+  compatibility and migration path.
+
 ## v0.4 | Plugin Ecosystem
 
 Standardize how official and community plugins are published, discovered, and
 installed, with plugin releases independent from Krabb kernel releases.
+Share this catalog and packaging infrastructure with clients, intelligence
+providers, and channels while retaining their distinct setup experiences.
 
 - Add the `krabb-plugins/template` Hello Krabb Rust starter.
 - Use one plugin manifest and release format for official and community plugins.
@@ -92,7 +129,10 @@ Let operators run multiple independent agents and later coordinate them across
 process and machine boundaries, without weakening workspace or capability
 isolation.
 
-- Keep the existing single-agent home layout and behavior as the default.
+- Keep the existing single-agent home layout and behavior as the default. Channels
+  share the AOS platform while retaining separate conversation histories.
+- Give each agent its own memories, context, instructions, and workspace; channel
+  concurrency alone does not establish agent-level isolation.
 - Add an explicit `krabb init --multiagent` mode that puts every agent,
   including the first, under `agents/<id>` with its own configuration, state,
   workspace, and plugin installations; do not create a special root agent in

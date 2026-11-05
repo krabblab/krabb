@@ -53,6 +53,12 @@ krabb <plugin-command> [arguments...]
 - [Initialization And Service Management](#initialization-and-service-management)
 - [Providers And Agent Interoperability](#providers-and-agent-interoperability)
 
+An omitted provider or model inherits environment and TOML defaults using
+[CLI arguments > environment > config.toml](configuration.md#provider-and-model-precedence).
+With no configured model, the selected provider's small default is used. `--model default` and
+`krabb session model <id> default` select that behavior explicitly; legacy `unset`
+sessions are also accepted. See [default models](providers.md#default-models).
+
 ## Command Tree And Help
 
 `krabb help` and `krabb --help` group commands into three types:
@@ -335,11 +341,14 @@ See [Workflows](workflows.md) for platform setup.
 ## Providers And Agent Interoperability
 
 Use `krabb plugin list` and `krabb doctor` to inspect installed capabilities.
-For one-shot model requests, run:
+For one-shot model requests, run (`--provider` and `--model` are optional):
 
 ```sh
-krabb ask --provider <id> --model <name> <prompt...>
+krabb ask [--provider <id>] [--model <name>] <prompt...>
 ```
+
+Place options before the prompt. To start a prompt with a hyphen, use `--`,
+for example `krabb ask -- --explain this option`.
 
 `krabb acp --workspace <path> <prompt>` routes filesystem requests through the
 tools plugin. The selected directory must stay under the configured workspace;

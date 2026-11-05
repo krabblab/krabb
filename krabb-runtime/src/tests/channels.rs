@@ -248,3 +248,233 @@ for line in sys.stdin:
         channel.stop().await.unwrap();
     }
 }
+
+const CONCURRENT: &str = r#"
+import json, pathlib, sys, time
+root, name, capability, peer = pathlib.Path(sys.argv[1]), *sys.argv[2:]
+for line in sys.stdin:
+    request = json.loads(line)
+
+    if 'id' not in request:
+        continue
+
+    method = request['method']
+    with (root / (name + '.jsonl')).open('a') as log:
+        log.write(json.dumps(request) + '\n')
+
+    if method == 'hello':
+        result = {'protocol': {'major': 0, 'minor': 1}, 'id': name,
+                  'version': '0.1.0', 'capabilities': [capability]}
+    elif method == 'poll':
+        if peer == 'blocked':
+            (root / (name + '.polling')).touch()
+            time.sleep(30)
+
+        time.sleep(0.02)
+        result = {'events': [] if request['params'].get('offset', 0) else [
+            {'id': 1, 'chat': 7, 'private': True, 'sender': 8, 'text': name}]}
+    elif method == 'generate':
+        (root / (name + '.started')).touch()
+        deadline = time.monotonic() + 10
+
+        while not (root / (peer + '.started')).exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError('The other provider never ran concurrently')
+            time.sleep(0.01)
+        result = {'text': name + ' answered', 'stop': 'stop'}
+    else:
+        result = {'message_id': 99, 'acknowledged': True}
+
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if method == 'shutdown':
+        break
+"#;
+
+async fn concurrent_plugin(root: &Path, id: &str, capability: &str, peer: &str) -> Process {
+    Process::start_with(
+        "python3",
+        ["-u", "-c", CONCURRENT, root.to_str().unwrap(), id, capability, peer],
+    )
+    .await
+    .unwrap()
+}
+
+fn concurrent_requests(root: &Path, id: &str, method: &str) -> Vec<serde_json::Value> {
+    fs::read_to_string(root.join(format!("{id}.jsonl")))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|request| request["method"] == method)
+        .collect()
+}
+
+#[tokio::test]
+async fn simultaneous_channels_route_providers_and_claim_deliveries_once() {
+    let root = test_root("simultaneous-channels");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let plugins = Plugins::default();
+    let sessions = Arc::new(Mutex::new(crate::state::Store::default()));
+
+    sessions
+        .lock()
+        .unwrap()
+        .queue_delivery("queued", "telegram", "7", true, None, "queued")
+        .unwrap();
+
+    let stop = Arc::new(Stop::new());
+
+    let policies = [("telegram", "alpha"), ("discord", "beta")]
+        .into_iter()
+        .map(|(channel, provider)| {
+            (
+                channel.into(),
+                crate::ChannelConfig {
+                    provider: Some(provider.into()),
+                    model: Some(format!("{provider}-model")),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+
+    let worker = tokio::spawn(crate::channels::run(crate::channels::Context {
+        plugins: plugins.clone(),
+        sessions: Arc::clone(&sessions),
+        stop: Arc::clone(&stop),
+        cancels: Arc::new(Mutex::new(BTreeMap::new())),
+        policies,
+        provider: "unavailable".into(),
+        model: "wrong-default".into(),
+        approval_mode: crate::ApprovalMode::Off,
+        home: root.clone(),
+        media: root.join("media"),
+        approvals: Arc::new(crate::AsyncMutex::new(crate::approval::Gate::new().unwrap())),
+    }));
+
+    // Start with no plugins, then add channels before their providers are ready.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    for id in ["telegram", "discord"] {
+        plugins.insert(Live::new(concurrent_plugin(&root, id, "channel", "").await)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    for (id, peer) in [("alpha", "beta"), ("beta", "alpha")] {
+        plugins.insert(Live::new(concurrent_plugin(&root, id, "model", peer).await)).await;
+    }
+
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if concurrent_requests(&root, "telegram", "send").len() == 2
+                && concurrent_requests(&root, "discord", "send").len() == 1
+                && sessions.lock().unwrap().outbox.is_empty()
+            {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // Unloading one channel leaves the other worker polling; reloading preserves its cursor.
+    let removed = plugins.remove("telegram").await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    removed.stop().await.unwrap();
+
+    let polls = concurrent_requests(&root, "discord", "poll").len();
+
+    plugins.insert(Live::new(concurrent_plugin(&root, "telegram", "channel", "").await)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    stop.signal();
+
+    tokio::time::timeout(Duration::from_secs(5), worker).await.unwrap().unwrap().unwrap();
+    stop_registry(&plugins).await;
+    completed.unwrap();
+
+    assert!(concurrent_requests(&root, "discord", "poll").len() > polls);
+    assert_eq!(concurrent_requests(&root, "telegram", "send").len(), 2);
+    assert_eq!(concurrent_requests(&root, "discord", "send").len(), 1);
+
+    let alpha = concurrent_requests(&root, "alpha", "generate");
+    let beta = concurrent_requests(&root, "beta", "generate");
+
+    assert_eq!(alpha.len(), 1);
+    assert_eq!(beta.len(), 1);
+    assert_ne!(alpha[0]["id"], beta[0]["id"]);
+    assert_eq!(alpha[0]["params"]["model"], "alpha-model");
+    assert_eq!(beta[0]["params"]["model"], "beta-model");
+
+    let store = sessions.lock().unwrap();
+
+    assert_eq!(store.offset("telegram"), 2);
+    assert_eq!(store.offset("discord"), 2);
+    assert!(store.sessions.contains_key("telegram-7"));
+    assert!(store.sessions.contains_key("discord-7"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn stalled_channel_and_missing_provider_do_not_block_other_channels_or_shutdown() {
+    let root = test_root("channel-isolation");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let plugins = registry([
+        concurrent_plugin(&root, "telegram", "channel", "").await,
+        concurrent_plugin(&root, "discord", "channel", "blocked").await,
+        concurrent_plugin(&root, "whatsapp", "channel", "").await,
+        concurrent_plugin(&root, "alpha", "model", "alpha").await,
+    ])
+    .await;
+
+    let stop = Arc::new(Stop::new());
+
+    let policies = BTreeMap::from([(
+        "whatsapp".into(),
+        crate::ChannelConfig { provider: Some("missing".into()), ..Default::default() },
+    )]);
+
+    let worker = tokio::spawn(crate::channels::run(crate::channels::Context {
+        plugins: plugins.clone(),
+        sessions: Arc::new(Mutex::new(crate::state::Store::default())),
+        stop: Arc::clone(&stop),
+        cancels: Arc::new(Mutex::new(BTreeMap::new())),
+        policies,
+        provider: "alpha".into(),
+        model: "unset".into(),
+        approval_mode: crate::ApprovalMode::Off,
+        home: root.clone(),
+        media: root.join("media"),
+        approvals: Arc::new(crate::AsyncMutex::new(crate::approval::Gate::new().unwrap())),
+    }));
+
+    let completed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !concurrent_requests(&root, "telegram", "send").is_empty()
+                && root.join("discord.polling").is_file()
+            {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    stop.signal();
+
+    tokio::time::timeout(Duration::from_secs(3), worker).await.unwrap().unwrap().unwrap();
+    stop_registry(&plugins).await;
+    completed.unwrap();
+
+    assert!(concurrent_requests(&root, "whatsapp", "poll").is_empty());
+    assert_eq!(concurrent_requests(&root, "telegram", "send").len(), 1);
+
+    fs::remove_dir_all(root).unwrap();
+}

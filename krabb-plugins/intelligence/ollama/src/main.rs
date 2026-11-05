@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod model;
+
 use krabb_core::{
     plugin::Emitter,
     types::{Content, Event, ModelReply, ModelRequest, Request, Response},
@@ -85,6 +87,23 @@ async fn generate_at(
     }
 }
 
+fn request_body(
+    input: &ModelRequest,
+    host: &str,
+    stream: bool,
+) -> krabb_core::Result<serde_json::Value> {
+    let mut body = json!({
+        "model": model::resolve(&input.model, host),
+        "messages": messages(input)?,
+        "stream": stream,
+        "tools": tools(input),
+    });
+
+    model::configure(&mut body);
+
+    Ok(body)
+}
+
 async fn generate_request(
     client: &reqwest::Client,
     id: u64,
@@ -109,13 +128,8 @@ async fn request(
         post = post.bearer_auth(key);
     }
 
-    let messages = messages(&input)?;
-
-    let response = post
-        .json(&json!({"model": input.model, "messages": messages, "tools": tools(&input), "stream": stream}))
-        .send()
-        .await
-        .map_err(|error| {
+    let response =
+        post.json(&request_body(&input, &host, stream)?).send().await.map_err(|error| {
             let kind = if stream { "stream" } else { "request" };
 
             krabb_core::Error::Denied(format!("Ollama {kind} failed: {error}."))
@@ -445,17 +459,15 @@ async fn stream_request(
     let key = credential();
     let host = validate_host(host, key.is_some())?;
     let mut post = client.post(format!("{host}/api/chat"));
-    let messages = messages(&input)?;
 
     if let Some(key) = key {
         post = post.bearer_auth(key);
     }
 
-    let response = post
-        .json(&json!({"model": input.model, "messages": messages, "tools": tools(&input), "stream": true}))
-        .send()
-        .await
-        .map_err(|error| krabb_core::Error::Denied(format!("Ollama stream failed: {error}.")))?;
+    let response =
+        post.json(&request_body(&input, &host, true)?).send().await.map_err(|error| {
+            krabb_core::Error::Denied(format!("Ollama stream failed: {error}."))
+        })?;
 
     let status = response.status();
 
@@ -917,3 +929,6 @@ mod tests {
 #[cfg(test)]
 #[path = "tests/hardening.rs"]
 mod hardening;
+
+#[cfg(test)]
+mod defaults;

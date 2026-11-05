@@ -30,6 +30,7 @@ session are copied under `media/pinned` and are not removed by cache cleanup.
 ## Table Of Contents
 
 - [Example](#example)
+- [Provider And Model Precedence](#provider-and-model-precedence)
 - [Paths](#paths)
 - [Channel Policy](#channel-policy)
 - [Update Policy](#update-policy)
@@ -42,6 +43,8 @@ session are copied under `media/pinned` and are not removed by cache cleanup.
 name = "Krabb"
 update = "prompt"
 approval = "off"
+provider = "openrouter"
+model = "default"
 
 [channels.telegram]
 allow = ["-1001234567890"]
@@ -121,6 +124,70 @@ Use `prompt` for interactive Telegram and Discord channels. Use `auto` only
 when the configured channel policy is trusted to run workspace mutations
 without a person confirming each request.
 
+## Provider And Model Precedence
+
+Set the global intelligence defaults with top-level `provider` and `model` keys:
+
+```toml
+provider = "openrouter"
+model = "default"
+
+[channels.telegram]
+provider = "codex"
+
+[clients.tui]
+provider = "ollama"
+model = "qwen3.5:4b"
+
+[clients.cli]
+model = "default"
+```
+
+Selection uses this priority, highest first:
+
+1. Command-line arguments: `--provider` / `--model` for `krabb ask`, or
+   `--plugin` / `--model` for `krabb tui` and `krabb tui --once`.
+2. Environment variables: `KRABB_MODEL_PLUGIN` / `KRABB_MODEL`.
+3. Scoped `config.toml` settings: `[channels.<id>]`, `[clients.tui]`, or
+   `[clients.cli]`.
+4. Global `config.toml` settings: top-level `provider` / `model`.
+5. Built-in fallback: provider `codex`, model `default`.
+
+In other words, **CLI arguments > environment variables > config.toml**.
+Within TOML, scoped values override global ones. Unspecified values inherit from
+lower-priority settings. If a layer changes the provider without specifying a
+model, selection resets to that provider's `default`; a model belonging to the
+previous provider is not carried across. Specifying the same provider preserves
+the inherited model. Each adapter resolves `default` to its
+[small default model](providers.md#default-models).
+
+Environment values override even channel-specific TOML settings. To keep channels
+on different providers, put their choices in TOML and leave the global environment
+overrides unset. A service uses its own environment; exporting a variable in a shell
+does not change an already-running daemon.
+
+TUI and CLI are local clients, not messaging channels. `[clients.cli]` applies to
+`krabb ask` and the model used by `krabb session new`. Other plugin commands use
+global defaults through their existing environment contract; their own options
+remain plugin-specific. Provider-specific default variables such as
+`KRABB_OPENROUTER_MODEL` only resolve implicit model names inside that adapter;
+they do not replace an explicit concrete model selected above.
+
+These are defaults for new sessions and one-shot requests. Saved session models
+remain in force when resuming a conversation. Use `krabb session model <id> <model>`,
+TUI `/model set <model>`, or TUI `--model <model>` to change a saved selection.
+Scheduled tasks retain their captured selections.
+
+Restart the daemon to apply channel defaults. Local CLI requests and newly
+launched TUI clients read the current TOML settings. You can edit them with:
+
+```sh
+krabb config set 'provider="openrouter"'
+krabb config set 'model="default"'
+krabb config set 'channels.telegram.provider="codex"'
+krabb config set 'clients.tui.provider="ollama"'
+```
+
 ## Paths
 
 Krabb keeps operational state, working files, and installed plugin files in
@@ -191,7 +258,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_CREDENTIALS` | Encrypted credential file; defaults to `credentials.json` in Krabb's home |
 | `KRABB_CREDENTIALS_KEY` | Fallback encryption key file; defaults to `credentials.key` in Krabb's home |
 | `KRABB_KEYRING` | Setup key storage: `auto` (default), `1` (require keyring), or `0` (protected key file) |
-| `KRABB_CHANNEL` | Default messaging plugin ID |
+| `KRABB_CHANNEL` | Default messaging plugin ID for diagnostics; all loaded channels receive messages |
 | `KRABB_MODEL_PLUGIN` | Default intelligence plugin ID |
 | `KRABB_MODEL` | Default model identifier |
 | `KRABB_MEMORY` | Override the optional memory plugin's JSON index path; Markdown records live under a sibling `records/` directory |
@@ -253,9 +320,9 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_SANDBOX_RUNTIME` | `docker`, `podman`, or `off`; shell sandbox required on macOS and other non-Linux Unix hosts |
 | `KRABB_SANDBOX_IMAGE` | Locally available image used by the shell sandbox |
 
-The default host model is unset when `KRABB_MODEL` is unset; select a model
-explicitly in the TUI or configure `KRABB_MODEL`. When Gemini is selected,
-the Gemini plugin maps the unset host model to its own `gemini-3.8-flash` default.
+Without `KRABB_MODEL`, new host and TUI sessions select `default`. Each intelligence
+plugin resolves it to its [documented default](providers.md#default-models).
+Legacy `unset` selections also resolve through that adapter; explicit names take precedence.
 
 Operating-system variables such as `HOME`, `USERPROFILE`, `PATH`, and
 `XDG_CONFIG_HOME` retain their platform-defined names and are not Krabb
@@ -263,6 +330,38 @@ configuration. Tool-native variables used to constrain subprocesses, such as
 Git's `GIT_CONFIG_NOSYSTEM`, also retain their required names.
 
 ## Channel Policy
+
+Every loaded messaging plugin receives messages concurrently. Installing and setting up
+WhatsApp keeps Telegram active. `KRABB_CHANNEL` does not restrict the receive loops.
+The runtime supervises up to 64 channel loops, including plugins activated while it
+is running. Sessions, incoming cursors, and replies remain scoped to their channel.
+
+Channels inherit the global provider and model unless overridden according to
+[selection precedence](#provider-and-model-precedence). To use different
+intelligence providers simultaneously, configure each channel in `config.toml`:
+
+```toml
+[channels.telegram]
+provider = "codex"
+
+[channels.whatsapp]
+provider = "openai"
+model = "default"
+```
+
+Install and authenticate both providers, then restart the daemon after changing
+configuration. When a channel selects a different provider without a `model`, its model
+is `default`; the global model name is not passed to it. Each adapter resolves that
+selection to its [small default model](providers.md#default-models). The model setting
+initializes new sessions. Existing sessions retain their selection; change it with
+`krabb session model <session-id> default` to opt into the provider's default.
+Independent provider processes can generate concurrently. Calls to the same
+provider process remain serialized. TUI sessions can also select providers independently.
+
+The WhatsApp webhook listener defaults to `127.0.0.1:8787`; `KRABB_WHATSAPP_LISTEN`
+is only needed to override that address. Meta still needs a public HTTPS callback
+URL routed to that listener.
+
 
 Direct messages are accepted by default, but tool schemas are not exposed
 unless the sender also satisfies the channel policy and daemon approval mode.

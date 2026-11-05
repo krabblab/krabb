@@ -8,7 +8,7 @@ use ring::hmac;
 use serde::Serialize;
 use serde_json::Value;
 use subtle::ConstantTimeEq;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 const LIMIT: usize = 32;
 const LIFE: Duration = Duration::from_secs(300);
@@ -43,6 +43,7 @@ struct Pending {
     target: Target,
     expires: u64,
     answer: oneshot::Sender<bool>,
+    completion: watch::Sender<()>,
 }
 
 pub(crate) struct Gate {
@@ -79,7 +80,8 @@ impl Gate {
         let id = hex(&nonce);
         let expires = now.saturating_add(LIFE.as_secs());
         let (answer, receiver) = oneshot::channel();
-        let pending = Pending { target, expires, answer };
+        let (completion, _) = watch::channel(());
+        let pending = Pending { target, expires, answer, completion };
         let approve = token(&self.key, &id, &pending, b'a')?;
         let deny = token(&self.key, &id, &pending, b'd')?;
         self.pending.insert(id, pending);
@@ -139,6 +141,13 @@ impl Gate {
         }
     }
 
+    pub fn subscribe(&self, token: &str) -> Option<watch::Receiver<()>> {
+        let (id, _, _) = decode(token)?;
+
+        Some(self.pending.get(id)?.completion.subscribe())
+    }
+
+    #[cfg(test)]
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
@@ -385,6 +394,36 @@ mod tests {
         gate.cancel(&challenge.approve);
 
         assert!(gate.pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn completion_is_scoped_to_resolution_cancellation_and_expiry() {
+        let mut gate = Gate::new().unwrap();
+        let first = gate.issue(target()).unwrap();
+        let second = gate.issue(target()).unwrap();
+        let mut first_done = gate.subscribe(&first.approve).unwrap();
+        let mut second_done = gate.subscribe(&second.deny).unwrap();
+
+        assert!(gate.subscribe("invalid").is_none());
+        assert_eq!(gate.resolve(&first.approve, "telegram", "8", Some("4"), true), Some(true));
+        assert!(first_done.changed().await.is_err());
+        assert!(first.answer.await.unwrap());
+        assert!(gate.subscribe(&first.approve).is_none());
+        assert!(!second_done.has_changed().unwrap());
+
+        gate.cancel(&second.approve);
+
+        assert!(second_done.changed().await.is_err());
+        assert!(second.answer.await.is_err());
+
+        let expired = gate.issue(target()).unwrap();
+        let mut expiry = gate.subscribe(&expired.approve).unwrap();
+        let (id, _, _) = decode(&expired.approve).unwrap();
+        gate.pending.get_mut(id).unwrap().expires = 0;
+
+        assert!(gate.list().unwrap().is_empty());
+        assert!(expiry.changed().await.is_err());
+        assert!(expired.answer.await.is_err());
     }
 
     #[test]

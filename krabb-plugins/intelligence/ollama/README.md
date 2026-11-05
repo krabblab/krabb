@@ -29,3 +29,15 @@ credentials, a query, or a fragment.
 
 See [deployment validation](../../../krabb-docs/providers.md#deployment-validation)
 before relying on this adapter in production.
+
+
+Blank, `default`, and legacy `unset` model selections use `qwen3.5:4b` on
+local/custom hosts, and `deepseek-v4.1-flash` on `https://ollama.com`. Host matching uses the
+parsed hostname, not substring matching or the presence of an API key. Explicit
+model names always win, including cloud model tags used through a local proxy.
+
+The local Qwen 4B must already be installed. Both selected models support images
+and tools; cloud calls require authentication and account access. Krabb never downloads
+models or retries with a different model. Default models disable thinking and cap
+generation at 4096 tokens. See [default models](../../../krabb-docs/providers.md#default-models)
+for current catalog sources and the verification date.

@@ -78,3 +78,12 @@ Set `theme = false` under `[clients.tui]` to use the terminal's default colors.
 Use `/statusline` to choose which details appear in the footer. Preferences are
 saved under `KRABB_HOME/data/plugins/tui/` and apply to the next launch where
 noted.
+
+
+The TUI uses `--plugin` / `--model` first, then `KRABB_MODEL_PLUGIN` /
+`KRABB_MODEL`, then `[clients.tui]` and global `provider` / `model` settings in
+`config.toml`. With no configured selection it uses `codex` and `default`, resolved
+by the intelligence plugin to its small model. Existing sessions retain their
+model; `--model <id>` or `/model set <id>` changes it. Sessions saved as `unset`
+can also generate using the provider default. See
+[selection precedence](../../krabb-docs/configuration.md#provider-and-model-precedence).

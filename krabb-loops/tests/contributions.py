@@ -125,12 +125,14 @@ class Contributions(unittest.TestCase):
         loop.branch = 'feature'
         loop.sha = 'abc'
         loop.sequence = 0
+        loop.attempt = 0
         loop.args = argparse.Namespace(max_repairs=0, ci_timeout=1)
 
         return loop
 
     def test_red_ci_repairs_reverifies_commits_and_waits_again(self):
         loop = self.contribution()
+        loop.stable = Mock()
         events = []
         loop.prepare = lambda: events.append('prepare')
         loop.verify = lambda: events.append('verify') or 'verified'
@@ -279,6 +281,7 @@ class Contributions(unittest.TestCase):
             local('push', '-u', 'origin', 'main')
             local('switch', '-c', 'feature')
             (root / 'file').write_text('feature')
+            (root / 'new').write_bytes(b'new binary\0file\xff')
 
             loop = self.contribution()
             loop.sha = local('rev-parse', 'HEAD')
@@ -323,6 +326,7 @@ class Contributions(unittest.TestCase):
 
                 self.assertEqual(local('log', '-1', '--format=%s'), 'feat: example')
                 self.assertEqual(local('rev-parse', 'origin/feature'), first)
+                self.assertEqual(local('ls-tree', '--name-only', 'HEAD'), 'file\nnew')
                 self.assertIn('--draft', published[0])
 
                 (root / 'file').write_text('repaired')
