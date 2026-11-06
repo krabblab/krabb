@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::collections::BTreeSet;
 
 const CHANNEL: &str = r#"
 import json, pathlib, sys, time
@@ -196,7 +197,12 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
     let typing: Vec<_> = calls.iter().filter(|value| value["method"] == "typing").collect();
 
     assert_eq!(typing.len(), 2);
-    assert!(typing.iter().all(|value| value["params"] == json!({"chat":7,"thread":"4"})));
+
+    assert!(typing.iter().all(|value| value["params"]
+        == json!({"chat":7,"thread":"4","message":value["params"]["message"],"private":true})));
+
+    assert_eq!(typing[0]["params"]["message"], "1");
+    assert_eq!(typing[1]["params"]["message"], "2");
 
     let sent: Vec<_> = calls.iter().filter(|value| value["method"] == "send").collect();
 
@@ -235,11 +241,15 @@ for line in sys.stdin:
             Live::new(Process::start_with("python3", ["-u", "-c", &script]).await.unwrap());
         let mut call = 7;
 
-        assert!(!crate::indicate_typing(&channel, "telegram", "invalid", None, &mut call).await);
+        assert!(
+            !crate::indicate_typing(&channel, "telegram", "invalid", None, &json!({}), &mut call)
+                .await
+        );
+
         assert_eq!(call, 7);
         let outcome = tokio::time::timeout(
             Duration::from_secs(3),
-            crate::indicate_typing(&channel, "telegram", "7", None, &mut call),
+            crate::indicate_typing(&channel, "telegram", "7", None, &json!({}), &mut call),
         )
         .await;
 
@@ -477,4 +487,304 @@ async fn stalled_channel_and_missing_provider_do_not_block_other_channels_or_shu
     assert_eq!(concurrent_requests(&root, "telegram", "send").len(), 1);
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn group_workspace_failures_reply_without_running_the_model() {
+    check_group_workspace(true);
+}
+
+#[test]
+fn group_chat_works_in_a_fresh_workspace_by_default() {
+    check_group_workspace(false);
+}
+
+#[test]
+fn private_worktree_failures_reply_without_running_the_model() {
+    check_workspace(true, true, false);
+}
+
+#[test]
+fn private_chats_have_distinct_worktrees_and_durable_local_history() {
+    check_workspace(true, true, true);
+}
+
+#[test]
+fn group_chats_have_distinct_worktrees_and_durable_local_history() {
+    check_workspace(true, false, true);
+}
+
+fn check_group_workspace(isolated: bool) {
+    check_workspace(isolated, false, false);
+}
+
+fn check_workspace(isolated: bool, private: bool, prepared: bool) {
+    let root = test_root("group-workspace-failure");
+
+    crate::init_at(&root).unwrap();
+
+    assert!(!root.join("workspace/.git").exists());
+    assert!(crate::isolate_at("telegram-7", &root).is_err());
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::channels::workspace_failure_worker", "--ignored", "--nocapture"])
+        .env("KRABB_HOME", &root)
+        .env("KRABB_ROOT", root.join("workspace"))
+        .env("KRABB_TEST_ISOLATION", if isolated { "1" } else { "0" })
+        .env("KRABB_TEST_PRIVATE", if private { "1" } else { "0" })
+        .env("KRABB_TEST_PREPARED", if prepared { "1" } else { "0" })
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "isolated workspace fixture"]
+async fn workspace_failure_worker() {
+    let root = crate::home();
+    let private = std::env::var("KRABB_TEST_PRIVATE").unwrap() == "1";
+    let prepared = std::env::var("KRABB_TEST_PREPARED").unwrap() == "1";
+
+    let mut script = if private {
+        CHANNEL.to_owned()
+    } else {
+        CHANNEL.replace("'private': True", "'private': False")
+    };
+
+    if prepared {
+        use clap::Parser;
+
+        let cli = crate::Cli::try_parse_from(["krabb", "worktree", "setup", "telegram", "--yes"])
+            .unwrap();
+
+        let crate::Command::Worktree { command } = cli.command else { panic!() };
+
+        crate::worktree::run(command, &root, true).await.unwrap();
+        fs::write(root.join("data/system/KRAB.md"), "host-system-fixture").unwrap();
+
+        for id in ["telegram-7", "telegram-8"] {
+            let checkout = crate::worktree::conversation(id, &root).unwrap();
+
+            fs::write(checkout.join("KRAB.md"), "untrusted-workspace-identity").unwrap();
+        }
+
+        script = script.replace("'chat': 7", "'chat': (7+n%2)");
+    }
+
+    let channel = Process::start_with("python3", ["-u", "-c", &script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let model =
+        Process::start_with("python3", ["-u", "-c", MODEL, root.to_str().unwrap()]).await.unwrap();
+
+    let plugins = registry([channel, model]).await;
+
+    let sessions = Arc::new(Mutex::new(
+        crate::state::Store::load(root.join("data/sessions/index.json")).unwrap(),
+    ));
+
+    let stop = Arc::new(Stop::new());
+    let signal = Arc::clone(&stop);
+    let observed = root.clone();
+
+    let monitor = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                if requests(&observed).iter().filter(|request| request["method"] == "send").count()
+                    >= 2
+                {
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        signal.signal();
+    });
+
+    let isolated = std::env::var("KRABB_TEST_ISOLATION").unwrap() == "1";
+
+    let mut policy =
+        crate::ChannelConfig { allow: vec!["7".into(), "8".into()], ..Default::default() };
+
+    if isolated {
+        policy.worktree = true;
+    }
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        crate::bridge(
+            &plugins,
+            "telegram",
+            "fixture",
+            "unset",
+            Arc::clone(&sessions),
+            Arc::clone(&stop),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            BTreeMap::from([("telegram".into(), policy.clone())]),
+            crate::ApprovalMode::Off,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    monitor.await.unwrap();
+
+    let sent: Vec<_> =
+        requests(&root).into_iter().filter(|request| request["method"] == "send").collect();
+
+    assert_eq!(sent.len(), 2);
+
+    if !isolated || prepared {
+        if prepared {
+            let stored = crate::state::Store::load(root.join("data/sessions/index.json")).unwrap();
+
+            assert_eq!(stored.sessions.len(), 2);
+
+            let request = fs::read_to_string(root.join("model.json")).unwrap();
+
+            assert!(request.contains("host-system-fixture"));
+            assert!(!request.contains("untrusted-workspace-identity"));
+
+            let mut paths = BTreeSet::new();
+
+            for session in stored.sessions.values() {
+                let path = session.isolated.as_ref().unwrap();
+
+                paths.insert(path.clone());
+
+                assert!(
+                    root.join("data/workspaces/conversations")
+                        .join(&session.id)
+                        .join("sessions/records")
+                        .is_dir()
+                );
+
+                assert!(!path.join(".krabb").exists());
+                assert_eq!(session.private, private);
+                assert!(!session.messages.is_empty());
+            }
+
+            assert_eq!(paths.len(), 2);
+            assert_eq!(fs::read_dir(root.join("data/sessions/records")).unwrap().count(), 0);
+        } else {
+            assert!(!root.join("workspace/.git").exists());
+            assert!(!root.join("workspace/.krabb/worktrees").exists());
+        }
+
+        assert_eq!(fs::read_to_string(root.join("generated")).unwrap(), "2");
+        assert!(sent.iter().any(|request| request["params"]["text"] == "Recovered"));
+
+        stop_registry(&plugins).await;
+        return;
+    }
+
+    assert!(sent.iter().all(|request| {
+        request["params"]["text"].as_str().unwrap().contains("channels.telegram.worktree=false")
+    }));
+
+    assert!(sent.iter().all(|request| request["params"]["thread"] == "4"));
+    assert!(!root.join("generated").exists());
+    assert!(sessions.lock().unwrap().sessions.is_empty());
+
+    let channel = plugins.get("telegram").await.unwrap();
+    let event = json!({"id":3,"chat":7,"private":false,"sender":8,"thread":"4","text":"queued"});
+
+    assert!(
+        crate::queue_during_turn(
+            &channel, "telegram", "unset", &event, &policy, &sessions, &mut 0, &mut 100
+        )
+        .await
+        .unwrap()
+    );
+
+    let stored = crate::state::Store::load(root.join("data/sessions/index.json")).unwrap();
+
+    let delivery =
+        stored.outbox.iter().find(|delivery| delivery.id == "workspace-telegram-3").unwrap();
+
+    assert_eq!(delivery.thread.as_deref(), Some("4"));
+    assert!(delivery.text.contains("isolated workspace"));
+    assert!(stored.sessions.is_empty());
+    assert!(stored.known("telegram", "3"));
+
+    stop_registry(&plugins).await;
+}
+
+#[tokio::test]
+async fn typing_preserves_incoming_message_identity_and_conversation_scope() {
+    for (channel_id, chat, private, expected) in [
+        ("discord", "123", false, json!({"channel":"123","message":"incoming","private":false})),
+        (
+            "whatsapp",
+            "123",
+            true,
+            json!({"chat":"123","thread":"456","message":"incoming","private":true}),
+        ),
+        (
+            "signal",
+            "group",
+            false,
+            json!({"chat":"group","thread":"456","message":"incoming","private":false}),
+        ),
+        (
+            "slack",
+            "D123",
+            true,
+            json!({"chat":"D123","thread":"456","message":"incoming","private":true}),
+        ),
+    ] {
+        let script = r#"
+import json, sys
+expected = json.loads(sys.argv[1])
+
+for line in sys.stdin:
+    request = json.loads(line)
+
+    if 'id' not in request: continue
+    method = request['method']
+
+    if method == 'hello':
+        result = {'protocol': {'major':0, 'minor':1}, 'id':'fixture', 'version':'0.1.0', 'capabilities':['channel']}
+    elif method == 'typing':
+        result = request['params'] == expected
+    else:
+        result = {}
+
+    print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
+    if method == 'shutdown': break
+"#;
+
+        let expected = expected.to_string();
+
+        let channel = Live::new(
+            Process::start_with("python3", ["-u", "-c", script, &expected]).await.unwrap(),
+        );
+
+        assert!(
+            crate::indicate_typing(
+                &channel,
+                channel_id,
+                chat,
+                Some("456"),
+                &json!({"id":"incoming","private":private}),
+                &mut 7
+            )
+            .await
+        );
+
+        channel.stop().await.unwrap();
+    }
 }

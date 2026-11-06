@@ -152,7 +152,7 @@ and model flags; saved conversations retain their model selection.
   Delivery dropping supports all pages and exact
   channel filtering, with one confirmation and a durable batch update. Terminal dropped
   history does not block uninstall.
-- `KRABB_HOME/workspace/KRAB.md` defines Krabb's identity and communication
+- `KRABB_HOME/data/system/KRAB.md` defines Krabb's identity and communication
   style; `KLAW.md` defines behavioral guidance and workflows. Both are loaded
   into every model turn alongside the bounded session transcript. Krabb does
   not load `AGENTS.md` itself; delegated coding agents may use it.
@@ -199,7 +199,8 @@ and model flags; saved conversations retain their model selection.
   networkless, read-only-root, and limited to a writable active workspace.
   Direct Git and Git-backed patches share host shell descendant containment on Linux
   and Windows; other platforms require Git execution through the sandboxed shell.
-  Remote rooms default to isolated worktrees; owner DM/TUI defaults to in-place.
+  All conversations default to isolated scopes in ordinary folders. Worktrees are opt-in
+  through guided Git setup, including owner DMs and TUI sessions.
 - Codex supports Platform API keys and personal Codex OAuth through its
   installed runtime, owner-only by default. Anthropic uses API keys with no
   Claude OAuth or
@@ -251,8 +252,11 @@ and model flags; saved conversations retain their model selection.
 - Acceptance flows cover a Telegram DM with text/image/voice/tools/memory/
   scheduler, a Discord thread with authorization and a worktree, provider
   switching without history loss, core-only diagnostics, and update rollback.
-  The deterministic evidence matrix is maintained in
-  [Compatibility And Deployment Checks](../COMPATIBILITY.md).
+  Track basic functionality per OS/architecture and detailed component checks
+  in the simple tables in [Compatibility](../COMPATIBILITY.md). Record verified
+  functional success only by ticking existing checkboxes; do not add status
+  phrases, dates, versions, evidence links, or narrative notes. Leave partial,
+  untested, or unsupported checks unchecked.
 
 Browser automation, video, text-to-speech, Telegram webhooks,
 email/calendar/smart-home integrations, hosted multi-tenancy, Claude Code

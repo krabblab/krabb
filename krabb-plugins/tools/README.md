@@ -53,3 +53,10 @@ Use a local Docker or Podman engine. Remote container contexts are unsupported
 because the active workspace mount must refer to this host's filesystem. The
 sandbox narrows command access but does not replace kernel, daemon, or host
 security updates.
+
+Worktree turns expose only confined `read`, `write`, `list`, and `search` operations.
+The host blocks shell, Git/patch execution, and tools that cannot enforce the
+worktree boundary. Filesystem operations reject internal runtime storage and
+other conversation directories; searches skip `.git` and `.krabb` trees unless
+explicitly reading permitted conversation media. See
+[Visibility And Worktrees](../../krabb-docs/sharing.md).

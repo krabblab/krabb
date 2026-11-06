@@ -8,6 +8,8 @@ root, name, capability, mode = pathlib.Path(sys.argv[1]), *sys.argv[2:]
 initial, callback, token, generated = False, False, None, 0
 for line in sys.stdin:
     request = json.loads(line)
+    if request.get('method') == 'visible':
+        request['method'], request['params'] = request['params']['method'], request['params']['params']
     if 'id' not in request:
         continue
     method = request['method']

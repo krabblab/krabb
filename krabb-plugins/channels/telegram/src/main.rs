@@ -517,8 +517,9 @@ fn valid_file_id(byte: u8) -> bool {
 fn media_root() -> krabb_core::Result<PathBuf> {
     let root = std::env::var_os("KRABB_MEDIA")
         .or_else(|| {
-            std::env::var_os("KRABB_HOME")
-                .map(|value| PathBuf::from(value).join("media").into_os_string())
+            std::env::var_os("KRABB_HOME").map(|value| {
+                krabb_file::location(&PathBuf::from(value), "data/media", "media").into_os_string()
+            })
         })
         .ok_or_else(|| {
             krabb_core::Error::Denied("KRABB_MEDIA or KRABB_HOME is required.".into())

@@ -60,6 +60,14 @@ container engine, image, kernel, and host still need to be trusted and
 maintained. See the [configuration](configuration.md) and
 [security](security.md) guides for setup and threat-model details.
 
+Worktrees are optional and cover all conversations, including DMs and TUI sessions.
+They exclude all visibility grants and isolate content and private state. The runtime
+limits worktree turns to confined file tools and scoped memory/data operations;
+host shell, third-party tools, desktop/browser control, and schedule creation are
+blocked. Filesystem tools protect runtime state and other conversation directories.
+Installed plugins and the operator remain trusted: Git alone is not an OS sandbox.
+See [Visibility And Worktrees](sharing.md) for the exact boundary and visibility defaults.
+
 Automatic room worktree creation disables Git hooks, filesystem monitors, recursive
 submodule checkout, automatic maintenance, and lazy object fetching. Repositories with
 checkout filters or partial-clone configuration require an explicitly approved shell

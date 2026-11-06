@@ -1,6 +1,12 @@
 #![allow(unsafe_code)]
 
 mod cache;
+mod directory;
+mod layout;
+mod ownership;
+pub use directory::{confined, directory, workspace_state};
+pub use layout::location;
+pub use ownership::Ownership;
 
 use serde::{Deserialize, Serialize};
 

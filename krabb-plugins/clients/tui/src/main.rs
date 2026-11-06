@@ -2345,6 +2345,7 @@ where
                 params["id"] = Value::from(id);
                 params["text"] = Value::String(instruction.clone());
                 params["activate"] = Value::Bool(true);
+                let destinations = params["context"]["destinations"].take();
                 params["context"] = serde_json::json!({
                     "provider": provider.clone(),
                     "model": model.clone(),
@@ -2353,6 +2354,10 @@ where
                     "shell": configured_tui_shell(&home),
                     "origin": {"channel": "tui", "session": session}
                 });
+
+                if !destinations.is_null() {
+                    params["context"]["destinations"] = destinations;
+                }
 
                 capability(home.clone(), "scheduler", "add", params, host)
                     .await
@@ -2403,6 +2408,37 @@ where
 
             Err(error) => Ok(format!("{error}\n> ")),
         },
+
+        "update" => {
+            let tokens = match schedule_tokens(remaining) {
+                Ok(tokens) => tokens,
+                Err(error) => return format!("{error}\n> "),
+            };
+
+            let Some(selector) = tokens.first() else {
+                return "Usage: /schedule update ID|NAME --to channel:private|group:chat[:thread] ... | --clear.\n> ".into();
+            };
+
+            let destinations = match schedule_destinations(&tokens[1..]) {
+                Ok(destinations) => destinations,
+                Err(error) => return format!("{error}\n> "),
+            };
+
+            match schedule_selector(&home, selector, host).await {
+                Ok((id, name)) => capability(
+                    home,
+                    "scheduler",
+                    "update",
+                    serde_json::json!({
+                        "id":id,"destinations":destinations,"approved":true
+                    }),
+                    host,
+                )
+                .await
+                .map(|_| format!("Schedule {name} ({id}) destinations updated.\n> ")),
+                Err(error) => Ok(format!("{error}\n> ")),
+            }
+        }
 
         "history" => {
             let mut arguments = remaining.split_whitespace();
@@ -2877,6 +2913,31 @@ Notes:
 > "#
 }
 
+fn schedule_destinations(
+    tokens: &[String],
+) -> Result<Vec<krabb_core::schedule::Destination>, String> {
+    if tokens == ["--clear"] {
+        return Ok(Vec::new());
+    }
+
+    if tokens.is_empty() || !tokens.len().is_multiple_of(2) {
+        return Err("Use --to <destination> (repeatable), or --clear.".into());
+    }
+
+    let mut destinations = Vec::new();
+
+    for pair in tokens.chunks_exact(2) {
+        if pair[0] != "--to" {
+            return Err("Use --to <destination> (repeatable), or --clear.".into());
+        }
+
+        destinations.push(pair[1].parse()?);
+    }
+
+    krabb_core::schedule::validate_destinations(&destinations)?;
+    Ok(destinations)
+}
+
 fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String> {
     let mut tokens = schedule_tokens(input)?;
 
@@ -2899,6 +2960,7 @@ fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String
         tokens.splice(0..1, ["--after".into(), delay.to_string()]);
     }
 
+    let mut destinations = Vec::<krabb_core::schedule::Destination>::new();
     let mut after = None;
     let mut every = None;
     let mut at_input = None;
@@ -2929,6 +2991,7 @@ fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String
         index += 1;
 
         match name {
+            "--to" => destinations.push(value.parse()?),
             "--after" => after = Some(parse_schedule_seconds(&value, name)?),
             "--every" => every = Some(parse_schedule_seconds(&value, name)?),
 
@@ -2966,6 +3029,8 @@ fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String
             _ => return Err(format!("Unknown schedule option {name}. Run /schedule help.")),
         }
     }
+
+    krabb_core::schedule::validate_destinations(&destinations)?;
 
     let instruction = instruction_words.join(" ").trim().to_owned();
 
@@ -3056,6 +3121,10 @@ fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String
         }
 
         params["name"] = Value::String(name.trim().to_owned());
+    }
+
+    if !destinations.is_empty() {
+        params["context"] = serde_json::json!({"destinations":destinations});
     }
 
     Ok((params, instruction))
@@ -4147,18 +4216,24 @@ async fn control_with_stream(
     params: Value,
     events: Option<mpsc::UnboundedSender<EngineEvent>>,
 ) -> std::result::Result<Value, ControlError> {
-    let token = tokio::fs::read_to_string(std::path::Path::new(home).join("ipc.token"))
-        .await
-        .map_err(unavailable_before_delivery)?;
+    let token = tokio::fs::read_to_string(krabb_file::location(
+        std::path::Path::new(home),
+        "run/ipc.token",
+        "ipc.token",
+    ))
+    .await
+    .map_err(unavailable_before_delivery)?;
 
-    let port = tokio::fs::read_to_string(std::path::Path::new(home).join("ipc.port"))
-        .await
-        .map_err(unavailable_before_delivery)?
-        .trim()
-        .parse::<u16>()
-        .map_err(|error| {
-            krabb_core::Error::Denied(format!("The daemon port is invalid: {error}."))
-        })?;
+    let port = tokio::fs::read_to_string(krabb_file::location(
+        std::path::Path::new(home),
+        "run/ipc.port",
+        "ipc.port",
+    ))
+    .await
+    .map_err(unavailable_before_delivery)?
+    .trim()
+    .parse::<u16>()
+    .map_err(|error| krabb_core::Error::Denied(format!("The daemon port is invalid: {error}.")))?;
 
     let streaming_turn = matches!(method, "session.answer" | "session.command");
 
@@ -6156,6 +6231,34 @@ mod tests {
         assert!(
             super::parse_schedule_add("--after 5m --name 'Backup job' Send report", "/tmp")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn tui_schedule_destinations_are_explicit_and_updates_replace_the_list() {
+        let (params, _) = super::parse_schedule_add(
+            "--after 5m --to telegram:private:1 --to discord:group:2 Prepare report",
+            "/tmp",
+        )
+        .unwrap();
+
+        assert_eq!(params["context"]["destinations"].as_array().unwrap().len(), 2);
+        assert!(super::schedule_destinations(&["--clear".into()]).unwrap().is_empty());
+        assert!(super::schedule_destinations(&[]).is_err());
+        assert!(super::schedule_destinations(&["--bad".into(), "x".into()]).is_err());
+        assert_eq!(
+            super::schedule_destinations(&["--to".into(), "tui:group:tui-default".into()])
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(
+            super::parse_schedule_add(
+                "--after 5m --to telegram:private:1 --to telegram:group:1 Report",
+                "/tmp"
+            )
+            .is_err()
         );
     }
 

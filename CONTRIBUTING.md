@@ -115,6 +115,10 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
 ## Change Rules
 
 - These changelog rules apply to human and agentic contributions.
+- For the current `0.1.0` release, add entries only under `Added`, and only for
+  important, shipped, user-facing additions. Use one very short sentence per
+  entry. Carefully assess the value to users; routine or minor additions need
+  no entry. Omit internal work, tests, documentation, and planning.
 - Include only shipped changes that matter to end users. Omit refactors,
   dependency updates, tests, CI work, and planned features, including platform
   fixes that do not change user-visible behavior.
@@ -125,9 +129,9 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
   use commit history as a checklist, not as release-note copy. Group related
   changes and keep only the most valuable capabilities, especially for the
   first release.
-- For `0.1.0`, include only an `Added` section. For later releases, keep
-  upcoming notes under `Unreleased` and use Keep a Changelog categories only
-  when they contain a user-visible entry. Omit empty headings.
+- For later releases, keep upcoming notes under `Unreleased` and use Keep a
+  Changelog categories only when they contain a user-visible entry. Omit empty
+  headings.
 - Keep the core capability-free and provider-neutral.
 - Add provider or channel behavior only in its plugin.
 - Keep plugin stdout as protocol-only JSONL and logs on stderr.
@@ -138,6 +142,11 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
 - Keep filesystem access confined, shell disabled by default, and secrets out
   of logs, manifests, issues, and planning files.
 - Never add telemetry or commit credentials.
+- Keep [Compatibility](COMPATIBILITY.md) as simple checkbox tables for basic
+  functionality per OS/architecture and the detailed component matrix. Record
+  verified functional success only by ticking existing checkboxes. Do not add
+  status phrases, dates, versions, evidence links, or narrative notes. Leave
+  partial, untested, or unsupported checks unchecked.
 
 ## Commit Messages
 

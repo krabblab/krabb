@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod visibility;
+
 use std::sync::atomic::AtomicU64;
 
 use std::{
@@ -133,6 +135,24 @@ async fn call_with_sandbox(
     };
 
     let result = match method.as_str() {
+        "visible" => {
+            let permit = timeout(SEARCH_TIME, searches().acquire_owned())
+                .await
+                .map_err(|_| denied("File access exceeded the time limit."))?
+                .map_err(|_| denied("File worker is unavailable."))?;
+            let policy = policy.clone();
+            timeout(
+                SEARCH_TIME,
+                tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    visibility::call(&policy, &params)
+                }),
+            )
+            .await
+            .map_err(|_| denied("File access exceeded the time limit."))?
+            .map_err(|error| denied(format!("File worker failed: {error}")))??
+        }
+
         "tools/list" => serde_json::json!({"tools": tool_specs(policy.shell != Shell::Off)}),
 
         "read" => {
@@ -1288,6 +1308,8 @@ fn file_at(policy: &Policy, path: &str, workspace: Option<&Path>) -> krabb_core:
     let candidate =
         if Path::new(path).is_absolute() { PathBuf::from(path) } else { root.join(path) };
 
+    protect(&candidate, &root)?;
+
     if Path::new(path).components().any(|component| component == Component::ParentDir) {
         return Err(denied("Path traversal is not allowed"));
     }
@@ -1326,7 +1348,42 @@ fn file_at(policy: &Policy, path: &str, workspace: Option<&Path>) -> krabb_core:
         clean
     };
 
+    protect(&clean, &root)?;
+
     if clean.starts_with(&root) { Ok(clean) } else { Err(denied("Path leaves the workspace")) }
+}
+
+fn reserved(name: &str) -> bool {
+    name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case(".krabb")
+}
+
+fn protect(path: &Path, root: &Path) -> krabb_core::Result<()> {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return Ok(());
+    };
+
+    let parts = relative.components().collect::<Vec<_>>();
+
+    for (index, part) in parts.iter().enumerate() {
+        let Component::Normal(name) = part else {
+            continue;
+        };
+
+        let name = name.to_string_lossy();
+        let name = name.split(':').next().unwrap_or_default().trim_end_matches(['.', ' ']);
+
+        let media = parts.get(index + 1).is_some_and(|part| {
+            matches!(part, Component::Normal(name) if name.to_string_lossy().eq_ignore_ascii_case("media"))
+        });
+
+        if reserved(name) && !(name.eq_ignore_ascii_case(".krabb") && media) {
+            return Err(denied(
+                "Runtime state and other conversation storage are not workspace files",
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 struct Confined {
@@ -1883,7 +1940,7 @@ fn search_confined(
                 let entry = entry.map_err(|error| denied(format!("Search failed: {error}")))?;
                 let entry_name = entry.file_name().to_string_lossy();
 
-                if entry_name == "." || entry_name == ".." {
+                if matches!(entry_name.as_ref(), "." | "..") || reserved(&entry_name) {
                     continue;
                 }
 
@@ -1940,6 +1997,10 @@ fn search_confined(
                     .map_err(|error| denied(format!("Search failed: {error}")))?
                     .is_symlink()
                 {
+                    continue;
+                }
+
+                if reserved(&entry.file_name().to_string_lossy()) {
                     continue;
                 }
 
@@ -3000,5 +3061,48 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("note.txt")).unwrap(), "after\n");
 
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod isolation {
+    use super::*;
+
+    #[tokio::test]
+    async fn file_tools_protect_runtime_metadata_and_other_conversations() {
+        let root =
+            std::env::temp_dir().join(format!("krabb-tool-isolation-{}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&root);
+
+        std::fs::create_dir_all(root.join(".krabb/worktrees/other")).unwrap();
+        std::fs::create_dir_all(root.join(".krabb/media")).unwrap();
+        std::fs::write(root.join(".krabb/worktrees/other/private.txt"), "secret needle").unwrap();
+        std::fs::write(root.join(".krabb/media/note.txt"), "attachment").unwrap();
+
+        let policy = Arc::new(Policy { root: Some(root.clone()), ..Policy::default() });
+
+        assert!(file_at(&policy, ".krabb/worktrees/other/private.txt", None).is_err());
+
+        for path in [".git/config", ".GIT", ".KrAbB/sessions", ".git.", ".git:stream"] {
+            assert!(file_at(&policy, path, None).is_err(), "{path}");
+        }
+
+        std::fs::create_dir_all(root.join(".GIT")).unwrap();
+        std::fs::write(root.join(".GIT/hidden.txt"), "secret needle").unwrap();
+
+        assert!(file_at(&policy, ".krabb/media/note.txt", None).is_ok());
+
+        let result = call(&policy, Request::call(1, "search", json!({"path":".","text":"needle"})))
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .unwrap();
+
+        assert!(!result.to_string().contains("private.txt"));
+        assert!(!result.to_string().contains("hidden.txt"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

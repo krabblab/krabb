@@ -31,7 +31,7 @@ admin = ["7"]
 member = ["9"]
 topic = ["12"]
 thread = ["topic-12"]
-worktree = true
+worktree = false
 tools = false
 
 [[plugins]]

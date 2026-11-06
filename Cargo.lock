@@ -2041,6 +2041,7 @@ name = "krabb-plugin-sqlite"
 version = "0.1.0"
 dependencies = [
  "krabb-core",
+ "krabb-file",
  "krabb-log",
  "rusqlite",
  "serde",
@@ -2069,6 +2070,7 @@ name = "krabb-plugin-tools"
 version = "0.1.0"
 dependencies = [
  "krabb-core",
+ "krabb-file",
  "krabb-log",
  "krabb-process",
  "reqwest",
@@ -2120,6 +2122,7 @@ name = "krabb-plugin-whisper"
 version = "0.1.0"
 dependencies = [
  "krabb-core",
+ "krabb-file",
  "krabb-log",
  "serde_json",
  "tokio",

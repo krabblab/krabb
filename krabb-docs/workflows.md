@@ -7,8 +7,11 @@ Use these workflows to set up, operate, and update a Krabb installation.
 - [First Run](#first-run)
 - [Local Development](#local-development)
 - [Background Service](#background-service)
+- [Optional Worktrees](#optional-worktrees)
 - [Session Operations](#session-operations)
 - [Updates](#updates)
+
+## First Run
 
 Install the core and at least one intelligence and channel plugin using the
 platform instructions in the [README](../README.md). Configure their required
@@ -94,6 +97,27 @@ Use `krabb service install --force` to replace an existing definition, and
 `krabb service stop` before changing binaries or environment values. Use
 `krabb service uninstall -y` to unregister the definition; pending worktree
 cleanup is reported for the next daemon start.
+
+## Optional Worktrees
+
+Ordinary chats use the plain workspace with ownership filtering and need no Git
+setup. Outgoing visibility grants are explicit; see [Visibility And Worktrees](sharing.md).
+
+To enforce worktree isolation for every conversation on an integration:
+
+```sh
+krabb worktree setup discord --force
+# Or, for a client:
+krabb worktree setup tui --client --force
+```
+
+Review the displayed root and confirm. Setup creates a managed empty Git baseline under `data/workspaces` if
+needed, preserves the plain workspace, and restarts the daemon.
+New worktrees start from committed baseline files. Worktrees cover DMs as well as
+groups and disable tools that cannot enforce their filesystem boundary.
+
+Use `krabb worktree disable discord --force` to return to ordinary conversation
+storage. Old worktree files remain available for manual transfer or later reuse.
 
 ## Session Operations
 

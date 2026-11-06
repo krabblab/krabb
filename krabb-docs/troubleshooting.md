@@ -38,6 +38,13 @@ messages, verify the chat ID, mention filter, topic or thread filter, and the
 sender role. A channel may poll successfully while policy intentionally drops
 an unauthorized event.
 
+If the bot reports that it could not create an isolated workspace, check the
+daemon log for `Conversation workspace isolation failed.` Worktrees are explicitly enabled
+for this integration; the failure also applies to DMs. Run `krabb worktree setup discord --force` to check and prepare the
+workspace, or `krabb worktree disable discord --force` to use the shared
+conversation storage again. Replace `discord` with the affected channel. Both commands
+restart the running daemon when `--force` is supplied. For a client such as TUI, add `--client`.
+
 If the bot replies “I could not complete that turn,” delivery is working; check
 the daemon log for the model failure. Codex personal sign-in uses its configured
 default when no model is selected. Explicit provider rejections end the turn

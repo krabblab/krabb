@@ -9,6 +9,8 @@ krabb init [--force] [-y|--yes] [--json]
 krabb doctor [--fix] [--json]
 krabb config get [<key>] [--json]
 krabb config set <key=value> [--force] [--json]
+krabb worktree setup <channel-or-client> [--client] [-y|--yes] [--force] [--json]
+krabb worktree disable <channel-or-client> [--client] [--force] [--json]
 krabb status [--json]
 krabb version [--json]
 krabb completion <bash|fish|powershell|zsh>
@@ -50,6 +52,7 @@ krabb <plugin-command> [arguments...]
 - [Status And Health](#status-and-health)
 - [Terminal User Interface](#terminal-user-interface)
 - [Plugin Management](#plugin-management)
+- [Worktrees](#worktrees)
 - [Memory](#memory)
 - [Sessions And Deliveries](#sessions-and-deliveries)
 - [Scheduling](#scheduling)
@@ -236,6 +239,19 @@ last channel plugin. Removing the last intelligence plugin with `--force` can de
 sessions. The command confirms this cleanup; `-y` skips the prompt. Dropped delivery
 history does not block ordinary uninstall.
 
+## Worktrees
+
+`krabb worktree setup discord` enables one isolated Git workspace per Discord
+conversation, including DMs. Use `krabb worktree setup tui --client` for TUI
+sessions. Setup displays the managed repository under `data/workspaces` and asks
+before enabling worktrees and initializing its empty Git baseline.
+
+Use `--yes` to approve setup without a prompt, including in JSON mode. Add
+`--force` to restart a running daemon. `krabb worktree disable discord --force`
+returns to ordinary storage without deleting old worktrees; add `--client` for a
+client. Worktrees exclude all visibility grants. See
+[Visibility And Worktrees](sharing.md) for scope configuration and tool restrictions.
+
 ## Memory
 
 The memory plugin provides `krabb memory status|search|list|show|remember|edit|forget|audit|converge|learning`.
@@ -290,11 +306,13 @@ messages from entering the queue. JSON mode requires `--yes` for cleanup.
 
 ## Scheduling
 
-The scheduler plugin adds `krabb schedule add|list|history|run|retry|pause|resume|remove`.
+The scheduler plugin adds `krabb schedule add|list|history|update|run|retry|pause|resume|remove`.
 Explicit CLI additions authorize immediate activation. Model-generated scheduling
 proposals follow the turn's approval policy before activation; `off` blocks them.
-Remote schedule controls can change only tasks owned by the same channel, chat,
-thread, and session. Local CLI/TUI administration can control all schedules.
+Agent schedule tools use the conversation's `schedules` scope: own tasks by default,
+explicit sources for shared, and configured integrations for global. Local CLI/TUI
+slash-command administration can control all schedules. Sharing never grants outbound
+send permission; recipients must be explicitly authorized.
 Create a task with one timing option and an explicit provider and model:
 
 ```sh
@@ -317,6 +335,27 @@ delivery requires an exact destination at task creation. Uncertain side effects
 pause for review, and interrupted mutating turns are not replayed.
 Pausing a running schedule lets its current run finish before preventing later
 occurrences.
+
+Add up to 16 explicit result recipients with repeated
+`--to channel:private|group:chat[:thread]` options. For example:
+
+```sh
+krabb schedule add --after 5m --provider codex --model <model> \
+  --to telegram:private:123 --to discord:group:456 "Prepare a report"
+krabb schedule update <id-or-name> --to tui:group:tui-default
+krabb schedule update <id-or-name> --clear
+```
+
+The TUI accepts the same `--to` and `/schedule update` syntax. Explicit operator
+commands authorize their specified destinations; natural-language requests use
+the configured approval policy. Updates replace the complete list and are blocked
+until any running task and its pending report finish. `--clear` removes outbound
+recipients while retaining origin status reports. Existing `--message-*` options
+remain available for legacy tasks using the message tool.
+
+One run produces one stored result and independent durable deliveries. Use
+`krabb delivery list`, then retry an uncertain delivery only after checking whether
+it arrived. Retrying delivery does not rerun the job or resend successful targets.
 
 Use `krabb schedule help` for full syntax. The
 [Scheduler guide](../krabb-plugins/scheduler/README.md) covers task
@@ -386,3 +425,16 @@ interrupted, with bounded model work for each HTTP run.
 
 Provider-specific setup and supported agent protocols are in
 [Providers](providers.md). Each integration's README describes its limits.
+
+## Workspace Ownership
+
+`krabb workspace <path> --owner <resource>` assigns an existing file in the plain
+workspace to an integration or to `global`. Paths are relative to `KRABB_ROOT`
+(or `KRABB_HOME/workspace`). Files are not moved or modified.
+
+```sh
+krabb workspace notes.txt --owner channels.telegram
+krabb workspace reference.pdf --owner global
+```
+
+See [Visibility And Worktrees](sharing.md) for grants and file access rules.

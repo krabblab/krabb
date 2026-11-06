@@ -34,8 +34,12 @@ krabb plugin list
 krabb doctor
 krabb status
 krabb-daemon
+```
+
 Configure at least one intelligence provider before starting the daemon.
-To receive chat messages, follow a [channel setup guide](krabb-docs/providers.md#platform-setup). The daemon stays in the foreground until you stop it with
+To receive chat messages, follow a
+[channel setup guide](krabb-docs/providers.md#platform-setup).
+The daemon stays in the foreground until you stop it with
 Ctrl-C; use the [service guide](krabb-docs/workflows.md#background-service) to
 run it in the background.
 
@@ -63,10 +67,12 @@ All plugins are optional. Intelligence plugins live in
 Use the [documentation home](krabb-docs/home.md) for the full guide index.
 Common starting points:
 
-- [First run](krabb-docs/workflows.md)
-- [Provider setup](krabb-docs/providers.md)
+- [First Run](krabb-docs/workflows.md)
+- [Provider Setup](krabb-docs/providers.md)
 - [Configuration](krabb-docs/configuration.md)
-- [Plugin development](krabb-docs/plugins.md)
+- [Visibility And Worktrees](krabb-docs/sharing.md)
+- [Storage](krabb-docs/storage.md)
+- [Plugin Development](krabb-docs/plugins.md)
 
 ## Development
 

@@ -338,10 +338,10 @@ async fn session_answer(
 
         session.reservation_active = true;
 
-        Ok((session.model.clone(), model_context(session), session.workspace.clone(), owner))
+        Ok((session.model.clone(), session.workspace.clone(), owner))
     })();
 
-    let (model, mut messages, workspace, owner) = match snapshot {
+    let (model, workspace, owner) = match snapshot {
         Ok(snapshot) => snapshot,
 
         Err((code, message)) => {
@@ -350,6 +350,21 @@ async fn session_answer(
     };
 
     let _reservation = Reservation { sessions: &state.sessions, id };
+    let policy = state.config.clients.get("tui").cloned().unwrap_or_default();
+
+    let workspace = if policy.worktree {
+        Some(super::worktree::conversation(id, &state.home).map_err(io::Error::other)?)
+    } else {
+        workspace
+            .map(PathBuf::from)
+            .or(super::sharing::workspace(&state.root).map_err(io::Error::other)?)
+    };
+
+    let mut messages = {
+        let mut sessions = state.sessions.lock().map_err(lock)?;
+        sessions.storage(id, workspace.as_deref(), policy.worktree)?;
+        model_context(&sessions.sessions[id])
+    };
 
     let (notices, mut receiver) = tokio::sync::mpsc::channel(32);
 
@@ -374,20 +389,42 @@ async fn session_answer(
     }
 
     let mut messages = super::turn_messages(id, &state.home, messages);
+
+    if !policy.worktree {
+        super::context::append(
+            &mut messages,
+            &*state.sessions.lock().map_err(lock)?,
+            id,
+            &super::sharing::sources(
+                &state.config,
+                &super::sharing::principal("tui"),
+                super::sharing::Data::Context,
+            ),
+            &state.config,
+        );
+    }
+
     let mut call_id = request.id;
     let memory_scope = super::memory_scope("tui", id);
-    let legacy_memory_scope = format!("provider:tui:{id}");
 
-    super::append_memory_context_scopes(
+    super::append_conversation_memory(
         &state.plugins,
         &mut messages,
-        &[&memory_scope, &legacy_memory_scope],
+        &memory_scope,
+        "tui",
+        if policy.worktree { workspace.as_deref() } else { None },
         &mut call_id,
     )
     .await;
 
     let cancel = super::cancellation(&state.cancels, id);
-    let media_root = super::media_root_at(&state.home);
+
+    let media_root = if let Some(workspace) = &workspace {
+        super::worktree::media(workspace, "tui").map_err(io::Error::other)?
+    } else {
+        super::media_root_at(&state.home)
+    };
+
     let mut failed_tool = None;
 
     let answer = super::answer(
@@ -400,12 +437,16 @@ async fn session_answer(
         id,
         None,
         &state.sessions,
-        workspace.as_deref().map(std::path::Path::new).or(Some(state.root.as_path())),
+        workspace.as_deref().or(Some(state.root.as_path())),
         &media_root,
         state.tui_tools.load(Ordering::Acquire),
-        true,
-        state.tui_shell.load(Ordering::Acquire),
-        state.config.approval_mode(),
+        !policy.worktree,
+        !policy.worktree && state.tui_shell.load(Ordering::Acquire),
+        super::sharing::approval(
+            &state.config,
+            &super::sharing::Principal::Client("tui".into()),
+            state.config.approval_mode(),
+        ),
         Arc::clone(&state.pending),
         &cancel,
         &state.stop,
@@ -1368,7 +1409,8 @@ async fn capability_call(request: &IpcRequest, state: &State) -> IpcResponse {
     let (capability, allowed) = match service {
         "scheduler" => (
             Capability::Scheduler,
-            ["add", "approve", "list", "pause", "remove", "resume", "run", "retry"].as_slice(),
+            ["add", "approve", "list", "pause", "remove", "resume", "run", "retry", "update"]
+                .as_slice(),
         ),
         "memory" => (
             Capability::Memory,
@@ -1738,7 +1780,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let mut pending_worktrees = Vec::new();
 
             for id in &session_ids {
-                if let Err(error) = super::state::remove_worktree(&state.root, id) {
+                if let Err(error) = super::state::remove_worktree(&state.home, id) {
                     pending_worktrees.push(json!({
                         "id": id,
                         "error": super::sentence(error.to_string()),
@@ -1950,7 +1992,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let mut sessions = state.sessions.lock().map_err(lock)?;
             sessions.rename_session(source, target)?;
 
-            if let Err(error) = super::state::rename_worktree(&state.root, source, target) {
+            if let Err(error) = super::state::rename_worktree(&state.home, source, target) {
                 if let Err(rollback) = sessions.rename_session(target, source) {
                     return Err(io::Error::other(format!(
                         "Could not rename the session worktree ({error}); session rollback failed ({rollback})."
@@ -1981,7 +2023,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 sessions.remove(id)?;
             }
 
-            let worktree = match super::state::remove_worktree(&state.root, id) {
+            let worktree = match super::state::remove_worktree(&state.home, id) {
                 Ok(()) => json!({"status": "removed"}),
                 Err(error) => json!({
                     "status": "pending",
@@ -2194,8 +2236,10 @@ pub async fn call(
     params: Value,
 ) -> io::Result<Value> {
     let home = home.as_ref();
-    let token = std::fs::read_to_string(home.join("ipc.token"))?.trim().to_owned();
-    let port = std::fs::read_to_string(home.join("ipc.port"))?
+    let token = std::fs::read_to_string(krabb_file::location(home, "run/ipc.token", "ipc.token"))?
+        .trim()
+        .to_owned();
+    let port = std::fs::read_to_string(krabb_file::location(home, "run/ipc.port", "ipc.port"))?
         .trim()
         .parse::<u16>()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -3541,6 +3585,17 @@ done"##;
     #[cfg(unix)]
     #[tokio::test]
     async fn tui_answers_use_configured_workspace_tools() {
+        tui_workspace(false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tui_worktrees_override_shared_scopes() {
+        tui_workspace(true).await;
+    }
+
+    #[cfg(unix)]
+    async fn tui_workspace(isolated: bool) {
         use krabb_core::plugin::Process;
 
         let mut state = state_at("tui-workspace-tools");
@@ -3556,6 +3611,30 @@ done"##;
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&state.home).unwrap();
         state.root = workspace.clone();
+
+        if isolated {
+            let repository = krabb_file::directory(
+                &state.home,
+                std::path::Path::new("data/workspaces/repository"),
+            )
+            .unwrap();
+
+            crate::worktree::initialize(&repository).unwrap();
+
+            let policy = state.config.clients.entry("tui".into()).or_default();
+
+            policy.worktree = true;
+
+            policy.visibility = Some(vec![crate::sharing::Rule {
+                data: vec![
+                    crate::sharing::Data::Context,
+                    crate::sharing::Data::Memory,
+                    crate::sharing::Data::Approvals,
+                ],
+                resources: vec![krabb_core::visibility::Resource::Global],
+            }]);
+        }
+
         state.tui_tools.store(true, std::sync::atomic::Ordering::Release);
 
         let provider_script = r#"
@@ -3599,7 +3678,7 @@ while IFS= read -r line; do
         *'"method":"tools/list"'*)
             printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"read","description":"Read a fixture file.","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}}'
             ;;
-        *'"method":"read"'*)
+        *'"method":"read"'* | *'"method":"visible"'*)
             printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"fixture note contents"}}'
             ;;
         *'"method":"shutdown"'*)
@@ -3674,6 +3753,17 @@ done
         assert_eq!(messages[2].role, Role::Tool);
         assert_eq!(messages[2].content[0].render(), "fixture note contents");
         assert_eq!(messages[3].content[0].render(), "The fixture note was read.");
+
+        let directory = state.sessions.lock().unwrap().sessions[session].isolated.clone();
+
+        if isolated {
+            assert_eq!(
+                directory,
+                Some(std::fs::canonicalize(&state.home).unwrap().join("worktrees").join(session))
+            );
+        } else {
+            assert!(directory.is_none());
+        }
 
         for (_, plugin) in state.plugins.all().await {
             plugin.stop().await.unwrap();
@@ -5515,7 +5605,7 @@ for line in sys.stdin:
         let root = std::env::temp_dir().join(format!("krabb-ipc-cleanup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
 
-        std::fs::create_dir_all(root.join(".krabb/worktrees/copy")).unwrap();
+        std::fs::create_dir_all(root.join("worktrees/copy")).unwrap();
 
         let state = State {
             token: "secret".into(),

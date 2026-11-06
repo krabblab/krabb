@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod typing;
+
 use krabb_core::types::Request;
 use krabb_core::types::Response;
 #[cfg(not(test))]
@@ -174,12 +176,24 @@ fn response_fits(id: u64, events: &[Value]) -> krabb_core::Result<bool> {
 }
 
 fn inbox_path() -> Option<PathBuf> {
-    std::env::var_os("KRABB_HOME").map(|home| PathBuf::from(home).join("signal-inbox.json"))
+    std::env::var_os("KRABB_HOME").map(|home| {
+        krabb_file::location(
+            &PathBuf::from(home),
+            "data/plugins/signal/inbox.json",
+            "signal-inbox.json",
+        )
+    })
 }
 
 #[cfg_attr(test, allow(dead_code))]
 fn receive_spool_path() -> Option<PathBuf> {
-    std::env::var_os("KRABB_HOME").map(|home| PathBuf::from(home).join("signal-receive.jsonl"))
+    std::env::var_os("KRABB_HOME").map(|home| {
+        krabb_file::location(
+            &PathBuf::from(home),
+            "data/plugins/signal/receive.jsonl",
+            "signal-receive.jsonl",
+        )
+    })
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -296,6 +310,14 @@ async fn call(inbox: &Arc<Mutex<Inbox>>, request: Request) -> krabb_core::Result
         }
 
         "send" => send(&account, &params).await?,
+
+        "typing" => {
+            let command =
+                std::env::var("KRABB_SIGNAL_COMMAND").unwrap_or_else(|_| "signal-cli".into());
+
+            typing::send(&account, &params, &command, &[]).await?
+        }
+
         "media" => media(&account, &params).await?,
         "info" => json!({"account": account}),
         _ => return Ok(None),
@@ -1185,7 +1207,10 @@ fn local_media(uri: &str) -> krabb_core::Result<std::path::PathBuf> {
 
     let root = std::env::var_os("KRABB_MEDIA")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("KRABB_HOME").map(|value| PathBuf::from(value).join("media")))
+        .or_else(|| {
+            std::env::var_os("KRABB_HOME")
+                .map(|value| krabb_file::location(&PathBuf::from(value), "data/media", "media"))
+        })
         .ok_or_else(|| {
             krabb_core::Error::Denied("KRABB_MEDIA or KRABB_HOME is required.".into())
         })?;
@@ -1196,8 +1221,9 @@ fn local_media(uri: &str) -> krabb_core::Result<std::path::PathBuf> {
 fn media_root() -> krabb_core::Result<PathBuf> {
     std::env::var_os("KRABB_MEDIA")
         .or_else(|| {
-            std::env::var_os("KRABB_HOME")
-                .map(|value| PathBuf::from(value).join("media").into_os_string())
+            std::env::var_os("KRABB_HOME").map(|value| {
+                krabb_file::location(&PathBuf::from(value), "data/media", "media").into_os_string()
+            })
         })
         .map(PathBuf::from)
         .ok_or_else(|| krabb_core::Error::Denied("KRABB_MEDIA or KRABB_HOME is required.".into()))

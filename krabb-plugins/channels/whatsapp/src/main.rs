@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod typing;
+
 use krabb_core::types::{Content, Request, Response};
 #[cfg(not(test))]
 use krabb_core::{
@@ -288,7 +290,13 @@ fn response_fits(id: u64, events: &[Value]) -> krabb_core::Result<bool> {
 }
 
 fn inbox_path() -> Option<PathBuf> {
-    std::env::var_os("KRABB_HOME").map(|home| PathBuf::from(home).join("whatsapp-inbox.json"))
+    std::env::var_os("KRABB_HOME").map(|home| {
+        krabb_file::location(
+            &PathBuf::from(home),
+            "data/plugins/whatsapp/inbox.json",
+            "whatsapp-inbox.json",
+        )
+    })
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -420,6 +428,7 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
         }
 
         "send" => send(app, &params).await?,
+        "typing" => typing::send(app, &params, &token()?, &graph_url()?, &phone()?).await?,
 
         "media" => {
             media(
@@ -1170,8 +1179,9 @@ fn allowed_url(value: &str) -> bool {
 fn media_root() -> krabb_core::Result<PathBuf> {
     std::env::var_os("KRABB_MEDIA")
         .or_else(|| {
-            std::env::var_os("KRABB_HOME")
-                .map(|value| PathBuf::from(value).join("media").into_os_string())
+            std::env::var_os("KRABB_HOME").map(|value| {
+                krabb_file::location(&PathBuf::from(value), "data/media", "media").into_os_string()
+            })
         })
         .map(PathBuf::from)
         .ok_or_else(|| krabb_core::Error::Denied("KRABB_MEDIA or KRABB_HOME is required.".into()))
