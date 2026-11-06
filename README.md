@@ -34,10 +34,8 @@ krabb plugin list
 krabb doctor
 krabb status
 krabb-daemon
-```
-
-Configure at least one intelligence provider and one messaging channel before
-starting the daemon. The daemon stays in the foreground until you stop it with
+Configure at least one intelligence provider before starting the daemon.
+To receive chat messages, follow a [channel setup guide](krabb-docs/providers.md#platform-setup). The daemon stays in the foreground until you stop it with
 Ctrl-C; use the [service guide](krabb-docs/workflows.md#background-service) to
 run it in the background.
 
@@ -45,9 +43,7 @@ run it in the background.
 
 | Capability | Description | Plugins |
 | --- | --- | --- |
-| Intelligence | Sends prompts to hosted and local language models. | Codex, Anthropic, OpenAI, Gemini, Ollama, OpenRouter |
-| Vision | Sends image inputs to models that advertise image support. | Codex, Anthropic, OpenAI, Gemini, Ollama, OpenRouter |
-| Messaging | Connects Krabb to chat channels for receiving and sending messages. | Telegram, Discord, WhatsApp, Signal, Slack |
+| Channels | Connects Krabb to chat channels for receiving and sending messages. | Telegram, Discord, WhatsApp, Signal, Slack |
 | Agent Interoperability | Connects external agents and local agent clients. | ACP, A2A, AG-UI |
 | Tools | Provides filesystem, Git, shell, browser, and desktop operations under host policy. | Tools, Browser, Computer |
 | MCP | Connects MCP servers and exposes their tools and resources. | MCP |

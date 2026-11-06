@@ -15,9 +15,7 @@ principles. [PLAN.md](../PLAN.md) contains only active work, while
 - [Verification And Acceptance](#verification-and-acceptance)
 
 ## Summary
-
-Build Krabb as a self-hosted Rust agent runtime with a deliberately
-capability-free core. Model providers, messaging channels, persistence, tools,
+capability-free core. Model providers, channels, persistence, tools,
 memory, scheduling, speech recognition, MCP, and the TUI are independently
 installed process plugins.
 
@@ -54,9 +52,7 @@ Brand positioning:
 - krabb-plugins contains one independently buildable Rust project per
   official plugin.
 - The core contains no channel, model, database, memory, scheduler, tool,
-  MCP, speech, or TUI implementation. Core-only startup still supports
-  configuration, diagnostics, plugin management, and version reporting.
-- Official plugins include intelligence providers, messaging channels, tools,
+- Official plugins include intelligence providers, channels, tools,
   memory and storage, browser and isolated desktop controls, and optional agent
   interoperability through ACP, A2A, and AG-UI.
 
@@ -101,9 +97,7 @@ conditional on that plugin being installed.
 - The MCP plugin supports stdio and Streamable HTTP, tools, resources,
   prompts, OAuth where applicable, cancellation, and negotiation.
 
-## Product Behavior
-
-Messaging channels run concurrently, with independent sessions and optional provider/model
+Channels run concurrently, with independent sessions and optional provider/model
 selection per channel. Additional channels and intelligence providers activate without
 replacing existing ones. Local concurrency fixtures verify provider overlap, separate
 cursors, plugin activation/removal, and single claims of queued replies.
@@ -125,9 +119,7 @@ Global and per-channel/client intelligence defaults are configurable in TOML.
 CLI arguments take precedence over environment variables, which take precedence
 over scoped and global TOML defaults. One-shot CLI requests can omit provider
 and model flags; saved conversations retain their model selection.
-
-
-- Messaging channels negotiate Markdown input and preserve supported formatting through
+- Channels negotiate Markdown input and preserve supported formatting through
   their adapters for sends, streaming edits, and scheduled delivery. Plugins without
   formatting support receive readable plain text with visible source URLs.
   Terminal formatting is unchanged. Research guidance prioritizes exact supplied

@@ -8,8 +8,7 @@ This roadmap summarizes planned work across upcoming Krabb releases.
 - [v0.3 | Experience](#v03--experience)
 - [v0.4 | Plugin Ecosystem](#v04--plugin-ecosystem)
 - [v0.5 | Deployments](#v05--deployments)
-- [v0.6 | Multi-Agent Runtime](#v06--multi-agent-runtime)
-- [v0.7 | Small-Footprint Runtime](#v07--small-footprint-runtime)
+- [v0.8 | Distribution](#v08--distribution)
 
 ## v0.2 | Reliability
 
@@ -181,5 +180,28 @@ preserving the full feature set and clear behavior under load.
 - Apply bounded concurrency, queues, and per-agent resource budgets without
   silently dropping work or disabling capabilities; keep limits observable and
   configurable where operators need control.
-- Add repeatable performance and low-memory smoke tests for representative
-  supported targets, and verify behavior with the full configured plugin set.
+
+## v0.8 | Distribution
+
+Make Krabb usable entirely from official release binaries. Users should be able
+to download or install the CLI, configure plugins, and run the daemon without
+cloning this repository or installing a Rust toolchain.
+
+- Provide direct CLI and daemon downloads for supported operating systems and
+  architectures, plus a simple `curl` installer for supported Unix hosts.
+- Make `krabb plugin install <id>` resolve official plugin IDs to compatible
+  release artifacts, download the correct platform binary, and install it
+  through the existing plugin lifecycle without requiring a local checkout.
+- Reuse the release metadata and artifact conventions from the Plugin Ecosystem
+  milestone. Verify release digests, manifest identity, and compatibility before
+  activation, and record the installed version and digest in `plugins.lock`.
+- Support explicit release versions and report unavailable or unsupported
+  artifacts clearly; do not silently fall back to cloning or compiling sources.
+- Keep plugin updates on the official release path, preserving configuration
+  and credentials and using staged installation and rollback on failure.
+- Preserve explicit `--source` and `--link` workflows for development and
+  third-party plugins; normal official installs must work from any directory.
+- Update onboarding and plugin READMEs to start with installing the CLI, followed
+  by `krabb plugin install <id>` and `krabb <id> setup` where supported.
+- Verify the complete download, install, setup, service startup, plugin update,
+  and uninstall flow on clean supported hosts without Git, Cargo, or a checkout.

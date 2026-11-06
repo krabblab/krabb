@@ -164,9 +164,7 @@ the inherited model. Each adapter resolves `default` to its
 Environment values override even channel-specific TOML settings. To keep channels
 on different providers, put their choices in TOML and leave the global environment
 overrides unset. A service uses its own environment; exporting a variable in a shell
-does not change an already-running daemon.
-
-TUI and CLI are local clients, not messaging channels. `[clients.cli]` applies to
+TUI and CLI are local clients, not channels. `[clients.cli]` applies to
 `krabb ask` and the model used by `krabb session new`. Other plugin commands use
 global defaults through their existing environment contract; their own options
 remain plugin-specific. Provider-specific default variables such as
@@ -231,11 +229,9 @@ required, and shell remains separately disabled by default.
 
 The TUI is a local daemon client. Its `tools` and `shell` settings default to
 `false`; enable them under `[clients.tui]` for TUI turns. Global approval still
-controls mutating tools. Move legacy top-level `shell` settings here.
-
-The host resolves declared secrets from nonempty environment overrides first,
-then from the encrypted file named by `KRABB_CREDENTIALS`, defaulting to
-`credentials.json` in Krabb's home. `krabb plugin setup <id>` securely prompts
+The host resolves declared secrets and settings from nonempty environment overrides
+first, then from the encrypted file named by `KRABB_CREDENTIALS`, defaulting to
+`credentials.json` in Krabb's home. Unset settings use their manifest defaults. `krabb plugin setup <id>` securely prompts
 and saves before the plugin is active. The random encryption key is stored in
 the OS keyring by default, or a protected key file when no keyring is available.
 See [credential storage](authentication.md#provider-credentials) for backend selection,
@@ -256,9 +252,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_HOME` | Krabb state, plugins, and global agent workspace |
 | `KRABB_ROOT` | Override the default `KRABB_HOME/workspace` tool root |
 | `KRABB_CREDENTIALS` | Encrypted credential file; defaults to `credentials.json` in Krabb's home |
-| `KRABB_CREDENTIALS_KEY` | Fallback encryption key file; defaults to `credentials.key` in Krabb's home |
-| `KRABB_KEYRING` | Setup key storage: `auto` (default), `1` (require keyring), or `0` (protected key file) |
-| `KRABB_CHANNEL` | Default messaging plugin ID for diagnostics; all loaded channels receive messages |
+| `KRABB_CHANNEL` | Default channel plugin ID for diagnostics; all loaded channels receive messages |
 | `KRABB_MODEL_PLUGIN` | Default intelligence plugin ID |
 | `KRABB_MODEL` | Default model identifier |
 | `KRABB_MEMORY` | Override the optional memory plugin's JSON index path; Markdown records live under a sibling `records/` directory |
@@ -329,9 +323,7 @@ Operating-system variables such as `HOME`, `USERPROFILE`, `PATH`, and
 configuration. Tool-native variables used to constrain subprocesses, such as
 Git's `GIT_CONFIG_NOSYSTEM`, also retain their required names.
 
-## Channel Policy
-
-Every loaded messaging plugin receives messages concurrently. Installing and setting up
+Every loaded channel plugin receives messages concurrently. Installing and setting up
 WhatsApp keeps Telegram active. `KRABB_CHANNEL` does not restrict the receive loops.
 The runtime supervises up to 64 channel loops, including plugins activated while it
 is running. Sessions, incoming cursors, and replies remain scoped to their channel.
@@ -356,12 +348,13 @@ selection to its [small default model](providers.md#default-models). The model s
 initializes new sessions. Existing sessions retain their selection; change it with
 `krabb session model <session-id> default` to opt into the provider's default.
 Independent provider processes can generate concurrently. Calls to the same
-provider process remain serialized. TUI sessions can also select providers independently.
-
-The WhatsApp webhook listener defaults to `127.0.0.1:8787`; `KRABB_WHATSAPP_LISTEN`
-is only needed to override that address. Meta still needs a public HTTPS callback
-URL routed to that listener.
-
+`krabb whatsapp setup` saves the phone number ID, versioned Graph API base, and
+listener address alongside the three secrets. The daemon supplies these values
+to WhatsApp on activation and restart; service-file edits are unnecessary.
+Nonempty environment variables remain overrides. The webhook listener defaults
+to `127.0.0.1:8787`; press Enter at its setup prompt to accept it. Meta still needs
+a public HTTPS callback URL routed to that listener and a WABA app subscription;
+see the [WhatsApp setup guide](../krabb-plugins/channels/whatsapp/README.md#setup).
 
 Direct messages are accepted by default, but tool schemas are not exposed
 unless the sender also satisfies the channel policy and daemon approval mode.

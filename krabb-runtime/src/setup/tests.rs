@@ -16,6 +16,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         capabilities: vec!["channel".into()],
         permissions: vec![],
         variables: variables.iter().map(|name| (*name).into()).collect(),
+        settings: Vec::new(),
         commands: commands.clone(),
     };
 
@@ -32,6 +33,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         capabilities: manifest.capabilities,
         permissions: vec![],
         variables: manifest.variables,
+        settings: manifest.settings,
         linked: false,
         commands,
     };
@@ -87,7 +89,9 @@ fn secret_input_edits_cancels_and_bounds_without_echo() {
 
 #[test]
 fn validates_all_values_before_saving_and_never_quotes_invalid_values() {
-    let names = vec!["KRABB_SETUP_A".into(), "KRABB_SETUP_B".into()];
+    let names =
+        ["KRABB_SETUP_A", "KRABB_SETUP_B"].map(|name| Setting { name: name.into(), default: None });
+
     let values = collect(&names, |_| Ok("synthetic".into())).unwrap();
 
     assert_eq!(values.len(), 2);
@@ -95,7 +99,7 @@ fn validates_all_values_before_saving_and_never_quotes_invalid_values() {
     for invalid in ["".into(), " ".into(), "synthetic\nvalue".into(), "x".repeat(LIMIT + 1)] {
         let error = collect(&names, |_| Ok(invalid.clone())).unwrap_err().to_string();
 
-        assert!(error.starts_with("Secret must be"));
+        assert!(error.starts_with("Setup value must be"));
         assert!(!error.contains("synthetic"));
     }
 
@@ -214,10 +218,13 @@ fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
         assert!(metadata.get("variables").is_none());
     }
 
-    assert_eq!(names(&root, "telegram").unwrap(), ["KRABB_SETUP_A"]);
+    assert_eq!(
+        fields(&root, "telegram").unwrap(),
+        [Setting { name: "KRABB_SETUP_A".into(), default: None }]
+    );
 
-    assert!(names(&root, "../escape").is_err());
-    assert!(names(&root, "missing").is_err());
+    assert!(fields(&root, "../escape").is_err());
+    assert!(fields(&root, "missing").is_err());
 
     let destination = path(&root);
 
@@ -256,13 +263,13 @@ fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
     lock.plugins.get_mut("telegram").unwrap().variables.clear();
     crate::save_lock_at(&root, &lock).unwrap();
 
-    assert!(names(&root, "telegram").unwrap_err().to_string().contains("changed"));
+    assert!(fields(&root, "telegram").unwrap_err().to_string().contains("changed"));
 
     fs::remove_dir_all(root).unwrap();
 
     let root = fixture("ollama", &[], vec![]);
 
-    assert!(names(&root, "ollama").unwrap_err().to_string().contains("no secrets"));
+    assert!(fields(&root, "ollama").unwrap_err().to_string().contains("no secrets"));
     assert!(!crate::available_commands(&root).unwrap().contains_key("ollama"));
 
     fs::remove_dir_all(root).unwrap();
@@ -270,7 +277,11 @@ fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
     let root = fixture("config", &["KRABB_SETUP_A"], vec![]);
 
     assert!(!crate::available_commands(&root).unwrap().contains_key("config"));
-    assert_eq!(names(&root, "config").unwrap(), ["KRABB_SETUP_A"]);
+
+    assert_eq!(
+        fields(&root, "config").unwrap(),
+        [Setting { name: "KRABB_SETUP_A".into(), default: None }]
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -467,4 +478,308 @@ fn save(path: &Path, values: BTreeMap<String, String>) -> Result<(), Error> {
         Some(false),
     )
     .map(|_| ())
+}
+
+fn configure(root: &Path, manifest: &crate::Manifest) {
+    let mut lock = crate::load_lock_at(root).unwrap();
+
+    let entry = lock.plugins.get_mut(&manifest.id).unwrap();
+
+    entry.variables = manifest.variables.clone();
+    entry.settings = manifest.settings.clone();
+
+    fs::write(
+        root.join("plugins").join(&manifest.id).join("krabb-plugin.toml"),
+        toml::to_string(manifest).unwrap(),
+    )
+    .unwrap();
+
+    crate::save_lock_at(root, &lock).unwrap();
+}
+
+#[test]
+fn whatsapp_setup_persists_all_fields_for_activation_and_restart() {
+    let manifest: crate::Manifest =
+        toml::from_str(include_str!("../../../krabb-plugins/channels/whatsapp/krabb-plugin.toml"))
+            .unwrap();
+
+    let root = fixture("whatsapp", &[], vec![]);
+
+    manifest.validate().unwrap();
+    configure(&root, &manifest);
+
+    let fields = fields(&root, "whatsapp").unwrap();
+    let mut prompted = Vec::new();
+
+    let values = collect(&fields, |field| {
+        prompted.push(field.name.clone());
+
+        Ok(match field.name.as_str() {
+            "KRABB_WHATSAPP_PHONE" => "123456789".into(),
+            "KRABB_WHATSAPP_GRAPH_URL" => "https://graph.example.invalid/v1.0".into(),
+            "KRABB_WHATSAPP_LISTEN" => String::new(),
+            _ => "synthetic-secret".into(),
+        })
+    })
+    .unwrap();
+
+    assert_eq!(
+        prompted,
+        [
+            "KRABB_WHATSAPP_TOKEN",
+            "KRABB_WHATSAPP_APP_SECRET",
+            "KRABB_WHATSAPP_VERIFY",
+            "KRABB_WHATSAPP_PHONE",
+            "KRABB_WHATSAPP_GRAPH_URL",
+            "KRABB_WHATSAPP_LISTEN",
+        ]
+    );
+
+    for name in ["KRABB_WHATSAPP_TOKEN", "KRABB_WHATSAPP_APP_SECRET", "KRABB_WHATSAPP_VERIFY"] {
+        assert_eq!(values[name], "synthetic-secret");
+    }
+
+    assert_eq!(values["KRABB_WHATSAPP_LISTEN"], "127.0.0.1:8787");
+    assert_eq!(values["KRABB_WHATSAPP_PHONE"], "123456789");
+
+    let destination = path(&root);
+    let key = root.join("credentials.key");
+
+    save(&destination, BTreeMap::from([("KRABB_TELEGRAM_TOKEN".into(), "retained".into())]))
+        .unwrap();
+    save(&destination, values.clone()).unwrap();
+
+    let encrypted = fs::read_to_string(&destination).unwrap();
+
+    assert!(!encrypted.contains("synthetic-secret"));
+    assert!(!encrypted.contains("123456789"));
+    assert_eq!(read(&destination).unwrap()["KRABB_TELEGRAM_TOKEN"], "retained");
+    assert!(activation(&root, "whatsapp", &destination.canonicalize().unwrap()).is_ok());
+    assert!(crate::ready_at("whatsapp", Some(&destination), &key));
+    assert!(crate::ready_at("telegram", Some(&destination), &key));
+
+    let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
+
+    for (name, value) in &values {
+        assert!(environment.contains(&(name.clone(), value.clone())), "{name}");
+        assert_eq!(environment.iter().filter(|(key, _)| key == name).count(), 1);
+    }
+
+    assert!(!environment.iter().any(|(name, _)| name == "KRABB_TELEGRAM_TOKEN"));
+
+    save(&destination, BTreeMap::from([("KRABB_WHATSAPP_PHONE".into(), "987654321".into())]))
+        .unwrap();
+
+    let reloaded = crate::read_manifest_checked(&root.join("plugins/whatsapp")).unwrap();
+
+    let environment = crate::env_for(&reloaded, &crate::Config::default(), &root).unwrap();
+
+    assert!(environment.contains(&("KRABB_WHATSAPP_PHONE".into(), "987654321".into())));
+
+    for missing in [
+        "KRABB_WHATSAPP_TOKEN",
+        "KRABB_WHATSAPP_APP_SECRET",
+        "KRABB_WHATSAPP_VERIFY",
+        "KRABB_WHATSAPP_PHONE",
+        "KRABB_WHATSAPP_GRAPH_URL",
+    ] {
+        let mut incomplete = values.clone();
+
+        incomplete.remove(missing);
+        fs::remove_file(&destination).unwrap();
+        save(&destination, incomplete).unwrap();
+
+        assert!(!crate::ready_at("whatsapp", Some(&destination), &key), "{missing}");
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_only_plugins_offer_setup_and_reject_unreviewed_defaults() {
+    let root = fixture("custom", &[], vec![]);
+    let mut manifest = crate::read_manifest_checked(&root.join("plugins/custom")).unwrap();
+
+    manifest.settings = vec![Setting {
+        name: "KRABB_SETUP_ADDRESS".into(),
+        default: Some("127.0.0.1:8787".into()),
+    }];
+
+    configure(&root, &manifest);
+
+    let fields = fields(&root, "custom").unwrap();
+
+    assert!(crate::available_commands(&root).unwrap().contains_key("custom"));
+
+    assert_eq!(
+        crate::plugin_summary(&manifest, "ok")["setup_command"],
+        "krabb plugin setup custom"
+    );
+
+    crate::external_command_at(
+        vec!["custom".into(), "setup".into(), "--help".into()],
+        false,
+        root.clone(),
+    )
+    .await
+    .unwrap();
+
+    let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
+
+    assert!(environment.contains(&("KRABB_SETUP_ADDRESS".into(), "127.0.0.1:8787".into())));
+    assert!(!path(&root).exists());
+
+    let values = collect(&fields, |_| Ok("127.0.0.1:9898".into())).unwrap();
+
+    save(&path(&root), values).unwrap();
+
+    let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
+
+    assert!(environment.contains(&("KRABB_SETUP_ADDRESS".into(), "127.0.0.1:9898".into())));
+
+    manifest.settings[0].default = Some("0.0.0.0:8787".into());
+    fs::write(root.join("plugins/custom/krabb-plugin.toml"), toml::to_string(&manifest).unwrap())
+        .unwrap();
+
+    assert!(super::fields(&root, "custom").unwrap_err().to_string().contains("changed"));
+
+    assert!(activation(&root, "custom", &path(&root).canonicalize().unwrap()).is_err());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_preserve_secret_and_permission_metadata() {
+    let root = fixture("custom", &["KRABB_SETUP_TOKEN"], vec![]);
+    let mut manifest = crate::read_manifest_checked(&root.join("plugins/custom")).unwrap();
+
+    manifest.permissions = vec!["filesystem".into()];
+
+    manifest.settings = vec![Setting {
+        name: "KRABB_SETUP_ADDRESS".into(),
+        default: Some("127.0.0.1:8787".into()),
+    }];
+
+    let mut lock = crate::load_lock_at(&root).unwrap();
+
+    lock.plugins.get_mut("custom").unwrap().permissions = manifest.permissions.clone();
+    crate::save_lock_at(&root, &lock).unwrap();
+    configure(&root, &manifest);
+
+    let reloaded = crate::read_manifest_checked(&root.join("plugins/custom")).unwrap();
+    let lock = crate::load_lock_at(&root).unwrap();
+
+    for metadata in [
+        serde_json::to_value(&reloaded).unwrap(),
+        serde_json::to_value(&lock.plugins["custom"]).unwrap(),
+        crate::plugin_summary(&reloaded, "ok"),
+    ] {
+        assert_eq!(metadata["permissions"], json!(["filesystem"]));
+        assert_eq!(metadata["secrets"], json!(["KRABB_SETUP_TOKEN"]));
+        assert_eq!(metadata["settings"], serde_json::to_value(&manifest.settings).unwrap());
+        assert!(metadata.get("variables").is_none());
+    }
+
+    assert_eq!(
+        fields(&root, "custom").unwrap(),
+        [Setting { name: "KRABB_SETUP_TOKEN".into(), default: None }, manifest.settings[0].clone(),]
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_manifest_is_backward_compatible_and_rejects_invalid_declarations() {
+    let legacy = "id='custom'\nversion='0.1.0'\ncapabilities=[]\nprotocol={major=0,minor=1}";
+    let mut manifest: crate::Manifest = toml::from_str(legacy).unwrap();
+
+    assert!(manifest.settings.is_empty());
+    assert!(!toml::to_string(&manifest).unwrap().contains("settings"));
+
+    manifest.validate().unwrap();
+
+    for name in ["PATH", "KRABB_bad", "KRABB_BAD-NAME", ""] {
+        manifest.settings = vec![Setting { name: name.into(), default: None }];
+
+        assert!(manifest.validate().is_err());
+    }
+
+    let field = Setting { name: "KRABB_SETUP_ADDRESS".into(), default: None };
+
+    manifest.settings = vec![field.clone(), field.clone()];
+
+    assert!(manifest.validate().is_err());
+
+    manifest.settings.pop();
+    manifest.variables = vec![field.name.clone()];
+
+    assert!(manifest.validate().is_err());
+
+    manifest.variables.clear();
+
+    for invalid in ["".into(), " ".into(), "private\nvalue".into(), "x".repeat(LIMIT + 1)] {
+        manifest.settings[0].default = Some(invalid);
+
+        let error = manifest.validate().unwrap_err();
+
+        assert!(!error.contains("private"));
+    }
+
+    manifest.settings[0].default = Some("127.0.0.1:8787".into());
+    manifest.validate().unwrap();
+
+    let parsed: crate::Manifest = toml::from_str(&toml::to_string(&manifest).unwrap()).unwrap();
+
+    assert_eq!(parsed.settings, manifest.settings);
+
+    assert!(
+        toml::from_str::<crate::Manifest>(&format!(
+            "{legacy}\n[[settings]]\nname='KRABB_SETUP_ADDRESS'\nunknown=true"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn environment_overrides_saved_settings_and_blocks_misleading_activation() {
+    const NAME: &str = "KRABB_WHATSAPP_LISTEN";
+
+    if std::env::var_os("KRABB_SETUP_OVERRIDE_TEST").is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "setup::tests::environment_overrides_saved_settings_and_blocks_misleading_activation",
+            ])
+            .env("KRABB_SETUP_OVERRIDE_TEST", "1")
+            .env(NAME, "127.0.0.1:9898")
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+
+        return;
+    }
+
+    let root = fixture("custom", &[], vec![]);
+    let mut manifest = crate::read_manifest_checked(&root.join("plugins/custom")).unwrap();
+
+    manifest.settings = vec![Setting { name: NAME.into(), default: Some("127.0.0.1:8787".into()) }];
+    configure(&root, &manifest);
+    save(&path(&root), BTreeMap::from([(NAME.into(), "127.0.0.1:8989".into())])).unwrap();
+
+    let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
+
+    assert!(environment.contains(&(NAME.into(), "127.0.0.1:9898".into())));
+    assert_eq!(environment.iter().filter(|(name, _)| name == NAME).count(), 1);
+
+    assert!(
+        activation(&root, "custom", &path(&root).canonicalize().unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("overriding setup environment")
+    );
+
+    assert_eq!(read(&path(&root)).unwrap()[NAME], "127.0.0.1:8989");
+
+    fs::remove_dir_all(root).unwrap();
 }

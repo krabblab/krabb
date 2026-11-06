@@ -60,6 +60,7 @@ for line in sys.stdin:
             capabilities: vec![capability.into()],
             permissions: vec![],
             variables: vec![],
+            settings: Vec::new(),
             linked: false,
             commands: vec![],
         },
@@ -270,6 +271,95 @@ async fn live_controls_wait_for_work_and_preserve_installation_and_deliveries() 
     assert!(crate::lifecycle::change(&state.home, "tools", true).await.is_err());
     assert!(crate::lifecycle::change(&state.home, "missing", false).await.is_err());
     assert!(crate::lifecycle::change(&state.home, "../bad", false).await.is_err());
+
+    std::fs::remove_dir_all(&state.home).unwrap();
+}
+
+#[tokio::test]
+async fn status_reports_all_live_channels_without_cli_credentials() {
+    let state = Arc::new(super::tests::state_at("status-channels"));
+
+    for (id, capability) in [("ollama", "model"), ("telegram", "channel"), ("whatsapp", "channel")]
+    {
+        install(&state.home, id, capability);
+
+        let binary = crate::binary_at(id, &state.home).unwrap();
+        let process = krabb_core::plugin::Process::start(&binary).await.unwrap();
+
+        state.plugins.insert(crate::Live::new(process)).await;
+    }
+
+    std::fs::write(state.home.join("config.toml"), "provider = 'ollama'\n").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    std::fs::write(state.home.join("ipc.port"), listener.local_addr().unwrap().port().to_string())
+        .unwrap();
+    std::fs::write(state.home.join("ipc.token"), "secret").unwrap();
+
+    let server = tokio::spawn(serve(listener, Arc::clone(&state)));
+    let status = crate::status_at(&state.home).await.unwrap();
+
+    assert_eq!(status["daemon"], "running");
+    assert_eq!(status["health"], "healthy");
+    assert_eq!(status["channels"]["plugins"], json!(["telegram", "whatsapp"]));
+    assert_eq!(status["intelligence"]["plugins"], json!(["ollama"]));
+    assert!(status.get("messaging").is_none());
+
+    assert!(
+        crate::status_text(&status, 3)
+            .contains("Channels:           configured (telegram, whatsapp)")
+    );
+
+    for (id, _) in state.plugins.all().await {
+        state.plugins.remove(&id).await.unwrap().stop().await.unwrap();
+    }
+
+    let status = crate::status_at(&state.home).await.unwrap();
+
+    assert_eq!(status["daemon"], "running");
+    assert_eq!(status["health"], "unhealthy");
+    assert_eq!(status["channels"]["plugins"], json!([]));
+    assert_eq!(status["intelligence"]["plugins"], json!([]));
+
+    state.stop.signal();
+    server.await.unwrap().unwrap();
+    std::fs::remove_dir_all(&state.home).unwrap();
+}
+
+#[tokio::test]
+async fn offline_status_accepts_whatsapp_without_default_telegram() {
+    let state = super::tests::state_at("status-offline");
+
+    install(&state.home, "ollama", "model");
+    std::fs::write(state.home.join("config.toml"), "provider = 'ollama'\n").unwrap();
+
+    let status = crate::status_at(&state.home).await.unwrap();
+
+    assert_eq!(status["daemon"], "stopped");
+    assert_eq!(status["health"], "healthy");
+    assert_eq!(status["channels"]["status"], "not configured");
+
+    install(&state.home, "whatsapp", "channel");
+
+    crate::save_file(
+        state.home.join("credentials.json"),
+        serde_json::to_vec(&json!({
+            "KRABB_WHATSAPP_TOKEN": "synthetic",
+            "KRABB_WHATSAPP_APP_SECRET": "synthetic",
+            "KRABB_WHATSAPP_VERIFY": "synthetic",
+            "KRABB_WHATSAPP_PHONE": "123",
+            "KRABB_WHATSAPP_GRAPH_URL": "http://127.0.0.1:9",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let status = crate::status_at(&state.home).await.unwrap();
+
+    assert_eq!(status["daemon"], "stopped");
+    assert_eq!(status["health"], "healthy");
+    assert_eq!(status["channels"]["plugins"], json!(["whatsapp"]));
 
     std::fs::remove_dir_all(&state.home).unwrap();
 }

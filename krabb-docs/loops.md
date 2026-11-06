@@ -150,6 +150,11 @@ Unsupported explicit options fail. Model defaults are pinned; override `MODEL` t
 
 ## Reports And Recovery
 
+Contribution commits run the configured Git hooks, including in linked worktrees.
+Tests that create temporary repositories must clear inherited Git repository and
+configuration variables before invoking Git. Runtime fixtures do this explicitly;
+the loop still stops if a hook or another process unexpectedly moves the branch or HEAD.
+
 Private run artifacts live under `.krabb/loops/<rev|sec|test>/<run-id>/`.
 Start with `latest-orchestrator.json`, `latest-worker.md`, and `latest-verification.log`.
 Validated reports use `.json`; raw responses use `.response`, event streams `.jsonl`,

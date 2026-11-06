@@ -7,7 +7,7 @@ pub(crate) fn context(session: &str, channel: &str) -> Message {
 
     if !matches!(channel, "tui" | "cli") {
         text.push_str(
-            "\n\nThis reply is delivered through a messaging channel. Use portable Markdown for useful emphasis, links, lists, quotes, and fenced code. The channel adapter preserves supported formatting and renders unsupported elements as readable text. Include actual source URLs in Markdown links; do not emit platform-specific markup, HTML, or provider-specific citation markers. Apply this format to progress messages and any message_send text as well as the final reply.",
+            "\n\nThis reply is delivered through a channel. Use portable Markdown for useful emphasis, links, lists, quotes, and fenced code. The channel adapter preserves supported formatting and renders unsupported elements as readable text. Include actual source URLs in Markdown links; do not emit platform-specific markup, HTML, or provider-specific citation markers. Apply this format to progress messages and any message_send text as well as the final reply.",
         );
     }
 

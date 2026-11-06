@@ -6,14 +6,23 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 const LIMIT: usize = 16 * 1024;
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Setting {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+}
+
 #[derive(Debug, Args)]
 pub(super) struct Options {
-    /// Installed plugin whose declared secrets should be configured.
+    /// Installed plugin whose secrets and settings should be configured.
     id: String,
     /// Save credentials without contacting the running daemon.
     #[arg(long)]
@@ -21,7 +30,7 @@ pub(super) struct Options {
 }
 
 #[derive(Parser)]
-#[command(name = "krabb <plugin>", about = "Set up plugin credentials.")]
+#[command(name = "krabb <plugin>", about = "Set up plugin secrets and settings.")]
 struct Setup {
     #[arg(long, global = true)]
     json: bool,
@@ -35,7 +44,7 @@ struct Setup {
 
 #[derive(Subcommand)]
 enum SetupCommand {
-    /// Securely prompt for declared secrets without starting the plugin first.
+    /// Securely prompt for secrets and settings without starting the plugin first.
     Setup {
         #[arg(long)]
         no_activate: bool,
@@ -74,7 +83,7 @@ pub(super) fn path(root: &Path) -> PathBuf {
     super::credentials::path(root)
 }
 
-fn names(root: &Path, id: &str) -> Result<Vec<String>, Error> {
+fn fields(root: &Path, id: &str) -> Result<Vec<Setting>, Error> {
     if !super::valid(id) {
         return Err("Invalid plugin ID.".into());
     }
@@ -83,19 +92,29 @@ fn names(root: &Path, id: &str) -> Result<Vec<String>, Error> {
     let entry = lock.plugins.get(id).ok_or("Install the plugin before running setup.")?;
     let manifest = super::read_manifest_checked(&root.join("plugins").join(id))?;
 
-    if manifest.id != id || manifest.variables != entry.variables {
-        return Err("Plugin secrets changed; review and reinstall the plugin before setup.".into());
+    if manifest.id != id
+        || manifest.variables != entry.variables
+        || manifest.settings != entry.settings
+    {
+        return Err("Plugin setup changed; review and reinstall the plugin before setup.".into());
     }
 
-    if entry.variables.is_empty() {
-        return Err("This plugin declares no secrets; use its own authentication flow.".into());
+    if entry.variables.is_empty() && entry.settings.is_empty() {
+        return Err(
+            "This plugin declares no secrets or settings; use its own authentication flow.".into(),
+        );
     }
 
-    Ok(entry.variables.clone())
+    Ok(entry
+        .variables
+        .iter()
+        .map(|name| Setting { name: name.clone(), default: None })
+        .chain(entry.settings.iter().cloned())
+        .collect())
 }
 
 pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(), Error> {
-    let names = names(root, &options.id)?;
+    let fields = fields(root, &options.id)?;
     let destination = path(root);
     let key = super::credentials::key_path(root);
     let preference = super::credentials::preference()?;
@@ -103,7 +122,7 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     // Validate the destination before asking for sensitive input; re-read it under the save lock.
     super::credentials::read(&destination, &key)?;
 
-    let values = collect(&names, prompt)?;
+    let values = collect(&fields, prompt)?;
     let backend = super::credentials::save(&destination, &key, values, preference)?;
     let destination = destination.canonicalize()?;
     let mut result = finish(root, &options.id, &destination, options.no_activate).await;
@@ -117,7 +136,7 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
         println!("{}", serde_json::to_string(&result)?);
     } else {
         println!(
-            "Saved encrypted credentials for {} in {} (key: {backend}).",
+            "Saved encrypted secrets and settings for {} in {} (key: {backend}).",
             options.id,
             destination.display()
         );
@@ -150,8 +169,8 @@ async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Val
             // Plugin errors can contain provider responses. Never include them in setup output.
             _ => (false, concat!(
                 "Credentials saved; activation is pending. Check that the daemon uses the same ",
-                "credential file, has no overriding secret environment variables, and selects ",
-                "this channel/model. Restart an older daemon, then run krabb doctor."
+                "credential file and has no overriding setup environment variables. ",
+                "Restart an older daemon, then run krabb doctor."
             ).to_owned()),
         }
     };
@@ -160,22 +179,33 @@ async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Val
 }
 
 fn collect(
-    names: &[String],
-    mut prompt: impl FnMut(&str) -> Result<String, Error>,
+    fields: &[Setting],
+    mut prompt: impl FnMut(&Setting) -> Result<String, Error>,
 ) -> Result<BTreeMap<String, String>, Error> {
     let mut values = BTreeMap::new();
 
-    for name in names {
-        let value = prompt(name)?;
+    for field in fields {
+        let mut value = prompt(field)?;
 
-        if value.trim().is_empty() || value.len() > LIMIT || value.chars().any(char::is_control) {
-            return Err("Secret must be nonempty, single-line, and at most 16 KiB.".into());
+        if value.is_empty()
+            && let Some(default) = &field.default
+        {
+            value = default.clone();
         }
 
-        values.insert(name.clone(), value);
+        validate(&value)?;
+        values.insert(field.name.clone(), value);
     }
 
     Ok(values)
+}
+
+pub(super) fn validate(value: &str) -> Result<(), &'static str> {
+    if value.trim().is_empty() || value.len() > LIMIT || value.chars().any(char::is_control) {
+        return Err("Setup value must be nonempty, single-line, and at most 16 KiB.");
+    }
+
+    Ok(())
 }
 
 struct Terminal;
@@ -189,7 +219,7 @@ impl Drop for Terminal {
     }
 }
 
-fn prompt(name: &str) -> Result<String, Error> {
+fn prompt(field: &Setting) -> Result<String, Error> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err("Setup requires an interactive terminal; secret input cannot be piped.".into());
     }
@@ -199,7 +229,13 @@ fn prompt(name: &str) -> Result<String, Error> {
     let _terminal = Terminal;
 
     crossterm::execute!(io::stderr(), crossterm::event::EnableBracketedPaste)?;
-    eprint!("{name}: ");
+
+    if let Some(default) = &field.default {
+        eprint!("{} [{default}]: ", field.name);
+    } else {
+        eprint!("{}: ", field.name);
+    }
+
     io::stderr().flush()?;
 
     input(crossterm::event::read)
@@ -255,10 +291,10 @@ pub(super) fn activation(root: &Path, id: &str, destination: &Path) -> Result<()
 
     super::credentials::read(destination, &super::credentials::key_path(root))?;
 
-    let names = names(root, id)?;
+    let fields = fields(root, id)?;
 
-    if names.iter().any(|name| super::env_nonempty(name)) {
-        return Err("The daemon has overriding secret environment variables; restart it.".into());
+    if fields.iter().any(|field| super::env_nonempty(&field.name)) {
+        return Err("The daemon has overriding setup environment variables; restart it.".into());
     }
 
     super::load_lock_at(root)?.plugins.remove(id).ok_or("Plugin is not installed.")?;

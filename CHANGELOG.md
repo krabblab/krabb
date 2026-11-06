@@ -5,14 +5,9 @@ Semantic Versioning.
 
 ## [0.1.0]
 
-### Added
-
-- Add plugin attach/detach mechanism for plugins for safe enabling/disabling.
-- Support concurrent channels with isolated queues and approvals, plus global and per-channel/client provider/model defaults.
-- Run Krabb from the command line, as a daemon, or in an interactive terminal chat.
-- Use hosted and local models from Codex, Anthropic, OpenAI, Gemini, Ollama, or OpenRouter.
-- Connect Telegram, Discord, WhatsApp, Signal, and Slack to your agents.
-- Preserve supported rich formatting in messaging channels, including streamed edits and scheduled messages.
+- Isolate Git test fixtures from inherited hook and worktree settings so pre-commit
+  checks cannot overwrite the contributor's branch, index, or Git configuration.
+- Preserve supported rich formatting in channels, including streamed edits and scheduled messages.
 - Research user-supplied URLs with live Codex search and distinguish retrieval failures from missing pages.
 - Give agents file, Git, shell, browser, and desktop tools with access controls.
 - Connect agents and tools through ACP, A2A, AG-UI, and MCP.

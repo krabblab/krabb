@@ -68,15 +68,13 @@ sessions are also accepted. See [default models](providers.md#default-models).
 
 - **Native commands** are part of the Krabb CLI and do not depend on a plugin,
   such as `init`, `doctor`, and `plugin`.
-- **Conditional native commands** are first-party Krabb commands that need an
-  installed plugin or capability. For example, `session` needs a model,
-  `delivery` needs a messaging channel, `schedule` needs the scheduler, and
+  `delivery` needs a channel, `schedule` needs the scheduler, and
   `memory`, `tui`, and `data` need their respective plugins. These commands
   expose a Krabb-managed capability and appear in help when usable; an
   underlying plugin may implement the capability.
 - **Plugin commands** include plugin-declared commands such as `codex` and setup
   shortcuts such as `telegram` and `anthropic`. They appear under Plugin Commands
-  when installed. Krabb handles secret setup; custom commands run in the plugin.
+  when installed. Krabb handles setup; custom commands run in the plugin.
 - `krabb service` prints service help; use `krabb service status` for its
   current state. `krabb --version` and `krabb version` are equivalent.
 
@@ -84,16 +82,16 @@ sessions are also accepted. See [default models](providers.md#default-models).
 if no model is ready. SQLite's `data` command is a first-party conditional
 command: runtime exposes it when SQLite is installed and routes its data
 operations to the plugin. The agent-facing data tool uses the same conditional
-capability.
-
-Installed plugins that declare secrets expose the host-owned `setup` subcommand:
+Installed plugins that declare secrets or settings expose the host-owned `setup` subcommand:
 `krabb telegram setup`, `krabb anthropic setup`, and `krabb codex setup` all use
 the same secure prompt and credential-file workflow. Existing plugin commands,
 such as `krabb codex login`, keep their provider-specific behavior. The generic
 `krabb plugin setup <id>` command also works when the plugin ID cannot be exposed
 as a shortcut. Setup requires a terminal and accepts no token argument or piped
 secret. See [Plugin Setup](authentication.md#plugin-setup) for storage, activation,
-and service behavior.
+`krabb whatsapp setup` also collects the phone number ID, Graph API base URL,
+and listener address. Press Enter to accept the listener's `127.0.0.1:8787`
+default. Saved settings are applied when the plugin starts or reloads.
 
 Command discovery waits up to five seconds for concurrent metadata access. If the
 metadata remains locked or cannot be read, the command exits with an error;
@@ -164,15 +162,19 @@ already present, export stops without changing it; pass `--force` to overwrite
 that file.
 
 ## Status And Health
+intelligence, channels, version, and the installed plugin count. When the daemon
+is running, the capability lists reflect its loaded plugins, including all active
+channels regardless of the CLI's environment. When it is stopped, the lists use
+locally available credentials and settings; they do not prove live connectivity.
 
-`krabb status` prints aligned installation health, background runtime state,
-intelligence setup, messaging setup, version, and the installed plugin count.
-Messaging is optional for local CLI and TUI use; health only requires a ready
-messaging plugin when one is installed or explicitly selected. Health is
-`unhealthy` when a required setup check fails, and the output lists the reasons.
-Use `--json` for automation; the
-health details are in `health_details`, and capability fields are objects with
-a `status` and `plugins` array.
+Channels are optional for local CLI and TUI use. If any channel is installed,
+health requires at least one ready channel; an explicit `KRABB_CHANNEL` requires
+that channel. Health also checks configuration, the selected intelligence plugin,
+and command conflicts. Failed checks appear in `health_details`.
+
+Use `--json` for automation. Capability objects are named `intelligence` and
+`channels`, each with a `status` and `plugins` array. The former `messaging` key
+has been renamed to `channels`; update scripts that read it.
 
 ## Terminal User Interface
 
@@ -217,9 +219,7 @@ setup commands. Binary presence does not mean a plugin is authenticated or activ
 
 `plugin update` previews changes, then replaces changed plugins after
 confirmation. Uninstall accepts multiple plugin IDs and confirms the batch once;
-it waits for active daemon work to settle and reserves the lifecycle through state
-checks, process unloading, and file removal. Removing
-the last model or messaging plugin can require deleting dependent session or
+the last model or channel plugin can require deleting dependent session or
 delivery state; `--force` with confirmation performs that purge. See
 [Plugins](plugins.md) for manifests, permissions, and update behavior.
 
@@ -232,9 +232,7 @@ and disconnects the plugin from the runtime, keeping its files, credentials and 
 Use `plugin attach <id>` (alias `start`) to bring it back. Updates preserve detachment;
 restarting the daemon or explicitly activating the plugin loads it again. These commands
 control daemon-managed plugins, not separately launched CLI clients.
-
-`plugin uninstall telegram --force` also deletes delivery state when Telegram is the
-last messaging plugin. Removing the last intelligence plugin with `--force` can delete
+last channel plugin. Removing the last intelligence plugin with `--force` can delete
 sessions. The command confirms this cleanup; `-y` skips the prompt. Dropped delivery
 history does not block ordinary uninstall.
 

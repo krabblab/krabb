@@ -12,12 +12,13 @@ This guide explains Krabb’s process boundaries, runtime, and plugin protocol.
 - [Security](#security)
 - [Test Organization](#test-organization)
 
-## Architecture Style
-
-Plugin secret onboarding is host-owned. `krabb plugin setup <id>` and the
-`krabb <id> setup` shortcuts read installed secret declarations without launching
-the plugin. The host saves protected credentials and requests authenticated
-`plugin.setup` IPC with only the ID and credential path. The daemon checks its
+Plugin onboarding is host-owned. `krabb plugin setup <id>` and the
+`krabb <id> setup` shortcuts read installed secret and setting declarations without
+launching the plugin. Optional `[[settings]]` manifest entries carry environment
+variable names and public defaults, and are pinned in the plugin lock alongside
+secrets. Older manifests and locks default to no settings. The host saves secrets
+and configured settings atomically in the same encrypted store and requests
+authenticated `plugin.setup` IPC with only the ID and credential path. The daemon checks its
 credential source before invoking the existing loader. Additional channels and
 providers can activate without replacing the defaults.
 An older daemon rejects the new method, leaving activation pending. Provider
@@ -30,9 +31,8 @@ their format, key backend, and key identifier. The OS keyring holds the key when
 available; the fallback key file has restricted permissions and an independent
 path. Existing envelopes pin their key backend. Environment values override
 storage; decryption errors prevent plugin launch rather than becoming missing
-credentials. Service installation captures environment secrets into encrypted
-storage, and plugins receive only their declared values through the existing
-process environment. Neither plugin manifests nor the core protocol change.
+process environment. Nonempty environment values override stored settings;
+manifest defaults fill missing settings. The core JSON-RPC protocol is unchanged.
 
 Krabb uses a layered, hexagonal host/plugin architecture with a
 microkernel-style core, isolated JSON-RPC plugins, and a client–daemon runtime.
@@ -84,7 +84,10 @@ Runtime and shared-library calls stay in-process; Runtime-to-plugin JSON-RPC
 and client-to-daemon IPC cross process boundaries. The `krabb-libs/` crates
 are compiled into their consumers, so plugins depend only on the libraries
 they use. Plugins do not connect to Core at runtime. They implement its
-contracts and communicate through Runtime.
+Status queries the authenticated `plugin.active` inventory to report the daemon's
+loaded intelligence and channels. It does not recheck their credentials in the
+CLI's environment. Without a daemon, status falls back to local configuration
+readiness. The JSON capability fields are `intelligence` and `channels`.
 
 The TUI is a terminal client, not a second agent runtime. It submits turns over
 authenticated local IPC; the daemon selects the model plugin, applies tool and
@@ -176,9 +179,7 @@ including when the response transport remains open. Fatal plugin input errors re
 concurrent request handlers before waiting for the output channel to close.
 
 ## Turn Flow
-
-Before generation, the runtime supplies portable-Markdown communication guidance
-for messaging destinations. The channel handshake advertises accepted text formats;
+for channel destinations. The channel handshake advertises accepted text formats;
 the host forwards Markdown to capable adapters and converts it to readable plain
 text for legacy channels. Platform rendering and chunking belong to each adapter,
 using shared bounded parsing primitives from `krabb-text`. Persisted deliveries keep

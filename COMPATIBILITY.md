@@ -25,9 +25,7 @@ operating-system or plugin functional checks below.
 Run the checklist on one representative installation per operating system.
 CPU architecture results remain in CI and do not need separate rows here.
 
-| Operating System | Status  | Evidence And Remaining Checks                                                                                                                                                                             |
-| ---------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux            | Partial | Local daemon and capability smoke checks passed on 2026-10-27. Browser and isolated Xvfb fixtures passed on Linux x86_64. Complete the end-to-end checklist, including a provider and channel round trip. |
+| Linux            | Partial | Local daemon and capability smoke checks passed on 2026-10-27. Browser and isolated Xvfb fixtures passed on Linux x86_64. Telegram and WhatsApp live text round trips passed on Linux aarch64 (0.1.0, user-reported 2026-11-05). Other installation checks remain. |
 | macOS            | Not Run | CI covers native builds and tests. Complete the end-to-end checklist on a macOS installation, including any enabled interactive desktop behavior.                                                         |
 | Windows          | Not Run | CI covers native builds and tests. Complete the end-to-end checklist in a logged-in user session, including any enabled interactive desktop behavior.                                                     |
 
@@ -62,9 +60,8 @@ The functional evidence below records local fixture results separately from
 checks that still need a real provider, channel, backend, or installation.
 
 | Plugins                                              | Functional Evidence                                                                | Remaining Check                                                                 |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Anthropic, Codex, Gemini, Ollama, OpenAI, OpenRouter | Workspace tests passed in `make verify` on 2026-10-27.                             | Send and stream a request through a test account or local Ollama service.       |
-| Discord, Signal, Slack, Telegram, WhatsApp           | Workspace tests and protocol smoke passed on 2026-10-27.                           | Verify receive, send, acknowledgement, media, and reconnect with test accounts. |
+| Discord, Signal, Slack                              | Workspace tests and protocol smoke passed on 2026-10-27.                           | Verify receive, send, acknowledgement, media, and reconnect with test accounts. |
+| Telegram, WhatsApp | Tested on Linux aarch64: user-confirmed live text receive/reply on 2026-11-05, Krabb 0.1.0. | Verify media, reconnect, and interrupted delivery recovery separately. |
 | A2A, ACP, AG-UI                                      | Workspace tests and protocol smoke passed on 2026-10-27.                           | Exercise a request lifecycle with a compatible external agent or client.        |
 | MCP                                                  | Protocol smoke and a loopback HTTP `tools/list` fixture passed on 2026-10-27.      | Exercise the configured transport against an intended MCP server.               |
 | Memory, Scheduler, SQLite, Tools, TUI                | Local capability smoke and daemon or IPC checks passed on 2026-10-27.              | Verify SQLite tool discovery, conditional `data` command/help visibility, scope isolation, approval, and database/table/column/record commands in the target installation. |
@@ -78,7 +75,14 @@ a functional fixture or real integration check passes.
 
 Local regressions (2026-11-01) cover provider stream completion and tool arguments
 across transport boundaries, plus memory rollback, reopen, and retry after failed saves.
-These fixtures do not establish live-provider or cross-platform functional status.
+Local regressions (2026-11-05) cover complete WhatsApp setup from declared secrets
+and settings, encrypted persistence, readiness after reload, environment overrides,
+listener defaults, and delivery of saved settings to a reloaded plugin process.
+Workspace tests and all package coverage gates passed. Separately, the user confirmed
+live Telegram and WhatsApp text round trips on a Linux aarch64 VPS running 0.1.0 on
+2026-11-05. WhatsApp verification included the public HTTPS webhook, WABA app
+subscription, and replies using the Phone Number ID. This does not establish
+media, reconnect, or other-platform results.
 
 ## Recording Results
 
@@ -113,12 +117,10 @@ handshake has passed.
 | OpenRouter | [ ]          | [ ]           | [ ]          | [ ]           | [ ]            | [ ]             |
 | Scheduler  | [ ]          | [x]           | [ ]          | [ ]           | [ ]            | [ ]             |
 | Signal     | [ ]          | [ ]           | [ ]          | [ ]           | [ ]            | [ ]             |
-| Slack      | [ ]          | [ ]           | [ ]          | [ ]           | [ ]            | [ ]             |
-| SQLite     | [ ]          | [x]           | [ ]          | [ ]           | [ ]            | [ ]             |
-| Telegram   | [ ]          | [ ]           | [ ]          | [ ]           | [ ]            | [ ]             |
+| Telegram   | [ ]          | [x]           | [ ]          | [ ]           | [ ]            | [ ]             |
 | Tools      | [ ]          | [x]           | [ ]          | [ ]           | [ ]            | [ ]             |
 | TUI        | [ ]          | [x]           | [ ]          | [ ]           | [ ]            | [ ]             |
-| WhatsApp   | [ ]          | [ ]           | [ ]          | [ ]           | [ ]            | [ ]             |
+| WhatsApp   | [ ]          | [x]           | [ ]          | [ ]           | [ ]            | [ ]             |
 | Whisper    | [ ]          | [ ]           | [ ]          | [ ]           | [ ]            | [ ]             |
 
 Keep fixture, credentialed integration, and full installation results distinct.
