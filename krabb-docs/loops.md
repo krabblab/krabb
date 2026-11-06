@@ -46,17 +46,21 @@ non-success. They never count as clean convergence. Review loops do not commit, 
 
 ## Contribution Loop
 
-`make contribloop` handles the contribution after implementation: run `make verify`,
-repair failures, create a branch, commit with a lowercase conventional title without a
-scope, push to `origin`, and create a draft PR. It reads recent merged PRs for writing
+`make contribloop` handles the contribution after implementation: empty `PLAN.md` and
+`IMPLEMENTATION.md`, run `make verify`, repair failures, create a branch, commit with a
+lowercase conventional title without a scope, push to `origin`, and create a draft PR.
+It reads recent merged PRs for writing
 style and fills the repository template while preserving its guidance comments. The PR
 title summarizes the complete change; the authenticated GitHub user becomes its assignee,
 and the change type selects an existing label. It does not invent linked issues,
 milestones or reviewers; those remain available for a maintainer to add.
 
 Invoking this command authorizes staging and committing **all uncommitted changes**,
-pushing the feature branch and creating or updating its PR. Run it in a dedicated
-working tree without concurrent edits. It never force-pushes or merges. New branches
+pushing the feature branch and creating or updating its PR. Move future work to
+`ROADMAP.md` and durable implementation details to the relevant documentation before
+running it. Both files are emptied before each verification attempt, so the cleanup is
+included in the verified commit. Run it in a dedicated working tree without concurrent
+edits. It never force-pushes or merges. New branches
 use a short, single-word name inferred from the full contribution diff, such as
 `multiprovider`. The read-only naming agent considers staged, unstaged and untracked
 changes. Names contain only lowercase letters; invalid or occupied names trigger another

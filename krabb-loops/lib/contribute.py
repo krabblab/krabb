@@ -274,6 +274,14 @@ class Contribution:
         while True:
             self.stable()
 
+            for name in ('PLAN.md', 'IMPLEMENTATION.md'):
+                path = ROOT / name
+
+                if path.is_symlink():
+                    raise RuntimeError(f'refusing to clear a symbolic link: {name}')
+
+                path.write_text('')
+
             before = fingerprint()
             log = self.state / f'verify-{self.sequence}-{self.attempt}.log'
 
