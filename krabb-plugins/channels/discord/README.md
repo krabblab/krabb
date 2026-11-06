@@ -4,6 +4,8 @@ Install the released plugin with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh -s -- discord
+```
+
 ## Setup
 
 Create and install a bot using [Discord's getting started guide](https://docs.discord.com/developers/quick-start/getting-started).
@@ -24,6 +26,10 @@ The legacy `discord` keyring entry remains supported with `KRABB_KEYRING=1`.
 
 ## Messages And Media
 
+While a reply is being prepared, the plugin uses Discord's native typing
+indicator in the destination DM, channel, or thread. Indicator failures do not
+prevent the reply.
+
 The plugin receives `MESSAGE_CREATE` events through the Gateway, answers
 heartbeats, ignores bot authors, normalizes text and attachments, and sends replies through the REST
 API. Gateway session state is persisted under `KRABB_HOME` and advances only
@@ -40,6 +46,7 @@ cache within 64 MiB and 256 files. Cleanup failures reject storage; the protecte
 session image directory is preserved. The plugin
 supports attachment uploads, but the current daemon sends generated replies as
 text. Direct messages work by default; guild channels and threads require the
+configured channel allowlist.
 A missing heartbeat acknowledgement closes the Gateway connection so the next
 poll reconnects. A nonresumable session rejection clears the old session before
 identifying again. Gateway connection establishment has a ten-second deadline.

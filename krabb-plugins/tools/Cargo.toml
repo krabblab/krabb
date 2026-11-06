@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 krabb-log.workspace = true
+krabb-file = { path = "../../krabb-libs/file" }
 krabb-core = { path = "../../krabb-core" }
 krabb-process = { path = "../../krabb-libs/process" }
 reqwest.workspace = true

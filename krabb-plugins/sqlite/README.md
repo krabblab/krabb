@@ -77,3 +77,10 @@ The plugin also keeps the existing key/value methods (`put`, `get`, `delete`),
 owner-scoped leases (`lease`, `release`), a durable queue (`enqueue`, `outbox`,
 `retry`, `ack`), and expiring event deduplication (`seen`). The daemon's
 messaging delivery retry queue is separate and remains in runtime state.
+
+Writes retain their conversation namespace. The host supplies outgoing visibility
+grants for reads; `list_databases` reports accessible sources and `source` selects
+a namespace for read-only operations.
+Worktree requests use the optional `scoped` wrapper and a separate database at
+`KRABB_HOME/data/workspaces/conversations/<conversation>/records/data.db`. Unsupported scoped operations never fall back to
+the installation database. See [Visibility And Worktrees](../../krabb-docs/sharing.md).

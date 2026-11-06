@@ -109,7 +109,77 @@ async fn plugin_main() -> krabb_core::Result<()> {
     .await
 }
 
+fn validate_visibility(params: &serde_json::Value) -> krabb_core::Result<()> {
+    for key in ["visibility", "excluded"] {
+        if let Some(value) = params.get(key) {
+            let values = value.as_array().ok_or_else(|| {
+                krabb_core::Error::Denied("Memory visibility must be a list.".into())
+            })?;
+
+            if values.len() > 128
+                || values.iter().any(|value| {
+                    value.as_str().is_none_or(|value| value.is_empty() || value.len() > 4096)
+                })
+            {
+                return Err(krabb_core::Error::Denied("Invalid memory visibility.".into()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn visible(scope: &str, params: &serde_json::Value) -> bool {
+    let matches = |key: &str| {
+        params[key].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).any(
+            |value| {
+                value.strip_suffix('*').map_or(value == scope, |prefix| scope.starts_with(prefix))
+            },
+        )
+    };
+
+    matches("visibility") && !matches("excluded")
+}
+
 fn call(items: &Arc<Mutex<State>>, request: Request) -> krabb_core::Result<Option<Response>> {
+    if let Request::Call { id, method, params, .. } = &request
+        && method == "scoped"
+    {
+        let workspace = params["workspace"].as_str().ok_or_else(|| {
+            krabb_core::Error::Denied("Scoped memory requires a workspace.".into())
+        })?;
+        let operation = params["method"]
+            .as_str()
+            .filter(|method| matches!(*method, "index" | "search" | "remember"))
+            .ok_or_else(|| {
+                krabb_core::Error::Denied("Unsupported scoped memory operation.".into())
+            })?;
+        let root = std::env::var_os("KRABB_HOME").map(PathBuf::from).ok_or_else(|| {
+            krabb_core::Error::Denied("KRABB_HOME is required for scoped memory.".into())
+        })?;
+        let directory = krabb_file::directory(
+            &krabb_file::workspace_state(&root, Path::new(workspace))?,
+            Path::new("memory"),
+        )?;
+        let location = directory.join("index.json");
+
+        if !location.exists() {
+            let scope = params["params"]["scope"].as_str().ok_or_else(|| {
+                krabb_core::Error::Denied("Scoped memory requires a conversation scope.".into())
+            })?;
+            let mut inherited = load_at(path()?.as_deref())?.lock().unwrap().clone();
+            inherited.items.retain(|_, entry| entry.scope == scope);
+            inherited.audit.retain(|entry| entry.scope == scope);
+            persist_at(Some(&location), &inherited)?;
+        }
+
+        return call_at(
+            &Arc::new(Mutex::new(State::default())),
+            Request::call(*id, operation, params["params"].clone()),
+            Some(&location),
+        );
+    }
+
     call_at(items, request, path()?.as_deref())
 }
 
@@ -362,7 +432,17 @@ fn call_inner_at(
 
         "index" => {
             let scope = params["scope"].as_str();
-            let mut entries = if let Some(scope) = scope.filter(|scope| *scope != "global") {
+            let mut entries = if params.get("visibility").is_some() {
+                validate_visibility(&params)?;
+                let mut entries = state
+                    .items
+                    .values()
+                    .filter(|entry| visible(&entry.scope, &params))
+                    .collect::<Vec<_>>();
+                entries.sort_by_key(|entry| std::cmp::Reverse(entry.updated));
+                entries.truncate(INDEX_LIMIT);
+                entries
+            } else if let Some(scope) = scope.filter(|scope| *scope != "global") {
                 let mut scoped =
                     state.items.values().filter(|entry| entry.scope == scope).collect::<Vec<_>>();
 
@@ -427,14 +507,19 @@ fn call_inner_at(
                 .filter(|query| !query.trim().is_empty())
                 .ok_or_else(|| krabb_core::Error::Denied("search.query is required.".into()))?;
             let query = query.to_lowercase();
+            validate_visibility(&params)?;
             let scope = params["scope"].as_str();
             let mut entries = state
                 .items
                 .values()
                 .filter(|entry| {
-                    scope.is_none_or(|value| {
-                        value == entry.scope || (value != "global" && entry.scope == "global")
-                    })
+                    if params.get("visibility").is_some() {
+                        visible(&entry.scope, &params)
+                    } else {
+                        scope.is_none_or(|value| {
+                            value == entry.scope || (value != "global" && entry.scope == "global")
+                        })
+                    }
                 })
                 .filter(|entry| {
                     entry.key.to_lowercase().contains(&query)
@@ -1414,7 +1499,11 @@ fn persist_at(path: Option<&std::path::Path>, state: &State) -> krabb_core::Resu
             .parent()
             .ok_or_else(|| krabb_core::Error::Denied("Memory record path is invalid.".into()))?;
 
-        std::fs::create_dir_all(record_parent)?;
+        let relative = record_parent
+            .strip_prefix(parent)
+            .map_err(|_| krabb_core::Error::Denied("Memory record leaves its storage.".into()))?;
+
+        krabb_file::directory(parent, relative)?;
 
         #[cfg(unix)]
         {
@@ -2843,3 +2932,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod isolation;

@@ -25,6 +25,14 @@ conversation IDs in the daemon's environment; this is separate from the allowlis
 
 ## Messages And Media
 
+In DM threads, the plugin uses `assistant.threads.setStatus` to show typing
+while preparing a reply. This requires an app configured for Slack's assistant
+or agent messaging experience and access to that method (`chat:write`, or the
+legacy `assistant:write` scope). Slack clears the status on reply or after its
+two-minute timeout. Ordinary channels and unthreaded messages have no typing
+indicator through this API. Unsupported contexts and API failures do not
+prevent replies.
+
 The plugin receives Socket Mode events and falls back to Web API history polling
 for configured conversations. Text, images, voice, and text files are normalized
 through the channel boundary, and bounded downloads are stored under `KRABB_MEDIA`.

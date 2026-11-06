@@ -16,6 +16,8 @@ import json, pathlib, subprocess, sys
 root = pathlib.Path(sys.argv[1])
 for line in sys.stdin:
     request = json.loads(line)
+    if request.get('method') == 'visible':
+        request['method'], request['params'] = request['params']['method'], request['params']['params']
     method = request['method']
     if method == 'hello':
         result = {'protocol': {'major': 0, 'minor': 1}, 'id': 'tools',
@@ -254,6 +256,8 @@ import json, pathlib, sys
 root, plugin = pathlib.Path(sys.argv[1]), sys.argv[2]
 for line in sys.stdin:
     request = json.loads(line)
+    if request.get('method') == 'visible':
+        request['method'], request['params'] = request['params']['method'], request['params']['params']
     method = request['method']
     if method == 'hello':
         result = {'protocol': {'major': 0, 'minor': 1}, 'id': plugin,
@@ -371,7 +375,7 @@ for line in sys.stdin:
                 "context": {
                     "provider": "fixture", "model": "test", "workspace": root,
                     "origin": {"channel": channel, "chat": "7", "thread": null,
-                               "session": "session", "private": true},
+                               "session": "session", "private": true, "sender": null, "roles": []},
                     "message_destination": null, "tools": true, "shell": false
                 }
             });
@@ -503,6 +507,8 @@ for line in sys.stdin:
 
                         assert_eq!(received["scope"], memory_scope(channel, "7"));
                         received.as_object_mut().unwrap().remove("scope");
+                        received.as_object_mut().unwrap().remove("visibility");
+                        received.as_object_mut().unwrap().remove("excluded");
 
                         assert_eq!(received, *args);
                     } else {
@@ -549,6 +555,8 @@ import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 for line in sys.stdin:
     request = json.loads(line)
+    if request.get('method') == 'visible':
+        request['method'], request['params'] = request['params']['method'], request['params']['params']
     method = request['method']
     if method == 'hello':
         result = {'protocol': {'major': 0, 'minor': 1}, 'id': 'tools',

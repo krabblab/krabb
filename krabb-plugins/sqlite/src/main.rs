@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod scoped;
+
 #[cfg(not(test))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -36,9 +38,15 @@ async fn plugin_main() -> krabb_core::Result<()> {
     let path = std::env::var_os("KRABB_DB")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("KRABB_HOME").map(PathBuf::from).map(|home| home.join("krabb.db"))
+            std::env::var_os("KRABB_HOME")
+                .map(PathBuf::from)
+                .map(|home| krabb_file::location(&home, "data/plugins/sqlite/krabb.db", "krabb.db"))
         })
         .ok_or_else(|| krabb_core::Error::Denied("KRABB_DB or KRABB_HOME is required.".into()))?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     let db = Connection::open(&path)
         .map_err(|error| krabb_core::Error::Denied(format!("SQLite open failed: {error}.")))?;
@@ -85,10 +93,9 @@ fn private(path: &std::path::Path) -> krabb_core::Result<()> {
     Ok(())
 }
 
-#[cfg(not(test))]
 fn private_sidecars(path: &std::path::Path) -> krabb_core::Result<()> {
     for suffix in ["-wal", "-shm"] {
-        let sidecar = PathBuf::from(format!("{}{}", path.display(), suffix));
+        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
 
         if sidecar.exists() {
             private(&sidecar)?;
@@ -103,6 +110,65 @@ fn store(db: &Arc<Mutex<Connection>>, request: Request) -> krabb_core::Result<Op
         Request::Call { id, method, params, .. } => (id, method, params),
         Request::Note { .. } => return Ok(None),
     };
+
+    if method == "scoped" {
+        let workspace = params["workspace"]
+            .as_str()
+            .ok_or_else(|| denied("Scoped data requires a workspace."))?;
+
+        if params["method"] != "data" {
+            return Err(denied("Unsupported scoped data operation."));
+        }
+
+        let root = std::env::var_os("KRABB_HOME")
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| denied("KRABB_HOME is required for scoped data."))?;
+
+        let directory = krabb_file::directory(
+            &krabb_file::workspace_state(&root, std::path::Path::new(workspace))?,
+            std::path::Path::new("records"),
+        )?;
+
+        let path = directory.join("data.db");
+
+        for name in ["data.db", "data.db-wal", "data.db-shm", "data.db-journal"] {
+            match std::fs::symlink_metadata(directory.join(name)) {
+                Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                    return Err(denied("Scoped database paths must be regular files."));
+                }
+
+                Ok(_) => {}
+
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let mut connection = Connection::open(&path).map_err(|error| denied(error.to_string()))?;
+
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| denied(error.to_string()))?;
+
+        private(&path)?;
+        migrate(&connection)?;
+
+        let scope = params["params"]["scope"]
+            .as_str()
+            .ok_or_else(|| denied("Scoped data requires a conversation scope."))?;
+
+        scoped::inherit(
+            &*db.lock().map_err(|_| denied("SQLite lock is poisoned."))?,
+            &mut connection,
+            scope,
+        )?;
+
+        let connection = Arc::new(Mutex::new(connection));
+        let result = store(&connection, Request::call(id, "data", params["params"].clone()));
+
+        private_sidecars(&path)?;
+        return result;
+    }
 
     let mut db =
         db.lock().map_err(|_| krabb_core::Error::Denied("SQLite lock is poisoned.".into()))?;
@@ -259,7 +325,36 @@ fn migrate(db: &Connection) -> krabb_core::Result<()> {
     Ok(())
 }
 
+fn record_visible(params: &serde_json::Value, scope: &str) -> bool {
+    let matches = |key: &str| {
+        params[key].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).any(
+            |value| {
+                value.strip_suffix('*').map_or(value == scope, |prefix| scope.starts_with(prefix))
+            },
+        )
+    };
+
+    (params["scope"] == scope || matches("visibility")) && !matches("excluded")
+}
+
 fn data(db: &mut Connection, params: &serde_json::Value) -> krabb_core::Result<serde_json::Value> {
+    if let Some(source) = params.get("source") {
+        let source = source.as_str().ok_or_else(|| denied("Invalid record source."))?;
+        let operation = params["operation"].as_str().unwrap_or_default();
+
+        if !matches!(operation, "list_databases" | "list_tables" | "describe_table" | "query")
+            || !record_visible(params, source)
+        {
+            return Err(denied("Record source is not authorized for this operation."));
+        }
+
+        let mut selected = params.clone();
+
+        selected.as_object_mut().unwrap().remove("source");
+        selected["scope"] = serde_json::json!(source);
+        return data(db, &selected);
+    }
+
     let scope = params["scope"]
         .as_str()
         .filter(|scope| {
@@ -332,7 +427,19 @@ fn data(db: &mut Connection, params: &serde_json::Value) -> krabb_core::Result<s
                 .map_err(|error| denied(format!("SQLite list databases failed: {error}.")))?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|error| denied(format!("SQLite list databases failed: {error}.")))?;
-            serde_json::json!({"databases": items})
+            let mut visible = transaction
+                .prepare("SELECT scope, name FROM data_database ORDER BY scope, name LIMIT 1000")
+                .map_err(|error| denied(error.to_string()))?;
+            let sources = visible
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(|error| denied(error.to_string()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| denied(error.to_string()))?
+                .into_iter()
+                .filter(|(source, _)| record_visible(params, source))
+                .map(|(source, database)| serde_json::json!({"source":source,"database":database}))
+                .collect::<Vec<_>>();
+            serde_json::json!({"databases": items, "sources":sources})
         }
 
         "drop_database" => {
@@ -1994,3 +2101,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[cfg(test)]
+mod isolation;

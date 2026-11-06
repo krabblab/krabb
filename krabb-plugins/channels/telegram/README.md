@@ -40,7 +40,7 @@ cache; only textual Bot API responses are decoded as UTF-8.
 - Voice: up to 4 MiB and requires the optional speech plugin. Raw audio is
   removed after transcription.
 
-Media is downloaded into `KRABB_MEDIA`, or `KRABB_HOME/media` by default.
+Media is downloaded into `KRABB_MEDIA`, or `KRABB_HOME/data/media` by default.
 Cached files older than 24 hours are removed; oldest files are also evicted before
 downloads are stored to keep the cache within 64 MiB and 256 files. Storage is
 rejected if cache cleanup fails. Durable session images are kept

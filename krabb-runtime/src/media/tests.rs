@@ -493,6 +493,7 @@ for line in sys.stdin:
             ApprovalMode::Off,
             false,
             fixture.0.clone(),
+            fixture.0.join("workspace"),
             fixture.media(),
             Arc::new(AsyncMutex::new(approval::Gate::new().unwrap())),
             10,
@@ -508,7 +509,11 @@ for line in sys.stdin:
         completed.unwrap();
 
         if mode == "accepted" {
-            assert_eq!(fixture.files(), 1);
+            assert_eq!(
+                fs::read_dir(fixture.0.join("workspace/attachments/channels.telegram/pinned"))
+                    .map_or(0, |entries| entries.count()),
+                1
+            );
 
             let request = fs::read_to_string(&captured).unwrap();
 
@@ -516,8 +521,68 @@ for line in sys.stdin:
             assert!(request.contains("describe"));
             assert!(!request.contains("file://"));
         } else {
-            assert_eq!(fixture.files(), 0, "Rejected {mode} message must not pin images");
+            assert_eq!(
+                fs::read_dir(fixture.0.join("workspace/attachments/channels.telegram/pinned"))
+                    .map_or(0, |entries| entries.count()),
+                0,
+                "Rejected {mode} message must not pin images"
+            );
+
             assert!(!captured.exists());
         }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retained_voice_uses_owned_storage_without_deleting_the_attachment() {
+    use crate::{Live, Plugins, Process};
+    let fixture = Fixture::new();
+    let workspace = fixture.0.join("workspace");
+    let media = workspace.join("attachments/channels.telegram");
+
+    fs::create_dir_all(media.join("pinned")).unwrap();
+
+    let voice = media.join("pinned/voice.ogg");
+
+    fs::write(&voice, "fixture").unwrap();
+
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request['method']
+    if method == 'hello':
+        result = {'protocol': {'major': 0, 'minor': 1}, 'id': 'whisper', 'version': '0.1.0', 'capabilities': ['speech']}
+    elif method == 'shutdown':
+        break
+    else:
+        assert method == 'retained'
+        assert request['params']['owner'] == 'channels.telegram'
+        assert request['params']['workspace'] == sys.argv[1]
+        result = {'text': 'retained words'}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+
+    let process = Process::start_with("python3", ["-u", "-c", script, workspace.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let plugins = Plugins::default();
+
+    plugins.insert(Live::new(process)).await;
+
+    let content = crate::transcribe_media(
+        &plugins,
+        "telegram",
+        vec![Content::Audio { uri: format!("file://{}", voice.display()), mime: None }],
+        &media,
+        &mut 2,
+    )
+    .await;
+
+    assert_eq!(content, vec![Content::Text { text: "retained words".into() }]);
+    assert!(voice.is_file());
+
+    plugins.all().await.into_iter().next().unwrap().1.stop().await.unwrap();
 }

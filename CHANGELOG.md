@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [0.1.0]
 
+### Added
+
+- Control data visibility between integrations and isolate conversations with worktrees.
+- Show typing feedback on Discord, WhatsApp, Signal, and supported Slack threads.
 - Isolate Git test fixtures from inherited hook and worktree settings so pre-commit
   checks cannot overwrite the contributor's branch, index, or Git configuration.
 - Preserve supported rich formatting in channels, including streamed edits and scheduled messages.
@@ -12,7 +16,7 @@ Semantic Versioning.
 - Give agents file, Git, shell, browser, and desktop tools with access controls.
 - Connect agents and tools through ACP, A2A, AG-UI, and MCP.
 - Save memories and organize data across conversations.
-- Schedule agent tasks and send their results to chat channels.
+- Run scheduled tasks once and deliver results independently to multiple chats.
 - Send images to supported models and transcribe voice locally.
 - Add loops for speeding up development and improving robustness.
 - Make contribloop recover from stale verification, commit-hook failures, and invalid PR metadata until checks pass.

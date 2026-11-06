@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod formatting;
+mod typing;
 
 use krabb_core::types::{Content, Request, Response};
 #[cfg(not(test))]
@@ -231,6 +232,8 @@ async fn call_with_state(
     };
 
     let result = match operation {
+        Operation::Typing(channel) => typing::send(client, &channel, token, base).await?,
+
         Operation::Send { channel, text, content } => {
             if params["format"] == "markdown" {
                 let mut result = Value::Null;
@@ -357,6 +360,7 @@ where
 }
 
 enum Operation {
+    Typing(String),
     Send { channel: String, text: String, content: Vec<Content> },
     Edit { channel: String, message_id: String, text: String },
     Approval { channel: String, text: String, approve: String, deny: String },
@@ -368,6 +372,14 @@ enum Operation {
 
 fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Option<Operation>> {
     match method {
+        "typing" => Ok(Some(Operation::Typing(
+            params["channel"]
+                .as_str()
+                .filter(|value| snowflake(value))
+                .ok_or_else(|| krabb_core::Error::Denied("typing.channel is invalid.".into()))?
+                .into(),
+        ))),
+
         "send" => {
             let channel: String = params["channel"]
                 .as_str()
@@ -782,8 +794,9 @@ fn local_media(uri: &str) -> krabb_core::Result<PathBuf> {
 fn media_root() -> krabb_core::Result<PathBuf> {
     std::env::var_os("KRABB_MEDIA")
         .or_else(|| {
-            std::env::var_os("KRABB_HOME")
-                .map(|value| PathBuf::from(value).join("media").into_os_string())
+            std::env::var_os("KRABB_HOME").map(|value| {
+                krabb_file::location(&PathBuf::from(value), "data/media", "media").into_os_string()
+            })
         })
         .map(PathBuf::from)
         .ok_or_else(|| krabb_core::Error::Denied("KRABB_MEDIA or KRABB_HOME is required.".into()))
@@ -1310,12 +1323,23 @@ fn prepare_gateway_value(
 }
 
 fn cursor_path() -> Option<PathBuf> {
-    std::env::var_os("KRABB_HOME").map(|home| PathBuf::from(home).join("discord-gateway.json"))
+    std::env::var_os("KRABB_HOME").map(|home| {
+        krabb_file::location(
+            &PathBuf::from(home),
+            "data/plugins/discord/gateway.json",
+            "discord-gateway.json",
+        )
+    })
 }
 
 fn dispatches_path() -> Option<PathBuf> {
-    std::env::var_os("KRABB_HOME")
-        .map(|home| PathBuf::from(home).join("discord-gateway-dispatches.json"))
+    std::env::var_os("KRABB_HOME").map(|home| {
+        krabb_file::location(
+            &PathBuf::from(home),
+            "data/plugins/discord/dispatches.json",
+            "discord-gateway-dispatches.json",
+        )
+    })
 }
 
 fn load_dispatches() -> VecDeque<Value> {

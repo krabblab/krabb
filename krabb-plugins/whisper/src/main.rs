@@ -45,14 +45,84 @@ fn media_root() -> Option<std::path::PathBuf> {
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            std::env::var_os("KRABB_HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| std::path::PathBuf::from(home).join("media"))
+            std::env::var_os("KRABB_HOME").filter(|value| !value.is_empty()).map(|home| {
+                krabb_file::location(std::path::Path::new(&home), "data/media", "media")
+            })
         })
 }
 
 async fn call(policy: &Policy, request: Request) -> krabb_core::Result<Option<Response>> {
     let command = std::env::var("KRABB_WHISPER_COMMAND").ok();
+
+    if let Request::Call { id, method, params, .. } = &request
+        && method == "retained"
+    {
+        let home =
+            std::env::var_os("KRABB_HOME").map(std::path::PathBuf::from).ok_or_else(|| {
+                krabb_core::Error::Denied("KRABB_HOME is required for retained speech.".into())
+            })?;
+        let workspace = params["workspace"].as_str().ok_or_else(|| {
+            krabb_core::Error::Denied("Retained speech requires a workspace.".into())
+        })?;
+        let workspace = std::fs::canonicalize(workspace)?;
+        let owner: krabb_core::scope::Principal =
+            serde_json::from_value(params["owner"].clone())
+                .map_err(|_| krabb_core::Error::Denied("Invalid speech owner.".into()))?;
+        let owner = String::from(owner);
+        let media =
+            krabb_file::directory(&workspace, &std::path::Path::new("attachments").join(&owner))?;
+        let policy = Policy { root: Some(media), ..Policy::default() };
+        let path = params["path"]
+            .as_str()
+            .ok_or_else(|| krabb_core::Error::Denied("Retained speech requires a path.".into()))?;
+        let path = policy.path(path)?;
+        let relative = path
+            .strip_prefix(&workspace)
+            .map_err(|_| krabb_core::Error::Denied("Speech leaves workspace.".into()))?;
+
+        if krabb_file::Ownership::open(&home, &workspace)?.owner(relative) != Some(owner.as_str()) {
+            return Err(krabb_core::Error::Denied(
+                "Speech ownership does not match this integration.".into(),
+            ));
+        }
+
+        return call_at(
+            &policy,
+            Request::call(*id, "transcribe", json!({"path":path})),
+            command.as_deref(),
+        )
+        .await;
+    }
+
+    if let Request::Call { id, method, params, .. } = &request
+        && method == "scoped"
+    {
+        let workspace = params["workspace"].as_str().ok_or_else(|| {
+            krabb_core::Error::Denied("Scoped speech requires a workspace.".into())
+        })?;
+
+        if params["method"] != "transcribe" {
+            return Err(krabb_core::Error::Denied("Unsupported scoped speech operation.".into()));
+        }
+
+        let root =
+            std::env::var_os("KRABB_HOME").map(std::path::PathBuf::from).ok_or_else(|| {
+                krabb_core::Error::Denied("KRABB_HOME is required for scoped speech.".into())
+            })?;
+        krabb_file::workspace_state(&root, std::path::Path::new(workspace))?;
+        let media = krabb_file::confined(
+            &root,
+            std::path::Path::new(workspace),
+            std::path::Path::new("attachments"),
+        )?;
+        let policy = Policy { root: Some(media), ..Policy::default() };
+        return call_at(
+            &policy,
+            Request::call(*id, "transcribe", params["params"].clone()),
+            command.as_deref(),
+        )
+        .await;
+    }
 
     call_at(policy, request, command.as_deref()).await
 }
@@ -246,7 +316,12 @@ mod tests {
         );
     }
 
-    fn write_transcriber(path: &std::path::Path, output: &str, error: &str, status: i32) {
+    pub(super) fn write_transcriber(
+        path: &std::path::Path,
+        output: &str,
+        error: &str,
+        status: i32,
+    ) {
         let source = path.with_extension("rs");
 
         let source_code = format!(
@@ -337,3 +412,6 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
     }
 }
+
+#[cfg(test)]
+mod isolation;

@@ -170,8 +170,9 @@ overrides, and activation details.
 
 Setup configures credentials; a successful setup or handshake does not prove
 that an external account, model, or channel is ready. Local fixture tests
-cover protocol behavior and failure recovery. Record real installation results
-separately in [Compatibility](../COMPATIBILITY.md).
+cover protocol behavior and failure recovery. Record successful real installation
+checks only by ticking the existing checkboxes in [Compatibility](../COMPATIBILITY.md);
+do not add status prose or notes.
 
 Before enabling an integration for regular use:
 

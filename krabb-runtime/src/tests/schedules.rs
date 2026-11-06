@@ -19,6 +19,8 @@ root = pathlib.Path(root)
 called = False
 for line in sys.stdin:
     request = json.loads(line)
+    if request.get('method') == 'visible':
+        request['method'], request['params'] = request['params']['method'], request['params']['params']
     method = request.get('method')
     if method == 'hello':
         capability = {'fixture': 'model', 'tools': 'tool', 'scheduler': 'scheduler'}[role]

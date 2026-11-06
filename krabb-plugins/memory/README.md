@@ -53,7 +53,13 @@ text matching; it changes nothing and favors the newer saved preference.
 
 ## Scopes And Privacy
 
-Global records are available in every conversation. Channel and TUI records
-are scoped to their conversation. Model turns receive a bounded index of global
-and current-conversation records. Memory tools still follow the channel or TUI
-tool policy.
+Channel and TUI records are scoped to their conversation. Model turns receive a
+bounded index of their own integration and explicitly global records. Outgoing
+memory visibility grants widen retrieval to other permitted sources. Memory tools still follow the channel or TUI tool policy.
+
+The host controls outgoing memory visibility grants independently of chat
+context. Worktree conversations use the optional `scoped` wrapper and store their
+memory beneath `KRABB_HOME/data/workspaces/conversations/<conversation>/memory`; they do not read global memories.
+Existing exact-conversation memories are copied on first scoped use. See
+[Visibility And Worktrees](../../krabb-docs/sharing.md) and the
+[scoped protocol](../../krabb-docs/plugins.md#guarded-storage-operations).

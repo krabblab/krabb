@@ -146,9 +146,17 @@ implements only the operations it declares. Media-capable channels may expose
 `media` to resolve a normalized external reference into a bounded private file.
 Channels may implement `typing` with the same chat/channel and thread routing
 fields as `send`, without text or a delivery ID, and return `true` on success.
+The host also supplies `message` (the incoming event ID as a string) and
+`private` (whether the conversation is a DM). These additive fields let plugins
+reference the incoming message or distinguish individual and group recipients;
+older handlers may ignore them.
 The host refreshes it while waiting for the first streamed reply. Unsupported
 methods, failures, and a two-second timeout disable this hint for the current
 turn; they never fail or replay the turn.
+Discord and Signal support typing in direct and group conversations. WhatsApp
+typing also marks the incoming message as read. Slack supports assistant status
+in DM threads when the app has access to that API; ordinary channels and
+unthreaded messages return `false` without sending a placeholder message.
 Do not add a direct dependency from one plugin to another.
 
 ### Channel Formatting
@@ -427,3 +435,29 @@ that declare unprefixed configuration variables.
 Git tools and Git-backed patches require shell access and tool approval,
 including status and diff: Git filters can execute repository-configured
 programs. These tools are unavailable when shell access is disabled.
+
+## Guarded Storage Operations
+
+The host uses `scoped` for private memory, structured records, and speech:
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"scoped","params":{"workspace":"/home/krabb/worktrees/discord-123","method":"index","params":{"scope":"provider:discord:123","visibility":["provider:discord:123"],"excluded":[]}}}
+```
+
+Plugins validate the host-assigned checkout under `KRABB_HOME/worktrees`. Memory
+uses `data/workspaces/conversations/<id>/memory`; SQLite uses `data/workspaces/conversations/<id>/records`.
+Whisper reads only the selected checkout's `attachments/`. Its `retained` method
+checks the file owner and integration attachment directory for ordinary workspace audio. Inner methods are
+allowlisted. Unsupported guarded operations fail without an unguarded fallback.
+
+Memory retrieval and record reads accept host-issued `visibility` and `excluded`
+lists of exact scopes or prefixes ending in `*`. The host overwrites model-supplied
+access metadata. Record `source` selects an authorized namespace for reads only.
+Writes retain their originating scope.
+
+Ordinary file operations use the tools plugin's `visible` wrapper with `method`,
+`params`, and typed `access`. Provenance is stored outside the workspace, under
+`data/workspaces/files.json`. Reads, lists, and searches filter by owner; writes
+cannot overwrite foreign ownership. Unknown files require an operator assignment.
+Old direct calls remain available for trusted standalone callers. See
+[Visibility And Worktrees](sharing.md) for configuration and capability boundaries.

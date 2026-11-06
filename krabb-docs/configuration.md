@@ -7,7 +7,9 @@ Plugin-owned persistent data is kept separately under
 `KRABB_HOME/data/plugins/<plugin-id>/`; agent workspaces remain the place for
 agent instructions, prompts, and other working files.
 Scheduled tasks are stored under `KRABB_HOME/data/schedules/`, and their
-execution history is stored under `KRABB_HOME/logs/schedules/`.
+full run results are stored under `KRABB_HOME/data/schedules/runs/`. Diagnostic
+history is stored under `KRABB_HOME/logs/schedules/`. See [Storage](storage.md)
+for the complete layout and upgrade behavior.
 
 Read or change settings without opening the TOML file with `krabb config get`
 and `krabb config set KEY=VALUE`. For example, enable TUI workspace tools with
@@ -23,9 +25,9 @@ take effect the next time the daemon starts. Add
 `--force` to restart a running daemon and apply restart-required settings.
 
 Media-capable channels use `KRABB_MEDIA` for temporary downloaded content;
-when it is unset, media is stored under `KRABB_HOME/media` and expired files
-are removed during the next media request. Images accepted into a durable
-session are copied under `media/pinned` and are not removed by cache cleanup.
+when it is unset, transient channel downloads use `KRABB_HOME/data/media`. Admitted
+attachments are retained in the selected conversation storage. See
+[Files And Attachments](sharing.md#files-and-attachments) for scope and retention.
 
 ## Table Of Contents
 
@@ -33,6 +35,8 @@ session are copied under `media/pinned` and are not removed by cache cleanup.
 - [Provider And Model Precedence](#provider-and-model-precedence)
 - [Paths](#paths)
 - [Channel Policy](#channel-policy)
+- [Visibility And Worktrees](#isolation-and-sharing)
+- [Worktrees](#worktrees)
 - [Update Policy](#update-policy)
 - [State And Recovery](#state-and-recovery)
 - [Troubleshooting](#troubleshooting)
@@ -56,14 +60,14 @@ topic = ["12"]
 thread = ["topic-12"]
 tools = false
 shell = false
-worktree = true
+worktree = false
 
 [channels.discord]
 allow = ["123456789012345678"]
 mention = "@krabb"
 tools = true
 shell = false
-worktree = true
+worktree = false
 
 [clients.tui]
 tools = true
@@ -93,7 +97,8 @@ Unknown update and approval modes fail validation before the daemon starts.
 `name` sets the globally displayed name for Krabb (1–64 visible characters).
 The default is `Krabb`.
 The default update mode is `prompt`, approval is `off`, shell execution is
-disabled, and isolated Git worktrees are enabled for group turns.
+disabled, and visibility exports nothing by default. Conversations use the plain
+workspace with ownership filtering; Git worktrees are an explicit opt-in.
 
 On Linux and Windows, approved shell commands run directly on the host unless a container
 sandbox is configured. macOS and other Unix hosts require the sandbox for shell containment.
@@ -203,11 +208,11 @@ separate locations under `KRABB_HOME`:
 `KRABB_HOME` contains configuration, the plugin registry, credential
 references, durable session state, IPC markers, and a `workspace/` directory
 for your Krabb's global personal data and instructions. When the optional
-memory plugin is installed, it lazily creates `memory/` on its first saved
+memory plugin is installed, it lazily creates `data/memories/` on its first saved
 record or learning-mode setting; no memory directory is created when the
 plugin is absent or unused.
 `init` creates
-`workspace/KRAB.md` and `workspace/KLAW.md`; Krabb injects their current
+`data/system/KRAB.md` and `data/system/KLAW.md`; Krabb injects their current
 contents into each model turn alongside the persisted, bounded conversation.
 Changes to either file apply on the next turn. These files guide model behavior
 but cannot grant capabilities or override host policy.
@@ -257,8 +262,8 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_MODEL` | Default model identifier |
 | `KRABB_MEMORY` | Override the optional memory plugin's JSON index path; Markdown records live under a sibling `records/` directory |
 | `KRABB_TIMER` | Legacy timer state path, imported into the scheduler on upgrade |
-| `KRABB_DB` | SQLite plugin database path |
-| `KRABB_MEDIA` | Private media cache directory |
+| `KRABB_DB` | SQLite path; defaults to `data/plugins/sqlite/krabb.db` under Krabb home |
+| `KRABB_MEDIA` | Download storage override; defaults to `data/media` under Krabb home |
 | `KRABB_WHISPER` | Default speech plugin ID |
 | `KRABB_WHISPER_COMMAND` | Local Whisper-compatible executable |
 | `KRABB_PLAYWRIGHT_MODULE` | Explicit Playwright package entry point for the browser plugin |
@@ -368,9 +373,47 @@ enabled and the sender is authorized. Use `approval = "prompt"` or
 `approval = "auto"` to enable channel tools. Scheduled tasks capture these
 effective permissions when created and use them for their later runs.
 
-`worktree = true` creates an isolated Git worktree for a group session. Set it
-to `false` only when the channel is explicitly allowed to operate in the
-configured workspace. Private messages use the configured workspace directly.
+## Visibility
+
+`visibility` is a list of outgoing grants, configurable globally or per channel/client:
+
+```toml
+[[visibility]]
+data = ["memory"]
+resources = ["clients"]
+
+[[channels.telegram.visibility]]
+data = ["files", "context", "memory", "records"]
+resources = ["channels.discord"]
+```
+
+Telegram's explicit list replaces the inherited list: Discord can read Telegram's
+selected data, while clients receive no Telegram grant. Access is directional;
+Discord must grant Telegram separately for reverse access. An explicit empty list
+exports nothing. Missing rules mean no exports. Resources accept `global`,
+`channels`, `clients`, named integrations, or `isolated`; typed agent selectors are
+reserved for future agent support. Tool permissions remain independent of visibility.
+See [Visibility And Worktrees](sharing.md) for all data categories and precedence.
+
+## Worktrees
+
+`worktree = false` is the default. Ordinary conversations use the plain workspace
+with file ownership and visibility filtering. No Git setup is required.
+
+```sh
+krabb worktree setup discord --force
+krabb worktree setup tui --client --force
+```
+
+Setup confirms a managed repository under `data/workspaces/repository`. Each
+conversation gets a checkout under `worktrees/` at runtime, including DMs. Host
+state stays under `data/workspaces/conversations/<conversation>`; system instructions stay under
+`data/system`. Worktrees bypass all visibility grants and expose only capabilities
+that enforce their boundary. `--force` restarts the daemon; otherwise restart it.
+
+`krabb worktree disable discord --force` returns to the plain workspace while
+preserving private files and data. For clients, add `--client`. See the
+[worktree guide](sharing.md#worktrees) for capability and retention details.
 
 ## Update Policy
 

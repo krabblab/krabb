@@ -114,8 +114,9 @@ are explicit extension seams; only model, channel, and tool routing is enabled
 in the initial daemon flow.
 
 Remote schedule controls carry a host-supplied conversation identity through the
-scheduler's `control` RPC. The scheduler compares it with the task's captured
-origin while holding the mutation lock. Local CLI/TUI administration uses the
+scheduler's `control` RPC, with typed source/conversation access and worktree
+exclusions. The scheduler filters lists before pagination and authorizes mutations
+against the captured origin while holding the mutation lock. Local CLI/TUI administration uses the
 existing methods over authenticated IPC. Unsupported scoped controls fail closed
 without retrying an unscoped request.
 
@@ -188,7 +189,7 @@ lose formatting. Streaming previews carry `draft: true` and render only the firs
 chunk; final delivery edits it and sends overflow once. Provider-independent research
 guidance requires checking the exact supplied URL and reporting actual tool results.
 
-The host reads `KRABB_HOME/workspace/KRAB.md` and `KLAW.md` as bounded system
+The host reads `KRABB_HOME/data/system/KRAB.md` and `KLAW.md` as bounded system
 context at the start of each turn. It appends the session's bounded transcript
 after that context; the instruction text is not stored in the transcript, so
 file edits take effect on the next turn. The host does not inject `AGENTS.md`
@@ -198,8 +199,12 @@ into general Krabb requests.
    an event with stable IDs, sender data, room scope, text, and attachments.
 2. The daemon checks channel policy, advances the channel offset, and records
    the event in its deduplication set before admitting work.
-3. A new session gets a bounded transcript and, for an eligible group, an
-   isolated Git worktree. Additional messages join the bounded session queue.
+3. A new session gets a bounded transcript and a conversation-specific directory.
+   An explicitly enabled worktree provides a Git checkout for groups and DMs;
+   `krabb worktree setup` validates or initializes the repository after confirmation.
+   Additional messages join the bounded session queue.
+   If isolation fails, the host durably queues an actionable error reply before
+   acknowledging the event, without calling the model or sharing the workspace.
 4. The host creates a durable lease and sends a model request through the core
    turn loop. The loop enforces step and call limits and asks the host before
    every tool invocation. Bounded model deltas are sent through a bounded
@@ -260,10 +265,10 @@ Memory processes hold an exclusive filesystem lock while reloading the index and
 servicing reads or writes. CLI changes are visible to an already running daemon.
 Both legacy session files and the session catalog apply restart recovery: safe
 inflight messages are requeued, interrupted mutations are never replayed, and
-unfinished deliveries become uncertain. Catalog version 2 stages immutable session
-and delivery records, then publishes their references and client cursors through
+unfinished deliveries become uncertain. Catalog version 3 stages immutable session
+and delivery records, then publishes their references, client cursors, and per-run delivery receipts through
 one atomic `data/sessions/index.json` replacement. Restart sees either the old
-inflight request or the completed transcript and delivery together. Version 1
+inflight request or the completed transcript and delivery together. Version 1 and 2
 catalogs remain readable and upgrade on the next save.
 
 ## Protocol
@@ -371,3 +376,20 @@ Approval waiters subscribe to the completion of their individual challenge.
 Resolution, cancellation, or expiry closes that subscription, allowing an approved
 turn to resume even while other channels have pending approvals or a channel poll
 is blocked. Each wait still observes its turn deadline and cancellation signals.
+
+## Schedule Results And Storage Ownership
+
+A scheduled execution captures its origin and capabilities. Current origin access,
+worktree restrictions, and tool policy are rechecked before each run. Scoped context,
+memory, and data use the origin identity; schedule-management sharing cannot change it.
+
+The host saves each full result and frozen recipient plan in
+`data/schedules/runs/<job>/<run>/result.json`, then publishes outbox entries, local
+TUI notices, and target receipts in one catalog transaction. Stable delivery IDs
+prevent duplicates when a pending report is replayed. Each destination has its own
+outcome; ambiguous channel delivery stays uncertain and is never automatically resent.
+The scheduler's `receipt` RPC reconciles a crash after report acknowledgement.
+
+Unchanged immutable records are verified and reused during catalog saves. Plain workspace file ownership is stored under `data/workspaces/files.json`.
+Private conversation state stays under `data/workspaces/conversations/<conversation>`. See
+[Storage](storage.md) for directory ownership, retention, and migration boundaries.

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod formatting;
+mod typing;
 
 #[cfg(not(test))]
 use krabb_core::types::{Request, Response};
@@ -403,7 +404,13 @@ fn socket_timestamp_seen(socket_events: &BTreeSet<String>, timestamp: &str) -> b
 }
 
 fn inbox_path() -> Option<PathBuf> {
-    std::env::var_os("KRABB_HOME").map(|home| PathBuf::from(home).join("slack-inbox.json"))
+    std::env::var_os("KRABB_HOME").map(|home| {
+        krabb_file::location(
+            &PathBuf::from(home),
+            "data/plugins/slack/inbox.json",
+            "slack-inbox.json",
+        )
+    })
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -541,6 +548,7 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
         }
 
         "send" => send(&app.client, &token, &params).await?,
+        "typing" => typing::send(&app.client, &token, &params, "https://slack.com/api/").await?,
         "media" => media(app, &token, &params).await?,
         "info" => json!({"mode": "web_api", "socket_mode": true}),
         _ => return Ok(None),
@@ -1203,8 +1211,9 @@ async fn media(app: &App, token: &str, params: &Value) -> krabb_core::Result<Val
 
     let root = std::env::var_os("KRABB_MEDIA")
         .or_else(|| {
-            std::env::var_os("KRABB_HOME")
-                .map(|value| PathBuf::from(value).join("media").into_os_string())
+            std::env::var_os("KRABB_HOME").map(|value| {
+                krabb_file::location(&PathBuf::from(value), "data/media", "media").into_os_string()
+            })
         })
         .map(PathBuf::from)
         .ok_or_else(|| {

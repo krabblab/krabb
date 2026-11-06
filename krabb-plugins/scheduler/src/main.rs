@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod access;
 mod cron;
 
 use std::{
@@ -233,9 +234,15 @@ async fn call_at(
         None
     };
 
+    if let Some(caller) = caller {
+        access::validate(caller)?;
+    }
+
     let method = if caller.is_some() {
         match params["action"].as_str() {
-            Some(action @ ("pause" | "resume" | "run" | "retry" | "remove")) => action,
+            Some(
+                action @ ("list" | "pause" | "resume" | "run" | "retry" | "remove" | "update"),
+            ) => action,
             _ => return Err(krabb_core::Error::Denied("Invalid schedule control action.".into())),
         }
     } else {
@@ -255,6 +262,19 @@ async fn call_at(
                 return Err(krabb_core::Error::Denied(
                     "Scheduler text must be smaller than 256 KiB.".into(),
                 ));
+            }
+
+            if let Some(value) = params["context"].get("destinations") {
+                let destinations: Vec<krabb_core::schedule::Destination> =
+                    serde_json::from_value(value.clone())?;
+                krabb_core::schedule::validate_destinations(&destinations)
+                    .map_err(krabb_core::Error::Denied)?;
+
+                if !params["context"]["message_destination"].is_null() {
+                    return Err(krabb_core::Error::Denied(
+                        "Choose destinations or message_destination, not both.".into(),
+                    ));
+                }
             }
 
             let tasks_guard = tasks
@@ -449,6 +469,78 @@ async fn call_at(
             json!({"id": id, "name": name, "due": due, "cron": cron, "repeat": repeat, "zone": zone, "retries": retries, "on_failure": on_failure, "status": status})
         }
 
+        "update" => {
+            if params["approved"] != true {
+                return Err(krabb_core::Error::Denied(
+                    "Destination changes require approval.".into(),
+                ));
+            }
+
+            let id = params["id"]
+                .as_u64()
+                .ok_or_else(|| krabb_core::Error::Denied("id is required.".into()))?;
+
+            let destinations: Vec<krabb_core::schedule::Destination> =
+                serde_json::from_value(params["destinations"].clone())?;
+
+            krabb_core::schedule::validate_destinations(&destinations)
+                .map_err(krabb_core::Error::Denied)?;
+
+            let mut tasks = tasks
+                .lock()
+                .map_err(|_| krabb_core::Error::Denied("Scheduler lock is poisoned.".into()))?;
+
+            let current = tasks
+                .get(&id)
+                .ok_or_else(|| krabb_core::Error::Denied("Scheduled task was not found.".into()))?;
+
+            authorize_control(current, caller)?;
+
+            if current.status == "running" || current.report_pending {
+                return Err(krabb_core::Error::Denied(
+                    "Wait for the current run and its report before changing destinations.".into(),
+                ));
+            }
+
+            let mut next = tasks.clone();
+            let task = Arc::make_mut(next.get_mut(&id).expect("task was checked"));
+
+            let context = Arc::make_mut(&mut task.context);
+
+            if !context.is_object() {
+                *context = json!({});
+            }
+
+            context["destinations"] = serde_json::to_value(&destinations)?;
+            context.as_object_mut().expect("context is an object").remove("message_destination");
+            let result = json!({"id":id,"status":task.status,"destinations":destinations});
+            persist_locked_at(location, &next)?;
+            *tasks = next;
+            result
+        }
+
+        "receipt" => {
+            let task_id = params["id"]
+                .as_u64()
+                .ok_or_else(|| krabb_core::Error::Denied("receipt.id is required.".into()))?;
+
+            let run_id = params["run_id"]
+                .as_u64()
+                .ok_or_else(|| krabb_core::Error::Denied("receipt.run_id is required.".into()))?;
+
+            let tasks = tasks
+                .lock()
+                .map_err(|_| krabb_core::Error::Denied("Scheduler lock is poisoned.".into()))?;
+
+            let reported = tasks.get(&task_id).is_none_or(|task| {
+                task.finished_run_id.is_some_and(|finished| {
+                    finished > run_id || (finished == run_id && !task.report_pending)
+                })
+            });
+
+            json!({"reported":reported})
+        }
+
         "reports" => {
             let tasks = tasks
                 .lock()
@@ -520,7 +612,11 @@ async fn call_at(
                 return Err(krabb_core::Error::Denied("List page must be at least 1.".into()));
             }
 
-            let total = tasks.len();
+            let visible = tasks
+                .iter()
+                .filter(|(_, task)| authorize_control(task, caller).is_ok())
+                .collect::<Vec<_>>();
+            let total = visible.len();
             let pages = total.max(1).div_ceil(LIST_PAGE_SIZE);
 
             if page > pages as u64 {
@@ -530,8 +626,8 @@ async fn call_at(
             }
 
             let start = (page as usize - 1).saturating_mul(LIST_PAGE_SIZE);
-            let items = tasks
-                .iter()
+            let items = visible
+                .into_iter()
                 .skip(start)
                 .take(LIST_PAGE_SIZE)
                 .map(|(id, task)| {
@@ -1069,25 +1165,7 @@ async fn call_at(
 }
 
 fn authorize_control(task: &Task, caller: Option<&serde_json::Value>) -> krabb_core::Result<()> {
-    let Some(caller) = caller else {
-        return Ok(());
-    };
-
-    let origin = &task.context["origin"];
-
-    let owns = ["channel", "chat", "session"].into_iter().all(|field| {
-        caller[field].as_str().is_some_and(|value| !value.is_empty())
-            && caller[field] == origin[field]
-    }) && (caller["thread"].is_null() || caller["thread"].is_string())
-        && caller["thread"] == origin["thread"];
-
-    if !owns {
-        return Err(krabb_core::Error::Denied(
-            "Scheduled task belongs to another conversation.".into(),
-        ));
-    }
-
-    Ok(())
+    access::authorize(&task.context["origin"], caller)
 }
 
 fn checked_response(id: u64, result: serde_json::Value) -> krabb_core::Result<Response> {

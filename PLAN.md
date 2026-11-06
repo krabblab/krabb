@@ -1,3 +1,3 @@
 # Plan
 
-No active work.
+No active plan.

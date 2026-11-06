@@ -3,6 +3,12 @@
 The `VERSION` file, Cargo manifests, `CITATION.cff`, and changelog must agree.
 Use Keep a Changelog headings and a semantic version tag such as `vX.Y.Z`.
 
+For the current `0.1.0` release, add changelog entries only under `Added`.
+Include only important, shipped, user-facing additions, each in one very short
+sentence. Carefully assess the value to users; routine or minor additions need
+no entry. Omit internal work, tests, documentation, and planning. See the
+[change rules](../CONTRIBUTING.md#change-rules).
+
 ```sh
 krabb-scripts/release.sh vX.Y.Z
 ```

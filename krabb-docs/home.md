@@ -3,7 +3,8 @@
 Use these guides to install, configure, operate, and extend Krabb.
 
 1. [Workflows](workflows.md) — first run, development, updates, and operations.
-2. [Configuration](configuration.md) — paths, credentials, channel policy,
+2. [Configuration](configuration.md) — paths, credentials, channel policy, and defaults.
+3. [Visibility And Worktrees](sharing.md) — chat contents, memory, files, data, and permissions.
 4. [Providers](providers.md) — intelligence and channel setup.
 5. [Authentication](authentication.md) — credentials and channel trust.
 6. [Commands](commands.md) — CLI, daemon, session, service, and plugin flows.
@@ -16,6 +17,8 @@ Use these guides to install, configure, operate, and extend Krabb.
 13. [Release](release.md) — packaging, checksums, and publication gates.
 14. [License](license.md) — Apache-2.0 rationale and contribution terms.
 15. [Product](product.md) — capabilities, boundaries, and engineering principles.
-16. [Compatibility And Functional Verification](../COMPATIBILITY.md) — OS
-    functional status, CI coverage, and plugin tests.
+16. [Compatibility](../COMPATIBILITY.md) — basic OS/architecture checklists
+    and a detailed component matrix.
 17. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.
+
+18. [Storage](storage.md) — home layout, ownership, retention, and migration.

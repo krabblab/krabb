@@ -74,21 +74,30 @@ history, run, retry, pause, resume, and remove operations. `run` starts a task
 now without shifting a recurring task's next scheduled time. Removing a
 running task requests cancellation; completed side effects cannot be undone.
 
-Remote conversations can pause, cancel, resume, run, or retry only their own
-tasks. The host supplies the captured channel, chat, thread, and session identity;
-model arguments cannot override it. Approval does not grant ownership of another
-conversation's task. Tasks without a captured owner require local administration.
+Agent schedule tools list and manage the current conversation's tasks by default.
+The `schedules` scope can authorize named source integrations or all configured
+integrations. The host supplies typed caller access; model arguments cannot override
+it. Listing is filtered before pagination. Tool and approval policy still apply.
+Changing recipients requires authorization and cannot change the execution origin.
+Tasks without a captured owner require local administration.
 
-Update the scheduler with the host to enable scoped remote controls. Older plugins reject
-these requests; the host never falls back to an unrestricted mutation. Authenticated local
-CLI/TUI clients can administer all schedules.
+Update the scheduler with the host to enable scoped controls and multi-destination
+results. Unsupported controls fail without an unrestricted fallback. Authenticated
+operator CLI/TUI commands can administer all schedules.
+
+Use repeated `--to channel:private|group:chat[:thread]` options to deliver a single
+result to up to 16 destinations. `krabb schedule update ID --to ...` replaces the
+list, and `--clear` removes it. The TUI supports the same options. Updates cannot
+alter a running task or one whose report is pending. Existing single-destination
+message-tool tasks keep their original behavior.
 
 Pausing a running task lets its current run finish, then keeps the schedule
 paused so no later occurrences start. The schedule list shows when this pause
 is pending.
 
-Full results are stored in append-only JSONL files under
-`KRABB_HOME/logs/schedules/`. The daemon reports results to the originating
+Full results and frozen recipient plans are stored under
+`KRABB_HOME/data/schedules/runs/<job>/<run>/result.json`. Diagnostic JSONL history
+under `KRABB_HOME/logs/schedules/` contains bounded excerpts, not full results. The daemon reports results to the originating
 conversation. See [Commands](../../krabb-docs/commands.md) for CLI usage.
 
 ## Storage And Migration
@@ -97,3 +106,10 @@ Task state is stored in `KRABB_HOME/data/schedules/schedules.json`. On upgrade,
 tasks in the configured `KRABB_TIMER` file are imported once and activated.
 Corrupt scheduler state prevents startup; the plugin preserves the file for
 repair instead of discarding tasks.
+
+Each run executes once; result publication atomically queues independent deliveries
+and local TUI notices. Successful targets are not resent during recovery. Uncertain
+delivery is reviewed through `krabb delivery`; delivery retry never reruns the agent.
+Current origin access and capability policy are checked before every execution.
+Worktree execution remains unavailable and fails closed. See
+[Visibility And Worktrees](../../krabb-docs/sharing.md#schedules).

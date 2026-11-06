@@ -1,3 +1,6 @@
+mod runs;
+pub use runs::{Receipt, Run, Target};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -80,7 +83,13 @@ pub struct Session {
     #[serde(default)]
     pub scheduled: bool,
     #[serde(default)]
+    pub origin: Option<super::schedules::Origin>,
+    #[serde(default)]
     pub workspace: Option<String>,
+    #[serde(default)]
+    pub isolated: Option<PathBuf>,
+    #[serde(default)]
+    pub directory: Option<PathBuf>,
     #[serde(default)]
     pub archived: bool,
     #[serde(default)]
@@ -166,6 +175,8 @@ pub enum DeliveryStatus {
 pub struct Store {
     pub sessions: BTreeMap<String, Session>,
     #[serde(default)]
+    pub runs: BTreeMap<String, Run>,
+    #[serde(default)]
     deferred: BTreeMap<String, Vec<serde_json::Value>>,
     #[serde(default)]
     deferred_acknowledged: BTreeSet<String>,
@@ -189,7 +200,11 @@ pub struct Store {
 #[derive(Debug, Deserialize, Serialize)]
 struct SessionIndex {
     version: u8,
+    #[serde(default)]
+    isolated: BTreeMap<String, PathBuf>,
     sessions: BTreeMap<String, String>,
+    #[serde(default)]
+    runs: BTreeMap<String, Run>,
     #[serde(default)]
     clients: Option<ClientState>,
     #[serde(default)]
@@ -494,7 +509,10 @@ impl Store {
                     id,
                     model,
                     scheduled,
+                    origin: None,
                     workspace: None,
+                    isolated: None,
+                    directory: None,
                     archived: false,
                     channel: None,
                     chat: None,
@@ -640,6 +658,13 @@ impl Store {
             ));
         }
 
+        if session.isolated.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Disable worktrees and resume this session before renaming it.",
+            ));
+        }
+
         session.id = target.to_owned();
 
         session.updated = now();
@@ -674,6 +699,31 @@ impl Store {
             let session = store.sessions.get_mut(id).expect("session was checked above");
             session.archived = archived;
             session.updated = now();
+        })
+    }
+
+    pub fn origin(
+        &mut self,
+        id: &str,
+        origin: Option<super::schedules::Origin>,
+    ) -> std::io::Result<()> {
+        let current = self.sessions.get(id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "Scheduled session was not found.")
+        })?;
+
+        if !current.scheduled {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Only schedules have an execution origin.",
+            ));
+        }
+
+        if current.origin == origin {
+            return Ok(());
+        }
+
+        self.change(|store| {
+            store.sessions.get_mut(id).expect("session was checked").origin = origin;
         })
     }
 
@@ -1473,6 +1523,93 @@ impl Store {
         })
     }
 
+    pub fn storage(
+        &mut self,
+        id: &str,
+        directory: Option<&Path>,
+        worktree: bool,
+    ) -> std::io::Result<()> {
+        let isolated = directory.filter(|_| worktree).map(Path::to_path_buf);
+
+        let directory = directory.map(Path::to_path_buf);
+
+        let Some(mut session) = self.sessions.get(id).cloned() else {
+            return Ok(());
+        };
+
+        if session.isolated == isolated && session.directory == directory {
+            return Ok(());
+        }
+
+        let shared = self.media_root.clone().or_else(|| {
+            self.path
+                .as_ref()
+                .filter(|path| session_catalog(path))
+                .and_then(|path| path.parent()?.parent()?.parent())
+                .map(super::media_root_at)
+        });
+
+        let channel = session.channel.as_deref().unwrap_or("tui");
+
+        if let Some(shared) = shared {
+            let source = session
+                .directory
+                .as_ref()
+                .or(session.isolated.as_ref())
+                .map(|path| path.join(super::worktree::media_path(path, channel)))
+                .unwrap_or_else(|| shared.clone());
+
+            let destination = directory
+                .as_ref()
+                .map(|path| super::worktree::media(path, channel))
+                .transpose()?
+                .unwrap_or(shared);
+
+            for message in session
+                .messages
+                .iter_mut()
+                .chain(session.queued.iter_mut())
+                .chain(session.inflight.iter_mut())
+                .chain(session.compacted_context.iter_mut().flatten())
+            {
+                message.content = super::media::archive(
+                    std::mem::take(&mut message.content),
+                    &source,
+                    &destination,
+                )?;
+            }
+        }
+
+        if !worktree
+            && let Some(directory) = &directory
+            && let Some(home) = self
+                .path
+                .as_ref()
+                .filter(|path| session_catalog(path))
+                .and_then(|path| path.parent()?.parent()?.parent())
+        {
+            let content = session
+                .messages
+                .iter()
+                .chain(session.queued.iter())
+                .chain(session.inflight.iter())
+                .chain(session.compacted_context.iter().flatten())
+                .flat_map(|message| message.content.clone())
+                .collect::<Vec<_>>();
+
+            super::storage::attachments(home, directory, channel, &content)
+                .map_err(std::io::Error::other)?;
+        }
+
+        session.isolated = isolated;
+
+        session.directory = directory;
+
+        self.change(|store| {
+            store.sessions.insert(id.into(), session);
+        })
+    }
+
     pub fn set_workspace(&mut self, id: &str, workspace: Option<&str>) -> std::io::Result<()> {
         if workspace.is_some_and(|workspace| workspace.trim().is_empty() || workspace.len() > 4096)
         {
@@ -1571,7 +1708,10 @@ impl Store {
                     id: target,
                     model: source.model,
                     scheduled: false,
+                    origin: None,
                     workspace: source.workspace,
+                    isolated: None,
+                    directory: None,
                     archived: false,
                     channel: source.channel,
                     chat: source.chat,
@@ -1702,6 +1842,12 @@ impl Store {
             }
 
             if deliveries {
+                let ids: Vec<_> = store.outbox.iter().map(|delivery| delivery.id.clone()).collect();
+
+                for id in ids {
+                    store.receipt(&id, Receipt::Stopped);
+                }
+
                 store.outbox.clear();
                 store.dead.clear();
             }
@@ -1714,6 +1860,7 @@ impl Store {
         if let Some(index) = self.outbox.iter().position(|delivery| delivery.id == id) {
             self.change(|store| {
                 store.outbox.remove(index);
+                store.receipt(id, Receipt::Delivered);
             })?;
         }
 
@@ -1800,6 +1947,7 @@ impl Store {
 
             for delivery in deliveries {
                 if channel.is_none_or(|channel| delivery.channel == channel) {
+                    store.receipt(&delivery.id, Receipt::Stopped);
                     store.dead.push(delivery);
                 } else {
                     store.outbox.push(delivery);
@@ -1822,6 +1970,7 @@ impl Store {
         self.change(|store| {
             if let Some(index) = store.outbox.iter().position(|item| item.id == id) {
                 let delivery = store.outbox.remove(index);
+                store.receipt(&delivery.id, Receipt::Stopped);
                 store.dead.push(delivery);
 
                 if store.dead.len() > LIMIT {
@@ -1974,6 +2123,7 @@ impl Store {
     fn change(&mut self, update: impl FnOnce(&mut Self)) -> std::io::Result<()> {
         let previous = self.sessions.clone();
 
+        let runs = self.runs.clone();
         let outbox = self.outbox.clone();
         let dead = self.dead.clone();
         let offsets = self.offsets.clone();
@@ -1986,6 +2136,7 @@ impl Store {
 
         if let Err(error) = self.save() {
             self.sessions = previous;
+            self.runs = runs;
             self.outbox = outbox;
             self.dead = dead;
             self.offsets = offsets;
@@ -2078,7 +2229,7 @@ pub fn remove_worktree(root: &Path, id: &str) -> std::io::Result<()> {
     }
 
     let root = std::fs::canonicalize(root)?;
-    let path = root.join(".krabb/worktrees").join(id);
+    let path = root.join("worktrees").join(id);
 
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -2105,7 +2256,12 @@ pub fn remove_worktree(root: &Path, id: &str) -> std::io::Result<()> {
     let mut command = super::git_command();
 
     command
-        .args(["-C", &root.display().to_string(), "worktree", "remove"])
+        .args([
+            "-C",
+            &root.join("data/workspaces/repository").display().to_string(),
+            "worktree",
+            "remove",
+        ])
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -2151,7 +2307,7 @@ pub fn rename_worktree(root: &Path, source: &str, target: &str) -> std::io::Resu
     }
 
     let root = std::fs::canonicalize(root)?;
-    let worktrees = root.join(".krabb/worktrees");
+    let worktrees = root.join("worktrees");
     let old_path = worktrees.join(source);
     let new_path = worktrees.join(target);
 
@@ -2193,7 +2349,12 @@ pub fn rename_worktree(root: &Path, source: &str, target: &str) -> std::io::Resu
     let mut command = super::git_command();
 
     command
-        .args(["-C", &root.display().to_string(), "worktree", "move"])
+        .args([
+            "-C",
+            &root.join("data/workspaces/repository").display().to_string(),
+            "worktree",
+            "move",
+        ])
         .arg(&old_path)
         .arg(&new_path)
         .stdin(Stdio::null())
@@ -2375,7 +2536,7 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
 
     let index: SessionIndex = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
 
-    if !matches!(index.version, 1 | 2) {
+    if !matches!(index.version, 1..=3) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "Unsupported session catalog version.",
@@ -2383,7 +2544,10 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
     }
 
     let root = path.parent().expect("catalog has parent");
-    let mut store = Store { path: Some(path.to_path_buf()), ..Store::default() };
+    let mut store = Store { path: Some(path.to_path_buf()), runs: index.runs, ..Store::default() };
+
+    store.validate_runs()?;
+
     let mut changed = false;
 
     for (id, key) in index.sessions {
@@ -2394,7 +2558,8 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
             ));
         }
 
-        let record_path = root.join("records").join(format!("{key}.json"));
+        let record_path =
+            record_directory(path, &id, index.isolated.get(&id))?.join(format!("{key}.json"));
 
         let record = load_file(&record_path, BYTE_LIMIT)?.ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Session record is missing.")
@@ -2406,7 +2571,10 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
         let mut session: Session =
             serde_json::from_value(value.clone()).map_err(std::io::Error::other)?;
 
-        if session.id != id || session_record_key(&record) != key {
+        if session.id != id
+            || session_record_key(&record) != key
+            || session.isolated.as_ref() != index.isolated.get(&id)
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Session record ID does not match its catalog entry.",
@@ -2514,7 +2682,23 @@ fn save_catalog(path: &Path, store: &Store) -> std::io::Result<()> {
 
     let root = path.parent().expect("catalog has parent");
     let deliveries = index.deliveries.expect("staged snapshot includes deliveries");
-    let _ = cleanup_session_records(&root.join("records"), &index.sessions);
+
+    let shared = index
+        .sessions
+        .iter()
+        .map(|(id, key)| {
+            (id.clone(), if index.isolated.contains_key(id) { String::new() } else { key.clone() })
+        })
+        .collect();
+
+    let _ = cleanup_session_records(&root.join("records"), &shared);
+
+    for (id, workspace) in &index.isolated {
+        if let Ok(directory) = record_directory(path, id, Some(workspace)) {
+            let retained = BTreeMap::from([(id.clone(), index.sessions[id].clone())]);
+            let _ = cleanup_session_records(&directory, &retained);
+        }
+    }
 
     let _ = cleanup_records(
         &root.join("state").join("deliveries").join("records"),
@@ -2522,6 +2706,50 @@ fn save_catalog(path: &Path, store: &Store) -> std::io::Result<()> {
     );
 
     Ok(())
+}
+
+fn record_directory(
+    index: &Path,
+    id: &str,
+    isolated: Option<&PathBuf>,
+) -> std::io::Result<PathBuf> {
+    let Some(workspace) = isolated else {
+        return Ok(index.parent().unwrap().join("records"));
+    };
+
+    let home = index
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| std::io::Error::other("Invalid session index."))?;
+
+    let expected = home.join("worktrees").join(id);
+
+    if std::fs::canonicalize(&expected)? != *workspace || !workspace.join(".git").is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Invalid isolated session storage.",
+        ));
+    }
+
+    let private = krabb_file::workspace_state(home, workspace)?;
+
+    krabb_file::directory(&private, Path::new("sessions/records"))
+}
+
+fn save_record(path: PathBuf, bytes: Vec<u8>) -> std::io::Result<()> {
+    if let Some(existing) = load_file(&path, BYTE_LIMIT)? {
+        if existing != bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Immutable state record has changed.",
+            ));
+        }
+
+        return Ok(());
+    }
+
+    save_file(path, bytes)
 }
 
 fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
@@ -2552,7 +2780,11 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
 
         let key = session_record_key(&bytes);
 
-        save_file(root.join("records").join(format!("{key}.json")), bytes)?;
+        save_record(
+            record_directory(path, id, session.isolated.as_ref())?.join(format!("{key}.json")),
+            bytes,
+        )?;
+
         sessions.insert(id.clone(), key);
     }
 
@@ -2575,7 +2807,7 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
 
         let key = session_record_key(&bytes);
 
-        save_file(
+        save_record(
             root.join("state").join("deliveries").join("records").join(format!("{key}.json")),
             bytes,
         )?;
@@ -2588,7 +2820,13 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
     }
 
     Ok(SessionIndex {
-        version: 2,
+        version: 3,
+        runs: store.runs.clone(),
+        isolated: store
+            .sessions
+            .iter()
+            .filter_map(|(id, session)| session.isolated.clone().map(|path| (id.clone(), path)))
+            .collect(),
         sessions,
         clients: Some(state),
         deliveries: Some(delivery_index),
@@ -3363,7 +3601,10 @@ mod tests {
                 id: "safe".into(),
                 model: "model".into(),
                 scheduled: false,
+                origin: None,
                 workspace: None,
+                isolated: None,
+                directory: None,
                 archived: false,
                 channel: None,
                 chat: None,
@@ -4246,7 +4487,7 @@ mod tests {
         let catalog: serde_json::Value = serde_json::from_str(&index).unwrap();
         let loaded = Store::load(&path).unwrap();
 
-        assert_eq!(catalog["version"], 2);
+        assert_eq!(catalog["version"], 3);
         assert_eq!(catalog["sessions"], serde_json::json!({}));
         assert_eq!(store.offset("telegram"), 9);
         assert_eq!(loaded.offset("telegram"), 9);

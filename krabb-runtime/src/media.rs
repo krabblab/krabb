@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs, io,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -208,3 +209,75 @@ fn references(value: &serde_json::Value, retained: &mut BTreeSet<PathBuf>) {
 
 #[cfg(test)]
 mod tests;
+
+/// Retain conversation attachments in their selected storage before durable admission.
+pub(super) fn archive(
+    content: Vec<Content>,
+    source: &Path,
+    destination: &Path,
+) -> io::Result<Vec<Content>> {
+    if source == destination {
+        return Ok(content);
+    }
+
+    let mut output = Vec::with_capacity(content.len());
+
+    for mut item in content {
+        let uri = match &mut item {
+            Content::Image { uri, .. } | Content::File { uri, .. } | Content::Audio { uri, .. } => {
+                uri
+            }
+
+            _ => {
+                output.push(item);
+                continue;
+            }
+        };
+
+        if crate::media_file(uri, destination).is_none() {
+            if let Some(path) = crate::media_file(uri, source) {
+                let mut bytes = Vec::new();
+                fs::File::open(&path)?.take(crate::MEDIA_LIMIT + 1).read_to_end(&mut bytes)?;
+
+                if bytes.len() as u64 > crate::MEDIA_LIMIT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::FileTooLarge,
+                        "Attachment exceeds the media limit.",
+                    ));
+                }
+
+                let path = retain(destination, &bytes, BYTE_LIMIT, FILE_LIMIT)?;
+                *uri = format!("file://{}", path.display());
+            } else if uri.starts_with("file://") {
+                item =
+                    Content::Text { text: "[Attachment unavailable in this conversation.]".into() };
+            }
+        }
+
+        output.push(item);
+    }
+
+    Ok(output)
+}
+
+pub(super) fn release(content: &[Content], source: &Path, destination: &Path) {
+    if source == destination {
+        return;
+    }
+
+    for item in content {
+        let uri = match item {
+            Content::Image { uri, .. } | Content::File { uri, .. } | Content::Audio { uri, .. } => {
+                uri
+            }
+
+            _ => continue,
+        };
+
+        if let Some(path) = crate::media_file(uri, source)
+            && path.parent() != Some(source.join("pinned").as_path())
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+}

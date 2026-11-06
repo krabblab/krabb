@@ -70,6 +70,16 @@ For a public behavior change, update the implementation ledger and changelog.
 
 ## Free Region
 
+Keep `COMPATIBILITY.md` as simple checkbox tables for basic functionality per
+OS/architecture and the detailed component matrix. When recording results,
+only tick existing checkboxes after verified functional success. Do not add
+status phrases, dates, versions, evidence links, or narrative notes.
+
+For the current `0.1.0` changelog, add entries only under `Added`. Include only
+important, shipped, user-facing additions, each in one very short sentence.
+Carefully assess the value to users; routine or minor additions need no entry.
+Do not add entries for internal work, tests, documentation, or planning.
+
 Maintainer policy: keep changes unstaged unless asked. Use lowercase
 conventional commits. Keep the implementation ledger current. Do not run
 release or publication commands without explicit approval. When the active plan

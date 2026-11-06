@@ -41,6 +41,7 @@ pub(crate) struct View {
 
 struct Pending {
     target: Target,
+    workspace: Option<String>,
     expires: u64,
     answer: oneshot::Sender<bool>,
     completion: watch::Sender<()>,
@@ -49,16 +50,22 @@ struct Pending {
 pub(crate) struct Gate {
     key: [u8; 32],
     pending: BTreeMap<String, Pending>,
+    decisions: Vec<(Target, Option<String>, bool, u64)>,
 }
 
 impl Gate {
     pub fn new() -> io::Result<Self> {
         let mut key = [0_u8; 32];
         getrandom::fill(&mut key).map_err(io::Error::other)?;
-        Ok(Self { key, pending: BTreeMap::new() })
+        Ok(Self { key, pending: BTreeMap::new(), decisions: Vec::new() })
     }
 
+    #[cfg(test)]
     pub fn issue(&mut self, target: Target) -> io::Result<Challenge> {
+        self.issue_in(target, None)
+    }
+
+    pub fn issue_in(&mut self, target: Target, workspace: Option<String>) -> io::Result<Challenge> {
         let now = now()?;
         let target_size = serde_json::to_vec(&target).map_err(io::Error::other)?.len();
 
@@ -81,7 +88,7 @@ impl Gate {
         let expires = now.saturating_add(LIFE.as_secs());
         let (answer, receiver) = oneshot::channel();
         let (completion, _) = watch::channel(());
-        let pending = Pending { target, expires, answer, completion };
+        let pending = Pending { target, workspace, expires, answer, completion };
         let approve = token(&self.key, &id, &pending, b'a')?;
         let deny = token(&self.key, &id, &pending, b'd')?;
         self.pending.insert(id, pending);
@@ -129,10 +136,45 @@ impl Gate {
             return None;
         }
 
+        self.complete(id, action == b'a', now)
+    }
+
+    fn complete(&mut self, id: &str, approved: bool, now: u64) -> Option<bool> {
         let pending = self.pending.remove(id)?;
-        let approved = action == b'a';
         pending.answer.send(approved).ok()?;
+        self.decisions.retain(|(_, _, _, expires)| *expires > now);
+
+        if self.decisions.len() >= LIMIT {
+            self.decisions.remove(0);
+        }
+
+        self.decisions.push((
+            pending.target,
+            pending.workspace,
+            approved,
+            now.saturating_add(LIFE.as_secs()),
+        ));
         Some(approved)
+    }
+
+    pub fn decision(
+        &self,
+        target: &Target,
+        workspace: &Option<String>,
+        allowed: impl Fn(&Target) -> bool,
+    ) -> Option<bool> {
+        let now = now().ok()?;
+        self.decisions
+            .iter()
+            .rev()
+            .find(|(previous, root, _, expires)| {
+                *expires > now
+                    && root == workspace
+                    && previous.tool == target.tool
+                    && previous.args == target.args
+                    && allowed(previous)
+            })
+            .map(|(_, _, approved, _)| *approved)
     }
 
     pub fn cancel(&mut self, token: &str) {
@@ -178,8 +220,7 @@ impl Gate {
             return None;
         }
 
-        self.pending.remove(id)?.answer.send(approved).ok()?;
-        Some(approved)
+        self.complete(id, approved, now)
     }
 }
 
@@ -314,6 +355,41 @@ mod tests {
 
         assert_eq!(gate.resolve_local(&id, false), Some(false));
         assert!(!challenge.answer.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn local_decisions_can_be_reused_only_after_delivery() {
+        let mut gate = Gate::new().unwrap();
+        let mut source = target();
+        source.channel = "tui".into();
+        let workspace = Some("/workspace".into());
+        let mut destination = source.clone();
+        destination.channel = "telegram".into();
+        destination.session = "another-conversation".into();
+
+        for approved in [true, false] {
+            let challenge = gate.issue_in(source.clone(), workspace.clone()).unwrap();
+            let id = gate.list().unwrap()[0].id.clone();
+
+            assert_eq!(gate.resolve_local(&id, approved), Some(approved));
+            assert_eq!(challenge.answer.await.unwrap(), approved);
+            assert_eq!(
+                gate.decision(&destination, &workspace, |previous| previous.channel == "tui"),
+                Some(approved)
+            );
+
+            assert_eq!(gate.decision(&destination, &workspace, |_| false), None);
+            assert_eq!(gate.decision(&destination, &Some("/other".into()), |_| true), None);
+        }
+
+        let mut cancelled = source;
+        cancelled.args = serde_json::json!({"path": "cancelled.txt"});
+        let challenge = gate.issue_in(cancelled.clone(), workspace.clone()).unwrap();
+        let id = gate.list().unwrap()[0].id.clone();
+        drop(challenge.answer);
+
+        assert_eq!(gate.resolve_local(&id, true), None);
+        assert_eq!(gate.decision(&cancelled, &workspace, |_| true), None);
     }
 
     #[test]
@@ -451,5 +527,51 @@ mod tests {
         }
 
         assert!(gate.pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shared_decisions_require_exact_operation_workspace_source_and_lifetime() {
+        let mut gate = Gate::new().unwrap();
+        let operation = target();
+        let workspace = Some("/workspace".into());
+        let challenge = gate.issue_in(operation.clone(), workspace.clone()).unwrap();
+
+        assert_eq!(
+            gate.resolve(
+                &challenge.approve,
+                &operation.channel,
+                &operation.chat,
+                operation.thread.as_deref(),
+                true
+            ),
+            Some(true)
+        );
+
+        assert!(challenge.answer.await.unwrap());
+        assert_eq!(gate.decision(&operation, &workspace, |_| true), Some(true));
+        assert_eq!(gate.decision(&operation, &workspace, |_| false), None);
+        assert_eq!(gate.decision(&operation, &Some("/another".into()), |_| true), None);
+        let mut changed = operation.clone();
+        changed.args = serde_json::json!({"path":"other"});
+
+        assert_eq!(gate.decision(&changed, &workspace, |_| true), None);
+        gate.decisions[0].3 = 0;
+
+        assert_eq!(gate.decision(&operation, &workspace, |_| true), None);
+        let challenge = gate.issue_in(operation.clone(), workspace.clone()).unwrap();
+
+        assert_eq!(
+            gate.resolve(
+                &challenge.deny,
+                &operation.channel,
+                &operation.chat,
+                operation.thread.as_deref(),
+                true
+            ),
+            Some(false)
+        );
+
+        assert!(!challenge.answer.await.unwrap());
+        assert_eq!(gate.decision(&operation, &workspace, |_| true), Some(false));
     }
 }
