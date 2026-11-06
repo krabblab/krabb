@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Default, Deserialize, Serialize)]
 struct Catalog {
-    roots: BTreeMap<String, BTreeMap<String, String>>,
+    roots: BTreeMap<String, BTreeMap<PathBuf, String>>,
 }
 
 /// A locked provenance catalog. Unknown files are private until explicitly assigned an owner.
@@ -58,11 +58,11 @@ impl Ownership {
             .get(&self.root)
             .into_iter()
             .flat_map(|entries| entries.iter())
-            .map(|(path, owner)| (path.as_str(), owner.as_str()))
+            .filter_map(|(path, owner)| path.to_str().map(|path| (path, owner.as_str())))
     }
 
     pub fn owner(&self, path: &Path) -> Option<&str> {
-        self.catalog.roots.get(&self.root)?.get(path.to_str()?).map(String::as_str)
+        self.catalog.roots.get(&self.root)?.get(path).map(String::as_str)
     }
 
     pub fn assign(&mut self, path: &Path, owner: &str) -> io::Result<()> {
@@ -81,7 +81,7 @@ impl Ownership {
             .roots
             .entry(self.root.clone())
             .or_default()
-            .insert(path.to_owned(), owner.to_owned());
+            .insert(PathBuf::from(path), owner.to_owned());
 
         let bytes = serde_json::to_vec(&self.catalog).map_err(io::Error::other)?;
 
@@ -96,6 +96,53 @@ impl Ownership {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ownership_matches_native_paths_across_reloads() {
+        let home =
+            std::env::temp_dir().join(format!("krabb-ownership-paths-{}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&home);
+        let root = home.join("workspace");
+        let relative = Path::new("attachments/channels.telegram/voice");
+
+        std::fs::create_dir_all(root.join(relative.parent().unwrap())).unwrap();
+        std::fs::write(root.join(relative), "fixture").unwrap();
+
+        let root = std::fs::canonicalize(root).unwrap();
+        let voice = std::fs::canonicalize(root.join(relative)).unwrap();
+        let native = voice.strip_prefix(&root).unwrap();
+
+        Ownership::open(&home, &root).unwrap().assign(relative, "channels.telegram").unwrap();
+
+        let mut ownership = Ownership::open(&home, &root).unwrap();
+
+        assert_eq!(ownership.owner(native), Some("channels.telegram"));
+
+        ownership.assign(native, "channels.discord").unwrap();
+
+        assert_eq!(ownership.owner(relative), Some("channels.discord"));
+        assert_eq!(ownership.entries().count(), 1);
+
+        drop(ownership);
+
+        assert_eq!(
+            Ownership::open(&home, &root).unwrap().owner(relative),
+            Some("channels.discord")
+        );
+
+        #[cfg(unix)]
+        {
+            assert!(
+                Ownership::open(&home, &root)
+                    .unwrap()
+                    .owner(Path::new(r"attachments\channels.telegram\voice"))
+                    .is_none()
+            );
+        }
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn ownership_is_durable_root_specific_locked_and_traversal_safe() {

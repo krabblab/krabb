@@ -9192,8 +9192,10 @@ async fn transcribe_media(
         };
 
         if let Some(text) = transcript {
-            if !path.starts_with(media_root.join("pinned")) && std::fs::remove_file(&path).is_err()
-            {
+            let pinned = std::fs::canonicalize(media_root.join("pinned"))
+                .is_ok_and(|pinned| path.starts_with(pinned));
+
+            if !pinned && std::fs::remove_file(&path).is_err() {
                 warn!(
                     channel = channel_id,
                     "Transcription completed, but the raw voice file could not be removed."
@@ -9752,7 +9754,7 @@ fn worktree_command(root: &Path) -> std::process::Command {
         .args(["-c", "core.fsmonitor=false", "-c", "submodule.recurse=false"])
         .args(["-c", "protocol.allow=never", "-c", "gc.auto=0", "-c", "maintenance.auto=false"])
         .arg("-C")
-        .arg(root);
+        .arg(worktree::git_path(root));
     command
 }
 
@@ -9836,7 +9838,7 @@ fn isolate_at(
     let output = command_output(
         worktree_command(&root)
             .args(["worktree", "add", "--detach", "--no-checkout"])
-            .arg(&path)
+            .arg(worktree::git_path(&path))
             .arg("HEAD"),
     )?;
 
@@ -9856,7 +9858,9 @@ fn isolate_at(
 
     if let Err(error) = checkout {
         let removed = command_output(
-            worktree_command(&root).args(["worktree", "remove", "--force"]).arg(&path),
+            worktree_command(&root)
+                .args(["worktree", "remove", "--force"])
+                .arg(worktree::git_path(&path)),
         )?;
 
         if !removed.status.success() {

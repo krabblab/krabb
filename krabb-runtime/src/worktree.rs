@@ -205,6 +205,38 @@ fn git(root: &Path, args: &[&str]) -> Result<String, PluginError> {
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
+// Git worktree paths must not contain the verbatim prefix returned by Windows canonicalization.
+pub(super) fn git_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        let mut components = path.components();
+
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            let mut result = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut root = std::ffi::OsString::from(r"\\");
+
+                    root.push(server);
+                    root.push(r"\");
+                    root.push(share);
+                    PathBuf::from(root)
+                }
+
+                _ => return path.to_path_buf(),
+            };
+
+            result.extend(components);
+            return result;
+        }
+    }
+
+    path.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests;
 

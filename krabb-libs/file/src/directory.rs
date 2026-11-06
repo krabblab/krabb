@@ -87,7 +87,7 @@ mod tests {
 
         assert_eq!(
             workspace_state(&home, &chat).unwrap(),
-            home.join("data/workspaces/conversations/chat")
+            fs::canonicalize(home.join("data/workspaces/conversations/chat")).unwrap()
         );
 
         assert!(!chat.join(".krabb").exists());

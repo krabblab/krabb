@@ -26,8 +26,11 @@
   home/worktrees, including DMs and TUI sessions. Private snapshots, memories, and
   records stay under data/workspaces/conversations/<conversation>. Host-loaded KRAB/KLAW live under
   data/system. No hidden runtime state is generated in content directories.
+  Git receives ordinary Windows drive/UNC paths.
 - Conversation storage: admitted attachments are retained in selected storage,
   with bounded transient downloads. History media follows storage changes.
+  Retained voice cleanup resolves media aliases; ownership matches native path
+  separators across catalog reloads.
   Memory, SQLite, and speech support a confined optional `scoped` protocol;
   unsupported operations fail without shared-storage fallback.
 - Enforcement: worktree turns expose confined filesystem tools and local

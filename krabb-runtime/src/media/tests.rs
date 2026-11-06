@@ -538,7 +538,11 @@ for line in sys.stdin:
 async fn retained_voice_uses_owned_storage_without_deleting_the_attachment() {
     use crate::{Live, Plugins, Process};
     let fixture = Fixture::new();
-    let workspace = fixture.0.join("workspace");
+
+    fs::create_dir(fixture.0.join("real")).unwrap();
+    std::os::unix::fs::symlink(fixture.0.join("real"), fixture.0.join("alias")).unwrap();
+
+    let workspace = fixture.0.join("alias/workspace");
     let media = workspace.join("attachments/channels.telegram");
 
     fs::create_dir_all(media.join("pinned")).unwrap();
@@ -582,6 +586,23 @@ for line in sys.stdin:
     .await;
 
     assert_eq!(content, vec![Content::Text { text: "retained words".into() }]);
+    assert!(voice.is_file());
+
+    let transient = media.join("transient.ogg");
+
+    fs::write(&transient, "fixture").unwrap();
+
+    let content = crate::transcribe_media(
+        &plugins,
+        "telegram",
+        vec![Content::Audio { uri: format!("file://{}", transient.display()), mime: None }],
+        &media,
+        &mut 3,
+    )
+    .await;
+
+    assert_eq!(content, vec![Content::Text { text: "retained words".into() }]);
+    assert!(!transient.exists());
     assert!(voice.is_file());
 
     plugins.all().await.into_iter().next().unwrap().1.stop().await.unwrap();

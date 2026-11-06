@@ -208,14 +208,16 @@ mod tests {
 
             let path = Path::new(uri.strip_prefix("file://").unwrap());
 
-            assert!(path.starts_with(root.join(worktree::media_path(root, "telegram"))));
+            let root = std::fs::canonicalize(root).unwrap();
+
+            assert!(path.starts_with(root.join(worktree::media_path(&root, "telegram"))));
             assert_eq!(std::fs::read_to_string(path).unwrap(), "attachment");
 
             if !isolated {
                 assert_eq!(
                     krabb_file::Ownership::open(&home, &plain)
                         .unwrap()
-                        .owner(path.strip_prefix(&plain).unwrap()),
+                        .owner(path.strip_prefix(&root).unwrap()),
                     Some("channels.telegram")
                 );
             }

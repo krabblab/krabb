@@ -42,7 +42,17 @@ async fn guided_setup_confirms_initialization_and_preserves_files() {
     assert_eq!(fs::read(home.join("data/system/KRAB.md")).unwrap(), instructions);
     assert_eq!(git(&workspace, &["ls-tree", "HEAD"]).unwrap(), "");
     assert!(crate::load_config_at(&home).unwrap().channels["discord"].worktree);
-    assert!(crate::isolate_at("discord-123", &home).unwrap().unwrap().join(".git").exists());
+
+    let checkout = crate::isolate_at("discord-123", &home).unwrap().unwrap();
+
+    assert!(checkout.join(".git").is_file());
+
+    assert_eq!(
+        git(&checkout, &["rev-parse", "HEAD"]).unwrap(),
+        git(&workspace, &["rev-parse", "HEAD"]).unwrap()
+    );
+
+    assert_eq!(crate::isolate_at("discord-123", &home).unwrap().unwrap(), checkout);
 
     let head = git(&workspace, &["rev-parse", "HEAD"]).unwrap();
 
@@ -72,9 +82,24 @@ async fn guided_setup_confirms_initialization_and_preserves_files() {
     fs::remove_dir_all(home).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn git_paths_use_drive_and_unc_paths_without_verbatim_prefixes() {
+    for (path, expected) in [
+        (r"\\?\C:\home\worktrees\chat", r"C:\home\worktrees\chat"),
+        (r"\\?\UNC\server\share\worktrees\chat", r"\\server\share\worktrees\chat"),
+        (r"C:\home\worktrees\chat", r"C:\home\worktrees\chat"),
+        (r"\\server\share\worktrees\chat", r"\\server\share\worktrees\chat"),
+        (r"worktrees\chat", r"worktrees\chat"),
+    ] {
+        assert_eq!(git_path(Path::new(path)), Path::new(expected));
+    }
+}
+
 #[test]
 fn initial_commit_does_not_capture_staged_or_untracked_files() {
     let home = root("worktree-index");
+
     let workspace = krabb_file::directory(&home, Path::new("data/workspaces/repository")).unwrap();
 
     git(&workspace, &["init", "-q"]).unwrap();
