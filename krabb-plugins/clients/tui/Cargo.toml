@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 krabb-date.workspace = true
 krabb-log.workspace = true
+krabb-text.workspace = true
 crossterm.workspace = true
 krabb-core = { path = "../../../krabb-core" }
 krabb-file = { path = "../../../krabb-libs/file" }

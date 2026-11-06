@@ -7,6 +7,7 @@ Semantic Versioning.
 
 ### Added
 
+- Display rich text and code panels in terminal conversations.
 - Control data visibility between integrations and isolate conversations with worktrees.
 - Show typing feedback on Discord, WhatsApp, Signal, and supported Slack threads.
 - Isolate Git test fixtures from inherited hook and worktree settings so pre-commit
