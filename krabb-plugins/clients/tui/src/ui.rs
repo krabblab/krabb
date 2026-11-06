@@ -1,3 +1,5 @@
+mod rich;
+
 use krabb_core::{
     Result,
     types::{Message, Role},
@@ -2475,7 +2477,7 @@ fn wrap_rail_message(
         };
 
         let mut rows = wrap_transcript_line(&heading, name, width);
-        rows.extend(body.iter().flat_map(|line| wrap_transcript_line(line, name, width)));
+        rows.extend(wrap_message_body(body, name, width, !is_user && !is_system));
         return rows;
     }
 
@@ -2496,7 +2498,7 @@ fn wrap_rail_message(
     let mut rows = Vec::new();
 
     let mut message_rows = wrap_styled_segments(&heading, content_width);
-    message_rows.extend(wrap_message_body(body, name, content_width));
+    message_rows.extend(wrap_message_body(body, name, content_width, !is_user && !is_system));
 
     for line in message_rows {
         let mut spans = vec![Span::styled("▌ ", rail_style)];
@@ -2508,7 +2510,7 @@ fn wrap_rail_message(
     rows
 }
 
-fn wrap_message_body(body: &[&str], name: &str, width: usize) -> Vec<Line<'static>> {
+fn wrap_message_body(body: &[&str], name: &str, width: usize, rich: bool) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     let mut index = 0;
 
@@ -2530,8 +2532,26 @@ fn wrap_message_body(body: &[&str], name: &str, width: usize) -> Vec<Line<'stati
             continue;
         }
 
-        rows.extend(wrap_transcript_line(body[index], name, width));
-        index += 1;
+        if rich && !body[index].is_empty() {
+            let start = index;
+            index += 1;
+
+            while index < body.len() && opening_code_fence(body[index]).is_none() {
+                index += 1;
+            }
+
+            let mut end = index;
+
+            while end > start && body[end - 1].is_empty() {
+                end -= 1;
+            }
+
+            rows.extend(rich::render(&body[start..end].join("\n"), width));
+            rows.extend((end..index).map(|_| Line::raw("")));
+        } else {
+            rows.extend(wrap_transcript_line(body[index], name, width));
+            index += 1;
+        }
     }
 
     rows
@@ -2593,6 +2613,8 @@ fn is_closing_code_fence(line: &str, character: char, minimum_length: usize) -> 
 }
 
 fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Vec<Line<'static>> {
+    let lines = lines.iter().map(|line| rich::visible(line)).collect::<Vec<_>>();
+
     if width < 8 {
         let mut rows = wrap_transcript_line(&format!("[{language}]"), "", width);
         rows.extend(lines.iter().flat_map(|line| wrap_transcript_line(line, "", width)));
@@ -2614,7 +2636,7 @@ fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Vec<Line<'st
         Span::styled("┐", border_style),
     ])];
 
-    for line in lines {
+    for line in &lines {
         for fragment in wrap_code_line(line, inner_width) {
             let fragment_width = UnicodeWidthStr::width(fragment.as_str());
             let padding = " ".repeat(inner_width.saturating_sub(fragment_width));
@@ -4768,6 +4790,54 @@ mod tests {
         assert!(!system_text.contains("NOTICE"));
         assert_eq!(rows[0].spans[0].style.fg, Some(Color::Reset));
         assert_eq!(assistant_header.spans[0].style.fg, Some(super::ACCENT_COLOR));
+    }
+
+    #[test]
+    fn assistant_rich_text_preserves_roles_code_and_monochrome_styles() {
+        let transcript = concat!(
+            "You\n**literal input**\n\nSystem\nArguments: **literal argument**\n\n",
+            "Krabb\n**Bold** and *italic* with `inline`.\n\n",
+            "```rust\n    **literal code**\n\n```\n\n",
+            "[Source](https://example.com)"
+        );
+
+        let (mut rows, ranges) = super::wrap_transcript_layout(transcript, "Krabb", 80, None);
+        let rendered = |rows: &[Line<'_>]| {
+            rows.iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        assert_eq!(ranges.len(), 3);
+        assert!(rendered(&rows).contains("**literal input**"));
+        assert!(rendered(&rows).contains("**literal argument**"));
+        assert!(rendered(&rows).contains("    **literal code**"));
+        assert!(rendered(&rows).contains("Source (https://example.com)"));
+        assert!(!rendered(&rows).contains("**Bold**"));
+
+        super::strip_transcript_colors(&mut rows);
+
+        assert!(
+            rows.iter()
+                .flat_map(|row| &row.spans)
+                .all(|span| { span.style.fg.is_none() && span.style.bg.is_none() })
+        );
+
+        assert!(rows.iter().flat_map(|row| &row.spans).any(|span| {
+            span.content == "Bold" && span.style.add_modifier.contains(super::Modifier::BOLD)
+        }));
+
+        let narrow = super::wrap_transcript("Krabb\n**Bold**", "Krabb", 4);
+
+        assert!(narrow.iter().all(|row| row.width() <= 4));
+        assert!(narrow.iter().flat_map(|row| &row.spans).any(|span| {
+            span.content == "Bold" && span.style.add_modifier.contains(super::Modifier::BOLD)
+        }));
+
+        let empty_code = super::wrap_transcript("Krabb\n```rust", "Krabb", 40);
+
+        assert!(rendered(&empty_code).contains("┌─ rust"));
     }
 
     #[test]

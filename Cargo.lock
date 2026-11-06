@@ -2091,6 +2091,7 @@ dependencies = [
  "krabb-date",
  "krabb-file",
  "krabb-log",
+ "krabb-text",
  "ratatui",
  "serde",
  "serde_json",

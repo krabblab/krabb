@@ -32,6 +32,12 @@ Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit. Use
 Up/Down for input history, Page Up/Page Down to scroll, and Shift-drag to
 select text.
 
+Assistant replies display bold, italic, strikethrough, headings, and inline code
+with terminal text styles. Code blocks appear in language-labeled panels, and
+links show their labels and URLs. Formatting stays readable while replies stream
+and when revisiting saved sessions. Terminal support determines how styles look;
+disabling colors preserves emphasis. Input and system command output remain literal.
+
 ## Commands
 
 Use `/help` for commands available in the current session. Common commands:

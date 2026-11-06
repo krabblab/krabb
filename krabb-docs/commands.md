@@ -186,6 +186,10 @@ has been renamed to `channels`; update scripts that read it.
 without opening the full-screen client; pass `--session` to continue an
 existing session.
 
+Interactive assistant replies render emphasis, inline code, headings, and code
+panels using terminal styles. Links retain visible URLs. Formatting also applies
+to streamed replies and saved history; `--once` keeps its plain output behavior.
+
 The TUI supports `/help`, `/status`, `/model`, `/session`, `/workspace`,
 `/approvals`, `/schedule`, `/memory`, `/data`, and `/plugin`. Use `/help` for
 the commands available in the current session. `/data value` manages simple
