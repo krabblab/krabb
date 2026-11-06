@@ -7,28 +7,26 @@ through the Bot API. Install it with:
 curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh -s -- telegram
 ```
 
-## Table Of Contents
-
-- [Credentials](#credentials)
+- [Setup](#setup)
 - [Messages And Media](#messages-and-media)
 - [Replies](#replies)
 
-## Credentials
+## Setup
 
-Create a bot with BotFather, then run `krabb telegram setup` (equivalently,
-`krabb plugin setup telegram`). The host prompts without echoing the token and
-saves it encrypted in `credentials.json` under Krabb's home, or the file
-selected by `KRABB_CREDENTIALS`. Setup works before the channel is active and
-attempts to load or reload it in a compatible running daemon. Use
-`--no-activate` to save without activation. It does not validate the token with
-Telegram; normal polling begins when the channel is activated.
+Create a bot and obtain its token using the
+[Telegram bot tutorial](https://core.telegram.org/bots/tutorial), then run:
 
-The random encryption key goes into the OS keyring when available; otherwise
-Krabb uses a protected `credentials.key` file. `KRABB_CREDENTIALS_KEY` selects a
-custom key file. Alternatively, `KRABB_TELEGRAM_TOKEN` overrides stored values.
-See [credential storage](../../../krabb-docs/authentication.md#provider-credentials)
-for backend selection and backups. The plugin's legacy `telegram` keyring entry
-remains supported with `KRABB_KEYRING=1`.
+```sh
+krabb telegram setup
+```
+
+Enter the bot token at `KRABB_TELEGRAM_TOKEN`. Telegram uses long polling, so
+no public webhook is needed. Send the bot a direct message to test the reply.
+
+See [shared setup](../../../krabb-docs/authentication.md#plugin-setup) for encrypted
+storage, daemon activation, environment overrides, and service configuration;
+see [channel policy](../../../krabb-docs/configuration.md#channel-policy) for group access.
+The legacy `telegram` keyring entry remains supported with `KRABB_KEYRING=1`.
 
 ## Messages And Media
 

@@ -4,9 +4,7 @@ Use these guides to install, configure, operate, and extend Krabb.
 
 1. [Workflows](workflows.md) — first run, development, updates, and operations.
 2. [Configuration](configuration.md) — paths, credentials, channel policy,
-   updates, state, and recovery.
-3. [Krabfile](krabfile.md) — versioned export, validation, and import format.
-4. [Providers](providers.md) — intelligence and messaging setup.
+4. [Providers](providers.md) — intelligence and channel setup.
 5. [Authentication](authentication.md) — credentials and channel trust.
 6. [Commands](commands.md) — CLI, daemon, session, service, and plugin flows.
 7. [Concepts](concepts.md) — sessions, turns, leases, events, and delivery.

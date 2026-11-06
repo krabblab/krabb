@@ -130,9 +130,7 @@ inline screenshot pixels alongside function responses and legacy tool history.
 
 Channel plugins own polling cursors, provider limits, message chunking and
 edits, and attachment normalization. They never decide whether a sender is
-authorized; that decision belongs to the daemon policy.
-
-Messaging turns use portable Markdown. Channel plugins advertise accepted input
+Channel turns use portable Markdown. Channel plugins advertise accepted input
 formats in their handshake and render supported formatting at the platform boundary.
 Telegram uses native message entities, Signal uses signal-cli text styles, Slack
 uses structured rich-text blocks, and Discord and WhatsApp receive their own markup.
@@ -145,34 +143,33 @@ The original Markdown stays in transcripts and the outbox. Rich-text chunks keep
 styles valid and obey platform limits; streaming drafts update only the first chunk,
 with overflow sent once during final delivery. TUI and CLI formatting remain unchanged.
 
-## Platform Setup
+Use the channel guide for installation and Krabb setup. Each guide links to the
+platform's own documentation for creating accounts, apps, permissions, and tokens.
 
-Create the provider account or application before installing its plugin:
+| Channel | Krabb guide | External setup |
+| --- | --- | --- |
+| Telegram | [Setup](../krabb-plugins/channels/telegram/README.md#setup) | [Telegram bot tutorial](https://core.telegram.org/bots/tutorial) |
+| Discord | [Setup](../krabb-plugins/channels/discord/README.md#setup) | [Discord getting started](https://docs.discord.com/developers/quick-start/getting-started) |
+| WhatsApp | [Setup](../krabb-plugins/channels/whatsapp/README.md#setup) | [Meta Cloud API](https://developers.facebook.com/documentation/business-messaging/whatsapp/get-started) |
+| Signal | [Setup](../krabb-plugins/channels/signal/README.md#setup) | [signal-cli installation and account setup](https://github.com/AsamK/signal-cli#usage) |
+| Slack | [Setup](../krabb-plugins/channels/slack/README.md#setup) | [Slack Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/) |
 
-- Telegram: create a bot with BotFather, install the plugin, and run
-  `krabb telegram setup` to enter its bot token without echoing it.
-- Discord: create a bot application, enable the message content intent, invite
-  it to the server, and set its token.
-- WhatsApp: create a Meta Cloud API application, configure the phone number,
-  app secret, verification token, and a public HTTPS webhook proxy.
-- Signal: install and register `signal-cli`, then set the registered account.
-- Slack: create a Slack app with Socket Mode, issue bot and app tokens, and
-  set the channel IDs the bot may poll.
+After installation, run `krabb <id> setup` as the same OS user as the daemon.
+Setup saves the declared secrets and settings in encrypted storage and requests
+activation. Follow the channel guide for any external prerequisites, then send
+a direct message and check the reply. Existing channels run alongside new ones.
+For group conversations, configure [channel policy](configuration.md#channel-policy).
 
-Use the environment names in the channel table or the protected credentials
-file. Keep group channels out of the allowlist until sender and workspace
-policy have been reviewed.
-
-All plugins declaring secrets support `krabb plugin setup <id>` and, when their
-command namespace is available, `krabb <id> setup`. This includes intelligence
-plugins: `krabb codex setup` configures an API key, while `krabb codex login`
-continues to perform personal account sign-in. See
-[Plugin Setup](authentication.md#plugin-setup) for activation and service details.
+`krabb plugin setup <id>` is the full command. All plugins declaring secrets or
+settings support setup, including intelligence plugins: `krabb codex setup`
+configures an API key, while `krabb codex login` performs personal account sign-in.
+See [shared setup](authentication.md#plugin-setup) for service paths, environment
+overrides, and activation details.
 
 ## Deployment Validation
 
 Setup configures credentials; a successful setup or handshake does not prove
-that an external account, model, or messaging app is ready. Local fixture tests
+that an external account, model, or channel is ready. Local fixture tests
 cover protocol behavior and failure recovery. Record real installation results
 separately in [Compatibility](../COMPATIBILITY.md).
 

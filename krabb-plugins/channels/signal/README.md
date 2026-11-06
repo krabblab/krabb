@@ -1,28 +1,37 @@
-# Signal
-
-Signal uses a managed `signal-cli` process. Install and register an account,
-install the Krabb plugin, then set `KRABB_SIGNAL_ACCOUNT`:
+Signal uses a managed `signal-cli` process. Install the Krabb plugin:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh -s -- signal
 ```
 
-Override the executable with
-`KRABB_SIGNAL_COMMAND` when it is not on `PATH`. Text, images, voice, and text
-files are normalized through the channel boundary. Attachments are resolved
+## Setup
+
+Install and register or link the unofficial Signal client using the
+[signal-cli instructions](https://github.com/AsamK/signal-cli#usage), then run:
+
+```sh
+krabb signal setup
+```
+
+Enter the registered account at `KRABB_SIGNAL_ACCOUNT`. Run registration and
+Krabb under the same OS user so `signal-cli` can access its account data.
+Make `signal-cli` available on the daemon's `PATH`, or set `KRABB_SIGNAL_COMMAND`
+in the daemon's environment to its executable path. Send the account a direct
+message from another account to test the reply.
+
+See [shared setup](../../../krabb-docs/authentication.md#plugin-setup) for encrypted
+storage, daemon activation, environment overrides, and service configuration;
+see [channel policy](../../../krabb-docs/configuration.md#channel-policy) for group access.
+
+## Messages And Media
+
+Text, images, voice, and text files are normalized through the channel boundary. Attachments are resolved
 through `signal-cli` and cached in `KRABB_MEDIA` (or `KRABB_HOME/media`);
 polled events are retained in a crash-safe inbox under `KRABB_HOME` until
 the host acknowledges them. Cached attachments expire after 24 hours and are
 bounded to 64 MiB and 256 files. Oldest files are evicted before storage, and cleanup
 failures reject storage; protected session images are preserved. Local attachment files
-are confined there before they are
-sent. Outgoing replies use the standard Krabb delivery contract.
-
-Use `krabb signal setup` for hidden credential entry and encrypted storage.
-Setup saves declared secrets; it does not register accounts, grant external app
-permissions, or configure channel authorization. Environment values override
-stored credentials. See [authentication](../../../krabb-docs/authentication.md#plugin-setup)
-and [deployment validation](../../../krabb-docs/providers.md#deployment-validation).
+are confined there before they are sent. Outgoing replies use the standard Krabb delivery contract.
 
 The adapter uses the global `--output json` option for receive, as specified by
 the [signal-cli manual](https://github.com/AsamK/signal-cli/blob/master/man/signal-cli.1.adoc).

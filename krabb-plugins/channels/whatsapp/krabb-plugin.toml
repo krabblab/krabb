@@ -4,6 +4,16 @@ capabilities = ["channel"]
 permissions = ["network", "filesystem"]
 secrets = ["KRABB_WHATSAPP_TOKEN", "KRABB_WHATSAPP_APP_SECRET", "KRABB_WHATSAPP_VERIFY"]
 
+[[settings]]
+name = "KRABB_WHATSAPP_PHONE"
+
+[[settings]]
+name = "KRABB_WHATSAPP_GRAPH_URL"
+
+[[settings]]
+name = "KRABB_WHATSAPP_LISTEN"
+default = "127.0.0.1:8787"
+
 [protocol]
 major = 0
 minor = 1

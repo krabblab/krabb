@@ -59,19 +59,40 @@ place plugin executables in `bin/` beside their manifest.
 
 For simple tokens and API keys, list their environment-variable names in the
 manifest's `secrets` array. Krabb supplies `krabb plugin setup <id>` and
-`krabb <id> setup` automatically: no setup handler or credential storage code is
-needed in your plugin. The host prompts and saves before starting the plugin,
-then passes only its declared secrets into its environment. Every declared
+then passes only its declared stored values into its environment. Every declared
 secret is prompted for, including optional ones.
+
+Declare additional setup fields with `[[settings]]` entries:
+
+```toml
+[[settings]]
+name = "KRABB_EXAMPLE_PHONE"
+
+[[settings]]
+name = "KRABB_EXAMPLE_LISTEN"
+default = "127.0.0.1:8787"
+```
+
+Each setting names a `KRABB_` environment variable. Names must be unique across
+secrets and settings. An optional `default` must be nonempty, single-line, and
+at most 16 KiB. Only public defaults belong in manifests; never put credentials
+there. Setup prompts for secrets first, then settings in declaration order;
+input remains hidden, and Enter accepts a displayed setting default. All values
+are saved together in the encrypted credential store. The host resolves each
+field from a nonempty environment override, saved value, then manifest default.
+It passes the result to the plugin on launch and reload, so services do not need
+extra environment entries. Plugin-specific validation remains in the plugin.
+
+Manifest and lock records without `settings` keep their existing behavior.
+Settings and defaults are recorded in the plugin lock; changing them requires
+the same explicit installation review as changing secret declarations.
 
 For a custom sign-in flow, declare a command named after your plugin and implement
 a subcommand such as `login`. Krabb delegates it to the plugin, as with
 `krabb codex login`. The plugin must be able to start without credentials to offer
 that flow. `setup` never redirects to `login`: a plugin may support both API-key
-setup and account sign-in.
-
-The host reserves `<id> setup` for secret configuration when secrets are declared.
-Other subcommands remain yours. Plugins without secrets get no generated setup
+The host reserves `<id> setup` when secrets or settings are declared.
+Other subcommands remain yours. Plugins without either get no generated setup
 shortcut; use `krabb plugin setup <id>` when an ID conflicts with another command.
 Document which route users should choose, any non-secret settings they need,
 and whether activation starts network activity. See
@@ -307,9 +328,7 @@ update` unloads active plugin processes before replacing their files, then
 starts those plugins again through IPC. Inactive plugins remain inactive, and
 the daemon itself does not restart. Active plugins are unavailable while
 updates are fetched, validated, and activated. If the daemon is stopped,
-updates are applied offline and the new versions load at its next start.
-
-When a plugin changes its capabilities, permissions, secrets, or protocol
+When a plugin changes its capabilities, permissions, secrets, settings, or protocol
 range, bump its version and update its README and release matrix. Keep explicit
 Git revisions pinned for reproducible deployments. Never place credentials in
 the manifest, source URL, archive name, or diagnostic output.
@@ -351,9 +370,7 @@ active TUI conversation scope with the agent. See the
 [SQLite plugin guide](../krabb-plugins/sqlite/README.md) for commands, limits,
 column types, and examples.
 
-The plugin also retains key/value methods, owner-scoped leases, a durable
-queue, acknowledgements, retries, and expiring event deduplication. These are
-SQLite persistence methods; daemon messaging delivery and its retry policy
+SQLite persistence methods; daemon channel delivery and its retry policy
 remain in runtime state. The TUI manages session-scoped values through
 `/data value`; `/store` remains as a compatibility alias.
 Host outbox entries expose stable IDs and explicit uncertainty; plugins receive
@@ -404,9 +421,7 @@ authenticated local bridge for host read, write, patch, search, Git, shell, and
 list tools. No current protocol recreates that combined workflow. ACP agents
 use their own tools, while A2A and AG-UI have remote-collaboration and
 user-interface roles. Workflows that depended on the old host-mediated coding
-tools must be adapted to the chosen external agent and its supported protocol.
-
-Secret declarations must use the `KRABB_` prefix. The host rejects manifests
+Secret and setting declarations must use the `KRABB_` prefix. The host rejects manifests
 that declare unprefixed configuration variables.
 
 Git tools and Git-backed patches require shell access and tool approval,

@@ -46,9 +46,7 @@ without automatic replay; correct the model or account settings before retrying.
 ## Tools Are Unavailable
 
 The default tool workspace is `KRABB_HOME/workspace`; set `KRABB_ROOT` to
-choose another default, or select a session workspace with `/workspace <path>`.
-File operations are confined to that selected directory. Confirm that the
-TUI has `[clients.tui] tools = true`, or that the messaging channel has
+TUI has `[clients.tui] tools = true`, or that the channel has
 `tools = true`. Mutating tools also require `approval = "prompt"` for inline
 confirmation or `approval = "auto"` for unattended approval. Shell execution
 requires `clients.tui.shell = true` and the configured approval mode.

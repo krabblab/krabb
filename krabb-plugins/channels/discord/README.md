@@ -4,12 +4,28 @@ Install the released plugin with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh -s -- discord
+## Setup
+
+Create and install a bot using [Discord's getting started guide](https://docs.discord.com/developers/quick-start/getting-started).
+Enable the [Message Content intent](https://docs.discord.com/developers/events/gateway#privileged-intents)
+for text conversations, then run:
+
+```sh
+krabb discord setup
 ```
 
-Set `KRABB_DISCORD_TOKEN`, or set `KRABB_KEYRING=1` to
-use the `discord` operating-system keyring entry. The plugin receives
-`MESSAGE_CREATE` events through the Gateway, answers heartbeats, ignores bot
-authors, normalizes text and attachments, and sends replies through the REST
+Enter the bot token at `KRABB_DISCORD_TOKEN`. Send the bot a direct message to
+test the reply. Guild channels and threads also need Krabb's
+[channel allowlist](../../../krabb-docs/configuration.md#channel-policy).
+
+See [shared setup](../../../krabb-docs/authentication.md#plugin-setup) for encrypted
+storage, daemon activation, environment overrides, and service configuration.
+The legacy `discord` keyring entry remains supported with `KRABB_KEYRING=1`.
+
+## Messages And Media
+
+The plugin receives `MESSAGE_CREATE` events through the Gateway, answers
+heartbeats, ignores bot authors, normalizes text and attachments, and sends replies through the REST
 API. Gateway session state is persisted under `KRABB_HOME` and advances only
 after the host acknowledges an accepted event. Outgoing text is split at
 Discord's message limit; `edit` updates the first existing message and sends
@@ -24,14 +40,6 @@ cache within 64 MiB and 256 files. Cleanup failures reject storage; the protecte
 session image directory is preserved. The plugin
 supports attachment uploads, but the current daemon sends generated replies as
 text. Direct messages work by default; guild channels and threads require the
-daemon channel allowlist.
-
-Use `krabb discord setup` for hidden credential entry and encrypted storage.
-Setup saves declared secrets; it does not register accounts, grant external app
-permissions, or configure channel authorization. Environment values override
-stored credentials. See [authentication](../../../krabb-docs/authentication.md#plugin-setup)
-and [deployment validation](../../../krabb-docs/providers.md#deployment-validation).
-
 A missing heartbeat acknowledgement closes the Gateway connection so the next
 poll reconnects. A nonresumable session rejection clears the old session before
 identifying again. Gateway connection establishment has a ten-second deadline.

@@ -10,9 +10,7 @@ Use these workflows to set up, operate, and update a Krabb installation.
 - [Session Operations](#session-operations)
 - [Updates](#updates)
 
-## First Run
-
-Install the core and at least one intelligence and messaging plugin using the
+Install the core and at least one intelligence and channel plugin using the
 platform instructions in the [README](../README.md). Configure their required
 credentials from [Providers](providers.md), then run:
 

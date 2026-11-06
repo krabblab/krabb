@@ -380,6 +380,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
             capabilities: vec![],
             permissions: vec![],
             variables: vec![name.into()],
+            settings: Vec::new(),
             commands: vec![],
         };
 
@@ -403,6 +404,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
         capabilities: vec![],
         permissions: vec![],
         variables: vec!["KRABB_SETUP_TEST".into()],
+        settings: Vec::new(),
         commands: vec![],
     };
 

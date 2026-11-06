@@ -53,39 +53,50 @@ Credential values are never written to manifests, logs, transcripts, or plugin l
 Use `setup` for a token or API key you already have. Use the plugin's own command
 for an interactive account sign-in:
 
-| You want to… | Run after installing the plugin | What happens |
-| --- | --- | --- |
+| Configure a channel | `krabb <id> setup` | Follow the [channel guide](providers.md#platform-setup) for required values and external setup. |
 | Enter a Telegram bot token | `krabb telegram setup` | Krabb prompts and saves it securely. |
 | Enter an Anthropic API key | `krabb anthropic setup` | The same secure setup workflow. |
 | Enter a Codex API key | `krabb codex setup` | Krabb stores the API key. |
 | Sign in to a personal Codex account | `krabb codex login` | The plugin runs its account sign-in flow. |
-
-`krabb plugin setup <id>` is the full form of `krabb <id> setup`. Both configure
-the plugin's declared secrets; neither invokes custom login flows. Plugins
-without declared secrets do not gain a setup shortcut. See
+the plugin's declared secrets and settings; neither invokes custom login flows.
+Plugins without declared secrets or settings do not gain a setup shortcut. See
 [the plugin author guide](plugins.md#credentials-and-sign-in) when creating a plugin.
 
 Setup works before the plugin is active. It prompts for every declared secret,
-including optional ones, without echoing input. A terminal is required, even
-with `--json`; tokens cannot be arguments or piped input. Escape or Ctrl-C cancels
-without saving. Empty, multiline, and oversized values are rejected.
-Prompt labels show the declared environment variable names, never stored credential values.
+including optional ones, followed by declared settings, without echoing input.
+Settings can declare a visible default; press Enter to accept it. For example,
+WhatsApp setup also asks for the phone number ID, versioned Graph API URL, and
+listener address (default `127.0.0.1:8787`). These settings are saved in the same
+encrypted store and supplied when the daemon starts or reloads the plugin,
+without service-file changes. A terminal is required, even with `--json`; tokens
+cannot be arguments or piped input. Escape or Ctrl-C cancels without saving.
+Multiline and oversized values are rejected.
+Prompt labels show the declared environment variable names and public manifest
+defaults, never stored values. An empty response is rejected when no default exists.
 
-Setup replaces the entered secrets and preserves others using locked, crash-safe
-encrypted writes. Its output identifies whether the encryption key is in the
+Setup replaces the entered secrets and settings and preserves others using
+locked, crash-safe encrypted writes. Its output identifies whether the encryption key is in the
 keyring or a file. Unusable files, missing keys, and decryption errors are rejected.
 
 Setup then asks the running daemon to load or reload the plugin. Use
 `--no-activate` to save only. If activation stays pending, start or restart the
-runtime with the same credential file and access to its key, no overriding secret
+runtime with the same credential file and access to its key, no overriding setup
 environment variables. Additional channels and providers activate alongside existing
 ones. Older daemons need a restart. Run
 `krabb doctor` for readiness checks. JSON results report `saved` and `active`
 separately; a successful save does not guarantee activation.
 
-For Telegram, create a token with BotFather first. Setup does not check it with
-Telegram; activation starts normal channel operation. Configure a working model
-and review channel policy before testing messages.
+Run setup as the same OS user as the service, using the same `KRABB_HOME`,
+`KRABB_CREDENTIALS`, and `KRABB_CREDENTIALS_KEY` when customized. Nonempty environment
+values override saved values; remove stale service overrides if you want setup to
+control those settings. For an already running WhatsApp listener, use
+`krabb whatsapp setup --no-activate` followed by `krabb service restart` so the old
+process releases its port before the replacement starts.
+
+Follow the [channel guide](providers.md#platform-setup) for external account and
+app configuration. Setup does not validate credentials with the platform;
+activation starts normal operation. Configure a working model and review
+[channel policy](configuration.md#channel-policy) before testing messages.
 
 ## Codex Compatibility
 

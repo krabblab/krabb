@@ -967,7 +967,7 @@ struct KrabfileImport {
 
 #[derive(Debug, Subcommand)]
 enum PluginCommand {
-    #[command(about = "Securely configure an installed plugin's declared secrets.")]
+    #[command(about = "Securely configure an installed plugin's secrets and settings.")]
     Setup(setup::Options),
     #[command(about = "List installed plugins.")]
     List(ListOutput),
@@ -1543,6 +1543,8 @@ struct Manifest {
     /// Names of required environment variables, never credential values.
     #[serde(default, rename = "secrets")]
     variables: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    settings: Vec<setup::Setting>,
     #[serde(default)]
     commands: Vec<CommandSpec>,
 }
@@ -1613,11 +1615,12 @@ impl Manifest {
         }
 
         let mut variables = self.variables.clone();
+        variables.extend(self.settings.iter().map(|setting| setting.name.clone()));
         variables.sort();
         variables.dedup();
 
-        if variables.len() != self.variables.len()
-            || self.variables.iter().any(|name| {
+        if variables.len() != self.variables.len() + self.settings.len()
+            || variables.iter().any(|name| {
                 name.is_empty()
                     || !name.starts_with("KRABB_")
                     || !name.bytes().all(|byte| {
@@ -1625,7 +1628,16 @@ impl Manifest {
                     })
             })
         {
-            return Err("Plugin secrets must be unique KRABB_ environment variable names.".into());
+            return Err(
+                "Plugin secrets and settings must be unique KRABB_ environment variable names."
+                    .into(),
+            );
+        }
+
+        for setting in &self.settings {
+            if let Some(default) = &setting.default {
+                setup::validate(default).map_err(str::to_owned)?;
+            }
         }
 
         Ok(())
@@ -1656,6 +1668,8 @@ struct Entry {
     /// Names of required environment variables, never credential values.
     #[serde(default, rename = "secrets")]
     variables: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    settings: Vec<setup::Setting>,
     #[serde(default)]
     linked: bool,
     #[serde(default)]
@@ -6838,6 +6852,7 @@ fn recover_plugins(root: &Path) -> std::io::Result<()> {
                     || manifest.capabilities != committed.capabilities
                     || manifest.permissions != committed.permissions
                     || manifest.variables != committed.variables
+                    || manifest.settings != committed.settings
                     || manifest.commands != committed.commands
                 {
                     return false;
@@ -7142,7 +7157,7 @@ fn available_commands(
     let mut commands = BTreeMap::new();
 
     for (id, entry) in &lock.plugins {
-        if !entry.variables.is_empty()
+        if (!entry.variables.is_empty() || !entry.settings.is_empty())
             && !native_command(id)
             && !entry.commands.iter().any(|command| command.name == *id)
             && binary_at(id, root).is_some()
@@ -7309,7 +7324,22 @@ fn env_for(
         }
     }
 
-    values.extend(credentials::resolve(&manifest.variables, root)?);
+    let names = manifest
+        .variables
+        .iter()
+        .cloned()
+        .chain(manifest.settings.iter().map(|setting| setting.name.clone()))
+        .collect::<Vec<_>>();
+    let mut configured = credentials::resolve(&names, root)?;
+
+    for setting in &manifest.settings {
+        if let Some(default) = &setting.default {
+            configured.entry(setting.name.clone()).or_insert_with(|| default.clone());
+        }
+    }
+
+    values.retain(|(name, _)| !configured.contains_key(name));
+    values.extend(configured);
 
     Ok(values)
 }
@@ -7414,8 +7444,10 @@ fn ready_with(
                     || file_credential_at(credentials, key, &["KRABB_WHATSAPP_APP_SECRET"]))
                 && (env_nonempty("KRABB_WHATSAPP_VERIFY")
                     || file_credential_at(credentials, key, &["KRABB_WHATSAPP_VERIFY"]))
-                && env_nonempty("KRABB_WHATSAPP_PHONE")
-                && env_nonempty("KRABB_WHATSAPP_GRAPH_URL")
+                && (env_nonempty("KRABB_WHATSAPP_PHONE")
+                    || file_credential_at(credentials, key, &["KRABB_WHATSAPP_PHONE"]))
+                && (env_nonempty("KRABB_WHATSAPP_GRAPH_URL")
+                    || file_credential_at(credentials, key, &["KRABB_WHATSAPP_GRAPH_URL"]))
         }
 
         _ => binary_at(id, &home()).is_some(),
@@ -10571,7 +10603,7 @@ mod tool_availability_tests {
 
         assert!(description.contains("workspace tools are enabled"));
         assert!(description.contains("local shell is disabled"));
-        assert!(description.contains("external messaging channels are discord, telegram"));
+        assert!(description.contains("external channels are discord, telegram"));
         assert!(description.contains("local TUI session messages are available"));
         assert!(description.contains("unique funny name"));
         assert!(proposal.schema["properties"].get("name").is_none());
@@ -10585,7 +10617,7 @@ mod tool_availability_tests {
 
         assert!(description.contains("workspace tools are disabled"));
         assert!(description.contains("local shell is disabled"));
-        assert!(description.contains("external messaging channels are none"));
+        assert!(description.contains("external channels are none"));
 
         assert!(
             !scheduler_tools(true, false, false, &channel_ids)
@@ -10703,7 +10735,7 @@ fn scheduler_tools(
     let channel_list = if channels.is_empty() { "none".into() } else { channels.join(", ") };
 
     let availability = format!(
-        "Current execution capabilities: workspace tools are {}; local shell is {}; external messaging channels are {channel_list}; local TUI session messages are available.",
+        "Current execution capabilities: workspace tools are {}; local shell is {}; external channels are {channel_list}; local TUI session messages are available.",
         if workspace_tools_enabled { "enabled" } else { "disabled" },
         if shell_enabled && workspace_tools_enabled { "enabled" } else { "disabled" },
     );
@@ -14932,39 +14964,58 @@ fn version(json: bool) {
 }
 
 async fn status_command(json: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let root = home();
-    let config_ok = load_config_text(&root)?.is_some_and(|text| {
+    let value = status_at(&home()).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!("{}", status_text(&value, value["plugins"].as_u64().unwrap_or(0) as usize));
+    }
+
+    Ok(())
+}
+
+async fn status_at(root: &Path) -> Result<serde_json::Value, PluginError> {
+    let config_ok = load_config_text(root)?.is_some_and(|text| {
         toml::from_str::<Config>(&text).is_ok_and(|config| config.validate().is_ok())
     });
 
-    let lock = load_lock_at(&root)?;
+    let lock = load_lock_at(root)?;
     let installed = lock.plugins.len();
-    let config = load_config_at(&root).unwrap_or_default();
+    let config = load_config_at(root).unwrap_or_default();
     let (model, _) = selection::current(&config, (None, None), (None, None));
-    let channel = std::env::var("KRABB_CHANNEL").unwrap_or_else(|_| "telegram".into());
-    let model_ready = lock.plugins.get(&model).is_some_and(|entry| {
-        entry.capabilities.iter().any(|capability| capability == "model") && ready(&model)
-    });
+    let active = active_at(root).await?;
+    let available = |id: &str| {
+        active.as_ref().map_or_else(
+            || ready_at(id, Some(&setup::path(root)), &credentials::key_path(root)),
+            |ids| ids.iter().any(|item| item == id),
+        )
+    };
 
-    let messaging_installed = lock
+    let intelligence = capability_status(&lock, "model", available);
+    let channels = capability_status(&lock, "channel", available);
+    let model_ready = intelligence["plugins"].as_array().unwrap().iter().any(|id| id == &model);
+
+    let channels_installed = lock
         .plugins
         .values()
         .any(|entry| entry.capabilities.iter().any(|capability| capability == "channel"));
-    let messaging_selected = std::env::var_os("KRABB_CHANNEL").is_some();
-    let messaging_ready = lock.plugins.get(&channel).is_some_and(|entry| {
-        entry.capabilities.iter().any(|capability| capability == "channel") && ready(&channel)
-    });
+    let channel = std::env::var("KRABB_CHANNEL").ok();
+    let channels_ready = channels["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|id| channel.as_ref().is_none_or(|selected| id == selected));
 
-    let conflicts = available_commands(&root)?.values().any(|owners| owners.len() > 1);
-    let daemon = ipc::call(&root, "status", serde_json::json!({})).await.is_ok();
+    let conflicts = available_commands(root)?.values().any(|owners| owners.len() > 1);
     let (health, health_details) = status_health(
         config_ok,
         model_ready,
-        messaging_installed || messaging_selected,
-        messaging_ready,
+        channels_installed || channel.is_some(),
+        channels_ready,
         conflicts,
     );
-    let daemon = if daemon { "running" } else { "stopped" };
+    let daemon = if active.is_some() { "running" } else { "stopped" };
 
     if health == "healthy" {
         debug!(health, daemon, "Status check completed.");
@@ -14972,30 +15023,22 @@ async fn status_command(json: bool) -> Result<(), Box<dyn std::error::Error + Se
         warn!(health, daemon, details = %health_details.join("; "), "Status check found unhealthy state.");
     }
 
-    let value = serde_json::json!({
+    Ok(serde_json::json!({
         "version": VERSION,
         "health": health,
         "health_details": health_details,
         "daemon": daemon,
-        "intelligence": capability_status(&lock, "model"),
-        "messaging": capability_status(&lock, "channel"),
+        "intelligence": intelligence,
+        "channels": channels,
         "plugins": installed,
-    });
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-    } else {
-        println!("{}", status_text(&value, installed));
-    }
-
-    Ok(())
+    }))
 }
 
 fn status_health(
     config_ok: bool,
     model_ready: bool,
-    messaging_expected: bool,
-    messaging_ready: bool,
+    channels_expected: bool,
+    channels_ready: bool,
     conflicts: bool,
 ) -> (&'static str, Vec<&'static str>) {
     let mut details = Vec::new();
@@ -15008,8 +15051,8 @@ fn status_health(
         details.push("selected intelligence plugin is not ready");
     }
 
-    if messaging_expected && !messaging_ready {
-        details.push("selected messaging plugin is not ready");
+    if channels_expected && !channels_ready {
+        details.push("no channel is ready or the selected channel is not ready");
     }
 
     if conflicts {
@@ -15021,11 +15064,17 @@ fn status_health(
     (health, details)
 }
 
-fn capability_status(lock: &Lock, capability: &str) -> serde_json::Value {
+fn capability_status(
+    lock: &Lock,
+    capability: &str,
+    available: impl Fn(&str) -> bool,
+) -> serde_json::Value {
     let plugins = lock
         .plugins
         .iter()
-        .filter(|(id, entry)| entry.capabilities.iter().any(|item| item == capability) && ready(id))
+        .filter(|(id, entry)| {
+            entry.capabilities.iter().any(|item| item == capability) && available(id)
+        })
         .map(|(id, _)| id.as_str())
         .collect::<Vec<_>>();
 
@@ -15062,8 +15111,8 @@ fn status_text(value: &serde_json::Value, installed: usize) -> String {
         value["daemon"].as_str().unwrap_or("stopped"),
         "Intelligence:",
         capability_text(&value["intelligence"]),
-        "Messaging:",
-        capability_text(&value["messaging"]),
+        "Channels:",
+        capability_text(&value["channels"]),
         "Plugins:",
         installed
     );
@@ -15130,7 +15179,7 @@ async fn external_command_at(
         && load_lock_at(&root)?
             .plugins
             .get(&plugin)
-            .is_some_and(|entry| !entry.variables.is_empty());
+            .is_some_and(|entry| !entry.variables.is_empty() || !entry.settings.is_empty());
 
     if has_setup && setup::requested(&args[1..]) {
         return setup::command(&args[1..], &plugin, &root, json).await;
@@ -15142,7 +15191,9 @@ async fn external_command_at(
         println!("{}", style_cli_help(&external_command_help(name, &owners[0].1.description)));
 
         if has_setup {
-            println!("\n  setup [--no-activate]  Securely configure declared API keys/secrets.");
+            println!(
+                "\n  setup [--no-activate]  Securely configure declared secrets and settings."
+            );
         }
 
         return Ok(());
@@ -16665,7 +16716,7 @@ fn check_plugin_state(
 
     if channel && deliveries {
         return Err(concat!(
-            "Cannot uninstall the last messaging plugin while deliveries are pending or ",
+            "Cannot uninstall the last channel plugin while deliveries are pending or ",
             "uncertain. Use `krabb delivery drop --all`, or ",
             "`krabb plugin uninstall <id> --force` to delete blocking delivery records."
         )
@@ -17107,6 +17158,7 @@ fn update_with_commit(
                     entry.capabilities = manifest.capabilities.clone();
                     entry.permissions = manifest.permissions.clone();
                     entry.variables = manifest.variables.clone();
+                    entry.settings = manifest.settings.clone();
                     entry.commands = manifest.commands.clone();
                 }
 
@@ -17520,10 +17572,11 @@ fn inspect_update(
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
         || manifest.variables != entry.variables
+        || manifest.settings != entry.settings
         || manifest.commands != entry.commands
     {
         return Err(format!(
-            "Plugin {id} changes declared capabilities, permissions, secrets, or commands; review it with plugin install --link --yes."
+            "Plugin {id} changes declared capabilities, permissions, secrets, settings, or commands; review it with plugin install --link --yes."
         )
         .into());
     }
@@ -17652,6 +17705,7 @@ fn validate_update_candidate(
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
         || manifest.variables != entry.variables
+        || manifest.settings != entry.settings
         || manifest.commands != entry.commands
     {
         return Err(format!(
@@ -17721,10 +17775,11 @@ fn update_one(
     if manifest.capabilities != entry.capabilities
         || manifest.permissions != entry.permissions
         || manifest.variables != entry.variables
+        || manifest.settings != entry.settings
         || manifest.commands != entry.commands
     {
         return Err(format!(
-            "Plugin {id} changes declared capabilities, permissions, secrets, or commands; review it with plugin install --link --yes."
+            "Plugin {id} changes declared capabilities, permissions, secrets, settings, or commands; review it with plugin install --link --yes."
         )
         .into());
     }
@@ -18055,6 +18110,7 @@ fn link_at(
                 capabilities: manifest.capabilities.clone(),
                 permissions: manifest.permissions.clone(),
                 variables: manifest.variables.clone(),
+                settings: manifest.settings.clone(),
                 commands: manifest.commands.clone(),
                 linked,
                 default: default_source,
@@ -19121,8 +19177,9 @@ fn plugin_summary(manifest: &Manifest, health: &str) -> Value {
         "capabilities": manifest.capabilities,
         "permissions": manifest.permissions,
         "secrets": manifest.variables,
+        "settings": manifest.settings,
         "commands": manifest.commands,
-        "setup_command": (!manifest.variables.is_empty())
+        "setup_command": (!manifest.variables.is_empty() || !manifest.settings.is_empty())
             .then(|| format!("krabb plugin setup {}", manifest.id)),
         "status": "installed",
         "health": health,
@@ -19480,6 +19537,9 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     mod krabfile;
+
+    #[cfg(unix)]
+    mod git;
 
     #[cfg(unix)]
     mod commits;
@@ -20601,7 +20661,7 @@ done
                 "plugins": ["codex", "gemini"]
             },
 
-            "messaging": {
+            "channels": {
                 "status": "configured",
                 "plugins": ["telegram", "discord"]
             },
@@ -20610,7 +20670,7 @@ done
         assert_eq!(
             super::status_text(&value, 0),
             format!(
-                "Version:            {}\nHealth:             unhealthy\nBackground runtime: stopped\nIntelligence:       configured (codex, gemini)\nMessaging:          configured (telegram, discord)\nPlugins:            0 installed",
+                "Version:            {}\nHealth:             unhealthy\nBackground runtime: stopped\nIntelligence:       configured (codex, gemini)\nChannels:           configured (telegram, discord)\nPlugins:            0 installed",
                 super::VERSION
             )
         );
@@ -20625,7 +20685,7 @@ done
     }
 
     #[test]
-    fn status_health_treats_messaging_as_optional_and_explains_unhealthy_state() {
+    fn status_health_treats_channels_as_optional_and_explains_unhealthy_state() {
         assert_eq!(super::status_health(true, true, false, false, false), ("healthy", vec![]));
 
         assert_eq!(
@@ -20633,7 +20693,7 @@ done
             (
                 "unhealthy",
                 vec![
-                    "selected messaging plugin is not ready",
+                    "no channel is ready or the selected channel is not ready",
                     "plugin commands have name conflicts",
                 ],
             )
@@ -20656,7 +20716,7 @@ done
             "health_details": ["configuration is invalid", "plugin commands have name conflicts"],
             "daemon": "running",
             "intelligence": {"status": "configured", "plugins": ["codex"]},
-            "messaging": {"status": "not configured", "plugins": []},
+            "channels": {"status": "not configured", "plugins": []},
         });
 
         let text = super::status_text(&value, 3);
@@ -23350,6 +23410,7 @@ done
             capabilities: vec!["tool".into()],
             permissions: vec!["filesystem".into()],
             variables: vec!["KRABB_TOOLS_KEY".into()],
+            settings: Vec::new(),
             commands: Vec::new(),
         };
 
@@ -23418,6 +23479,7 @@ done
                 capabilities: vec!["tool".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 commands: Vec::new(),
             },
             &Config::default(),
@@ -23460,6 +23522,7 @@ done
                 capabilities: vec!["tool".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 commands: Vec::new(),
             },
             &config,
@@ -23477,6 +23540,7 @@ done
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 commands: Vec::new(),
             },
             &Config::default(),
@@ -23760,6 +23824,7 @@ done
                 capabilities: Vec::new(),
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },
@@ -24728,6 +24793,7 @@ done
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
         };
@@ -24765,6 +24831,7 @@ done
                     capabilities: Vec::new(),
                     permissions: Vec::new(),
                     variables: Vec::new(),
+                    settings: Vec::new(),
                     commands: Vec::new(),
                     linked: false,
                 }
@@ -24784,6 +24851,7 @@ done
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             commands: Vec::new(),
         };
 
@@ -24821,6 +24889,7 @@ done
                 capabilities: Vec::new(),
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 commands: vec![CommandSpec {
                     name: "login".into(),
                     description: "Log in.".into(),
@@ -24942,6 +25011,7 @@ done
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 linked: false,
                 commands: vec![CommandSpec {
                     name: "model-console".into(),
@@ -25006,6 +25076,7 @@ done
                 capabilities: vec!["channel".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 linked: false,
                 commands: Vec::new(),
             },
@@ -25055,6 +25126,7 @@ done
                 capabilities: vec!["scheduler".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 linked: false,
                 commands: Vec::new(),
             },
@@ -25115,6 +25187,7 @@ done
             capabilities: vec![capability.into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             linked: false,
             commands: vec![CommandSpec {
                 name: name.into(),
@@ -25226,6 +25299,7 @@ done
             capabilities: vec![capability.into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -25782,6 +25856,8 @@ done
             assert!(output.contains("schedule"), "schedule missing from {name} completion");
             assert!(output.contains("data"), "data missing from {name} completion");
             assert!(output.contains("retry"), "schedule actions missing from {name} completion");
+            assert!(output.contains("setup"), "plugin setup missing from {name} completion");
+            assert!(output.contains("no-activate"), "setup options missing from {name} completion");
         }
 
         assert!(Cli::try_parse_from(["krabb", "completion", "nu"]).is_err());
@@ -29104,7 +29180,7 @@ fn main() {
         fs::write(repo.join("bin/krabb-plugin-memory"), "plugin").unwrap();
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", repo.to_str().unwrap(), "init", "-q"])
                 .status()
                 .unwrap()
@@ -29112,7 +29188,7 @@ fn main() {
         );
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", repo.to_str().unwrap(), "config", "user.email", "test@example.com"])
                 .status()
                 .unwrap()
@@ -29120,7 +29196,7 @@ fn main() {
         );
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", repo.to_str().unwrap(), "config", "user.name", "Krabb Test"])
                 .status()
                 .unwrap()
@@ -29128,7 +29204,7 @@ fn main() {
         );
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", repo.to_str().unwrap(), "config", "commit.gpgsign", "false"])
                 .status()
                 .unwrap()
@@ -29136,7 +29212,7 @@ fn main() {
         );
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", repo.to_str().unwrap(), "add", "."])
                 .status()
                 .unwrap()
@@ -29144,7 +29220,7 @@ fn main() {
         );
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", repo.to_str().unwrap(), "commit", "-qm", "initial"])
                 .status()
                 .unwrap()
@@ -29158,7 +29234,7 @@ fn main() {
         assert!(resolve(&format!("git+file://{}", repo.display()), Some("wrong")).is_err());
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", repo.to_str().unwrap(), "commit", "--allow-empty", "-qm", "moved"])
                 .status()
                 .unwrap()
@@ -29374,7 +29450,7 @@ fn main() {
         fs::create_dir_all(&root).unwrap();
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .args(["-C", root.to_str().unwrap(), "init", "-q"])
                 .status()
                 .unwrap()
@@ -29391,7 +29467,7 @@ fn main() {
             vec!["-C", root.to_str().unwrap(), "add", "."],
             vec!["-C", root.to_str().unwrap(), "commit", "-qm", "initial"],
         ] {
-            assert!(std::process::Command::new("git").args(args).status().unwrap().success());
+            assert!(git::command().args(args).status().unwrap().success());
         }
 
         let hook = root.join(".git/hooks/post-checkout");
@@ -29405,7 +29481,7 @@ fn main() {
         }
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .arg("-C")
                 .arg(&root)
                 .args(["config", "core.fsmonitor"])
@@ -29433,7 +29509,7 @@ fn main() {
             "remote.origin.promisor",
         ] {
             assert!(
-                std::process::Command::new("git")
+                git::command()
                     .arg("-C")
                     .arg(&root)
                     .args(["config", key, "true"])
@@ -29448,7 +29524,7 @@ fn main() {
             assert!(!root.join(".krabb/worktrees/blocked").exists());
 
             assert!(
-                std::process::Command::new("git")
+                git::command()
                     .arg("-C")
                     .arg(&root)
                     .args(["config", "--unset", key])
@@ -29459,7 +29535,7 @@ fn main() {
         }
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .arg("-C")
                 .arg(&root)
                 .args(["config", "--unset", "core.fsmonitor"])
@@ -29475,7 +29551,7 @@ fn main() {
         let conditional = "includeIf.gitdir:**/worktrees/conditional.path";
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .arg("-C")
                 .arg(&root)
                 .args(["config", conditional])
@@ -29497,7 +29573,7 @@ fn main() {
         assert!(!root.join(".krabb/worktrees/conditional").exists());
 
         assert!(
-            std::process::Command::new("git")
+            git::command()
                 .arg("-C")
                 .arg(&root)
                 .args(["config", "--unset", conditional])
@@ -29945,6 +30021,7 @@ fn main() {
                 capabilities: vec!["model".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },
@@ -29964,6 +30041,7 @@ fn main() {
                 capabilities: vec!["memory".into()],
                 permissions: Vec::new(),
                 variables: Vec::new(),
+                settings: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
             },

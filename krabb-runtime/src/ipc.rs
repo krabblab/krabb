@@ -4193,6 +4193,7 @@ for line in sys.stdin:
             capabilities: vec!["channel".into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -4327,6 +4328,7 @@ for line in sys.stdin:
             capabilities: vec!["tool".into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -4373,6 +4375,25 @@ for line in sys.stdin:
         let mut manifest = crate::read_manifest_checked(&plugin).unwrap();
 
         manifest.variables = vec!["KRABB_SETUP_TEST".into()];
+
+        manifest.settings =
+            vec![crate::setup::Setting { name: "KRABB_SETUP_TEST_SETTING".into(), default: None }];
+
+        crate::credentials::save(
+            &credentials,
+            &home.join("credentials.key"),
+            BTreeMap::from([("KRABB_SETUP_TEST_SETTING".into(), "saved-setting".into())]),
+            Some(false),
+        )
+        .unwrap();
+
+        let script = std::fs::read_to_string(&binary).unwrap().replacen(
+            "#!/bin/sh\n",
+            "#!/bin/sh\n[ \"$KRABB_SETUP_TEST_SETTING\" = saved-setting ] || exit 1\n",
+            1,
+        );
+
+        std::fs::write(&binary, script).unwrap();
         std::fs::write(plugin.join("krabb-plugin.toml"), toml::to_string(&manifest).unwrap())
             .unwrap();
         let mut lock = crate::load_lock_at(&home).unwrap();
@@ -4380,6 +4401,7 @@ for line in sys.stdin:
         let entry = lock.plugins.get_mut("tools").unwrap();
 
         entry.variables = manifest.variables;
+        entry.settings = manifest.settings;
         entry.hash = crate::digest(&plugin.join("krabb-plugin.toml"), &binary).unwrap();
         crate::save_lock_at(&home, &lock).unwrap();
 
@@ -4447,6 +4469,7 @@ for line in sys.stdin:
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
@@ -5721,6 +5744,7 @@ for line in sys.stdin:
             capabilities: vec!["model".into()],
             permissions: Vec::new(),
             variables: Vec::new(),
+            settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
         };
