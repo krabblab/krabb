@@ -1,0 +1,27 @@
+display_information:
+  name: Krabb
+  description: The klaw is the law.
+
+features:
+  bot_user:
+    display_name: Krabb
+    always_online: false
+
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - im:history
+
+settings:
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+
+  event_subscriptions:
+    bot_events:
+      - message.im

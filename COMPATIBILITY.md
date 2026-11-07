@@ -48,6 +48,7 @@ cell after it passes. Leave partial, untested, or unsupported checks unchecked.
 | File       | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | Logging    | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | Process    | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
+| Text       | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | A2A        | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | ACP        | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | AG-UI      | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
@@ -63,7 +64,9 @@ cell after it passes. Leave partial, untested, or unsupported checks unchecked.
 | OpenAI     | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | OpenRouter | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | Scheduler  | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Signal     | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
+| Signal     | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
+| Slack      | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
+| SQLite     | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | Telegram   | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | Tools      | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
 | TUI        | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |

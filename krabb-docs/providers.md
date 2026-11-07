@@ -207,7 +207,7 @@ its execution status as unknown. It does not replay the tool or report success.
 
 The daemon currently sends generated Discord and WhatsApp replies as text even
 though their adapters support media uploads. Signal requires an independently
-installed and registered `signal-cli`; Slack needs its external app configured;
+installed `signal-cli` with a registered or linked account; Slack needs its external app configured;
 WhatsApp needs a public HTTPS webhook proxy. These are deployment prerequisites,
 not actions performed by `setup`.
 

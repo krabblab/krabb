@@ -595,6 +595,77 @@ fn whatsapp_setup_persists_all_fields_for_activation_and_restart() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn slack_setup_persists_conversations_for_activation_and_restart() {
+    let manifest: crate::Manifest =
+        toml::from_str(include_str!("../../../krabb-plugins/channels/slack/krabb-plugin.toml"))
+            .unwrap();
+
+    let root = fixture("slack", &[], vec![]);
+
+    manifest.validate().unwrap();
+    configure(&root, &manifest);
+
+    let fields = fields(&root, "slack").unwrap();
+    let mut prompted = Vec::new();
+
+    let values = collect(&fields, |field| {
+        prompted.push(field.name.clone());
+
+        Ok(match field.name.as_str() {
+            "KRABB_SLACK_CHANNELS" => "D0123456789,C9876543210".into(),
+            _ => "synthetic-slack-secret".into(),
+        })
+    })
+    .unwrap();
+
+    assert_eq!(
+        prompted,
+        ["KRABB_SLACK_BOT_TOKEN", "KRABB_SLACK_APP_TOKEN", "KRABB_SLACK_CHANNELS"]
+    );
+
+    let destination = path(&root);
+    let key = root.join("credentials.key");
+
+    save(&destination, BTreeMap::from([("KRABB_TELEGRAM_TOKEN".into(), "retained".into())]))
+        .unwrap();
+    save(&destination, values.clone()).unwrap();
+
+    let encrypted = fs::read_to_string(&destination).unwrap();
+
+    assert!(!encrypted.contains("synthetic-slack-secret"));
+    assert!(!encrypted.contains("D0123456789"));
+    assert_eq!(read(&destination).unwrap()["KRABB_TELEGRAM_TOKEN"], "retained");
+    assert!(activation(&root, "slack", &destination.canonicalize().unwrap()).is_ok());
+    assert!(crate::ready_at("slack", Some(&destination), &key));
+
+    let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
+
+    for (name, value) in &values {
+        assert!(environment.contains(&(name.clone(), value.clone())), "{name}");
+        assert_eq!(environment.iter().filter(|(key, _)| key == name).count(), 1);
+    }
+
+    assert!(!environment.iter().any(|(name, _)| name == "KRABB_TELEGRAM_TOKEN"));
+
+    save(&destination, BTreeMap::from([("KRABB_SLACK_CHANNELS".into(), "D1111111111".into())]))
+        .unwrap();
+
+    let reloaded = crate::read_manifest_checked(&root.join("plugins/slack")).unwrap();
+
+    let environment = crate::env_for(&reloaded, &crate::Config::default(), &root).unwrap();
+
+    assert!(environment.contains(&("KRABB_SLACK_CHANNELS".into(), "D1111111111".into())));
+
+    assert!(
+        !environment.contains(&("KRABB_SLACK_CHANNELS".into(), "D0123456789,C9876543210".into()))
+    );
+
+    assert!(crate::ready_at("slack", Some(&destination), &key));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn settings_only_plugins_offer_setup_and_reject_unreviewed_defaults() {
     let root = fixture("custom", &[], vec![]);

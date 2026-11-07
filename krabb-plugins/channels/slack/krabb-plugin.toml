@@ -4,6 +4,9 @@ capabilities = ["channel"]
 permissions = ["network", "filesystem"]
 secrets = ["KRABB_SLACK_BOT_TOKEN", "KRABB_SLACK_APP_TOKEN"]
 
+[[settings]]
+name = "KRABB_SLACK_CHANNELS"
+
 [protocol]
 major = 0
 minor = 1

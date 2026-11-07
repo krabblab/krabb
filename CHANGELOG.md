@@ -7,6 +7,7 @@ Semantic Versioning.
 
 ### Added
 
+- Configure Slack conversations through interactive setup.
 - Display rich text and code panels in terminal conversations.
 - Control data visibility between integrations and isolate conversations with worktrees.
 - Show typing feedback on Discord, WhatsApp, Signal, and supported Slack threads.

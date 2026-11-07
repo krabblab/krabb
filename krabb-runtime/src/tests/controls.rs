@@ -276,6 +276,131 @@ async fn live_controls_wait_for_work_and_preserve_installation_and_deliveries() 
 }
 
 #[tokio::test]
+async fn uninstall_during_failed_channel_restarts_keeps_ipc_available() {
+    for mode in ["response", "exit"] {
+        let state = Arc::new(super::tests::state_at(&format!("restart-uninstall-{mode}")));
+
+        install(&state.home, "telegram", "channel");
+        install(&state.home, "codex", "model");
+
+        let script = r#"import json, pathlib, sys
+root, mode = pathlib.Path(sys.argv[1]), sys.argv[2]
+if (root / 'started').exists():
+    (root / 'restarting').touch()
+    sys.exit(1)
+
+(root / 'started').touch()
+for line in sys.stdin:
+    request = json.loads(line)
+
+    if request['method'] == 'hello':
+        response = {'result': {'id': 'telegram', 'version': '0.1.0', 'protocol': {'major': 0, 'minor': 1}, 'capabilities': ['channel']}}
+    elif request['method'] == 'poll':
+        if mode == 'exit':
+            sys.exit(1)
+        response = {'error': {'code': -32000, 'message': 'fixture polling failure'}}
+    else:
+        break
+
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], **response}), flush=True)
+"#;
+
+        let process = crate::Process::start_with(
+            "python3",
+            ["-c", script, state.home.to_str().unwrap(), mode],
+        )
+        .await
+        .unwrap();
+
+        state.plugins.insert(crate::Live::new(process)).await;
+        crate::load_plugin(&state.home, "codex", None, false, &state.config, &state.plugins)
+            .await
+            .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        std::fs::write(
+            state.home.join("ipc.port"),
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .unwrap();
+
+        std::fs::write(state.home.join("ipc.token"), "secret").unwrap();
+
+        let server = tokio::spawn(serve(listener, Arc::clone(&state)));
+        let bridge_state = Arc::clone(&state);
+
+        let bridge = tokio::spawn(async move {
+            crate::bridge(
+                &bridge_state.plugins,
+                "telegram",
+                "codex",
+                "test",
+                Arc::clone(&bridge_state.sessions),
+                Arc::clone(&bridge_state.stop),
+                Arc::clone(&bridge_state.cancels),
+                BTreeMap::new(),
+                crate::ApprovalMode::Off,
+            )
+            .await
+            .unwrap();
+        });
+
+        timeout(Duration::from_secs(8), async {
+            while !state.home.join("restarting").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let removed = timeout(
+            Duration::from_secs(2),
+            call(&state.home, "plugin.uninstall", json!({"id": "telegram"})),
+        )
+        .await;
+
+        if matches!(&removed, Ok(Ok(_))) {
+            install(&state.home, "tools", "tool");
+
+            let loaded = timeout(
+                Duration::from_secs(2),
+                call(&state.home, "plugin.load", json!({"id": "tools"})),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            let active =
+                timeout(Duration::from_secs(2), call(&state.home, "plugin.active", json!({})))
+                    .await
+                    .unwrap()
+                    .unwrap();
+
+            assert_eq!(loaded["loaded"], true);
+            assert!(!active["items"].as_array().unwrap().contains(&json!("telegram")));
+            assert!(active["items"].as_array().unwrap().contains(&json!("tools")));
+        }
+
+        state.stop.signal();
+        timeout(Duration::from_secs(2), bridge).await.unwrap().unwrap();
+        server.await.unwrap().unwrap();
+
+        for (_, plugin) in state.plugins.all().await {
+            plugin.stop().await.unwrap();
+        }
+
+        let removed = removed.expect("failed channel recovery blocked uninstall").unwrap();
+
+        assert_eq!(removed["status"], "uninstalled");
+        assert!(crate::binary_at("telegram", &state.home).is_none());
+        assert!(state.plugins.get("codex").await.is_some());
+
+        std::fs::remove_dir_all(&state.home).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn status_reports_all_live_channels_without_cli_credentials() {
     let state = Arc::new(super::tests::state_at("status-channels"));
 
