@@ -948,7 +948,10 @@ fn channel_allowed(channels: &str, channel: &str) -> bool {
 }
 
 fn message_supported(value: &Value) -> bool {
-    value["hidden"] != true && (value["subtype"].is_null() || value["subtype"] == "file_share")
+    value["hidden"] != true
+        && value["bot_id"].is_null()
+        && value["bot_profile"].is_null()
+        && (value["subtype"].is_null() || value["subtype"] == "file_share")
 }
 
 #[cfg(not(test))]
@@ -1395,6 +1398,8 @@ async fn send_at(
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
+    mod bots;
+
     mod persistence;
 
     mod logging;
@@ -1504,6 +1509,21 @@ mod tests {
         assert!(!message_supported(
             &json!({"type": "message", "subtype": "file_share", "hidden": true})
         ));
+
+        for subtype in [Value::Null, json!("file_share")] {
+            assert!(!message_supported(&json!({
+                "type":"message", "user":"UBOT", "subtype":subtype, "bot_id":"B1"
+            })));
+
+            assert!(!message_supported(&json!({
+                "type":"message", "user":"UBOT", "subtype":subtype, "bot_profile":{"id":"B1"}
+            })));
+
+            assert!(message_supported(&json!({
+                "type":"message", "user":"U1", "subtype":subtype,
+                "bot_id":null, "bot_profile":null
+            })));
+        }
     }
 
     #[test]

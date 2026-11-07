@@ -52,6 +52,7 @@ pub(crate) mod logging;
 mod media;
 mod messaging;
 mod process;
+mod recovery;
 mod schedules;
 mod selection;
 mod setup;
@@ -7997,22 +7998,29 @@ async fn bridge_with_media(
                 }
             };
 
-            let polled = match polled {
+            match polled {
                 Ok(response) => response,
 
                 Err(message) => {
                     warn!(channel = channel_id, error = %diagnostic(&message), "Channel polling failed.");
 
-                    if !recover(&channel, &mut channel_failures, "channel", stop.as_ref()).await? {
+                    drop(lifecycle);
+
+                    if !recovery::channel(
+                        plugins,
+                        channel_id,
+                        &channel,
+                        &mut channel_failures,
+                        &stop,
+                    )
+                    .await
+                    {
                         return Ok(());
                     }
 
                     continue;
                 }
-            };
-
-            channel_failures = 0;
-            polled
+            }
         };
 
         call += 1;
@@ -8022,12 +8030,17 @@ async fn bridge_with_media(
                 warn!(channel = channel_id, error = %diagnostic(sentence(error.message)), "Channel polling failed.");
             }
 
-            if !recover(&channel, &mut channel_failures, "channel", stop.as_ref()).await? {
+            drop(lifecycle);
+
+            if !recovery::channel(plugins, channel_id, &channel, &mut channel_failures, &stop).await
+            {
                 return Ok(());
             }
 
             continue;
         };
+
+        channel_failures = 0;
 
         let events = value["events"].as_array().cloned().unwrap_or_default();
         let channel_policy = channels.get(channel_id).cloned().unwrap_or_default();
@@ -16945,11 +16958,8 @@ async fn plugin(
 
             let root = home();
 
-            let spinner = if ids.len() > 1 && !json {
-                terminal::Spinner::start("Uninstalling plugins...")
-            } else {
-                None
-            };
+            let spinner =
+                if !json { terminal::Spinner::start("Uninstalling plugins...") } else { None };
 
             let mut outcomes = Vec::new();
             let mut errors = Vec::new();

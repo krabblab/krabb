@@ -35,7 +35,7 @@ attachments are retained in the selected conversation storage. See
 - [Provider And Model Precedence](#provider-and-model-precedence)
 - [Paths](#paths)
 - [Channel Policy](#channel-policy)
-- [Visibility And Worktrees](#isolation-and-sharing)
+- [Visibility](#visibility)
 - [Worktrees](#worktrees)
 - [Update Policy](#update-policy)
 - [State And Recovery](#state-and-recovery)
@@ -307,7 +307,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_SIGNAL_COMMAND` | Optional signal-cli executable |
 | `KRABB_SLACK_BOT_TOKEN` | Slack bot token |
 | `KRABB_SLACK_APP_TOKEN` | Slack Socket Mode app token |
-| `KRABB_SLACK_CHANNELS` | Comma-separated Slack channel IDs |
+| `KRABB_SLACK_CHANNELS` | Comma-separated Slack conversation IDs; saved by `krabb slack setup` |
 | `KRABB_CODEX_HOME` | Codex configuration directory |
 | `KRABB_CODEX_BINARY` | Optional Codex CLI executable |
 | `KRABB_ACP_COMMAND` | External ACP agent executable |
@@ -327,6 +327,8 @@ Operating-system variables such as `HOME`, `USERPROFILE`, `PATH`, and
 `XDG_CONFIG_HOME` retain their platform-defined names and are not Krabb
 configuration. Tool-native variables used to constrain subprocesses, such as
 Git's `GIT_CONFIG_NOSYSTEM`, also retain their required names.
+
+## Channel Policy
 
 Every loaded channel plugin receives messages concurrently. Installing and setting up
 WhatsApp keeps Telegram active. `KRABB_CHANNEL` does not restrict the receive loops.
@@ -353,6 +355,8 @@ selection to its [small default model](providers.md#default-models). The model s
 initializes new sessions. Existing sessions retain their selection; change it with
 `krabb session model <session-id> default` to opt into the provider's default.
 Independent provider processes can generate concurrently. Calls to the same
+provider process are serialized.
+
 `krabb whatsapp setup` saves the phone number ID, versioned Graph API base, and
 listener address alongside the three secrets. The daemon supplies these values
 to WhatsApp on activation and restart; service-file edits are unnecessary.
@@ -360,6 +364,20 @@ Nonempty environment variables remain overrides. The webhook listener defaults
 to `127.0.0.1:8787`; press Enter at its setup prompt to accept it. Meta still needs
 a public HTTPS callback URL routed to that listener and a WABA app subscription;
 see the [WhatsApp setup guide](../krabb-plugins/channels/whatsapp/README.md#setup).
+
+`krabb slack setup` saves both Slack tokens and the `KRABB_SLACK_CHANNELS`
+conversation list in encrypted storage, then reloads the plugin. The list is
+required for Socket Mode and history polling, including DMs. No service-file
+changes are needed unless an existing environment override must be removed.
+See the [Slack setup guide](../krabb-plugins/channels/slack/README.md#setup).
+
+`krabb signal setup` saves the account identifier for an already registered or
+linked `signal-cli` account and activates the Signal plugin. The daemon must run
+as the account data's OS user and be able to execute `signal-cli`. The optional
+`KRABB_SIGNAL_COMMAND` executable override belongs in the daemon environment;
+it is not a setup prompt. See the
+[Signal setup guide](../krabb-plugins/channels/signal/README.md#setup) for linking,
+native ARM64 builds, direct messages, groups, and troubleshooting.
 
 Direct messages are accepted by default, but tool schemas are not exposed
 unless the sender also satisfies the channel policy and daemon approval mode.

@@ -25,6 +25,12 @@ An older daemon rejects the new method, leaving activation pending. Provider
 account flows such as Codex login remain plugin commands; the plugin protocol
 and capability-free core are unchanged.
 
+Idle channel recovery releases the lifecycle guard during retry backoff and
+reacquires it for each restart attempt. The attempt verifies the plugin is still
+the current registry instance before restarting it. Repeated startup failures
+therefore leave opportunities for uninstall, detach, and replacement; active
+conversation turns still settle before destructive lifecycle operations.
+
 The runtime encrypts persisted secrets with AES-256-GCM using a CSPRNG-generated
 256-bit key and a fresh 96-bit nonce per write. Versioned envelopes authenticate
 their format, key backend, and key identifier. The OS keyring holds the key when

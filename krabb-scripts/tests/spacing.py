@@ -104,6 +104,20 @@ finish();
     assert!(result.ok());
     assert_eq!(result.count(), 1);
     cleanup();
+    let plugins = Plugins::default();
+    plugins.insert(process).await;
+    let original = plugins.get("channel").await.unwrap();
+    assert!(original.ready());
+    save(&destination, values)
+        .unwrap();
+    let reloaded = read_manifest(&root).unwrap();
+    let environment = env_for(&reloaded).unwrap();
+    assert!(environment.contains(&expected));
+    assert!(
+        !environment.contains(&previous)
+    );
+    assert!(ready(&root));
+    remove_dir_all(root).unwrap();
     let status = match result {
         Ready => {
             prepare();
@@ -171,6 +185,24 @@ last";
             self.assertIn(phases, formatted)
             self.assertIn('assert_eq!(result.count(), 1);\n\n    cleanup();', formatted)
             self.assertIn('        },\n\n        Pending => false,', formatted)
+
+            self.assertIn(
+                'let plugins = Plugins::default();\n\n'
+                '    plugins.insert(process).await;\n\n'
+                '    let original = plugins.get("channel").await.unwrap();',
+                formatted,
+            )
+
+            self.assertIn('assert!(original.ready());\n\n    save(', formatted)
+
+            self.assertIn(
+                'let reloaded = read_manifest(&root).unwrap();\n\n'
+                '    let environment = env_for(&reloaded).unwrap();',
+                formatted,
+            )
+
+            self.assertIn('assert!(environment.contains(&expected));\n\n    assert!(\n', formatted)
+            self.assertIn('assert!(ready(&root));\n\n    remove_dir_all(root).unwrap();', formatted)
 
             literals = [('r##"', '"##'), ('let quoted = "first', 'last"'), ('/* outer', '    */')]
 

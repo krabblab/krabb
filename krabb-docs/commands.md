@@ -218,7 +218,7 @@ Install accepts official IDs or one explicit source. Sources may be local
 paths, Git revisions, or HTTPS archives with a `#sha256=` digest. `--link` is
 for local development builds. Installation validates each manifest and stages
 files before activation; a running daemon loads new plugins over local IPC.
-Interactive install, update, and import operations show an in-place spinner.
+Interactive install, uninstall, update, and import operations show an in-place spinner.
 Plugin results use one-line tree entries; failed installs and updates point to
 the current application log file. Update previews also show the failure reason.
 `plugin list` distinguishes present and missing binaries and shows credential
@@ -229,6 +229,10 @@ confirmation. Uninstall accepts multiple plugin IDs and confirms the batch once;
 the last model or channel plugin can require deleting dependent session or
 delivery state; `--force` with confirmation performs that purge. See
 [Plugins](plugins.md) for manifests, permissions, and update behavior.
+
+Uninstall waits for active work, including an in-flight channel poll, to settle.
+Idle channel retry backoff does not keep uninstall waiting across repeated restart
+failures. The spinner remains visible while a single plugin or a batch is removed.
 
 Use `plugin install` (alias `add`) to install and activate a plugin, and
 `plugin uninstall` (alias `remove`) to remove it. Installing does not require a
