@@ -151,6 +151,14 @@ schemas, and images, not each model's exact tokenizer. API adapters reserve up t
 4096 output tokens, at most half a small context; reasoning consumes this space
 as well. Codex sign-in delegates generation limits to its harness. Summarization
 is bounded to 16 batches within the turn deadline and disables tools and search.
+Long histories compact a bounded prefix first; any remaining overflow is truncated
+from the oldest unprocessed turns while retaining the summary when it fits. A single
+entry larger than the entire compaction allowance uses bounded summarization input;
+its remaining detail can be lost. Exceeding the history workload no longer rejects
+the whole turn before automatic compaction. Explicit manual compaction still rejects
+multi-message workloads above that allowance rather than claiming to summarize unseen
+messages; subsequent turns can compact them incrementally. Local context-limit rejections produce one failure
+reply and do not restart the provider or requeue the message.
 It adds model work only when needed and can incur provider usage charges. A model
 that cannot produce a summary fails the turn instead of silently discarding history.
 Model metadata and summary caches are bounded; metadata refreshes after five minutes.

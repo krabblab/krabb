@@ -145,6 +145,7 @@ async fn handle(
     let _lifecycle = if matches!(
         request.method.as_str(),
         "plugin.uninstall"
+            | "plugin.update"
             | "plugin.unload"
             | "plugin.detach"
             | "delivery.drop"
@@ -171,6 +172,7 @@ async fn handle(
     }
 
     let response = match request.method.as_str() {
+        "plugin.update" => update(&request, &state).await,
         "plugin.load" => load(&request, &state).await,
         "plugin.attach" => attach(&request, &state).await,
         "plugin.setup" => setup(&request, &state).await,
@@ -1414,6 +1416,25 @@ async fn setup(request: &IpcRequest, state: &State) -> IpcResponse {
     }
 
     load(request, state).await
+}
+
+async fn update(request: &IpcRequest, state: &State) -> IpcResponse {
+    let (Some(id), Some(snapshot), Some(hash)) = (
+        request.params["id"].as_str(),
+        request.params["snapshot"].as_str(),
+        request.params["hash"].as_str(),
+    ) else {
+        return IpcResponse::fail(
+            request.id,
+            -32602,
+            "Plugin update requires ID, snapshot and hash.",
+        );
+    };
+
+    match super::updates::replace(&state.home, &state.plugins, id, snapshot, hash).await {
+        Ok(value) => IpcResponse::ok(request.id, value),
+        Err(error) => IpcResponse::fail(request.id, -32000, error.to_string()),
+    }
 }
 
 async fn load(request: &IpcRequest, state: &State) -> IpcResponse {

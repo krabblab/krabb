@@ -230,8 +230,8 @@ files before activation; a running daemon loads new plugins over local IPC.
 Interactive install, uninstall, update, and import operations show an in-place spinner.
 Plugin install, uninstall, and update also print plain status lines to stderr
 when it is redirected. Update progress covers checking sources, preparing the
-update, waiting for active plugins to unload, applying changes, and reloading
-plugins. Installation identifies the plugin being installed and activated;
+update, and validating each replacement while its current process stays loaded.
+Existing work finishes before the replacement takes over. Installation identifies the plugin being installed and activated;
 uninstallation identifies the plugin being removed. Spinners clear before
 prompts and results. `--json` suppresses these progress messages.
 Plugin results use one-line tree entries; failed installs and updates point to
@@ -240,7 +240,12 @@ the current application log file. Update previews also show the failure reason.
 setup commands. Binary presence does not mean a plugin is authenticated or active.
 
 `plugin update` previews changes, then replaces changed plugins after
-confirmation. Uninstall accepts multiple plugin IDs and confirms the batch once;
+confirmation, including reviewed changes to capabilities, permissions, secret names,
+settings, and commands. Reinstallation is not needed for these changes. `--yes` accepts
+the saved preview; stale or modified candidates are rejected. Running plugins stay
+registered during preparation and are replaced at a safe turn boundary. Installation
+activation errors print their cause and return a failure exit status.
+Uninstall accepts multiple plugin IDs and confirms the batch once;
 the last model or channel plugin can require deleting dependent session or
 delivery state; `--force` with confirmation performs that purge. See
 [Plugins](plugins.md) for manifests, permissions, and update behavior.

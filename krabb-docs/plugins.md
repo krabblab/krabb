@@ -86,8 +86,12 @@ It passes the result to the plugin on launch and reload, so services do not need
 extra environment entries. Plugin-specific validation remains in the plugin.
 
 Manifest and lock records without `settings` keep their existing behavior.
-Settings and defaults are recorded in the plugin lock; changing them requires
-the same explicit installation review as changing secret declarations.
+Settings and defaults are recorded in the plugin lock. Update previews show before/after
+capabilities, permissions, secret names, settings, and commands. Confirming the update
+also accepts these declaration changes; a separate reinstall is unnecessary. `--yes`
+authorizes the saved preview, or creates and applies one when none exists. Credential
+values never appear in the preview. Invalid declarations and incompatible protocols
+remain errors.
 
 For a custom sign-in flow, declare a command named after your plugin and implement
 a subcommand such as `login`. Krabb delegates it to the plugin, as with
@@ -356,12 +360,27 @@ available without restarting the daemon or reinstalling the core. When no
 daemon is running, it is discovered at the next daemon start. A selected model
 plugin loads when installed and reports missing authentication when a request
 needs it. Channel plugins load only when their required credentials are ready;
-an activation error leaves the verified plugin installed and reports the reason.
-`plugin uninstall` unloads an active process before deleting its files. `plugin
-update` unloads active plugin processes before replacing their files, then
-starts those plugins again through IPC. Inactive plugins remain inactive, and
-the daemon itself does not restart. Active plugins are unavailable while
-updates are fetched, validated, and activated. If the daemon is stopped,
+an activation error leaves the verified plugin installed, prints the reason, and returns
+a failure exit status. `krabb doctor` checks local installation integrity; use
+`krabb status` to check runtime availability. After upgrading the daemon binary itself,
+restart the service once so it understands new host capabilities.
+
+`plugin uninstall` unloads an active process before deleting its files. `plugin update`
+prepares and starts each replacement while the old process remains registered. Existing
+turns finish normally; new work queues during the handover instead of seeing a missing
+plugin. The daemon commits the files and lock record, swaps the registry entry, then
+stops the old process. Startup or commit failure keeps the old process and restores
+installed state. Inactive plugins stay inactive, and the daemon does not restart.
+An update can wait for a long turn; if work does not settle within 310 seconds, it
+leaves the old plugin running and reports that the update was deferred. This is a
+graceful handover, not a guarantee of unchanged request latency.
+
+Running processes use private executable copies, so replacing installed files does not
+change the executable used by an existing turn or its recovery. Copies are removed on
+shutdown; startup reclaims abandoned copies without deleting leased live images.
+An older running daemon that lacks the update operation is left untouched and receives
+an actionable upgrade/restart message. Offline updates hold the daemon lock.
+
 When a plugin changes its capabilities, permissions, secrets, settings, or protocol
 range, bump its version and update its README and release matrix. Keep explicit
 Git revisions pinned for reproducible deployments. Never place credentials in

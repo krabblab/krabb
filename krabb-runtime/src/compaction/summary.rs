@@ -26,7 +26,7 @@ pub(super) async fn summarize(
     deadline: Instant,
 ) -> Result<String> {
     let budget = profile.window.unwrap().input()?;
-    let batch_budget = budget.saturating_sub(target + context::text_tokens(INSTRUCTIONS) + 384);
+    let batch_budget = batch_budget(budget, target);
 
     if batch_budget < 128 || target == 0 {
         return Err(Error::Limit("The model context is too small to summarize history.".into()));
@@ -114,7 +114,7 @@ pub(super) async fn summarize(
                 .iter()
                 .any(|event| matches!(event, krabb_core::types::Event::Tool { .. }))
             {
-                return Err(Error::Protocol(
+                return Err(Error::Denied(
                     "Compaction requested a tool instead of a summary.".into(),
                 ));
             }
@@ -123,7 +123,7 @@ pub(super) async fn summarize(
         };
 
         if next.trim().is_empty() {
-            return Err(Error::Protocol("The model returned an empty compaction summary.".into()));
+            return Err(Error::Denied("The model returned an empty compaction summary.".into()));
         }
 
         // Enforce the rolling budget even if a provider ignores its requested output cap.
@@ -131,6 +131,46 @@ pub(super) async fn summarize(
     }
 
     Ok(summary)
+}
+
+fn batch_budget(budget: u64, target: u64) -> u64 {
+    budget.saturating_sub(target + context::text_tokens(INSTRUCTIONS) + 384)
+}
+
+/// Compact a bounded prefix, leaving the remaining history for the final fit check.
+pub(super) fn prefix(messages: &[Message], budget: u64, target: u64) -> usize {
+    let capacity = batch_budget(budget, target).saturating_mul(BATCHES as u64);
+    let mut used = 0_u64;
+    let mut end = 0;
+
+    for message in messages {
+        let cost = message.content.iter().fold(0_u64, |sum, part| {
+            let text = match part {
+                Content::Image { alt, .. } => alt.as_deref().unwrap_or("[image]").to_owned(),
+                part => part.render(),
+            };
+
+            sum.saturating_add(context::text_tokens(&text) + 16)
+        });
+
+        if end > 0 && used.saturating_add(cost) > capacity {
+            break;
+        }
+
+        used = used.saturating_add(cost);
+        end += 1;
+    }
+
+    // Retain complete tool exchanges with their user turn whenever possible.
+    if end < messages.len()
+        && messages[end].role != Role::User
+        && let Some(boundary) = messages[..end].iter().rposition(|item| item.role == Role::User)
+        && boundary > 0
+    {
+        end = boundary;
+    }
+
+    end
 }
 
 pub(super) fn text(session: &str, role: Role, text: String) -> Message {
@@ -184,9 +224,19 @@ pub(super) fn batches(messages: &[Message], tokens: u64) -> Result<Vec<String>> 
 
                 if part.is_empty() {
                     if batches.len() == BATCHES {
-                        return Err(Error::Limit(
-                            "History exceeds the bounded compaction workload.".into(),
-                        ));
+                        if messages.len() > 1 {
+                            return Err(Error::Limit(
+                                "Manual compaction exceeds the bounded workload; continue the \
+                                 conversation to compact history incrementally."
+                                    .into(),
+                            ));
+                        }
+
+                        tracing::warn!(
+                            "Oversized history entry exceeded compaction capacity; \
+                             its remaining text was omitted from summarization input."
+                        );
+                        return Ok(batches);
                     }
 
                     batches.push(String::new());

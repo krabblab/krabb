@@ -215,6 +215,72 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
 }
 
 #[tokio::test]
+async fn local_context_rejection_sends_once_per_message_without_restarting_or_requeueing() {
+    let root = test_root("channel-local-limit");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let script = MODEL.replace("['model']", "['model','context']")
+        .replace("    elif method == 'generate':", "    elif method == 'model.info':\n        response['result'] = {'window': {'tokens': 64, 'output': 32}}\n    elif method == 'generate':")
+        .replace("    if method == 'hello':", "    if method == 'hello':\n        with (root / 'starts').open('a') as log: log.write('start\\n')");
+
+    let channel = Process::start_with("python3", ["-u", "-c", CHANNEL, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let model = Process::start_with("python3", ["-u", "-c", &script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let plugins = registry([channel, model]).await;
+
+    let sessions =
+        Arc::new(Mutex::new(crate::state::Store::load(root.join("sessions.json")).unwrap()));
+
+    let stop = Arc::new(Stop::new());
+    let monitor_root = root.clone();
+    let signal = Arc::clone(&stop);
+
+    let monitor = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while requests(&monitor_root).iter().filter(|item| item["method"] == "send").count() < 2
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        })
+        .await
+        .unwrap();
+        signal.signal();
+    });
+
+    crate::bridge(
+        &plugins,
+        "telegram",
+        "fixture",
+        "small",
+        Arc::clone(&sessions),
+        Arc::clone(&stop),
+        Arc::new(Mutex::new(BTreeMap::new())),
+        BTreeMap::new(),
+        crate::ApprovalMode::Off,
+    )
+    .await
+    .unwrap();
+
+    monitor.await.unwrap();
+    crate::tests::stop_registry(&plugins).await;
+
+    assert_eq!(requests(&root).iter().filter(|item| item["method"] == "send").count(), 2);
+    assert_eq!(fs::read_to_string(root.join("starts")).unwrap(), "start\n");
+    assert!(!root.join("generated").exists());
+    assert!(sessions.lock().unwrap().sessions["telegram-7-thread-4"].queued.is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn typing_is_optional_and_bounded() {
     for (name, handler) in [
         ("unsupported", "response = {'error': {'code': -32601, 'message': 'Unknown method'}}"),
