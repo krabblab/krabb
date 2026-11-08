@@ -571,3 +571,82 @@ fn bulk_drop_rolls_back_if_catalog_cannot_be_saved() {
 
     std::fs::remove_dir_all(&state.home).unwrap();
 }
+
+#[tokio::test]
+async fn update_command_uses_authenticated_handover_and_reviews_new_declarations() {
+    let state = Arc::new(super::tests::state_at("live-update-command"));
+
+    crate::init_at(&state.home).unwrap();
+
+    let source = state.home.join("source");
+
+    std::fs::create_dir_all(source.join("bin")).unwrap();
+
+    let manifest = source.join("krabb-plugin.toml");
+    let binary = source.join("bin").join(crate::plugin_name("memory"));
+
+    let write = |version, extra: &str| {
+        std::fs::write(&manifest, format!(
+            "id='memory'\nversion='{version}'\nprotocol={{major=0,minor=1}}\ncapabilities=['memory']\n{extra}"
+        )).unwrap();
+        crate::tests::write_test_plugin(&binary, "memory", "memory", version);
+    };
+
+    write("0.1.0", "");
+
+    crate::link_at(
+        crate::Source {
+            id: "memory".into(),
+            source: Some(source.display().to_string()),
+            revision: None,
+            yes: true,
+        },
+        false,
+        &state.home,
+    )
+    .unwrap();
+
+    crate::load_plugin(&state.home, "memory", None, false, &state.config, &state.plugins)
+        .await
+        .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+    std::fs::write(state.home.join("ipc.port"), listener.local_addr().unwrap().port().to_string())
+        .unwrap();
+    std::fs::write(state.home.join("ipc.token"), "secret").unwrap();
+
+    let server = tokio::spawn(serve(listener, Arc::clone(&state)));
+
+    assert!(
+        call(&state.home, "plugin.update", json!({}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("requires")
+    );
+
+    for (version, json) in [("0.2.0", false), ("0.3.0", true)] {
+        write(version, "permissions=['network']\n");
+        crate::preview_updates_at(&state.home, json).unwrap();
+        crate::update_plugins_at(&state.home, true, json).await.unwrap();
+
+        assert_eq!(state.plugins.get("memory").await.unwrap().hello.version, version);
+    }
+
+    // A changed candidate fails without unloading or replacing the active generation.
+    write("0.4.0", "");
+    crate::preview_updates_at(&state.home, true).unwrap();
+
+    let snapshot = crate::load_update_preview_snapshot_at(&state.home).unwrap();
+
+    std::fs::write(&snapshot.candidates["memory"].binary, "changed").unwrap();
+
+    assert!(crate::updates::apply(&state.home, true, &snapshot).await.is_err());
+    assert_eq!(state.plugins.get("memory").await.unwrap().hello.version, "0.3.0");
+
+    state.stop.signal();
+    server.await.unwrap().unwrap();
+    crate::tests::stop_registry(&state.plugins).await;
+    std::fs::remove_dir_all(&state.home).unwrap();
+}

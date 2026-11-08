@@ -149,9 +149,15 @@ purge, guard checks, and removal hold the daemon lock throughout. The bridge wak
 when a channel or model is added, so a daemon need not restart to
 discover it. Selected model plugins load when installed; their own request
 handling reports missing authentication. Channels still load only when their
-credentials are ready. `plugin update` unloads active plugin processes before replacing
-their files, then reloads the same active set; inactive plugins stay inactive
-and the daemon process remains running.
+credentials are ready. `plugin update` sends an authenticated `plugin.update` request
+bound to the confirmed snapshot and its content hash. The daemon stages and starts
+one candidate while the old process serves. It reserves the lifecycle at a turn
+boundary, commits files and metadata with rollback, and atomically replaces the live
+registry entry before retiring the old process. New turns wait during the handover;
+no active turn is cancelled or replayed. Inactive plugins stay inactive. Private,
+leased executable images keep running and restarted processes independent of mutable
+installed paths, including on Windows. Preparation failure leaves the old process
+serving; commit failure restores the old installation. The daemon stays running.
 
 `plugin detach` uses authenticated `plugin.detach` with the same exclusive lifecycle
 reservation, retaining installation and durable state. `plugin attach` loads an inactive

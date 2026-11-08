@@ -41,7 +41,10 @@ impl Cleanup {
             .as_mut()
             .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?;
         let result = process.context.summarize(&mut process.inner, input, id, deadline).await;
-        call.armed = result.is_err();
+        call.armed = result.as_ref().is_err_and(|error| {
+            !matches!(error, krabb_core::Error::Limit(_) | krabb_core::Error::Denied(_))
+        });
+
         result
     }
 
@@ -155,6 +158,7 @@ pub(crate) struct Process {
     inner: CoreProcess,
     containers: Option<Containers>,
     pub context: super::compaction::Context,
+    pub image: Option<super::updates::Image>,
 }
 
 struct Containers {
@@ -164,7 +168,12 @@ struct Containers {
 
 impl From<CoreProcess> for Process {
     fn from(inner: CoreProcess) -> Self {
-        Self { inner, containers: None, context: super::compaction::Context::default() }
+        Self {
+            inner,
+            containers: None,
+            context: super::compaction::Context::default(),
+            image: None,
+        }
     }
 }
 
@@ -240,7 +249,18 @@ impl Process {
     {
         let deadline = tokio::time::Instant::now() + limit;
 
-        self.context.prepare(&mut self.inner, &mut request, deadline).await?;
+        let id = request.id();
+
+        if let Err(error) = self.context.prepare(&mut self.inner, &mut request, deadline).await {
+            if matches!(error, krabb_core::Error::Limit(_) | krabb_core::Error::Denied(_))
+                && let Some(id) = id
+            {
+                return Ok(krabb_core::types::Response::fail(id, -32000, error.to_string()));
+            }
+
+            return Err(error);
+        }
+
         let key = super::compaction::Key::from_request(&request);
         let response = self
             .inner
@@ -330,7 +350,7 @@ impl Process {
             }
         };
 
-        Ok(Self { inner, containers, context: super::compaction::Context::default() })
+        Ok(Self { inner, containers, context: super::compaction::Context::default(), image: None })
     }
 
     pub async fn restart(&mut self) -> Result<()> {

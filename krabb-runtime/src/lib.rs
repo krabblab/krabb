@@ -5,10 +5,8 @@ mod templates;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    future::Future,
     io::{BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    pin::Pin,
     process::{ExitCode, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -61,6 +59,7 @@ mod sharing;
 pub(crate) mod state;
 mod storage;
 pub(crate) mod terminal;
+mod updates;
 mod worktree;
 use process::Process;
 
@@ -131,8 +130,6 @@ const COMMAND_OUTPUT: usize = 2 * 1024 * 1024;
 const ACK_ATTEMPTS: u32 = 3;
 const TOOL_CALL_PROTOCOL_MINOR: u16 = 1;
 type PluginError = Box<dyn std::error::Error + Send + Sync>;
-type PluginControl = Result<Option<serde_json::Value>, PluginError>;
-type PluginTask = Pin<Box<dyn Future<Output = PluginControl> + Send>>;
 
 pub(crate) struct Stop {
     signal: watch::Sender<bool>,
@@ -6954,6 +6951,8 @@ fn lock_at_timeout(
 fn recover_plugins(root: &Path) -> std::io::Result<()> {
     let _plugins_lock = lock_at(root, ".plugins.lock")?;
 
+    updates::Image::clean(root)?;
+
     let lock = load_lock_at(root).map_err(std::io::Error::other)?;
     let plugins = root.join("plugins");
 
@@ -7097,12 +7096,21 @@ async fn launch(
         }
     }
 
+    let expected_hash = digest(&manifest_path, &path)?;
+    let image = updates::Image::new(root, &path)?;
+
+    if digest(&manifest_path, &image.binary)? != expected_hash {
+        return Err("Plugin executable changed while preparing its running image.".into());
+    }
+
     let mut process = Process::start_with_env(
-        path,
+        &image.binary,
         std::iter::empty::<&std::ffi::OsStr>(),
         env_for(&manifest, config, root)?,
     )
     .await?;
+
+    process.image = Some(image);
 
     if let Some(stderr) = process.take_stderr() {
         capture_plugin_stderr(expected.to_owned(), stderr);
@@ -7123,6 +7131,7 @@ async fn launch(
     actual_commands.sort_by(|left, right| left.name.cmp(&right.name));
 
     if process.hello.id != expected
+        || process.hello.version != manifest.version
         || capability.is_some_and(|capability| !process.hello.capabilities.contains(&capability))
         || expected_capabilities != actual_capabilities
         || expected_commands != actual_commands
@@ -14062,7 +14071,8 @@ fn doctor_at(
 
         let health = if healthy { "healthy" } else { "unhealthy" };
 
-        println!("Krabb is {health}. Its home directory is {}.", root.display());
+        println!("Krabb local installation is {health}. Its home directory is {}.", root.display());
+        println!("Runtime activation is checked separately with `krabb status`.");
         println!("\nThe configuration is {config_status}.");
         println!("The plugins directory is {plugins_status}.");
         println!("The workspace is {workspace_status}.");
@@ -17011,10 +17021,26 @@ async fn plugin(
                 }
 
                 if !activation_errors.is_empty() {
+                    for failure in &activation_errors {
+                        println!(
+                            "\n{}: {}",
+                            failure["id"].as_str().unwrap_or("plugin"),
+                            diagnostic(failure["error"].as_str().unwrap_or("Activation failed."))
+                        );
+                    }
+
                     println!("\n{}", plugin_log_hint("failed activation"));
                 } else if installed.len() == total && !waiting_for_credentials {
                     println!("\n{}", plugin_service_guidance(service_path().is_file()));
                 }
+            }
+
+            if !activation_errors.is_empty() {
+                return Err(
+                    "Plugins were installed, but activation failed; inspect the errors above. \
+                    If the daemon was upgraded, restart it with `krabb service restart`."
+                        .into(),
+                );
             }
         }
 
@@ -17484,13 +17510,6 @@ async fn activate_at(
     control_at("plugin.load", serde_json::json!({"id": id}), root).await
 }
 
-async fn unload_at(
-    root: &Path,
-    id: &str,
-) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
-    control_at("plugin.unload", serde_json::json!({"id": id}), root).await
-}
-
 async fn active_at(
     root: &Path,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -17557,141 +17576,13 @@ async fn update_plugins_at(
         return update_at_with_previews(root, json, &previews.candidates, true);
     }
 
-    let active = active_at(root).await?;
+    if active_at(root).await?.is_none() {
+        let _offline = offline_lock(root)?;
 
-    drop(spinner);
-
-    let Some(active) = active else {
         return update_at_with_previews(root, json, &previews.candidates, true);
-    };
-
-    let active = active.into_iter().filter(|id| changed.contains(id)).collect();
-
-    let unload_root = root.to_path_buf();
-    let activate_root = root.to_path_buf();
-
-    update_live(
-        root,
-        json,
-        active,
-        Some(&previews.candidates),
-        move |id| {
-            let root = unload_root.clone();
-            Box::pin(async move { unload_at(&root, &id).await })
-        },
-        move |id| {
-            let root = activate_root.clone();
-            Box::pin(async move { activate_at(&root, &id).await })
-        },
-    )
-    .await
-}
-
-async fn update_live<U, A>(
-    root: &Path,
-    json: bool,
-    active: Vec<String>,
-    previews: Option<&BTreeMap<String, UpdateCandidate>>,
-    mut unload: U,
-    mut activate: A,
-) -> Result<(), PluginError>
-where
-    U: FnMut(String) -> PluginTask,
-    A: FnMut(String) -> PluginTask,
-{
-    if active.is_empty() {
-        return match previews {
-            Some(previews) => update_at_with_previews(root, json, previews, true),
-            None => update_at(root, json, true),
-        };
     }
 
-    let mut unloaded = Vec::with_capacity(active.len());
-
-    for id in &active {
-        let spinner =
-            terminal::progress(format!("Updating plugins: waiting for {id} to unload..."), json);
-
-        let result = unload(id.clone()).await;
-
-        drop(spinner);
-
-        match result {
-            Ok(Some(value)) if value["unloaded"] == true => unloaded.push(id.clone()),
-
-            Ok(Some(_)) => {}
-
-            Ok(None) => {
-                let restore = restore_plugins(&unloaded, json, &mut activate).await;
-
-                return Err(format!(
-                    "The daemon became unavailable before {id} could be unloaded.{}",
-                    restore
-                )
-                .into());
-            }
-
-            Err(error) => {
-                let restore = restore_plugins(&unloaded, json, &mut activate).await;
-
-                return Err(format!(
-                    "Could not unload {id} before updating plugins: {}.{}",
-                    sentence(error.to_string()),
-                    restore
-                )
-                .into());
-            }
-        }
-    }
-
-    let update = match previews {
-        Some(previews) => update_at_with_previews(root, json, previews, true),
-        None => update_at(root, json, true),
-    };
-
-    let restore = restore_plugins(&unloaded, json, &mut activate).await;
-
-    match (update, restore.is_empty()) {
-        (Ok(()), true) => Ok(()),
-
-        (Ok(()), false) => {
-            if !json {
-                println!();
-            }
-
-            Err(format!("Plugins were updated, but runtime activation was incomplete.\n{restore}")
-                .into())
-        }
-
-        (Err(error), true) => Err(error),
-        (Err(error), false) => Err(format!(
-            "Plugin updates failed: {} Runtime restoration was also incomplete.{}",
-            sentence(error.to_string()),
-            restore
-        )
-        .into()),
-    }
-}
-
-async fn restore_plugins<A>(ids: &[String], json: bool, activate: &mut A) -> String
-where
-    A: FnMut(String) -> PluginTask,
-{
-    let mut failures = Vec::new();
-
-    for id in ids {
-        let _progress = terminal::progress(format!("Reloading plugin {id}..."), json);
-
-        match activate(id.clone()).await {
-            Ok(Some(_)) => {}
-            Ok(None) => failures.push(format!(
-                "{id} could not be reloaded because the background runtime is unavailable; it will load when the background runtime starts."
-            )),
-            Err(error) => failures.push(format!("{id} could not be reloaded: {}", sentence(error.to_string()))),
-        }
-    }
-
-    if failures.is_empty() { String::new() } else { failures.join("\n") }
+    updates::apply(root, json, &previews).await
 }
 
 fn update_at(
@@ -17945,6 +17836,7 @@ fn preview_updates_at_inner(
                 "current_revision": entry.revision,
                 "available_revision": candidate.source_revision,
                 "contents_changed": candidate.hash != entry.hash,
+                "declarations": updates::declarations(entry, &candidate.manifest),
             }));
         }
     }
@@ -17996,7 +17888,7 @@ fn preview_updates_at_inner(
 
                 section.push(format_tree_entry(
                     &format!("{id}@v{current} → v{available}{detail}"),
-                    &[],
+                    &updates::review(&update["declarations"]),
                     index + 1 == updates.len(),
                 ));
             }
@@ -18126,6 +18018,17 @@ fn load_update_preview_snapshot_at(
             binary,
         };
 
+        std::fs::write(
+            candidate.source_path.join("preview.json"),
+            serde_json::to_vec(&UpdatePreviewRecord {
+                base_hash: candidate.base_hash.clone(),
+                base_revision: candidate.base_revision.clone(),
+                base_version: candidate.base_version.clone(),
+                hash: candidate.hash.clone(),
+                source_revision: candidate.source_revision.clone(),
+            })?,
+        )?;
+
         candidates.insert(id.clone(), validate_update_candidate(home_root, id, entry, &candidate)?);
     }
 
@@ -18187,18 +18090,6 @@ fn inspect_update(
 
     if !Protocol::CURRENT.compatible(manifest.protocol) {
         return Err(format!("Plugin {id} requires unsupported protocol.").into());
-    }
-
-    if manifest.capabilities != entry.capabilities
-        || manifest.permissions != entry.permissions
-        || manifest.variables != entry.variables
-        || manifest.settings != entry.settings
-        || manifest.commands != entry.commands
-    {
-        return Err(format!(
-            "Plugin {id} changes declared capabilities, permissions, secrets, settings, or commands; review it with plugin install --link --yes."
-        )
-        .into());
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
@@ -18264,7 +18155,14 @@ fn load_update_preview_at(
     id: &str,
     entry: &Entry,
 ) -> Result<Option<UpdateCandidate>, Box<dyn std::error::Error + Send + Sync>> {
-    let root = home_root.join(".plugin-update-preview").join(id);
+    load_update_candidate_at(&home_root.join(".plugin-update-preview").join(id), id, entry)
+}
+
+fn load_update_candidate_at(
+    root: &Path,
+    id: &str,
+    entry: &Entry,
+) -> Result<Option<UpdateCandidate>, PluginError> {
     let record_path = root.join("preview.json");
 
     if !record_path.is_file() {
@@ -18284,7 +18182,7 @@ fn load_update_preview_at(
 
     let binary = root.join("bin").join(plugin_name(id));
 
-    let manifest = read_manifest(&root)
+    let manifest = read_manifest(root)
         .ok_or_else(|| format!("Saved update preview for {id} has no manifest."))?;
 
     Ok(Some(UpdateCandidate {
@@ -18294,7 +18192,7 @@ fn load_update_preview_at(
         base_hash: record.base_hash,
         base_revision: record.base_revision,
         base_version: record.base_version,
-        source_path: root,
+        source_path: root.to_path_buf(),
         binary,
     }))
 }
@@ -18320,18 +18218,6 @@ fn validate_update_candidate(
 
     if manifest.id != id || !Protocol::CURRENT.compatible(manifest.protocol) {
         return Err(format!("Saved update preview for {id} is invalid.").into());
-    }
-
-    if manifest.capabilities != entry.capabilities
-        || manifest.permissions != entry.permissions
-        || manifest.variables != entry.variables
-        || manifest.settings != entry.settings
-        || manifest.commands != entry.commands
-    {
-        return Err(format!(
-            "Saved update preview for {id} changes declared capabilities or permissions."
-        )
-        .into());
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
@@ -18360,7 +18246,22 @@ fn update_one(
     id: &str,
     entry: &Entry,
     preview: Option<&UpdateCandidate>,
-) -> Result<(Manifest, String, String, Update), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Manifest, String, String, Update), PluginError> {
+    let (manifest, hash, revision, stage) = prepare_update(home_root, id, entry, preview, true)?;
+
+    let update = stage.promote()?;
+
+    Ok((manifest, hash, revision, update))
+}
+
+fn prepare_update(
+    home_root: &Path,
+    id: &str,
+    entry: &Entry,
+    preview: Option<&UpdateCandidate>,
+    check_health: bool,
+) -> Result<(Manifest, String, String, updates::Prepared), Box<dyn std::error::Error + Send + Sync>>
+{
     if !valid(id) {
         return Err(format!("Invalid plugin ID: {id}.").into());
     }
@@ -18390,18 +18291,6 @@ fn update_one(
 
     if !Protocol::CURRENT.compatible(manifest.protocol) {
         return Err(format!("Plugin {id} requires unsupported protocol.").into());
-    }
-
-    if manifest.capabilities != entry.capabilities
-        || manifest.permissions != entry.permissions
-        || manifest.variables != entry.variables
-        || manifest.settings != entry.settings
-        || manifest.commands != entry.commands
-    {
-        return Err(format!(
-            "Plugin {id} changes declared capabilities, permissions, secrets, settings, or commands; review it with plugin install --link --yes."
-        )
-        .into());
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
@@ -18462,52 +18351,45 @@ fn update_one(
 
     let had_destination = destination.exists();
 
-    let result = (|| -> Result<(String, Update), Box<dyn std::error::Error + Send + Sync>> {
-        std::fs::create_dir_all(stage.join("bin"))?;
-        std::fs::copy(source_path.join("krabb-plugin.toml"), stage.join("krabb-plugin.toml"))?;
+    let result =
+        (|| -> Result<(String, updates::Prepared), Box<dyn std::error::Error + Send + Sync>> {
+            std::fs::create_dir_all(stage.join("bin"))?;
+            std::fs::copy(source_path.join("krabb-plugin.toml"), stage.join("krabb-plugin.toml"))?;
 
-        let staged = stage.join("bin").join(&name);
+            let staged = stage.join("bin").join(&name);
 
-        if linked {
-            link_binary(&binary, &staged)?;
-        } else {
-            copy_binary(&binary, &staged)?;
-        }
-
-        let hash = digest(&stage.join("krabb-plugin.toml"), &staged)?;
-
-        if preview_hash.is_some_and(|expected| expected != hash) {
-            return Err("The saved plugin update candidate changed while staging.".into());
-        }
-
-        let config = load_config_at(home_root)?;
-
-        config
-            .validate()
-            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
-        health(home_root, staged.clone(), id, &config)?;
-
-        if had_destination {
-            std::fs::rename(&destination, &backup)?;
-        }
-
-        if let Err(error) = std::fs::rename(&stage, &destination) {
-            if backup.exists() {
-                let _ = std::fs::rename(&backup, &destination);
+            if linked {
+                link_binary(&binary, &staged)?;
+            } else {
+                copy_binary(&binary, &staged)?;
             }
 
-            return Err(error.into());
-        }
+            let hash = digest(&stage.join("krabb-plugin.toml"), &staged)?;
 
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((
-            hash,
-            Update {
-                destination: destination.clone(),
-                backup: had_destination.then_some(backup.clone()),
-                linked,
-            },
-        ))
-    })();
+            if preview_hash.is_some_and(|expected| expected != hash) {
+                return Err("The saved plugin update candidate changed while staging.".into());
+            }
+
+            let config = load_config_at(home_root)?;
+
+            config
+                .validate()
+                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+
+            if check_health {
+                health(home_root, staged.clone(), id, &config)?;
+            }
+
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((
+                hash,
+                updates::Prepared {
+                    stage: stage.clone(),
+                    destination: destination.clone(),
+                    backup: had_destination.then_some(backup.clone()),
+                    linked,
+                },
+            ))
+        })();
 
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&stage);
@@ -28647,6 +28529,13 @@ done
             fs::set_permissions(plugin_root.join("bin").join(&memory_binary), permissions).unwrap();
         }
 
+        write_test_plugin(
+            &plugin_root.join("bin").join(&memory_binary),
+            "memory",
+            "memory",
+            "0.2.0",
+        );
+
         update_at(&root, true, false).unwrap();
 
         assert_eq!(read_manifest(&root.join("plugins/memory")).unwrap().version, "0.2.0");
@@ -29114,192 +29003,6 @@ done
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn updates_active_plugins_without_restarting_the_daemon() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = test_root("plugin-update-live");
-        let _ = fs::remove_dir_all(&root);
-
-        super::init_at(&root).unwrap();
-
-        for (id, capability) in [("memory", "memory"), ("tools", "tool")] {
-            let source = root.join("sources").join(id);
-
-            fs::create_dir_all(source.join("bin")).unwrap();
-
-            fs::write(
-                source.join("krabb-plugin.toml"),
-                format!(
-                    "id = '{id}'\nversion = '0.1.0'\nprotocol = {{ major = 0, minor = 1 }}\ncapabilities = ['{capability}']\n"
-                ),
-            )
-            .unwrap();
-
-            let binary = source.join(format!("bin/krabb-plugin-{id}"));
-
-            write_test_plugin(&binary, id, capability, "0.1.0");
-            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-
-            super::link_at(
-                Source {
-                    id: id.into(),
-                    source: Some(source.display().to_string()),
-                    revision: None,
-                    yes: true,
-                },
-                true,
-                &root,
-            )
-            .unwrap();
-        }
-
-        for (id, capability) in [("memory", "memory"), ("tools", "tool")] {
-            let source = root.join("sources").join(id);
-
-            fs::write(
-                source.join("krabb-plugin.toml"),
-                format!(
-                    "id = '{id}'\nversion = '0.2.0'\nprotocol = {{ major = 0, minor = 1 }}\ncapabilities = ['{capability}']\n"
-                ),
-            )
-            .unwrap();
-
-            write_test_plugin(
-                &source.join(format!("bin/krabb-plugin-{id}")),
-                id,
-                capability,
-                "0.2.0",
-            );
-        }
-
-        super::preview_updates_at(&root, false).unwrap();
-
-        let lock = super::load_lock_at(&root).unwrap();
-
-        assert_eq!(lock.plugins["memory"].version, "0.1.0");
-
-        assert_eq!(
-            super::load_update_previews_at(&root)
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["memory", "tools"]
-        );
-
-        let memory_source = root.join("sources/memory");
-
-        fs::write(
-            memory_source.join("krabb-plugin.toml"),
-            "id = 'memory'\nversion = '0.3.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\n",
-        )
-        .unwrap();
-
-        write_test_plugin(
-            &memory_source.join("bin/krabb-plugin-memory"),
-            "memory",
-            "memory",
-            "0.3.0",
-        );
-
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let unload_calls = Arc::clone(&calls);
-
-        let mut unload = move |id: String| {
-            let calls = Arc::clone(&unload_calls);
-            Box::pin(async move {
-                calls.lock().unwrap().push(format!("unload:{id}"));
-                Ok(Some(serde_json::json!({"unloaded": true})))
-            }) as super::PluginTask
-        };
-
-        let activate_calls = Arc::clone(&calls);
-
-        let mut activate = move |id: String| {
-            let calls = Arc::clone(&activate_calls);
-            Box::pin(async move {
-                calls.lock().unwrap().push(format!("activate:{id}"));
-                Ok(Some(serde_json::json!({"loaded": true})))
-            }) as super::PluginTask
-        };
-
-        super::update_live(&root, false, vec!["memory".into()], None, &mut unload, &mut activate)
-            .await
-            .unwrap();
-
-        assert_eq!(*calls.lock().unwrap(), ["unload:memory", "activate:memory"]);
-        assert_eq!(super::load_lock_at(&root).unwrap().plugins["memory"].version, "0.2.0");
-
-        fs::write(
-            root.join("sources/memory/krabb-plugin.toml"),
-            "id = 'memory'\nversion = '0.3.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['memory']\npermissions = ['network']\n",
-        )
-        .unwrap();
-
-        assert!(
-            super::update_live(
-                &root,
-                false,
-                vec!["memory".into()],
-                None,
-                &mut unload,
-                &mut activate,
-            )
-            .await
-            .is_err()
-        );
-
-        assert_eq!(
-            *calls.lock().unwrap(),
-            ["unload:memory", "activate:memory", "unload:memory", "activate:memory"]
-        );
-
-        calls.lock().unwrap().clear();
-
-        let unload_calls = Arc::clone(&calls);
-
-        let mut unload = move |id: String| {
-            let calls = Arc::clone(&unload_calls);
-            Box::pin(async move {
-                calls.lock().unwrap().push(format!("unload:{id}"));
-
-                if id == "tools" {
-                    return Err(std::io::Error::other("Plugin could not stop.").into());
-                }
-
-                Ok(Some(serde_json::json!({"unloaded": true})))
-            }) as super::PluginTask
-        };
-
-        let activate_calls = Arc::clone(&calls);
-
-        let mut activate = move |id: String| {
-            let calls = Arc::clone(&activate_calls);
-            Box::pin(async move {
-                calls.lock().unwrap().push(format!("activate:{id}"));
-                Ok(Some(serde_json::json!({"loaded": true})))
-            }) as super::PluginTask
-        };
-
-        let error = super::update_live(
-            &root,
-            false,
-            vec!["memory".into(), "tools".into()],
-            None,
-            &mut unload,
-            &mut activate,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("Could not unload tools"));
-        assert_eq!(*calls.lock().unwrap(), ["unload:memory", "unload:tools", "activate:memory"]);
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[cfg(unix)]
     #[test]
     fn applying_preview_uses_the_candidate_captured_before_a_later_preview() {
         use std::os::unix::fs::PermissionsExt;
@@ -29668,77 +29371,6 @@ done
         assert!(super::active_ids(serde_json::json!({"items": ["../escape"]})).is_err());
 
         super::update_plugins_at(&root, false, false).await.unwrap();
-
-        let mut unload = |_: String| {
-            Box::pin(async { Ok(Some(serde_json::json!({"unloaded": true}))) }) as super::PluginTask
-        };
-
-        let mut activate = |_: String| Box::pin(async { Ok(None) }) as super::PluginTask;
-
-        let error = super::update_live(
-            &root,
-            false,
-            vec!["memory".into()],
-            None,
-            &mut unload,
-            &mut activate,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("background runtime is unavailable"));
-
-        let mut unload = |id: String| {
-            Box::pin(async move {
-                if id == "tools" {
-                    return Ok(None);
-                }
-
-                Ok(Some(serde_json::json!({"unloaded": true})))
-            }) as super::PluginTask
-        };
-
-        let mut activate = |_: String| {
-            Box::pin(async { Ok(Some(serde_json::json!({"loaded": true}))) }) as super::PluginTask
-        };
-
-        let error = super::update_live(
-            &root,
-            false,
-            vec!["memory".into(), "tools".into()],
-            None,
-            &mut unload,
-            &mut activate,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("before tools could be unloaded"));
-
-        let mut unload = |_: String| {
-            Box::pin(async { Ok(Some(serde_json::json!({"unloaded": true}))) }) as super::PluginTask
-        };
-
-        let mut activate = |id: String| {
-            Box::pin(
-                async move { Err(std::io::Error::other(format!("Could not reload {id}.")).into()) },
-            ) as super::PluginTask
-        };
-
-        let error = super::update_live(
-            &root,
-            false,
-            vec!["memory".into()],
-            None,
-            &mut unload,
-            &mut activate,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            error.to_string().contains("activation was incomplete.\nmemory could not be reloaded")
-        );
 
         let _ = fs::remove_dir_all(root);
     }

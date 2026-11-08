@@ -73,7 +73,11 @@ fn input() -> ModelRequest {
 }
 
 async fn generate(process: &mut crate::process::Process, input: &ModelRequest) -> Result<()> {
-    process.call(Request::call(2, "generate", serde_json::to_value(input)?)).await?;
+    let response = process.call(Request::call(2, "generate", serde_json::to_value(input)?)).await?;
+
+    if let Some(error) = response.error {
+        return Err(Error::Limit(error.message));
+    }
 
     Ok(())
 }
@@ -276,7 +280,22 @@ fn batches_bound_unicode_work_and_do_not_copy_image_data() {
 
     assert!(batches.iter().all(|batch| context::text_tokens(batch) <= 128));
     assert_eq!(batches.concat(), format!("User: {}\n", "你好🙂".repeat(100)));
-    assert!(super::batches(&[text("s", Role::User, "x".repeat(100_000))], 128).is_err());
+
+    assert_eq!(
+        super::batches(&[text("s", Role::User, "x".repeat(100_000))], 128).unwrap().len(),
+        BATCHES
+    );
+
+    assert!(
+        super::batches(
+            &[
+                text("s", Role::User, "x".repeat(100_000)),
+                text("s", Role::User, "Important recent detail".into()),
+            ],
+            128
+        )
+        .is_err()
+    );
 
     let mut image = text("s", Role::User, "".into());
 
@@ -476,5 +495,95 @@ fn all_intelligence_manifests_accept_the_normalized_context_capability() {
         manifest.validate().unwrap();
 
         assert!(manifest.capabilities.iter().any(|capability| capability == "context"));
+    }
+}
+
+#[tokio::test]
+async fn long_history_makes_bounded_progress_and_still_answers_the_current_ping() {
+    let mut process = provider(false, "normal").await;
+
+    let mut input = input();
+    let current = input.messages.pop().unwrap();
+
+    input.messages.truncate(1);
+
+    for index in 0..80 {
+        let mut message = text("session", Role::User, "Old conversation details. ".repeat(250));
+
+        message.id = format!("history-{index}");
+        input.messages.push(message);
+    }
+
+    input.messages.push(current.clone());
+    generate(&mut process, &input).await.unwrap();
+
+    let requests = calls(&mut process).await;
+
+    let summaries = requests
+        .iter()
+        .filter(|request| request["params"]["generation"]["summary"] == true)
+        .count();
+
+    assert!(summaries > 0 && summaries <= BATCHES);
+
+    let sent: ModelRequest = serde_json::from_value(
+        requests.iter().rev().find(|request| request["method"] == "generate").unwrap()["params"]
+            .clone(),
+    )
+    .unwrap();
+
+    assert_eq!(sent.messages.last().unwrap(), &current);
+    assert_eq!(sent.messages[0], input.messages[0]);
+    assert!(sent.messages.iter().any(|item| item.sender.as_deref() == Some("compaction")));
+    assert!(context::estimate(&sent.messages, &sent.tools) <= 2048);
+
+    let record = process.context.record("small", None, "session").unwrap();
+    let mut persisted = input.messages.clone();
+
+    assert!(record.apply(&mut persisted).unwrap());
+    assert!(persisted.iter().any(|item| item.id == "history-79"));
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn local_context_limits_are_rejections_and_leave_the_process_usable() {
+    let mut process = provider(false, "normal").await;
+    let mut input = input();
+
+    input.messages = vec![text("session", Role::User, "large ".repeat(8000))];
+
+    let response = process
+        .call(Request::call(2, "generate", serde_json::to_value(input).unwrap()))
+        .await
+        .unwrap();
+
+    assert!(response.error.unwrap().message.contains("current turn exceed"));
+
+    let requests = calls(&mut process).await;
+
+    assert_eq!(requests.iter().filter(|request| request["method"] == "hello").count(), 1);
+    assert!(!requests.iter().any(|request| request["method"] == "generate"));
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn empty_or_tool_compaction_replies_are_rejections_without_restarting_the_process() {
+    for mode in ["empty", "tool"] {
+        let mut process = provider(false, mode).await;
+
+        let response = process
+            .call(Request::call(2, "generate", serde_json::to_value(input()).unwrap()))
+            .await
+            .unwrap();
+
+        assert!(response.error.is_some());
+
+        let requests = calls(&mut process).await;
+
+        assert_eq!(requests.iter().filter(|request| request["method"] == "hello").count(), 1);
+
+        process.stop().await.unwrap();
     }
 }

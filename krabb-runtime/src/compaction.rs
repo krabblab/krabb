@@ -143,7 +143,7 @@ impl Context {
 
         // Truncation is a last resort after the history has been summarized.
         while context::estimate(&input.messages, &input.tools) > budget || !frame::fits(&input) {
-            if !context::truncate(&mut input.messages) {
+            if !truncate(&mut input.messages) {
                 return Err(Error::Limit(
                     "System instructions, tools, and the current turn exceed the model's input \
                      budget; shorten the input, disable unused tools, or increase its context."
@@ -219,6 +219,10 @@ impl Context {
             .filter(|message| message.role != Role::System)
             .cloned()
             .collect::<Vec<_>>();
+        let window = profile.window.unwrap();
+        let target = (window.input()? / 4).clamp(1, 512).min(window.output);
+        let end = summary::prefix(&older, window.input()?, target);
+        let older = &older[..end];
         let Some(last) = older.last() else {
             return Ok(());
         };
@@ -233,9 +237,7 @@ impl Context {
         };
 
         let fingerprint = fingerprint(&source[..=index])?;
-        let window = profile.window.unwrap();
-        let target = (window.input()? / 4).clamp(1, 512).min(window.output);
-        let summary = summarize(process, profile, input, &older, target, id, deadline).await?;
+        let summary = summarize(process, profile, input, older, target, id, deadline).await?;
         let session = last.session.clone();
         let summary = Message {
             id: format!("compact-{through}"),
@@ -251,11 +253,12 @@ impl Context {
             model: input.model.clone(),
             workspace: input.workspace.clone(),
             session,
-            through,
+            through: through.clone(),
             fingerprint,
             summary: summary.clone(),
         };
 
+        let boundary = input.messages.iter().rposition(|item| item.id == through).unwrap() + 1;
         replace(&mut input.messages, boundary, summary);
         self.restore(record);
         Ok(())
@@ -288,6 +291,18 @@ fn replace(messages: &mut Vec<Message>, boundary: usize, summary: Message) {
 
     let index = messages.iter().take_while(|message| message.role == Role::System).count();
     messages.insert(index, summary);
+}
+
+fn truncate(messages: &mut Vec<Message>) -> bool {
+    let summary = messages.iter().position(|item| item.sender.as_deref() == Some("compaction"));
+    let saved = summary.map(|index| (index, messages.remove(index)));
+    let removed = context::truncate(messages);
+
+    if let Some((index, message)) = saved {
+        messages.insert(index.min(messages.len()), message);
+    }
+
+    removed || context::truncate(messages)
 }
 
 struct Fingerprint(Sha256);
@@ -328,10 +343,10 @@ fn fingerprint(messages: &[Message]) -> Result<Vec<u8>> {
 
 fn result(response: krabb_core::types::Response) -> Result<serde_json::Value> {
     response.result.ok_or_else(|| {
-        Error::Protocol(response.error.map_or_else(
-            || "The model returned no context response.".into(),
-            |error| error.message,
-        ))
+        response.error.map_or_else(
+            || Error::Protocol("The model returned no context response.".into()),
+            |error| Error::Denied(error.message),
+        )
     })
 }
 

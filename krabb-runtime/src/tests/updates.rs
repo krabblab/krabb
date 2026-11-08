@@ -42,19 +42,10 @@ async fn progress_precedes_lifecycle_waits_and_keeps_json_silent() {
             assert!(output.status.success(), "{stderr}");
 
             if json {
-                assert_eq!(stderr, "unload reached\nreload reached\n");
+                assert_eq!(stderr, "");
             } else {
                 assert!(stderr.contains("Installing plugin memory...\n"), "{stderr}");
                 assert!(stderr.contains("Activating plugin memory...\n"), "{stderr}");
-                assert!(
-                    stderr.contains(concat!(
-                        "Updating plugins: waiting for memory to unload...\n",
-                        "unload reached\nUpdating plugins...\n",
-                        "Reloading plugin memory...\nreload reached\n"
-                    )),
-                    "{stderr}"
-                );
-
                 assert!(stderr.ends_with("Uninstalling plugin memory...\n"), "{stderr}");
                 assert!(!stderr.contains('\r'));
                 assert!(!stderr.contains('\u{1b}'));
@@ -90,27 +81,6 @@ async fn progress_precedes_lifecycle_waits_and_keeps_json_silent() {
             yes: true,
         }),
         json,
-    )
-    .await
-    .unwrap();
-
-    update_live(
-        &root,
-        json,
-        vec!["memory".into()],
-        Some(&BTreeMap::new()),
-        |_| {
-            Box::pin(async {
-                eprintln!("unload reached");
-                Ok(Some(serde_json::json!({"unloaded":true})))
-            })
-        },
-        |_| {
-            Box::pin(async {
-                eprintln!("reload reached");
-                Ok(Some(serde_json::json!({"loaded":true})))
-            })
-        },
     )
     .await
     .unwrap();
