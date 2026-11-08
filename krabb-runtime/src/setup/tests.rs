@@ -89,8 +89,8 @@ fn secret_input_edits_cancels_and_bounds_without_echo() {
 
 #[test]
 fn validates_all_values_before_saving_and_never_quotes_invalid_values() {
-    let names =
-        ["KRABB_SETUP_A", "KRABB_SETUP_B"].map(|name| Setting { name: name.into(), default: None });
+    let names = ["KRABB_SETUP_A", "KRABB_SETUP_B"]
+        .map(|name| Field::from(Setting { name: name.into(), default: None }));
 
     let values = collect(&names, |_| Ok("synthetic".into())).unwrap();
 
@@ -113,6 +113,44 @@ fn validates_all_values_before_saving_and_never_quotes_invalid_values() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn empty_secrets_clear_saved_keys_without_leaking_to_plugins() {
+    let root = fixture("custom", &["KRABB_SETUP_A", "KRABB_SETUP_B"], vec![]);
+    let fields = fields(&root, "custom").unwrap();
+    let destination = path(&root);
+    let manifest = crate::read_manifest_checked(&root.join("plugins/custom")).unwrap();
+
+    for secret in ["", "synthetic", ""] {
+        let values = collect(&fields, |_| Ok(secret.into())).unwrap();
+
+        assert_eq!(values.len(), 2);
+
+        save(&destination, values).unwrap();
+
+        assert!(activation(&root, "custom", &destination.canonicalize().unwrap()).is_ok());
+
+        let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
+
+        for name in ["KRABB_SETUP_A", "KRABB_SETUP_B"] {
+            assert_eq!(read(&destination).unwrap()[name], secret);
+
+            assert_eq!(
+                environment.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str()),
+                (!secret.is_empty()).then_some(secret)
+            );
+        }
+    }
+
+    for invalid in [" ".into(), "synthetic\nvalue".into(), "x".repeat(LIMIT + 1)] {
+        let error = collect(&fields, |_| Ok(invalid.clone())).unwrap_err().to_string();
+
+        assert!(error.starts_with("Setup value must be"));
+        assert!(!error.contains("synthetic"));
+    }
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -218,10 +256,7 @@ fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
         assert!(metadata.get("variables").is_none());
     }
 
-    assert_eq!(
-        fields(&root, "telegram").unwrap(),
-        [Setting { name: "KRABB_SETUP_A".into(), default: None }]
-    );
+    assert_eq!(fields(&root, "telegram").unwrap(), [Field::secret("KRABB_SETUP_A".into())]);
 
     assert!(fields(&root, "../escape").is_err());
     assert!(fields(&root, "missing").is_err());
@@ -278,10 +313,7 @@ fn setup_uses_reviewed_manifest_secrets_and_default_credentials() {
 
     assert!(!crate::available_commands(&root).unwrap().contains_key("config"));
 
-    assert_eq!(
-        fields(&root, "config").unwrap(),
-        [Setting { name: "KRABB_SETUP_A".into(), default: None }]
-    );
+    assert_eq!(fields(&root, "config").unwrap(), [Field::secret("KRABB_SETUP_A".into())]);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -495,6 +527,77 @@ fn configure(root: &Path, manifest: &crate::Manifest) {
     .unwrap();
 
     crate::save_lock_at(root, &lock).unwrap();
+}
+
+#[test]
+fn ollama_setup_switches_hosts_without_changing_the_service() {
+    let manifest: crate::Manifest = toml::from_str(include_str!(
+        "../../../krabb-plugins/intelligence/ollama/krabb-plugin.toml"
+    ))
+    .unwrap();
+
+    let root = fixture("ollama", &[], vec![]);
+
+    manifest.validate().unwrap();
+    configure(&root, &manifest);
+
+    let fields = fields(&root, "ollama").unwrap();
+    let destination = path(&root);
+    let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
+
+    assert!(environment.contains(&("KRABB_OLLAMA_HOST".into(), "https://ollama.com".into())));
+
+    save(&destination, BTreeMap::from([("KRABB_TELEGRAM_TOKEN".into(), "retained".into())]))
+        .unwrap();
+
+    for (entered, expected, secret) in [
+        ("", "https://ollama.com", "synthetic-ollama-secret"),
+        ("http://127.0.0.1:11434", "http://127.0.0.1:11434", ""),
+        ("http://localhost:11435", "http://localhost:11435", ""),
+        ("https://ollama.com", "https://ollama.com", "synthetic-ollama-secret"),
+    ] {
+        let mut prompted = Vec::new();
+
+        let values = collect(&fields, |field| {
+            prompted.push(field.name.clone());
+
+            Ok(if field.name == "KRABB_OLLAMA_HOST" { entered.into() } else { secret.into() })
+        })
+        .unwrap();
+
+        assert_eq!(prompted, ["KRABB_OLLAMA_API_KEY", "KRABB_OLLAMA_HOST"]);
+        assert_eq!(values["KRABB_OLLAMA_HOST"], expected);
+
+        save(&destination, values).unwrap();
+
+        assert!(activation(&root, "ollama", &destination.canonicalize().unwrap()).is_ok());
+        assert!(!fs::read_to_string(&destination).unwrap().contains("synthetic-ollama-secret"));
+        assert_eq!(read(&destination).unwrap()["KRABB_TELEGRAM_TOKEN"], "retained");
+
+        let reloaded = crate::read_manifest_checked(&root.join("plugins/ollama")).unwrap();
+        let environment = crate::env_for(&reloaded, &crate::Config::default(), &root).unwrap();
+
+        let hosts = environment
+            .iter()
+            .filter(|(name, _)| name == "KRABB_OLLAMA_HOST")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(hosts, [expected]);
+
+        assert_eq!(
+            environment
+                .iter()
+                .find(|(name, _)| name == "KRABB_OLLAMA_API_KEY")
+                .map(|(_, value)| value.as_str()),
+            (!secret.is_empty()).then_some(secret)
+        );
+
+        assert!(!environment.iter().any(|(name, _)| name == "KRABB_TELEGRAM_TOKEN"));
+        assert!(!root.join("service").exists());
+    }
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -753,7 +856,7 @@ fn settings_preserve_secret_and_permission_metadata() {
 
     assert_eq!(
         fields(&root, "custom").unwrap(),
-        [Setting { name: "KRABB_SETUP_TOKEN".into(), default: None }, manifest.settings[0].clone(),]
+        [Field::secret("KRABB_SETUP_TOKEN".into()), manifest.settings[0].clone().into()]
     );
 
     fs::remove_dir_all(root).unwrap();

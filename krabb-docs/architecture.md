@@ -86,6 +86,18 @@ flowchart TB
 ```
 
 The CLI and TUI use authenticated IPC when they need daemon state or turns.
+
+Global and channel provider/model changes use authenticated `config.selection.reload`
+IPC after saving validated configuration. The daemon snapshots only the selection
+policy; channel workers resolve it at each new event without restarting the worker
+or interrupting a turn. Channel-created sessions follow configuration unless their
+model is explicitly pinned. Legacy sessions without pin metadata inherit channel
+configuration; local sessions and scheduled selections keep their existing behavior.
+
+Model generation receives the remaining overall turn budget instead of a separate
+120-second plugin-call limit. Channel and daemon-owned TUI turns remain bounded to
+300 seconds and retain cancellation and cleanup behavior. Providers can enforce
+shorter HTTP deadlines; Ollama permits 300 seconds for slow local generation.
 Runtime and shared-library calls stay in-process; Runtime-to-plugin JSON-RPC
 and client-to-daemon IPC cross process boundaries. The `krabb-libs/` crates
 are compiled into their consumers, so plugins depend only on the libraries

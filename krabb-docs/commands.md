@@ -91,10 +91,19 @@ the same secure prompt and credential-file workflow. Existing plugin commands,
 such as `krabb codex login`, keep their provider-specific behavior. The generic
 `krabb plugin setup <id>` command also works when the plugin ID cannot be exposed
 as a shortcut. Setup requires a terminal and accepts no token argument or piped
-secret. See [Plugin Setup](authentication.md#plugin-setup) for storage, activation,
+secret. Press Enter at any secret prompt to clear its saved value. Settings remain
+required unless they declare a default. See
+[Plugin Setup](authentication.md#plugin-setup) for storage and activation details.
+
 `krabb whatsapp setup` also collects the phone number ID, Graph API base URL,
 and listener address. Press Enter to accept the listener's `127.0.0.1:8787`
 default. Saved settings are applied when the plugin starts or reloads.
+
+`krabb ollama setup` also collects the host, defaulting to `https://ollama.com`.
+For a local server, leave the API key empty and enter `http://127.0.0.1:11434` as the
+host. Saved host changes reload the plugin
+without reinstalling the service; remove any existing host environment override
+first. See the [Ollama guide](../krabb-plugins/intelligence/ollama/README.md).
 
 Command discovery waits up to five seconds for concurrent metadata access. If the
 metadata remains locked or cannot be read, the command exits with an error;
@@ -303,7 +312,11 @@ krabb delivery drop --all [--channel <id>] [--yes]
 ```
 
 Lists are paginated; `--json` returns structured state. `session show` displays
-one transcript. Cancellation waits for the turn to stop. An uncertain delivery
+one transcript. `session model <id> <model>` pins a model; use `inherit` as the model
+to make a channel conversation follow its configured model again. Changing global
+or channel provider/model settings through `config set` applies to new channel
+turns without restarting the daemon. `default` selects the provider's default
+model and remains an explicit pin. Cancellation waits for the turn to stop. An uncertain delivery
 may already have reached its destination; retry only when a duplicate is
 acceptable. See [Concepts](concepts.md) for session and delivery state.
 

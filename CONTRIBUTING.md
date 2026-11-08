@@ -143,8 +143,9 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
   of logs, manifests, issues, and planning files.
 - Never add telemetry or commit credentials.
 - Keep [Compatibility](COMPATIBILITY.md) as simple checkbox tables for basic
-  functionality per OS/architecture and the detailed component matrix. Record
-  verified functional success only by ticking existing checkboxes. Do not add
+  functionality per OS/architecture. Keep the [functional test matrix](FUNCTIONAL.md)
+  as one tested checkbox per user-testable crate or plugin, independent of platform.
+  Record verified functional success only by ticking existing checkboxes. Do not add
   status phrases, dates, versions, evidence links, or narrative notes. Leave
   partial, untested, or unsupported checks unchecked.
 

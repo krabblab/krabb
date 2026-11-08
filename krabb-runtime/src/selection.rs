@@ -3,6 +3,45 @@ use std::collections::BTreeMap;
 
 type Layer<'a> = (Option<&'a str>, Option<&'a str>);
 
+#[derive(Clone, Debug)]
+pub(super) struct Policy {
+    default: (String, String),
+    channels: BTreeMap<String, (String, String)>,
+}
+
+impl Policy {
+    pub fn new(config: &Config) -> Self {
+        Self {
+            default: current(config, (None, None), (None, None)),
+            channels: config
+                .channels
+                .iter()
+                .map(|(id, policy)| {
+                    (
+                        id.clone(),
+                        current(
+                            config,
+                            (policy.provider.as_deref(), policy.model.as_deref()),
+                            (None, None),
+                        ),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub fn channel(&self, id: &str) -> (String, String) {
+        self.channels.get(id).unwrap_or(&self.default).clone()
+    }
+}
+
+pub(super) fn reloadable(key: &str) -> bool {
+    matches!(
+        key.split('.').collect::<Vec<_>>().as_slice(),
+        ["provider" | "model"] | ["channels", _, "provider" | "model"]
+    )
+}
+
 pub(super) fn resolve(
     config: &Config,
     scope: Layer<'_>,
@@ -102,6 +141,19 @@ mod tests {
     use super::*;
 
     const NONE: Layer<'_> = (None, None);
+
+    #[test]
+    fn only_channel_and_global_selections_are_reloadable() {
+        for key in ["model", "provider", "channels.telegram.model", "channels.discord.provider"] {
+            assert!(reloadable(key));
+        }
+
+        for key in
+            ["channels.telegram.tools", "clients.tui.model", "channels", "tools", "model.extra"]
+        {
+            assert!(!reloadable(key));
+        }
+    }
 
     fn configured() -> Config {
         toml::from_str("provider = 'openai'\nmodel = 'global-model'").unwrap()

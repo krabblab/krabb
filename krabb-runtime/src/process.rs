@@ -25,10 +25,11 @@ struct Call {
 }
 
 impl Cleanup {
-    pub async fn call_full_async<F, Fut, C, Cfut>(
+    pub async fn call_full_timeout_async<F, Fut, C, Cfut>(
         &self,
         process: std::sync::Arc<Mutex<Option<Process>>>,
         request: krabb_core::types::Request,
+        limit: Duration,
         note: F,
         handler: C,
     ) -> Result<krabb_core::types::Response>
@@ -46,7 +47,7 @@ impl Cleanup {
             .unwrap()
             .as_mut()
             .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?
-            .call_full_async(request, note, handler)
+            .call_full_timeout_async(request, limit, note, handler)
             .await;
         call.armed = result.is_err();
         result
@@ -328,12 +329,93 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
 
     #[tokio::test]
+    async fn model_calls_can_use_more_than_two_minutes() {
+        let root = crate::tests::test_root("model-deadline");
+        fs::create_dir_all(&root).unwrap();
+        let script = r#"
+import json, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+for line in sys.stdin:
+    request = json.loads(line)
+    if request['method'] == 'hello':
+        result = {'id':'fixture', 'version':'0.1.0', 'protocol':{'major':0,'minor':1},
+                  'capabilities':['model']}
+    elif request['method'] == 'generate':
+        (root / 'ready').touch()
+        while not (root / 'finish').exists():
+            time.sleep(0.01)
+        result = {'text':'finished', 'stop':'stop'}
+    elif request['method'] == 'shutdown':
+        break
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
+"#;
+
+        let process = Process::start_with("python3", ["-u", "-c", script, root.to_str().unwrap()])
+            .await
+            .unwrap();
+
+        let process = std::sync::Arc::new(Mutex::new(Some(process)));
+        let cleanup = Cleanup::default();
+
+        let request = cleanup.call_full_timeout_async(
+            std::sync::Arc::clone(&process),
+            Request::call(2, "generate", serde_json::json!({})),
+            crate::TURN_LIMIT,
+            |_| async { Ok(()) },
+            |_| async { unreachable!() },
+        );
+
+        tokio::pin!(request);
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = &mut request => panic!("model completed early: {result:?}"),
+
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if root.join("ready").exists() { break; }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(121)).await;
+
+        tokio::select! {
+            biased;
+            result = &mut request => panic!("model timed out before the turn deadline: {result:?}"),
+
+            _ = std::future::ready(()) => {}
+        }
+
+        tokio::time::resume();
+
+        fs::write(root.join("finish"), "").unwrap();
+
+        let response = timeout(Duration::from_secs(5), &mut request).await.unwrap().unwrap();
+
+        assert_eq!(response.result.unwrap()["text"], "finished");
+
+        cleanup.finish().await.unwrap();
+        process.lock().await.take().unwrap().stop().await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn cancelled_calls_and_stop_remove_detached_containers() {
         let root = std::env::temp_dir()
             .join(format!("krabb-container-test-{}", crate::ipc::token().unwrap()));
+
         fs::create_dir(&root).unwrap();
+
         let plugin = root.join("plugin");
         let runtime = root.join("docker");
+
         fs::write(&plugin, r#"#!/bin/sh
 set -eu
 while IFS= read -r request; do

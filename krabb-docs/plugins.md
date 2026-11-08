@@ -60,7 +60,9 @@ place plugin executables in `bin/` beside their manifest.
 For simple tokens and API keys, list their environment-variable names in the
 manifest's `secrets` array. Krabb supplies `krabb plugin setup <id>` and
 then passes only its declared stored values into its environment. Every declared
-secret is prompted for, including optional ones.
+secret is prompted for, including optional ones. Enter leaves a secret empty and
+clears its saved value. Empty secrets are omitted from the plugin environment;
+the plugin remains responsible for requiring credentials when needed.
 
 Declare additional setup fields with `[[settings]]` entries:
 

@@ -30,7 +30,7 @@ async fn main() -> std::process::ExitCode {
 async fn plugin_main() -> krabb_core::Result<()> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| krabb_core::Error::Denied(format!("Ollama client failed: {error}.")))?;
 
@@ -67,8 +67,7 @@ async fn generate(
 
     let input: ModelRequest = serde_json::from_value(params)?;
 
-    let host =
-        std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+    let host = std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
 
     generate_at(client, id, input, &host, &mut emitter).await
 }
@@ -297,6 +296,12 @@ where
             Ok(Event::Tool { name: tool.name, args: arguments, id: None, thought_signature: None })
         })
         .collect::<krabb_core::Result<Vec<_>>>()?;
+
+    if text.trim().is_empty() && events.is_empty() {
+        return Err(krabb_core::Error::Denied(
+            "Ollama stream contained no text or tools; check context and thinking settings.".into(),
+        ));
+    }
 
     response(
         id,

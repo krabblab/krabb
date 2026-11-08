@@ -5,7 +5,7 @@ only after the check passes on that platform; builds, unit tests, and protocol
 handshakes alone do not qualify. Record results only by ticking the existing
 checkboxes; do not add status prose, dates, versions, evidence links, or notes.
 
-## Basic Checklist
+## Checklist
 
 Run these checks on an installed system. Use test accounts and a disposable
 channel for external integrations.
@@ -18,7 +18,8 @@ channel for external integrations.
 - **Plugins:** Successfully install at least one plugin.
 
 Tick each check separately for every platform tested. A completed row means the
-basic checks passed; use the detailed checklist for individual capabilities.
+basic checks passed. Track individual crates and plugins in the
+[functional test matrix](FUNCTIONAL.md).
 
 | Platform          | Setup | Daemon | Intelligence | Channel | Client | Plugins |
 | ----------------- | ----- | ------ | ------------ | ------- | ------ | ------- |
@@ -31,44 +32,3 @@ basic checks passed; use the detailed checklist for individual capabilities.
 
 See [workflows](krabb-docs/workflows.md), [providers](krabb-docs/providers.md),
 [commands](krabb-docs/commands.md), and [safety](krabb-docs/safety.md) for instructions.
-
-## Detailed Checklist
-
-Test each component's end-to-end behavior on each platform, following the plugin
-READMEs for setup, prerequisites, and supported modes. Tick the corresponding
-cell after it passes. Leave partial, untested, or unsupported checks unchecked.
-
-| Component  | Linux (x86_64) | Linux (aarch64) | macOS (x86_64) | macOS (aarch64) | Windows (x86_64) | Windows (aarch64) |
-| ---------- | -------------- | --------------- | -------------- | --------------- | ---------------- | ----------------- |
-| CLI        | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Core       | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Daemon     | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Runtime    | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Date       | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| File       | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Logging    | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Process    | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Text       | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| A2A        | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| ACP        | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| AG-UI      | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Anthropic  | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Browser    | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Codex      | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Computer   | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Discord    | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Gemini     | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| MCP        | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Memory     | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Ollama     | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| OpenAI     | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| OpenRouter | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Scheduler  | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Signal     | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Slack      | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| SQLite     | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Telegram   | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Tools      | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| TUI        | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| WhatsApp   | [ ]            | [x]             | [ ]            | [ ]             | [ ]              | [ ]               |
-| Whisper    | [ ]            | [ ]             | [ ]            | [ ]             | [ ]              | [ ]               |
