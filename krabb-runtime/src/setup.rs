@@ -20,6 +20,25 @@ pub(super) struct Setting {
     pub default: Option<String>,
 }
 
+#[derive(Debug, PartialEq)]
+struct Field {
+    name: String,
+    default: Option<String>,
+    secret: bool,
+}
+
+impl Field {
+    fn secret(name: String) -> Self {
+        Self { name, default: None, secret: true }
+    }
+}
+
+impl From<Setting> for Field {
+    fn from(setting: Setting) -> Self {
+        Self { name: setting.name, default: setting.default, secret: false }
+    }
+}
+
 #[derive(Debug, Args)]
 pub(super) struct Options {
     /// Installed plugin whose secrets and settings should be configured.
@@ -83,7 +102,7 @@ pub(super) fn path(root: &Path) -> PathBuf {
     super::credentials::path(root)
 }
 
-fn fields(root: &Path, id: &str) -> Result<Vec<Setting>, Error> {
+fn fields(root: &Path, id: &str) -> Result<Vec<Field>, Error> {
     if !super::valid(id) {
         return Err("Invalid plugin ID.".into());
     }
@@ -108,8 +127,9 @@ fn fields(root: &Path, id: &str) -> Result<Vec<Setting>, Error> {
     Ok(entry
         .variables
         .iter()
-        .map(|name| Setting { name: name.clone(), default: None })
-        .chain(entry.settings.iter().cloned())
+        .cloned()
+        .map(Field::secret)
+        .chain(entry.settings.iter().cloned().map(Field::from))
         .collect())
 }
 
@@ -179,8 +199,8 @@ async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Val
 }
 
 fn collect(
-    fields: &[Setting],
-    mut prompt: impl FnMut(&Setting) -> Result<String, Error>,
+    fields: &[Field],
+    mut prompt: impl FnMut(&Field) -> Result<String, Error>,
 ) -> Result<BTreeMap<String, String>, Error> {
     let mut values = BTreeMap::new();
 
@@ -193,7 +213,10 @@ fn collect(
             value = default.clone();
         }
 
-        validate(&value)?;
+        if !field.secret || !value.is_empty() {
+            validate(&value)?;
+        }
+
         values.insert(field.name.clone(), value);
     }
 
@@ -219,7 +242,7 @@ impl Drop for Terminal {
     }
 }
 
-fn prompt(field: &Setting) -> Result<String, Error> {
+fn prompt(field: &Field) -> Result<String, Error> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err("Setup requires an interactive terminal; secret input cannot be piped.".into());
     }
@@ -230,7 +253,9 @@ fn prompt(field: &Setting) -> Result<String, Error> {
 
     crossterm::execute!(io::stderr(), crossterm::event::EnableBracketedPaste)?;
 
-    if let Some(default) = &field.default {
+    if field.secret {
+        eprint!("{} [Enter to clear]: ", field.name);
+    } else if let Some(default) = &field.default {
         eprint!("{} [{default}]: ", field.name);
     } else {
         eprint!("{}: ", field.name);

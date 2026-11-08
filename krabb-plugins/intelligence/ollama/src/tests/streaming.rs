@@ -45,6 +45,50 @@ impl contract::Stream for Provider {
 }
 
 #[tokio::test]
+async fn empty_completed_streams_fail_without_exposing_thinking() {
+    for content in ["", " \n\t"] {
+        let frames = [
+            json!({"message": {"thinking": "private reasoning"}, "done": false}),
+            json!({"message": {"content": content}, "done": true,
+                "done_reason": "length", "prompt_eval_count": 3839, "eval_count": 257}),
+        ];
+
+        let body: String = frames.iter().map(|frame| format!("{frame}\n")).collect();
+        let (output, mut events) = tokio::sync::mpsc::channel(8);
+        let mut emitter = Emitter::new(output);
+
+        let error = parse(vec![Ok(body.into_bytes())], &mut emitter).await.unwrap_err();
+
+        assert!(error.to_string().contains("no text or tools"));
+        assert!(!error.to_string().contains("private reasoning"));
+
+        while let Ok(event) = events.try_recv() {
+            assert!(!event.to_string().contains("private reasoning"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn tool_only_streams_remain_valid() {
+    let frame = json!({"message": {"content": "", "tool_calls": [{
+        "function": {"name": "read", "arguments": {"path": "README.md"}}
+    }]}, "done": true});
+
+    let (output, _events) = tokio::sync::mpsc::channel(8);
+    let mut emitter = Emitter::new(output);
+
+    let response = parse(vec![Ok(format!("{frame}\n").into_bytes())], &mut emitter)
+        .await
+        .unwrap()
+        .unwrap()
+        .result
+        .unwrap();
+
+    assert_eq!(response["text"], "");
+    assert_eq!(response["events"][0]["name"], "read");
+}
+
+#[tokio::test]
 async fn transport_whole_body_preserves_text_and_tools() {
     contract::transport_whole_body_preserves_text_and_tools::<Provider>().await;
 }

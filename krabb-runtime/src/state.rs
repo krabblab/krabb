@@ -81,6 +81,8 @@ pub struct Session {
     pub id: String,
     pub model: String,
     #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
     pub scheduled: bool,
     #[serde(default)]
     pub origin: Option<super::schedules::Origin>,
@@ -445,7 +447,7 @@ impl Store {
         id: impl Into<String>,
         model: impl Into<String>,
     ) -> std::io::Result<()> {
-        self.create_session(id.into(), model.into(), false)
+        self.create_session(id.into(), model.into(), false, true)
     }
 
     fn create_session(
@@ -453,6 +455,7 @@ impl Store {
         id: String,
         model: String,
         scheduled: bool,
+        pinned: bool,
     ) -> std::io::Result<()> {
         if !valid(&id) {
             return Err(std::io::Error::new(
@@ -508,6 +511,7 @@ impl Store {
                 Session {
                     id,
                     model,
+                    pinned,
                     scheduled,
                     origin: None,
                     workspace: None,
@@ -551,6 +555,23 @@ impl Store {
         }
 
         Ok(())
+    }
+
+    pub fn ensure_channel(&mut self, id: &str, model: &str) -> std::io::Result<()> {
+        let Some(session) = self.sessions.get(id) else {
+            return self.create_session(id.into(), model.into(), false, false);
+        };
+
+        if session.pinned || session.model == model || session.status == "working" {
+            return Ok(());
+        }
+
+        self.change(|store| {
+            let session = store.sessions.get_mut(id).unwrap();
+            session.model = model.into();
+            session.context_usage = None;
+            session.updated = now();
+        })
     }
 
     pub fn ensure_schedule(
@@ -608,7 +629,7 @@ impl Store {
     }
 
     fn create_scheduled(&mut self, id: String, model: impl Into<String>) -> std::io::Result<()> {
-        self.create_session(id, model.into(), true)
+        self.create_session(id, model.into(), true, true)
     }
 
     pub fn rename_session(&mut self, source: &str, target: &str) -> std::io::Result<()> {
@@ -1489,12 +1510,24 @@ impl Store {
             ));
         }
 
+        if model == "inherit" && self.sessions[id].channel.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Only channel sessions can inherit a model.",
+            ));
+        }
+
         self.change(|store| {
             let Some(session) = store.sessions.get_mut(id) else {
                 return;
             };
 
-            session.model = model.into();
+            session.pinned = model != "inherit";
+
+            if session.pinned {
+                session.model = model.into();
+            }
+
             session.context_usage = None;
             session.updated = now();
         })
@@ -1707,6 +1740,7 @@ impl Store {
                 Session {
                     id: target,
                     model: source.model,
+                    pinned: source.pinned,
                     scheduled: false,
                     origin: None,
                     workspace: source.workspace,
@@ -3440,6 +3474,77 @@ mod tests {
     }
 
     #[test]
+    fn channel_models_follow_defaults_unless_pinned_and_preserve_history() {
+        let root = crate::tests::test_root("channel-models");
+        let path = root.join("sessions.json");
+        let mut store = Store::load(&path).unwrap();
+        let id = "telegram-7";
+
+        store.ensure_channel(id, "first").unwrap();
+        store.route(id, "telegram", "7", None, true).unwrap();
+        store.sessions.get_mut(id).unwrap().messages.push(message(1, id));
+        store.ensure_channel(id, "second").unwrap();
+
+        assert_eq!(store.sessions[id].model, "second");
+        assert!(!store.sessions[id].pinned);
+        assert_eq!(store.sessions[id].messages.len(), 1);
+
+        store.set_model(id, "chosen").unwrap();
+
+        let mut store = Store::load(&path).unwrap();
+
+        store.ensure_channel(id, "third").unwrap();
+
+        assert_eq!(store.sessions[id].model, "chosen");
+        assert!(store.sessions[id].pinned);
+
+        store.fork(id, "copy").unwrap();
+
+        assert!(store.sessions["copy"].pinned);
+
+        store.set_model(id, "inherit").unwrap();
+        store.set_status(id, "working").unwrap();
+        store.ensure_channel(id, "third").unwrap();
+
+        assert_eq!(store.sessions[id].model, "chosen");
+
+        store.set_status(id, "idle").unwrap();
+        store.ensure_channel(id, "third").unwrap();
+
+        let store = Store::load(&path).unwrap();
+
+        assert_eq!(store.sessions[id].model, "third");
+        assert!(!store.sessions[id].pinned);
+        assert_eq!(store.sessions[id].messages.len(), 1);
+
+        let mut legacy = serde_json::to_value(&store.sessions[id]).unwrap();
+
+        legacy.as_object_mut().unwrap().remove("pinned");
+
+        let legacy: Session = serde_json::from_value(legacy).unwrap();
+
+        assert!(!legacy.pinned);
+        assert_eq!(legacy.messages.len(), 1);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn local_sessions_keep_explicit_models() {
+        let root = crate::tests::test_root("fixed-models");
+        let mut store = Store::load(root.join("sessions.json")).unwrap();
+
+        store.create("local", "chosen").unwrap();
+        store.ensure("local", "other").unwrap();
+
+        assert_eq!(store.sessions["local"].model, "chosen");
+        assert!(store.set_model("local", "inherit").is_err());
+        assert!(store.sessions["local"].pinned);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn channel_backed_sessions_cannot_be_renamed() {
         let root =
             std::env::temp_dir().join(format!("krabb-state-rename-channel-{}", std::process::id()));
@@ -3600,6 +3705,7 @@ mod tests {
             Session {
                 id: "safe".into(),
                 model: "model".into(),
+                pinned: true,
                 scheduled: false,
                 origin: None,
                 workspace: None,

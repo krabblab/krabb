@@ -7,6 +7,10 @@ Semantic Versioning.
 
 ### Added
 
+- Change channel models live while preserving conversations.
+- Allow daemon model requests to use the full five-minute turn budget.
+- Clear saved plugin keys through interactive setup.
+- Switch local and cloud Ollama hosts through interactive setup.
 - Configure Slack conversations through interactive setup.
 - Display rich text and code panels in terminal conversations.
 - Control data visibility between integrations and isolate conversations with worktrees.

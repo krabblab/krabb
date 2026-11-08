@@ -18,7 +18,8 @@ and `krabb config set KEY=VALUE`. For example, enable TUI workspace tools with
 such as `krabb config set 'approval="prompt"'` or
 `krabb config set 'channels.telegram.allow=["123"]'`. The command
 validates the complete config before saving and preserves existing comments.
-The TUI tools switch is applied immediately to a running daemon for new turns;
+Global/channel `provider` and `model` settings apply to new channel turns without
+restarting the daemon. The TUI tools switch applies immediately to new TUI turns;
 the TUI theme setting takes effect the next time `krabb tui` starts. TUI shell
 access takes effect after the daemon restarts. Other settings are saved and
 take effect the next time the daemon starts. Add
@@ -176,12 +177,17 @@ remain plugin-specific. Provider-specific default variables such as
 `KRABB_OPENROUTER_MODEL` only resolve implicit model names inside that adapter;
 they do not replace an explicit concrete model selected above.
 
-These are defaults for new sessions and one-shot requests. Saved session models
-remain in force when resuming a conversation. Use `krabb session model <id> <model>`,
-TUI `/model set <model>`, or TUI `--model <model>` to change a saved selection.
-Scheduled tasks retain their captured selections.
+Channel conversations follow their channel's configured model on each new turn,
+preserving history. `krabb config set` applies global/channel provider and model
+changes without restarting the daemon. An in-progress turn keeps its selection.
+Use `krabb session model <id> <model>` to pin a conversation's model, or
+`krabb session model <id> inherit` to follow channel configuration again. `default`
+pins the provider's default model; it does not mean channel inheritance.
+Existing channel sessions from versions without pin metadata follow configuration
+after upgrading; reapply any explicit pins you want to keep. Local TUI sessions
+and scheduled tasks retain their saved selections.
 
-Restart the daemon to apply channel defaults. Local CLI requests and newly
+Direct TOML edits require restarting the daemon. Local CLI requests and newly
 launched TUI clients read the current TOML settings. You can edit them with:
 
 ```sh
@@ -286,7 +292,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_ANTHROPIC_BASE_URL` | Anthropic-compatible API base |
 | `KRABB_GEMINI_KEY` | Gemini Developer API key |
 | `KRABB_GEMINI_BASE_URL` | Gemini-compatible API base |
-| `KRABB_OLLAMA_HOST` | Ollama endpoint |
+| `KRABB_OLLAMA_HOST` | Override the saved Ollama endpoint; default `https://ollama.com` |
 | `KRABB_OLLAMA_API_KEY` | Ollama cloud API key |
 | `KRABB_TELEGRAM_TOKEN` | Telegram bot token |
 | `KRABB_DISCORD_TOKEN` | Discord bot token |
@@ -348,12 +354,13 @@ provider = "openai"
 model = "default"
 ```
 
-Install and authenticate both providers, then restart the daemon after changing
-configuration. When a channel selects a different provider without a `model`, its model
+Install and authenticate both providers. Use `krabb config set` to change channel
+selections live, or restart after editing TOML directly. When a channel selects a
+different provider without a `model`, its model
 is `default`; the global model name is not passed to it. Each adapter resolves that
-selection to its [small default model](providers.md#default-models). The model setting
-initializes new sessions. Existing sessions retain their selection; change it with
-`krabb session model <session-id> default` to opt into the provider's default.
+selection to its [small default model](providers.md#default-models). Existing channel
+sessions follow the model setting unless explicitly pinned. Use
+`krabb session model <session-id> inherit` to release a pin.
 Independent provider processes can generate concurrently. Calls to the same
 provider process are serialized.
 

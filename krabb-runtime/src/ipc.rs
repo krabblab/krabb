@@ -47,6 +47,10 @@ const CLIENTS: usize = 64;
 #[path = "tests/controls.rs"]
 mod controls;
 
+#[cfg(all(test, unix))]
+#[path = "tests/selection.rs"]
+mod selection_tests;
+
 pub fn token() -> io::Result<String> {
     let mut bytes = [0_u8; 32];
 
@@ -1723,6 +1727,16 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             })
         }
 
+        "config.selection.reload" => {
+            let config =
+                super::load_config_at(&state.home).map_err(|error| invalid(&error.to_string()))?;
+            config.validate().map_err(|error| invalid(&error))?;
+            let policy = super::selection::Policy::new(&config);
+
+            *state.plugins.selection.lock().map_err(lock)? = Some(policy);
+            json!({"applied": true})
+        }
+
         "config.client.set" => {
             if request.params["client"] != "tui" {
                 return Ok(IpcResponse::fail(
@@ -2067,7 +2081,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
 
             let mut sessions = state.sessions.lock().map_err(lock)?;
             sessions.set_model(id, model)?;
-            json!({"id": id, "model": model})
+            json!({"id": id, "model": model, "pinned": sessions.sessions[id].pinned})
         }
 
         "session.workspace" => {
@@ -2115,6 +2129,7 @@ pub(crate) fn summary(session: &super::state::Session) -> Value {
     json!({
         "id": super::clip(session.id.clone(), SUMMARY_LIMIT),
         "model": super::clip(session.model.clone(), SUMMARY_LIMIT),
+        "pinned": session.pinned,
         "channel": short(session.channel.as_ref()),
         "chat": short(session.chat.as_ref()),
         "thread": short(session.thread.as_ref()),

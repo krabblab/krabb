@@ -64,15 +64,21 @@ Plugins without declared secrets or settings do not gain a setup shortcut. See
 
 Setup works before the plugin is active. It prompts for every declared secret,
 including optional ones, followed by declared settings, without echoing input.
+Press Enter at a secret prompt to leave it empty and clear any previously saved
+value. Empty secrets are omitted from the plugin environment; plugins that require
+authentication still need valid credentials to operate. Environment overrides
+continue to take precedence and must be removed separately.
 Settings can declare a visible default; press Enter to accept it. For example,
 WhatsApp setup also asks for the phone number ID, versioned Graph API URL, and
-listener address (default `127.0.0.1:8787`). These settings are saved in the same
-encrypted store and supplied when the daemon starts or reloads the plugin,
-without service-file changes. A terminal is required, even with `--json`; tokens
+listener address (default `127.0.0.1:8787`). Ollama setup asks for the API key and
+host (default `https://ollama.com`; use `http://127.0.0.1:11434` for a local server).
+These settings are saved in the same encrypted store and supplied when the daemon
+starts or reloads the plugin, without service-file changes. A terminal is required,
+even with `--json`; tokens
 cannot be arguments or piped input. Escape or Ctrl-C cancels without saving.
 Multiline and oversized values are rejected.
 Prompt labels show the declared environment variable names and public manifest
-defaults, never stored values. An empty response is rejected when no default exists.
+defaults, never stored values. An empty setting is rejected when no default exists.
 
 Setup replaces the entered secrets and settings and preserves others using
 locked, crash-safe encrypted writes. Its output identifies whether the encryption key is in the

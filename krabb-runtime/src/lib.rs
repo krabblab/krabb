@@ -181,6 +181,7 @@ impl Cancellation {
 #[derive(Clone)]
 pub(crate) struct Plugins {
     config: Arc<Config>,
+    selection: Arc<Mutex<Option<selection::Policy>>>,
     items: Arc<RwLock<BTreeMap<String, Arc<Live>>>>,
     detached: Arc<RwLock<BTreeSet<String>>>,
     loading: Arc<AsyncMutex<()>>,
@@ -199,12 +200,27 @@ impl Default for Plugins {
     fn default() -> Self {
         Self {
             config: Arc::new(Config::default()),
+            selection: Arc::new(Mutex::new(None)),
             items: Arc::new(RwLock::new(BTreeMap::new())),
             detached: Arc::new(RwLock::new(BTreeSet::new())),
             loading: Arc::new(AsyncMutex::new(())),
             changed: Arc::new(Notify::new()),
             lifecycle: Arc::new(RwLock::new(())),
         }
+    }
+}
+
+impl Plugins {
+    fn channel_selection(
+        &self,
+        channel: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<(String, String), PluginError> {
+        Ok(self.selection.lock().map_err(|_| "Selection lock is poisoned.")?.as_ref().map_or_else(
+            || (provider.to_owned(), model.to_owned()),
+            |policy| policy.channel(channel),
+        ))
     }
 }
 
@@ -1214,7 +1230,7 @@ struct Fork {
 struct SessionModel {
     #[arg(help = "Session identifier.")]
     id: String,
-    #[arg(help = "Model identifier.")]
+    #[arg(help = "Model name, or inherit to follow a channel's configured model.")]
     model: String,
 }
 
@@ -1564,7 +1580,7 @@ struct Manifest {
     capabilities: Vec<String>,
     #[serde(default)]
     permissions: Vec<String>,
-    /// Names of required environment variables, never credential values.
+    /// Names of secret environment variables, never credential values.
     #[serde(default, rename = "secrets")]
     variables: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1689,7 +1705,7 @@ struct Entry {
     capabilities: Vec<String>,
     #[serde(default)]
     permissions: Vec<String>,
-    /// Names of required environment variables, never credential values.
+    /// Names of secret environment variables, never credential values.
     #[serde(default, rename = "secrets")]
     variables: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -4255,6 +4271,8 @@ async fn session_at_json(
 
                 if json {
                     println!("{}", serde_json::to_string_pretty(&value)?);
+                } else if args.model == "inherit" {
+                    println!("Session {} now follows its channel's model.", args.id);
                 } else {
                     println!(
                         "Session {} now uses {}.",
@@ -4437,9 +4455,12 @@ fn local_session_json(
                     serde_json::to_string_pretty(&serde_json::json!({
                         "action": "model",
                         "id": args.id,
-                        "model": args.model
+                        "model": args.model,
+                        "pinned": store.sessions[&args.id].pinned,
                     }))?
                 );
+            } else if args.model == "inherit" {
+                println!("Session {} now follows its channel's model.", args.id);
             } else {
                 println!("Session {} now uses {}.", args.id, args.model);
             }
@@ -4666,9 +4687,12 @@ async fn config_command(
             secure(&path, rendered.as_bytes())?;
             info!(key, "Configuration value saved.");
 
-            let hot = key == "clients.tui.tools";
+            let selection = selection::reloadable(key);
+            let hot = key == "clients.tui.tools" || selection;
             let next_launch = key == "clients.tui.theme";
-            let applied = if hot {
+            let applied = if selection {
+                control_at("config.selection.reload", serde_json::json!({}), root).await?.is_some()
+            } else if hot {
                 control_at(
                     "config.client.set",
                     serde_json::json!({
@@ -7827,8 +7851,12 @@ async fn bridge_with_media(
             }
         };
 
-        let Some(provider) =
-            plugins.get(model_id).await.filter(|plugin| plugin.supports(Capability::Model))
+        let (selected_provider, _) = plugins.channel_selection(channel_id, model_id, model)?;
+
+        let Some(_) = plugins
+            .get(&selected_provider)
+            .await
+            .filter(|plugin| plugin.supports(Capability::Model))
         else {
             drop(lifecycle);
             tokio::select! {
@@ -8049,6 +8077,16 @@ async fn bridge_with_media(
             let Some(event_key) = event_id(&event["id"]) else {
                 continue;
             };
+
+            let (selected_provider, selected_model) =
+                plugins.channel_selection(channel_id, model_id, model)?;
+            let provider = plugins
+                .get(&selected_provider)
+                .await
+                .filter(|plugin| plugin.supports(Capability::Model))
+                .ok_or_else(|| {
+                    format!("Configured model provider {selected_provider} is not loaded.")
+                })?;
 
             let gateway_sequence = event["gateway_sequence"].as_u64();
             let next_offset = event["id"].as_i64().map(|value| value.saturating_add(1));
@@ -8380,7 +8418,7 @@ async fn bridge_with_media(
 
                 let prepared = if commit {
                     None
-                } else if let Err(error) = store.ensure(&session_name, model) {
+                } else if let Err(error) = store.ensure_channel(&session_name, &selected_model) {
                     if error.kind() == std::io::ErrorKind::WouldBlock {
                         warn!(session = %session_name, event = %event_id, "Session capacity reached; message deferred.");
                         defer = true;
@@ -10504,7 +10542,7 @@ async fn queue_during_turn(
             }
 
             if !rejected {
-                if let Err(error) = store.ensure(&session, model) {
+                if let Err(error) = store.ensure_channel(&session, model) {
                     if error.kind() == std::io::ErrorKind::WouldBlock {
                         deferred = true;
                     } else {
@@ -11826,9 +11864,10 @@ async fn answer_with_registry(
         let host_turn_id = turn_id.clone();
         let host_scheduled_destination = scheduled_destination.clone();
 
-        let request_stream = registry.cleanup.call_full_async(
+        let request_stream = registry.cleanup.call_full_timeout_async(
             Arc::clone(&provider.process),
             request,
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
             move |note| {
                 let sender = sender.clone();
                 async move {
@@ -11898,6 +11937,10 @@ async fn answer_with_registry(
                 _ = cancel.cancelled() => return Err("The turn was cancelled.".into()),
 
                 result = tokio::time::timeout_at(deadline, &mut request_stream) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err("The turn exceeded its time limit.".into());
+                    }
+
                     break result.map_err(|_| "The turn exceeded its time limit.")??;
                 }
 
@@ -19840,6 +19883,10 @@ fn format_session_list(value: &Value, page: usize) -> Result<String, String> {
 
         let model = item["model"].as_str().filter(|model| !model.is_empty()).unwrap_or("unset");
         let mut details = vec![format!("Uses model {model}")];
+
+        if item["channel"].is_string() && item["pinned"] == false {
+            details.push("Follows the channel's model setting".into());
+        }
 
         if let Some(created) = item["created"].as_u64().and_then(format_date) {
             details.push(format!("Created on {created}"));

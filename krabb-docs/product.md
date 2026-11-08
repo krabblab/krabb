@@ -118,7 +118,8 @@ preserved. Defaults never trigger automatic model downloads or fallback upgrades
 Global and per-channel/client intelligence defaults are configurable in TOML.
 CLI arguments take precedence over environment variables, which take precedence
 over scoped and global TOML defaults. One-shot CLI requests can omit provider
-and model flags; saved conversations retain their model selection.
+and model flags. Channel conversations follow live configuration changes unless
+their model is explicitly pinned; their history is preserved.
 - Channels negotiate Markdown input and preserve supported formatting through
   their adapters for sends, streaming edits, and scheduled delivery. Plugins without
   formatting support receive readable plain text with visible source URLs.
@@ -252,8 +253,9 @@ and model flags; saved conversations retain their model selection.
 - Acceptance flows cover a Telegram DM with text/image/voice/tools/memory/
   scheduler, a Discord thread with authorization and a worktree, provider
   switching without history loss, core-only diagnostics, and update rollback.
-  Track basic functionality per OS/architecture and detailed component checks
-  in the simple tables in [Compatibility](../COMPATIBILITY.md). Record verified
+  Track basic functionality per OS/architecture in [Compatibility](../COMPATIBILITY.md)
+  and each user-testable crate or plugin once in the
+  [functional test matrix](../FUNCTIONAL.md). Record verified
   functional success only by ticking existing checkboxes; do not add status
   phrases, dates, versions, evidence links, or narrative notes. Leave partial,
   untested, or unsupported checks unchecked.

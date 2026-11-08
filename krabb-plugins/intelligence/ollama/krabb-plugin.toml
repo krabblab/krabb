@@ -4,6 +4,10 @@ capabilities = ["model", "vision"]
 permissions = ["network"]
 secrets = ["KRABB_OLLAMA_API_KEY"]
 
+[[settings]]
+name = "KRABB_OLLAMA_HOST"
+default = "https://ollama.com"
+
 [protocol]
 major = 0
 minor = 1
