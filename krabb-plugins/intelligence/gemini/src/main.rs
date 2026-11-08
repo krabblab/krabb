@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod context;
+mod search;
+
 use krabb_core::plugin::Emitter;
 
 mod streaming;
@@ -40,7 +43,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
             protocol: Protocol::CURRENT,
             id: "gemini".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: vec![Capability::Model, Capability::Vision],
+            capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],
             commands: Vec::new(),
         },
         move |request, mut emitter| {
@@ -61,11 +64,22 @@ async fn generate(
         Request::Note { .. } => return Ok(None),
     };
 
-    if method != "generate" {
+    if !matches!(method.as_str(), "generate" | "model.info") {
         return Ok(None);
     }
 
-    let input: ModelRequest = serde_json::from_value(params)?;
+    let input: ModelRequest = if method == "model.info" {
+        ModelRequest {
+            generation: None,
+            model: params["model"].as_str().unwrap_or("default").into(),
+            workspace: None,
+            messages: vec![],
+            stream: false,
+            tools: vec![],
+        }
+    } else {
+        serde_json::from_value(params)?
+    };
 
     let key = std::env::var("KRABB_GEMINI_KEY")
         .map_err(|_| krabb_core::Error::Denied("KRABB_GEMINI_KEY is not configured.".into()))?;
@@ -78,6 +92,12 @@ async fn generate(
         .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/v1beta".into());
 
     let base = validate_base(&base)?;
+
+    if method == "model.info" {
+        let profile = context::profile(client, &input, &key, &base).await?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+    }
 
     if input.stream {
         streaming::generate(client, id, &input, &key, &base, emitter).await
@@ -160,7 +180,7 @@ async fn generate_at(
         )));
     }
 
-    let mut reply = streaming::Reply::default();
+    let mut reply = streaming::Reply::new(&model);
 
     reply.absorb(&value)?;
     streaming::response(id, reply.finish(false)?)
@@ -191,7 +211,7 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
 
     let mut contents = Vec::new();
     let mut system = Vec::new();
-    let mut calls = VecDeque::new();
+    let mut calls = VecDeque::<FunctionCall>::new();
     let mut tool_parts = None;
 
     let flush_tool_parts = |contents: &mut Vec<Value>, tool_parts: &mut Option<Vec<Value>>| {
@@ -201,6 +221,10 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
     };
 
     for message in &input.messages {
+        if message.role != Role::Tool {
+            finish_calls(&mut calls, &mut tool_parts);
+        }
+
         if message.role == Role::System {
             flush_tool_parts(&mut contents, &mut tool_parts);
             system.extend(message.content.iter().flat_map(content_parts));
@@ -209,6 +233,17 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
 
         if message.role == Role::Assistant {
             flush_tool_parts(&mut contents, &mut tool_parts);
+
+            if let Some(replay) = search::replay(message, &model)? {
+                calls.extend(replay.calls);
+                contents.push(json!({"role":"model", "parts":replay.parts}));
+
+                if !replay.skipped.is_empty() {
+                    tool_parts = Some(replay.skipped);
+                }
+
+                continue;
+            }
 
             let (parts, found) = assistant_parts(message, require_signature)?;
 
@@ -237,7 +272,7 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
                 _ => None,
             });
 
-            if matched.as_ref().is_some_and(|call| call.legacy) {
+            if matched.as_ref().is_none_or(|call| call.legacy) {
                 tool_parts.get_or_insert_with(Vec::new).push(json!({
                     "text": format!("[Tool result {name}]: {}", rendered_content(&message.content)),
                 }));
@@ -268,15 +303,20 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
         }));
     }
 
+    finish_calls(&mut calls, &mut tool_parts);
     flush_tool_parts(&mut contents, &mut tool_parts);
 
     let mut body = json!({"contents": contents});
+
+    if let Some(generation) = input.generation {
+        body["generationConfig"]["maxOutputTokens"] = generation.output.into();
+    }
 
     if !system.is_empty() {
         body["systemInstruction"] = json!({"parts": system});
     }
 
-    if !input.tools.is_empty() {
+    if !input.tools.is_empty() && !input.generation.is_some_and(|value| value.summary) {
         body["tools"] = json!([{"functionDeclarations": input.tools.iter().map(|tool| json!({
             "name": tool.name,
             "description": tool.description,
@@ -284,7 +324,19 @@ fn request_body(input: &ModelRequest) -> krabb_core::Result<Value> {
         })).collect::<Vec<_>>()}]);
     }
 
+    search::configure(&mut body, input);
+
     Ok(body)
+}
+
+fn finish_calls(calls: &mut VecDeque<FunctionCall>, parts: &mut Option<Vec<Value>>) {
+    for call in calls.drain(..).filter(|call| !call.legacy) {
+        parts.get_or_insert_with(Vec::new).push(json!({"functionResponse": {
+            "id": call.id,
+            "name": call.name,
+            "response": {"error":"Execution status is unknown; do not retry automatically."},
+        }}));
+    }
 }
 
 fn requires_thought_signature(model: &str) -> bool {
@@ -311,6 +363,7 @@ struct FunctionCall {
 
 fn content_parts(content: &Content) -> Vec<Value> {
     match content {
+        Content::Context { .. } => vec![],
         Content::Text { text } => vec![json!({"text": text})],
 
         Content::Image { uri, alt } => image_part(uri).map_or_else(

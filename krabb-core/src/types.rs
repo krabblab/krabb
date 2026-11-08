@@ -19,6 +19,7 @@ impl Protocol {
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     Model,
+    Context,
     Vision,
     Channel,
     Store,
@@ -65,6 +66,9 @@ pub enum Role {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Content {
+    Context {
+        state: crate::context::State,
+    },
     Text {
         text: String,
     },
@@ -98,6 +102,7 @@ pub enum Content {
 impl Content {
     pub fn render(&self) -> String {
         match self {
+            Self::Context { .. } => String::new(),
             Self::Text { text } => text.clone(),
 
             Self::Image { alt, .. } => alt
@@ -122,6 +127,8 @@ pub struct Message {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ModelRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<crate::context::Generation>,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
@@ -180,6 +187,9 @@ pub enum ToolContent {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
+    Context {
+        state: crate::context::State,
+    },
     Text {
         text: String,
     },

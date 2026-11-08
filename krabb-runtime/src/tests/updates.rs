@@ -9,6 +9,124 @@ impl Drop for Fixture {
     }
 }
 
+#[tokio::test]
+async fn progress_precedes_lifecycle_waits_and_keeps_json_silent() {
+    let Ok(mode) = std::env::var("KRABB_PROGRESS_FIXTURE") else {
+        for json in [false, true] {
+            let fixture = Fixture(tests::test_root("progress"));
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+
+            command
+                .args([
+                    "--exact",
+                    "tests::updates::progress_precedes_lifecycle_waits_and_keeps_json_silent",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("KRABB_PROGRESS_FIXTURE", json.to_string())
+                .env("KRABB_HOME", &fixture.0)
+                .kill_on_drop(true);
+
+            for key in ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+
+            let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+                .await
+                .unwrap()
+                .unwrap();
+            let stderr = String::from_utf8(output.stderr).unwrap();
+
+            assert!(output.status.success(), "{stderr}");
+
+            if json {
+                assert_eq!(stderr, "unload reached\nreload reached\n");
+            } else {
+                assert!(stderr.contains("Installing plugin memory...\n"), "{stderr}");
+                assert!(stderr.contains("Activating plugin memory...\n"), "{stderr}");
+                assert!(
+                    stderr.contains(concat!(
+                        "Updating plugins: waiting for memory to unload...\n",
+                        "unload reached\nUpdating plugins...\n",
+                        "Reloading plugin memory...\nreload reached\n"
+                    )),
+                    "{stderr}"
+                );
+
+                assert!(stderr.ends_with("Uninstalling plugin memory...\n"), "{stderr}");
+                assert!(!stderr.contains('\r'));
+                assert!(!stderr.contains('\u{1b}'));
+            }
+        }
+
+        return;
+    };
+
+    let json = mode == "true";
+    let root = home();
+
+    init_at(&root).unwrap();
+
+    let source = root.join("source");
+
+    fs::create_dir_all(source.join("bin")).unwrap();
+
+    fs::write(
+        source.join("krabb-plugin.toml"),
+        "id='memory'\nversion='0.1.0'\nprotocol={major=0,minor=1}\ncapabilities=['memory']\n",
+    )
+    .unwrap();
+
+    tests::write_test_plugin(&source.join("bin/krabb-plugin-memory"), "memory", "memory", "0.1.0");
+
+    plugin(
+        PluginCommand::Install(PluginInstall {
+            ids: vec!["memory".into()],
+            source: Some(source.display().to_string()),
+            revision: None,
+            link: false,
+            yes: true,
+        }),
+        json,
+    )
+    .await
+    .unwrap();
+
+    update_live(
+        &root,
+        json,
+        vec!["memory".into()],
+        Some(&BTreeMap::new()),
+        |_| {
+            Box::pin(async {
+                eprintln!("unload reached");
+                Ok(Some(serde_json::json!({"unloaded":true})))
+            })
+        },
+        |_| {
+            Box::pin(async {
+                eprintln!("reload reached");
+                Ok(Some(serde_json::json!({"loaded":true})))
+            })
+        },
+    )
+    .await
+    .unwrap();
+
+    plugin(
+        PluginCommand::Remove(PluginUninstall {
+            ids: vec!["memory".into()],
+            yes: true,
+            force: false,
+        }),
+        json,
+    )
+    .await
+    .unwrap();
+}
+
 #[test]
 fn lock_commit_failure_restores_installed_plugin_before_recovery() {
     let fixture = Fixture(tests::test_root("update-rollback"));

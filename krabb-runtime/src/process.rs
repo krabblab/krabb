@@ -25,6 +25,26 @@ struct Call {
 }
 
 impl Cleanup {
+    pub async fn compact(
+        &self,
+        process: std::sync::Arc<Mutex<Option<Process>>>,
+        input: &krabb_core::types::ModelRequest,
+        id: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<String> {
+        let process = process.lock_owned().await;
+        let mut call = Call { process: Some(process), cleanup: self.clone(), armed: true };
+        let process = call
+            .process
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?;
+        let result = process.context.summarize(&mut process.inner, input, id, deadline).await;
+        call.armed = result.is_err();
+        result
+    }
+
     pub async fn call_full_timeout_async<F, Fut, C, Cfut>(
         &self,
         process: std::sync::Arc<Mutex<Option<Process>>>,
@@ -134,6 +154,7 @@ impl Drop for Call {
 pub(crate) struct Process {
     inner: CoreProcess,
     containers: Option<Containers>,
+    pub context: super::compaction::Context,
 }
 
 struct Containers {
@@ -143,7 +164,7 @@ struct Containers {
 
 impl From<CoreProcess> for Process {
     fn from(inner: CoreProcess) -> Self {
-        Self { inner, containers: None }
+        Self { inner, containers: None, context: super::compaction::Context::default() }
     }
 }
 
@@ -162,6 +183,78 @@ impl DerefMut for Process {
 }
 
 impl Process {
+    pub async fn call(
+        &mut self,
+        request: krabb_core::types::Request,
+    ) -> Result<krabb_core::types::Response> {
+        let limit = request_limit(&request);
+
+        self.call_stream_timeout_async(request, limit, |_| async { Ok(()) }).await
+    }
+
+    pub async fn call_stream_timeout_async<F, Fut>(
+        &mut self,
+        request: krabb_core::types::Request,
+        limit: Duration,
+        note: F,
+    ) -> Result<krabb_core::types::Response>
+    where
+        F: FnMut(krabb_core::types::Request) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        self.call_full_timeout_async(request, limit, note, |_| async {
+            Err(krabb_core::Error::Protocol("Plugin requested an unsupported host method.".into()))
+        })
+        .await
+    }
+
+    pub async fn call_full_async<F, Fut, C, Cfut>(
+        &mut self,
+        request: krabb_core::types::Request,
+        note: F,
+        handler: C,
+    ) -> Result<krabb_core::types::Response>
+    where
+        F: FnMut(krabb_core::types::Request) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+        C: FnMut(krabb_core::types::Request) -> Cfut,
+        Cfut: std::future::Future<Output = Result<krabb_core::types::Response>>,
+    {
+        let limit = request_limit(&request);
+
+        self.call_full_timeout_async(request, limit, note, handler).await
+    }
+
+    pub async fn call_full_timeout_async<F, Fut, C, Cfut>(
+        &mut self,
+        mut request: krabb_core::types::Request,
+        limit: Duration,
+        note: F,
+        handler: C,
+    ) -> Result<krabb_core::types::Response>
+    where
+        F: FnMut(krabb_core::types::Request) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+        C: FnMut(krabb_core::types::Request) -> Cfut,
+        Cfut: std::future::Future<Output = Result<krabb_core::types::Response>>,
+    {
+        let deadline = tokio::time::Instant::now() + limit;
+
+        self.context.prepare(&mut self.inner, &mut request, deadline).await?;
+        let key = super::compaction::Key::from_request(&request);
+        let response = self
+            .inner
+            .call_full_timeout_async(
+                request,
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                note,
+                handler,
+            )
+            .await?;
+        self.context.capture(key, &response);
+        Ok(response)
+    }
+
     #[cfg(all(test, unix))]
     pub async fn start_with<I, S>(path: impl AsRef<Path>, args: I) -> Result<Self>
     where
@@ -237,7 +330,7 @@ impl Process {
             }
         };
 
-        Ok(Self { inner, containers })
+        Ok(Self { inner, containers, context: super::compaction::Context::default() })
     }
 
     pub async fn restart(&mut self) -> Result<()> {
@@ -259,6 +352,14 @@ impl Process {
         }
 
         result
+    }
+}
+
+fn request_limit(request: &krabb_core::types::Request) -> Duration {
+    if matches!(request, krabb_core::types::Request::Call { method, .. } if method == "generate") {
+        crate::TURN_LIMIT
+    } else {
+        Duration::from_secs(120)
     }
 }
 

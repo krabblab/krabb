@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod context;
 mod model;
 
 use krabb_core::{
@@ -40,7 +41,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
             protocol: Protocol { major: 0, minor: 1 },
             id: "ollama".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: vec![Capability::Model, Capability::Vision],
+            capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],
             commands: vec![],
         },
         move |request, emitter| {
@@ -60,6 +61,24 @@ async fn generate(
         Request::Call { id, method, params, .. } => (id, method, params),
         Request::Note { .. } => return Ok(None),
     };
+
+    if method == "model.info" {
+        let host =
+            std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+
+        let model = model::resolve(params["model"].as_str().unwrap_or("default"), &host);
+
+        let profile = context::profile(
+            client,
+            &model,
+            &host,
+            &std::env::var("KRABB_OLLAMA_CONTEXT_LENGTH").unwrap_or_default(),
+            credential().as_deref(),
+        )
+        .await?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+    }
 
     if method != "generate" {
         return Ok(None);
@@ -98,7 +117,20 @@ fn request_body(
         "tools": tools(input),
     });
 
-    model::configure(&mut body);
+    model::configure(
+        &mut body,
+        &std::env::var("KRABB_OLLAMA_THINK").unwrap_or_default(),
+        &std::env::var("KRABB_OLLAMA_CONTEXT_LENGTH").unwrap_or_default(),
+    )?;
+
+    if let Some(generation) = input.generation {
+        body["options"]["num_predict"] = generation.output.into();
+
+        if generation.summary {
+            body["think"] = false.into();
+            body["tools"] = json!([]);
+        }
+    }
 
     Ok(body)
 }
@@ -511,6 +543,7 @@ fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<serde_json::Value>> 
                         calls.push(json!({"function": {"name": name, "arguments": args}}));
                     }
 
+                    Content::Context { .. } => {}
                     content => text.push(content.render()),
                 }
             }
@@ -698,6 +731,7 @@ mod tests {
 
     fn model() -> ModelRequest {
         ModelRequest {
+            generation: None,
             model: "test".into(),
             workspace: None,
             messages: vec![

@@ -116,9 +116,33 @@ rejected. Providers that support streamed tool calls route each request through
 the host's policy callback. They return `ModelReply` or a JSON-RPC error. Keep
 stdout reserved for JSON-RPC frames; write diagnostics to stderr.
 
+Model plugins may advertise the additive `context` capability and implement:
+
+- `model.info` with `{ "model": "..." }`, returning optional
+  `window: { tokens, output }`, `compact: bool`, and `search: bool`.
+  `tokens` is total context capacity and `output` is reserved generation space.
+- `model.compact` when `compact` is true, accepting `model`, normalized `messages`,
+  `max_tokens` (desired summary length), and optional `output` (total generation
+  allowance), returning `{ "text": "portable summary" }`.
+
+The host owns compaction, fallback summarization, caching, and final truncation;
+providers only supply limits and integrations. `ModelRequest.generation` carries
+`output`, `summary`, and `search`. Summary requests must disable tools and search.
+An advertised capability with invalid metadata fails closed. Legacy plugins without
+`context` keep their existing request path and do not receive automatic budgeting.
+
+Optional `Event::Context` and `Content::Context` carry a bounded opaque `state`
+with `provider`, `model`, and `data`. Only the matching provider/model may interpret
+it. It is retained with assistant tool calls, excluded from display and summaries,
+and never treated as host instructions. Do not modify signed provider payloads.
+New hosts and plugins should be upgraded together for this protocol 0.1 extension;
+older hosts cannot decode the new content/event variants.
+
 Agent plugins can call `host/model_stream` to receive normalized text and tool
 events in `ModelReply.events`. The host collects these events and returns them
-with the completed reply.
+with the completed reply. Bridges should preserve opaque context and thought
+signatures with assistant tool calls. The host has a bounded live continuation
+cache for clients that omit these fields; it does not survive a daemon restart.
 
 Test plugins with malformed frames, oversized frames, cancellation, process
 exit, unknown methods, and protocol mismatch before publishing an archive.

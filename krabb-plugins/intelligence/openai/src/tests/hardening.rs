@@ -12,6 +12,7 @@ fn history() -> ModelRequest {
     };
 
     ModelRequest {
+        generation: None,
         model: "fixture".into(),
         workspace: None,
         stream: true,

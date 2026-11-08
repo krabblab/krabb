@@ -18,6 +18,37 @@ pub(super) fn messages(
             finish(&mut output, &mut pending);
         }
 
+        if message.role == Role::Assistant
+            && let Some(blocks) = search::replay(message, &model::resolve(&input.model))?
+        {
+            for block in &blocks {
+                if block["type"] == "tool_use" {
+                    pending.push_back((
+                        block["name"].as_str().unwrap().into(),
+                        block["id"].as_str().unwrap().into(),
+                    ));
+                }
+            }
+
+            output.push(json!({"role":"assistant", "content":blocks}));
+            let mut retained = VecDeque::new();
+
+            for (name, id) in pending.drain(..) {
+                if message.content.iter().any(|part| {
+                    matches!(part, Content::ToolCall { id:Some(expected), .. } if expected == &id)
+                }) {
+                    retained.push_back((name, id));
+                } else {
+                    result(&mut output, json!({"type":"tool_result", "tool_use_id":id,
+                        "content":"Execution status is unknown; do not retry automatically."
+                    }));
+                }
+            }
+
+            pending = retained;
+            continue;
+        }
+
         let (_, mut values) = legacy_messages(std::slice::from_ref(message))?;
         let mut value = values.remove(0);
 
@@ -27,6 +58,8 @@ pub(super) fn messages(
 
             for (position, item) in message.content.iter().enumerate() {
                 match item {
+                    Content::Context { .. } => {}
+
                     Content::ToolCall { name, args, id, .. } => {
                         let id = id.clone().unwrap_or_else(|| format!("call_{index}_{position}"));
                         pending.push_back((name.clone(), id.clone()));
@@ -109,6 +142,7 @@ fn legacy_messages(input: &[Message]) -> krabb_core::Result<(String, Vec<serde_j
 
         for content in &message.content {
             match content {
+                Content::Context { .. } => {}
                 Content::Text { text } => blocks.push(json!({"type": "text", "text": text})),
 
                 Content::Image { uri, alt } if message.role != krabb_core::types::Role::System => {

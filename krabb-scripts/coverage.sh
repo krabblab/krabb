@@ -4,6 +4,7 @@ set -euo pipefail
 packages=(
     krabb
     krabb-core
+    krabb-openai
     krabb-date
     krabb-text
     krabb-file

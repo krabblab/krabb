@@ -1,6 +1,6 @@
 id = "gemini"
 version = "0.1.0"
-capabilities = ["model", "vision"]
+capabilities = ["model", "vision", "context"]
 permissions = ["network"]
 secrets = ["KRABB_GEMINI_KEY"]
 

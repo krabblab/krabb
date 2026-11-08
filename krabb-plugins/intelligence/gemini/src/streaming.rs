@@ -3,6 +3,9 @@ use futures_util::{Stream, StreamExt};
 
 #[derive(Default)]
 pub(super) struct Reply {
+    model: String,
+    parts: Vec<Value>,
+    citations: Vec<String>,
     text: String,
     events: Vec<Event>,
     finish: Option<String>,
@@ -11,6 +14,10 @@ pub(super) struct Reply {
 }
 
 impl Reply {
+    pub(super) fn new(model: &str) -> Self {
+        Self { model: model.into(), ..Self::default() }
+    }
+
     pub(super) fn absorb(&mut self, value: &Value) -> krabb_core::Result<()> {
         if value.get("error").is_some() || value["promptFeedback"].get("blockReason").is_some() {
             return Err(krabb_core::Error::Denied(
@@ -33,6 +40,8 @@ impl Reply {
         }
 
         for part in candidate["content"]["parts"].as_array().into_iter().flatten() {
+            self.parts.push(part.clone());
+
             if part["thought"] == true {
                 continue;
             }
@@ -65,10 +74,18 @@ impl Reply {
             }
         }
 
+        for link in search::citations(candidate) {
+            if !self.citations.contains(&link) && self.citations.len() < 32 {
+                self.text.push(' ');
+                self.text.push_str(&link);
+                self.citations.push(link);
+            }
+        }
+
         Ok(())
     }
 
-    pub(super) fn finish(self, streamed: bool) -> krabb_core::Result<ModelReply> {
+    pub(super) fn finish(mut self, streamed: bool) -> krabb_core::Result<ModelReply> {
         if streamed && self.finish.is_none() {
             return Err(krabb_core::Error::Denied(
                 "Gemini stream ended before its completion marker.".into(),
@@ -94,6 +111,12 @@ impl Reply {
         } else {
             "stop"
         };
+
+        if !self.events.is_empty()
+            && let Some(state) = search::state(&self.model, self.parts)?
+        {
+            self.events.push(Event::Context { state });
+        }
 
         Ok(ModelReply {
             text: self.text,
@@ -145,13 +168,28 @@ pub(super) async fn generate(
         )));
     }
 
-    parse(id, response.bytes_stream(), emitter).await
+    parse_model(id, response.bytes_stream(), emitter, &model).await
 }
 
+#[cfg(test)]
 pub(super) async fn parse<S, C, E>(
+    id: u64,
+    stream: S,
+    emitter: &mut Emitter,
+) -> krabb_core::Result<Option<Response>>
+where
+    S: Stream<Item = Result<C, E>> + Unpin,
+    C: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    parse_model(id, stream, emitter, "fixture").await
+}
+
+async fn parse_model<S, C, E>(
     id: u64,
     mut stream: S,
     emitter: &mut Emitter,
+    model: &str,
 ) -> krabb_core::Result<Option<Response>>
 where
     S: Stream<Item = Result<C, E>> + Unpin,
@@ -161,7 +199,7 @@ where
     let mut buffer = Vec::new();
     let mut data = String::new();
     let mut bytes = 0_usize;
-    let mut reply = Reply::default();
+    let mut reply = Reply::new(model);
     let mut pending = String::new();
     let mut emitted = 0;
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));

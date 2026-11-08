@@ -133,6 +133,26 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn context(&self) -> Vec<Message> {
+        let (Some(context), Some(watermark)) = (&self.compacted_context, &self.compacted_through)
+        else {
+            return self.messages.clone();
+        };
+
+        let start = self
+            .messages
+            .iter()
+            .rposition(|message| &message.id == watermark)
+            .map_or(0, |index| index + 1);
+
+        let mut messages = context.clone();
+
+        messages.extend_from_slice(&self.messages[start..]);
+        messages
+    }
+}
+
+impl Session {
     pub fn has_live_tui_reservation(&self) -> bool {
         self.status == "working"
             && self.inflight.is_none()
@@ -893,6 +913,35 @@ impl Store {
                 session.updated = now();
             }
         })
+    }
+
+    pub(crate) fn compact(
+        &mut self,
+        id: &str,
+        record: &super::compaction::Record,
+    ) -> std::io::Result<bool> {
+        let Some(session) = self.sessions.get(id) else {
+            return Ok(false);
+        };
+
+        if session.status != "working" || record.summary.session != id {
+            return Ok(false);
+        }
+
+        let mut context = session.context();
+
+        if !record.apply(&mut context).map_err(std::io::Error::other)? {
+            return Ok(false);
+        }
+
+        self.change(|store| {
+            let session = store.sessions.get_mut(id).unwrap();
+            session.compacted_through = session.messages.last().map(|message| message.id.clone());
+            session.compacted_context = Some(context);
+            session.updated = now();
+        })?;
+
+        Ok(true)
     }
 
     fn push_with_status(

@@ -6,8 +6,11 @@ This roadmap summarizes planned work across upcoming Krabb releases.
 
 - [v0.2 | Reliability](#v02--reliability)
 - [v0.3 | Experience](#v03--experience)
+  - [Composable Components](#composable-components)
 - [v0.4 | Plugin Ecosystem](#v04--plugin-ecosystem)
 - [v0.5 | Deployments](#v05--deployments)
+- [v0.6 | Multi-Agent Runtime](#v06--multi-agent-runtime)
+- [v0.7 | Small-Footprint Runtime](#v07--small-footprint-runtime)
 - [v0.8 | Distribution](#v08--distribution)
 
 ## v0.2 | Reliability
@@ -42,6 +45,8 @@ clearer for adopters and contributors.
 - Improve errors, recovery guidance, and shell completion.
 - Clarify architecture, plugin development, configuration, security, and troubleshooting documentation.
 - Add deterministic onboarding and command-output tests.
+- Share slash commands across every channel and client, with one command registry,
+  permission checks, help text, and platform adapters for current and future interfaces.
 - Preserve protocol and plugin compatibility.
 
 ### Composable Components

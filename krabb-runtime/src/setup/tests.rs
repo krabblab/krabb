@@ -546,26 +546,42 @@ fn ollama_setup_switches_hosts_without_changing_the_service() {
     let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
 
     assert!(environment.contains(&("KRABB_OLLAMA_HOST".into(), "https://ollama.com".into())));
+    assert!(environment.contains(&("KRABB_OLLAMA_THINK".into(), "false".into())));
+    assert!(environment.contains(&("KRABB_OLLAMA_CONTEXT_LENGTH".into(), "auto".into())));
 
     save(&destination, BTreeMap::from([("KRABB_TELEGRAM_TOKEN".into(), "retained".into())]))
         .unwrap();
 
-    for (entered, expected, secret) in [
-        ("", "https://ollama.com", "synthetic-ollama-secret"),
-        ("http://127.0.0.1:11434", "http://127.0.0.1:11434", ""),
-        ("http://localhost:11435", "http://localhost:11435", ""),
-        ("https://ollama.com", "https://ollama.com", "synthetic-ollama-secret"),
+    for (entered, expected, secret, thinking, context) in [
+        ("", "https://ollama.com", "synthetic-ollama-secret", "", ""),
+        ("http://127.0.0.1:11434", "http://127.0.0.1:11434", "", "false", "4096"),
+        ("http://localhost:11435", "http://localhost:11435", "", "true", "16384"),
+        ("https://ollama.com", "https://ollama.com", "synthetic-ollama-secret", "", ""),
     ] {
         let mut prompted = Vec::new();
 
         let values = collect(&fields, |field| {
             prompted.push(field.name.clone());
 
-            Ok(if field.name == "KRABB_OLLAMA_HOST" { entered.into() } else { secret.into() })
+            Ok(match field.name.as_str() {
+                "KRABB_OLLAMA_HOST" => entered.into(),
+                "KRABB_OLLAMA_THINK" => thinking.into(),
+                "KRABB_OLLAMA_CONTEXT_LENGTH" => context.into(),
+                _ => secret.into(),
+            })
         })
         .unwrap();
 
-        assert_eq!(prompted, ["KRABB_OLLAMA_API_KEY", "KRABB_OLLAMA_HOST"]);
+        assert_eq!(
+            prompted,
+            [
+                "KRABB_OLLAMA_API_KEY",
+                "KRABB_OLLAMA_HOST",
+                "KRABB_OLLAMA_THINK",
+                "KRABB_OLLAMA_CONTEXT_LENGTH",
+            ]
+        );
+
         assert_eq!(values["KRABB_OLLAMA_HOST"], expected);
 
         save(&destination, values).unwrap();
@@ -584,6 +600,21 @@ fn ollama_setup_switches_hosts_without_changing_the_service() {
             .collect::<Vec<_>>();
 
         assert_eq!(hosts, [expected]);
+
+        for (name, value) in
+            [("KRABB_OLLAMA_THINK", thinking), ("KRABB_OLLAMA_CONTEXT_LENGTH", context)]
+        {
+            let expected = if !value.is_empty() {
+                value
+            } else if name == "KRABB_OLLAMA_THINK" {
+                "false"
+            } else {
+                "auto"
+            };
+
+            assert!(environment.contains(&(name.into(), expected.into())));
+            assert_eq!(read(&destination).unwrap()[name], expected);
+        }
 
         assert_eq!(
             environment

@@ -169,6 +169,7 @@ async fn streams_over_http_without_credentials_in_the_url() {
     });
 
     let input = ModelRequest {
+        generation: None,
         model: "fixture".into(),
         workspace: None,
         messages: vec![],

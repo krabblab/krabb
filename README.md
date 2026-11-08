@@ -18,6 +18,7 @@ ACP, agent collaboration uses A2A, and user interfaces connect through AG-UI.
 
 - [Get Started](#get-started)
 - [Capabilities](#capabilities)
+- [Resources](#resources)
 - [Documentation](#documentation)
 - [Development](#development)
 - [Support And License](#support-and-license)
@@ -61,6 +62,15 @@ All plugins are optional. Intelligence plugins live in
 `krabb-plugins/intelligence/`; channel plugins live in
 `krabb-plugins/channels/`; client plugins, including TUI, live in
 `krabb-plugins/clients/`. Plugin manifests declare capabilities and permissions.
+
+## Resources
+
+A minimal Krabbling needs a daemon, one intelligence plugin, and one channel or
+client. Together they can use roughly **50-70 MiB of RAM** with remote inference. For example, the daemon
+with Codex and Telegram is around 70 MiB. CPU use is near zero while idle.
+Additional plugins and local model inference add their
+own resource needs. See the [resource guide](krabb-docs/resources.md) for basic
+sizing figures and what they include.
 
 ## Documentation
 

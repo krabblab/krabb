@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod context;
 mod model;
+mod search;
 
 mod history;
 use history::messages;
@@ -37,7 +39,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
             protocol: Protocol { major: 0, minor: 1 },
             id: "anthropic".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: vec![Capability::Model, Capability::Vision],
+            capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],
             commands: vec![],
         },
         move |request, emitter| {
@@ -58,11 +60,10 @@ async fn generate(
         Request::Note { .. } => return Ok(None),
     };
 
-    if method != "generate" {
+    if !matches!(method.as_str(), "generate" | "model.info" | "model.compact") {
         return Ok(None);
     }
 
-    let input: ModelRequest = serde_json::from_value(params)?;
     let primary = std::env::var("KRABB_ANTHROPIC_KEY").ok();
 
     let key = key(primary.as_deref())
@@ -76,6 +77,21 @@ async fn generate(
     let base = std::env::var("KRABB_ANTHROPIC_BASE_URL")
         .unwrap_or_else(|_| "https://api.anthropic.com".into());
 
+    if method == "model.info" {
+        let model = model::resolve(params["model"].as_str().unwrap_or("default"));
+        let profile = context::profile(client, &model, &key, &base).await?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+    }
+
+    if method == "model.compact" {
+        let reply = context::compact(client, serde_json::from_value(params)?, &key, &base).await?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(reply)?)));
+    }
+
+    let input: ModelRequest = serde_json::from_value(params)?;
+
     generate_at(client, id, input, &key, &base, &mut emitter).await
 }
 
@@ -87,7 +103,9 @@ async fn generate_at(
     base: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
-    if input.stream {
+    if search::enabled(&input) {
+        search::generate(client, id, &input, key, base).await
+    } else if input.stream {
         stream_request(client, id, input, key, base, emitter).await
     } else {
         generate_request(client, id, input, key, base).await
@@ -160,6 +178,27 @@ async fn generate_request(
     request(client, id, input, key, base, false).await
 }
 
+fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_json::Value> {
+    let (system, messages) = messages(input)?;
+
+    let mut body = json!({
+        "model": model::resolve(&input.model),
+        "max_tokens": input.generation.map_or(4096, |value| value.output),
+        "system": system, "messages": messages, "tools": tools(input), "stream": stream,
+    });
+
+    if input.generation.is_some_and(|value| value.summary) {
+        body["thinking"] = json!({"type":"disabled"});
+        body["tools"] = json!([]);
+    } else if search::enabled(input) {
+        body["tools"].as_array_mut().unwrap().push(json!({
+            "type": "web_search_20250305", "name": "web_search", "max_uses": 3,
+        }));
+    }
+
+    Ok(body)
+}
+
 async fn stream_request(
     client: &reqwest::Client,
     id: u64,
@@ -170,18 +209,14 @@ async fn stream_request(
 ) -> krabb_core::Result<Option<Response>> {
     let base = validate_base(base)?;
 
-    let (system, messages) = messages(&input)?;
-
     let response = client
         .post(format!("{base}/v1/messages"))
         .header("x-api-key", key)
         .header("anthropic-version", "2023-06-01")
-        .json(&json!({"model": model::resolve(&input.model), "max_tokens": 4096, "system": system, "messages": messages, "tools": tools(&input), "stream": true}))
+        .json(&request_body(&input, true)?)
         .send()
         .await
-        .map_err(|error| {
-            krabb_core::Error::Denied(format!("Anthropic stream failed: {error}."))
-        })?;
+        .map_err(|error| krabb_core::Error::Denied(format!("Anthropic stream failed: {error}.")))?;
 
     let status = response.status();
 
@@ -203,13 +238,12 @@ async fn request(
     stream: bool,
 ) -> krabb_core::Result<Option<Response>> {
     let base = validate_base(base)?;
-    let (system, messages) = messages(&input)?;
 
     let response = client
         .post(format!("{base}/v1/messages"))
         .header("x-api-key", key)
         .header("anthropic-version", "2023-06-01")
-        .json(&json!({"model": model::resolve(&input.model), "max_tokens": 4096, "system": system, "messages": messages, "tools": tools(&input), "stream": stream}))
+        .json(&request_body(&input, stream)?)
         .send()
         .await
         .map_err(|error| {
@@ -421,8 +455,10 @@ fn anthropic_line(
             }
 
             if let Some(part) = value["delta"]["partial_json"].as_str() {
-                let index = tool_index(&value["index"])?;
-                let tool = tools.entry(index).or_default();
+                let index = value["index"].as_u64().and_then(|index| usize::try_from(index).ok());
+                let Some(tool) = index.and_then(|index| tools.get_mut(&index)) else {
+                    return Ok(false);
+                };
 
                 if part.len() > BODY_LIMIT.saturating_sub(tool.arguments.len()) {
                     return Err(krabb_core::Error::Limit(
@@ -588,7 +624,7 @@ fn response_body(
         krabb_core::Error::Denied("Anthropic response contained no content.".into())
     })?;
 
-    let text = blocks.iter().filter_map(|content| content["text"].as_str()).collect::<String>();
+    let text = search::text(blocks);
     let events = blocks
         .iter()
         .filter(|content| content["type"] == "tool_use")
@@ -653,6 +689,7 @@ mod tests {
 
     fn model() -> ModelRequest {
         ModelRequest {
+            generation: None,
             model: "test".into(),
             workspace: None,
             messages: vec![
@@ -839,7 +876,7 @@ mod tests {
 
         assert!(
             anthropic_line(
-                br#"data: {"type":"content_block_delta","index":16,"delta":{"partial_json":"{}"}}"#,
+                br#"data: {"type":"content_block_start","index":16,"content_block":{"type":"tool_use"}}"#,
                 &mut text,
                 &mut pending,
                 &mut tools,

@@ -8,6 +8,7 @@ async fn logged_request(base: String, key: String) -> Result<(), String> {
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let input = ModelRequest {
+        generation: None,
         model: "fixture".into(),
         workspace: None,
         messages: vec![],
@@ -54,6 +55,7 @@ async fn loopback_listener() -> Option<tokio::net::TcpListener> {
 #[test]
 fn builds_gemini_messages_and_tools() {
     let request = ModelRequest {
+        generation: None,
         model: "gemini-2.5-flash".into(),
         workspace: None,
         messages: vec![
@@ -152,6 +154,7 @@ fn builds_gemini_messages_and_tools() {
 #[test]
 fn encodes_bounded_data_images_as_gemini_inline_parts() {
     let input = ModelRequest {
+        generation: None,
         model: "gemini-2.5-flash".into(),
         workspace: None,
         messages: vec![Message {
@@ -183,6 +186,7 @@ fn preserves_large_function_call_arguments() {
     let args = json!({"patch": "x".repeat(4097)});
 
     let input = ModelRequest {
+        generation: None,
         model: "gemini-2.5-flash".into(),
         workspace: None,
         messages: vec![Message {
@@ -205,6 +209,7 @@ fn preserves_large_function_call_arguments() {
 #[test]
 fn builds_tool_and_assistant_messages_without_matching_calls() {
     let input = ModelRequest {
+        generation: None,
         model: "default".into(),
         workspace: None,
         messages: vec![
@@ -237,13 +242,19 @@ fn builds_tool_and_assistant_messages_without_matching_calls() {
     let body = request_body(&input).unwrap();
 
     assert_eq!(body["contents"][0]["parts"][0]["text"], "[Image attachment.]");
-    assert_eq!(body["contents"][1]["parts"][0]["functionResponse"]["name"], "missing");
+
+    assert_eq!(
+        body["contents"][1]["parts"][0]["text"],
+        "[Tool result missing]: [Image attachment.]"
+    );
+
     assert_eq!(body["contents"][2]["parts"][0]["text"], "[Audio attachment.]");
 }
 
 #[test]
 fn groups_parallel_tool_results_in_one_user_content_block() {
     let input = ModelRequest {
+        generation: None,
         model: "gemini-3.8-flash".into(),
         workspace: None,
         messages: vec![
@@ -299,6 +310,7 @@ fn groups_parallel_tool_results_in_one_user_content_block() {
 #[test]
 fn preserves_gemini_three_tool_signatures_and_migrates_legacy_calls() {
     let request = ModelRequest {
+        generation: None,
         model: "gemini-3.8-flash".into(),
         workspace: None,
         messages: vec![Message {
@@ -372,6 +384,7 @@ fn preserves_gemini_three_tool_signatures_and_migrates_legacy_calls() {
 #[test]
 fn migrates_legacy_tool_history_for_explicit_gemini_three() {
     let request = ModelRequest {
+        generation: None,
         model: "gemini-3.8-flash".into(),
         workspace: None,
         messages: vec![
@@ -421,6 +434,7 @@ fn migrates_legacy_tool_history_for_explicit_gemini_three() {
 #[test]
 fn preserves_default_legacy_transcripts_without_downgrading() {
     let request = ModelRequest {
+        generation: None,
         model: "default".into(),
         workspace: None,
         messages: vec![Message {
@@ -464,6 +478,7 @@ fn preserves_default_legacy_transcripts_without_downgrading() {
 #[test]
 fn routes_the_host_default_model_to_gemini_default() {
     let request = ModelRequest {
+        generation: None,
         model: HOST_DEFAULT_MODEL.into(),
         workspace: None,
         messages: Vec::new(),
@@ -483,6 +498,7 @@ fn routes_the_host_default_model_to_gemini_default() {
 #[test]
 fn preserves_default_signatureless_tool_history_without_downgrading() {
     let request = ModelRequest {
+        generation: None,
         model: "default".into(),
         workspace: None,
         messages: vec![Message {
@@ -566,6 +582,7 @@ async fn validates_gemini_configuration_before_network_access() {
     let client = reqwest::Client::new();
 
     let request = ModelRequest {
+        generation: None,
         model: "test".into(),
         workspace: None,
         messages: Vec::new(),
@@ -653,6 +670,7 @@ async fn sends_a_bounded_request_and_parses_status() {
     let client = reqwest::Client::new();
 
     let request = ModelRequest {
+        generation: None,
         model: "test".into(),
         workspace: None,
         messages: Vec::new(),
@@ -701,6 +719,7 @@ async fn uses_the_default_model_and_parses_tool_replies() {
     });
 
     let request = ModelRequest {
+        generation: None,
         model: "default".into(),
         workspace: None,
         messages: Vec::new(),
@@ -740,6 +759,7 @@ async fn rejects_an_oversized_response_before_parsing() {
     });
 
     let request = ModelRequest {
+        generation: None,
         model: "test".into(),
         workspace: None,
         messages: Vec::new(),
@@ -779,6 +799,7 @@ async fn rejects_failed_and_invalid_responses() {
         });
 
         let request = ModelRequest {
+            generation: None,
             model: "test".into(),
             workspace: None,
             messages: Vec::new(),
@@ -799,6 +820,7 @@ async fn rejects_failed_and_invalid_responses() {
 #[tokio::test]
 async fn transport_failure_omits_credentials() {
     let request = ModelRequest {
+        generation: None,
         model: "test".into(),
         workspace: None,
         messages: Vec::new(),
@@ -825,6 +847,7 @@ fn tool_results_preserve_pixels_with_current_and_legacy_calls() {
         ("gemini-2.5-flash", None, false),
     ] {
         let input = ModelRequest {
+            generation: None,
             model: model.into(),
             workspace: None,
             messages: vec![
@@ -875,3 +898,29 @@ fn tool_results_preserve_pixels_with_current_and_legacy_calls() {
 
 #[path = "tests/streaming.rs"]
 mod hardening;
+
+#[test]
+fn interrupted_function_calls_are_closed_without_replaying_actions() {
+    let input: ModelRequest = serde_json::from_value(json!({
+        "model":"gemini-2.5-flash", "stream":false, "tools":[], "messages":[
+            {"id":"a", "session":"s", "role":"assistant", "content":[
+                {"kind":"tool_call", "name":"write", "args":{}, "id":"write-1"}
+            ]},
+            {"id":"u", "session":"s", "role":"user", "content":[{"kind":"text","text":"continue"}]}
+        ]
+    }))
+    .unwrap();
+
+    let body = request_body(&input).unwrap();
+
+    assert_eq!(body["contents"][1]["parts"][0]["functionResponse"]["id"], "write-1");
+
+    assert!(
+        body["contents"][1]["parts"][0]["functionResponse"]["response"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("do not retry")
+    );
+
+    assert_eq!(body["contents"][2]["parts"][0]["text"], "continue");
+}

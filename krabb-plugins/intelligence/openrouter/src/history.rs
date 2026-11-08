@@ -13,6 +13,7 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
         }
 
         let mut value = legacy_messages(std::slice::from_ref(message))?.remove(0);
+        let mut restored = false;
 
         if message.role == Role::Assistant {
             let mut calls = Vec::new();
@@ -35,6 +36,13 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
                 value = legacy_messages(&[filtered])?.remove(0);
                 value["tool_calls"] = json!(calls);
             }
+
+            if let Some(calls) =
+                continuation::restore(message, &model::resolve(&input.model, None), &mut value)?
+            {
+                pending = calls.into();
+                restored = true;
+            }
         } else if message.role == Role::Tool {
             let position = pending
                 .iter()
@@ -51,6 +59,7 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
                 let text = message
                     .content
                     .iter()
+                    .filter(|item| !matches!(item, Content::Context { .. }))
                     .map(|item| match item {
                         Content::Image { alt, .. } => {
                             alt.clone().unwrap_or_else(|| "[Image attachment.]".into())
@@ -67,6 +76,24 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
         }
 
         output.push(value);
+
+        if restored {
+            let mut retained = VecDeque::new();
+
+            for (name, id) in pending.drain(..) {
+                if message.content.iter().any(|part| {
+                    matches!(part, Content::ToolCall { id:Some(expected), .. } if expected == &id)
+                }) {
+                    retained.push_back((name, id));
+                } else {
+                    output.push(json!({"role":"tool", "tool_call_id":id, "content":
+                        "Execution status is unknown; do not retry automatically."
+                    }));
+                }
+            }
+
+            pending = retained;
+        }
 
         if pending.is_empty() {
             finish(&mut output, &mut pending, &mut images);
@@ -104,6 +131,7 @@ fn legacy_messages(input: &[Message]) -> krabb_core::Result<Vec<Value>> {
 
         for item in &message.content {
             match item {
+                Content::Context { .. } => {},
                 Content::Text { text } => parts.push(json!({"type":"text","text":text})),
 
                 Content::Image { uri, .. } if message.role != Role::System => {

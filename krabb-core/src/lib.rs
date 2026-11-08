@@ -2,6 +2,7 @@
 #![allow(missing_docs)]
 
 pub mod agent;
+pub mod context;
 pub mod error;
 pub mod jsonl;
 pub mod plugin;

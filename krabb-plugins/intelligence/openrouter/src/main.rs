@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
+mod context;
+mod continuation;
 mod model;
+mod search;
 
 mod history;
 use history::messages;
@@ -42,7 +45,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
             protocol: Protocol { major: 0, minor: 1 },
             id: "openrouter".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: vec![Capability::Model, Capability::Vision],
+            capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],
             commands: vec![],
         },
         move |request, emitter| {
@@ -62,6 +65,17 @@ async fn generate(
         Request::Call { id, method, params, .. } => (id, method, params),
         Request::Note { .. } => return Ok(None),
     };
+
+    if method == "model.info" {
+        let model = model::resolve(
+            params["model"].as_str().unwrap_or("default"),
+            std::env::var("KRABB_OPENROUTER_MODEL").ok().as_deref(),
+        );
+
+        let profile = context::profile(client, &model, &credential()?, &base_url()?).await?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+    }
 
     if method != "generate" {
         return Ok(None);
@@ -120,6 +134,14 @@ fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_
 
     model::configure(&mut body);
 
+    if let Some(generation) = input.generation {
+        body["max_tokens"] = generation.output.into();
+
+        if generation.summary {
+            body["tools"] = json!([]);
+        }
+    }
+
     Ok(body)
 }
 
@@ -130,11 +152,15 @@ async fn complete(
     key: &str,
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
+    let mut body = request_body(&input, false)?;
+
+    search::configure(client, &input, &mut body, key, base).await?;
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .headers(headers()?)
         .bearer_auth(key)
-        .json(&request_body(&input, false)?)
+        .json(&body)
         .send()
         .await
         .map_err(|error| {
@@ -144,7 +170,7 @@ async fn complete(
     let status = response.status();
     let body = collect(response.bytes_stream()).await?;
 
-    response_body(id, status, serde_json::from_slice(&body)?)
+    response_model(id, status, serde_json::from_slice(&body)?, &model::resolve(&input.model, None))
 }
 
 async fn stream(
@@ -155,11 +181,15 @@ async fn stream(
     base: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
+    let mut body = request_body(&input, true)?;
+
+    search::configure(client, &input, &mut body, key, base).await?;
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .headers(headers()?)
         .bearer_auth(key)
-        .json(&request_body(&input, true)?)
+        .json(&body)
         .send()
         .await
         .map_err(|error| {
@@ -173,7 +203,7 @@ async fn stream(
         )));
     }
 
-    stream_body(id, response.bytes_stream(), emitter).await
+    stream_model(id, response.bytes_stream(), emitter, &model::resolve(&input.model, None)).await
 }
 
 fn headers() -> krabb_core::Result<reqwest::header::HeaderMap> {
@@ -260,10 +290,11 @@ fn tools(input: &ModelRequest) -> Vec<Value> {
         .collect()
 }
 
-async fn stream_body<S, C, E>(
+async fn stream_model<S, C, E>(
     id: u64,
     mut stream: S,
     emitter: &mut Emitter,
+    model: &str,
 ) -> krabb_core::Result<Option<Response>>
 where
     S: Stream<Item = Result<C, E>> + Unpin,
@@ -278,6 +309,7 @@ where
     let mut bytes: usize = 0;
     let mut emitted = 0;
     let mut complete = false;
+    let mut reasoning = continuation::Reasoning::default();
 
     'stream: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
@@ -297,7 +329,7 @@ where
         while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
             let line = buffer.drain(..=end).collect::<Vec<_>>();
 
-            if stream_line(&line, &mut text, &mut pending, &mut calls)? {
+            if stream_reasoning(&line, &mut text, &mut pending, &mut calls, &mut reasoning)? {
                 complete = true;
                 buffer.clear();
                 break 'stream;
@@ -310,7 +342,7 @@ where
     }
 
     if !buffer.is_empty() {
-        complete = stream_line(&buffer, &mut text, &mut pending, &mut calls)?;
+        complete = stream_reasoning(&buffer, &mut text, &mut pending, &mut calls, &mut reasoning)?;
     }
 
     if !complete {
@@ -320,7 +352,7 @@ where
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;
-    let events = calls
+    let mut events = calls
         .into_values()
         .map(|(name, args, call_id)| {
             let args = if args.is_empty() { json!({}) } else { serde_json::from_str(&args)? };
@@ -346,6 +378,8 @@ where
         ));
     }
 
+    reasoning.attach(model, &mut events)?;
+
     response(
         id,
         serde_json::to_value(ModelReply {
@@ -359,11 +393,12 @@ where
     )
 }
 
-fn stream_line(
+fn stream_reasoning(
     line: &[u8],
     text: &mut String,
     pending: &mut String,
     calls: &mut BTreeMap<usize, (String, String, String)>,
+    reasoning: &mut continuation::Reasoning,
 ) -> krabb_core::Result<bool> {
     let line = std::str::from_utf8(line)
         .map_err(|_| krabb_core::Error::Denied("OpenRouter stream was not UTF-8.".into()))?;
@@ -384,9 +419,19 @@ fn stream_line(
 
     let delta = &value["choices"][0]["delta"];
 
+    reasoning.collect(delta)?;
+
     if let Some(value) = delta["content"].as_str() {
         text.push_str(value);
         pending.push_str(value);
+    }
+
+    for link in search::citations(delta) {
+        if !text.contains(&link) {
+            let citation = format!(" {link}");
+            text.push_str(&citation);
+            pending.push_str(&citation);
+        }
     }
 
     if let Some(values) = delta["tool_calls"].as_array() {
@@ -435,10 +480,11 @@ async fn emit(
     Ok(())
 }
 
-fn response_body(
+fn response_model(
     id: u64,
     status: reqwest::StatusCode,
     body: Value,
+    model: &str,
 ) -> krabb_core::Result<Option<Response>> {
     if !status.is_success() {
         return Err(krabb_core::Error::Denied(format!(
@@ -451,7 +497,13 @@ fn response_body(
         krabb_core::Error::Denied("OpenRouter response contained no choices.".into())
     })?;
 
-    let text = choice["message"]["content"].as_str().unwrap_or_default().to_owned();
+    let mut text = choice["message"]["content"].as_str().unwrap_or_default().to_owned();
+
+    for link in search::citations(&choice["message"]) {
+        text.push(' ');
+        text.push_str(&link);
+    }
+
     let mut events = Vec::new();
 
     for value in choice["message"]["tool_calls"].as_array().into_iter().flatten() {
@@ -483,6 +535,11 @@ fn response_body(
         ));
     }
 
+    let mut reasoning = continuation::Reasoning::default();
+
+    reasoning.collect(&choice["message"])?;
+    reasoning.attach(model, &mut events)?;
+
     response(
         id,
         serde_json::to_value(ModelReply {
@@ -494,6 +551,39 @@ fn response_body(
             events,
         })?,
     )
+}
+
+#[cfg(test)]
+async fn stream_body<S, C, E>(
+    id: u64,
+    stream: S,
+    emitter: &mut Emitter,
+) -> krabb_core::Result<Option<Response>>
+where
+    S: Stream<Item = Result<C, E>> + Unpin,
+    C: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    stream_model(id, stream, emitter, "fixture").await
+}
+
+#[cfg(test)]
+fn stream_line(
+    line: &[u8],
+    text: &mut String,
+    pending: &mut String,
+    calls: &mut BTreeMap<usize, (String, String, String)>,
+) -> krabb_core::Result<bool> {
+    stream_reasoning(line, text, pending, calls, &mut continuation::Reasoning::default())
+}
+
+#[cfg(test)]
+fn response_body(
+    id: u64,
+    status: reqwest::StatusCode,
+    body: Value,
+) -> krabb_core::Result<Option<Response>> {
+    response_model(id, status, body, "fixture")
 }
 
 fn response(id: u64, result: Value) -> krabb_core::Result<Option<Response>> {
@@ -543,6 +633,7 @@ mod tests {
 
     fn model() -> ModelRequest {
         ModelRequest {
+            generation: None,
             model: "test/model".into(),
             workspace: None,
             messages: vec![

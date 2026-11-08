@@ -293,6 +293,10 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_GEMINI_KEY` | Gemini Developer API key |
 | `KRABB_GEMINI_BASE_URL` | Gemini-compatible API base |
 | `KRABB_OLLAMA_HOST` | Override the saved Ollama endpoint; default `https://ollama.com` |
+| `KRABB_OPENAI_CONTEXT_LENGTH` | OpenAI context budget: `auto` uses the model-family catalog; otherwise a token count greater than one |
+| `KRABB_CODEX_CONTEXT_LENGTH` | Codex context budget: `auto` uses the model-family catalog; otherwise a token count greater than one |
+| `KRABB_OLLAMA_THINK` | Ollama thinking mode: `false` (default), `true`, `auto`, `low`, `medium`, or `high`; model support varies |
+| `KRABB_OLLAMA_CONTEXT_LENGTH` | Ollama context override in tokens; default `auto` leaves allocation to the server/model |
 | `KRABB_OLLAMA_API_KEY` | Ollama cloud API key |
 | `KRABB_TELEGRAM_TOKEN` | Telegram bot token |
 | `KRABB_DISCORD_TOKEN` | Discord bot token |

@@ -1798,6 +1798,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "krabb-openai"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "krabb-core",
+ "krabb-test",
+ "krabb-text",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "krabb-plugin-a2a"
 version = "0.1.0"
 dependencies = [
@@ -1842,6 +1855,7 @@ dependencies = [
  "krabb-file",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "reqwest",
  "serde_json",
  "tokio",
@@ -1868,6 +1882,7 @@ dependencies = [
  "krabb-core",
  "krabb-file",
  "krabb-log",
+ "krabb-openai",
  "krabb-test",
  "reqwest",
  "serde_json",
@@ -1916,6 +1931,7 @@ dependencies = [
  "krabb-core",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "reqwest",
  "serde_json",
  "tokio",
@@ -1971,6 +1987,7 @@ dependencies = [
  "krabb-core",
  "krabb-file",
  "krabb-log",
+ "krabb-openai",
  "krabb-test",
  "reqwest",
  "serde_json",
@@ -1985,6 +2002,7 @@ dependencies = [
  "krabb-core",
  "krabb-log",
  "krabb-test",
+ "krabb-text",
  "reqwest",
  "serde_json",
  "tokio",

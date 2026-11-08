@@ -34,15 +34,19 @@ catalog sources and generation limits. Unavailable models fail without substitut
 
 Sign-in turns explicitly use live web search, overriding the cached-search default
 of a read-only Codex session. Provider-hosted web search is separate from local
-sandbox network access and Krabb's `fetch` tool. The API-key route does not expose
-built-in web search. A search or cache miss does not prove that a URL is missing.
+sandbox network access and Krabb's `fetch` tool. The API-key route enables Responses web search for supported models. A search or cache miss does not prove that a URL is missing.
 
 The plugin advertises image-request support during its handshake. The HTTP
-adapter sends inline image inputs using the OpenAI-compatible chat completions
-format. The Codex adapter sends inline image inputs through the app-server
+adapter sends inline images through Responses or compatible Chat Completions. The Codex adapter sends inline image inputs through the app-server
 `turn/start` protocol and negotiates the experimental API needed for workspace
 roots. Use a vision-capable selected model; Krabb does not pin the Codex CLI
 release.
 
 Krabb disables inherited MCP servers before each model thread so tools remain subject
 to host approval. Unsupported configuration responses stop the request before execution.
+
+Both routes use shared host context preparation before generation. Setup accepts
+`KRABB_CODEX_CONTEXT_LENGTH` (`auto` or a token count greater than one) for the host
+budget. Codex sign-in additionally manages its own harness context and generation
+limits. Summary turns disable web search and dynamic tools. See
+[context and search](../../../krabb-docs/providers.md#context).

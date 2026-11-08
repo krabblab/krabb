@@ -228,6 +228,12 @@ paths, Git revisions, or HTTPS archives with a `#sha256=` digest. `--link` is
 for local development builds. Installation validates each manifest and stages
 files before activation; a running daemon loads new plugins over local IPC.
 Interactive install, uninstall, update, and import operations show an in-place spinner.
+Plugin install, uninstall, and update also print plain status lines to stderr
+when it is redirected. Update progress covers checking sources, preparing the
+update, waiting for active plugins to unload, applying changes, and reloading
+plugins. Installation identifies the plugin being installed and activated;
+uninstallation identifies the plugin being removed. Spinners clear before
+prompts and results. `--json` suppresses these progress messages.
 Plugin results use one-line tree entries; failed installs and updates point to
 the current application log file. Update previews also show the failure reason.
 `plugin list` distinguishes present and missing binaries and shows credential
