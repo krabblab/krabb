@@ -88,7 +88,29 @@ pub(super) async fn generate(
             reply["content"] = content.into();
             reply["usage"]["input_tokens"] = input_tokens.into();
             reply["usage"]["output_tokens"] = output_tokens.into();
-            return response_body(id, status, reply);
+            let state = continuation(&model::resolve(&input.model), &reply["content"])?;
+            let mut response = response_body(id, status, reply)?;
+
+            if let Some(state) = state {
+                let events = response
+                    .as_mut()
+                    .and_then(|response| response.result.as_mut())
+                    .and_then(|result| result["events"].as_array_mut())
+                    .ok_or_else(|| {
+                        krabb_core::Error::Protocol(
+                            "Anthropic omitted its client tool calls.".into(),
+                        )
+                    })?;
+                events.push(serde_json::to_value(Event::Context { state })?);
+            }
+
+            if serde_json::to_vec(&response)?.len() > krabb_core::jsonl::MAX - 1 {
+                return Err(krabb_core::Error::Limit(
+                    "Anthropic continuation exceeded the frame budget.".into(),
+                ));
+            }
+
+            return Ok(response);
         }
 
         if blocks.iter().any(|block| block["type"] == "tool_use") {
@@ -121,6 +143,93 @@ pub(super) async fn generate(
     }
 
     Err(krabb_core::Error::Limit("Anthropic search exceeded its continuation limit.".into()))
+}
+
+fn continuation(
+    model: &str,
+    content: &Value,
+) -> krabb_core::Result<Option<krabb_core::context::State>> {
+    let blocks = content.as_array().ok_or_else(|| {
+        krabb_core::Error::Protocol("Invalid Anthropic continuation blocks.".into())
+    })?;
+
+    if !blocks.iter().any(|block| block["type"] == "tool_use")
+        || !blocks.iter().any(|block| block["type"] == "server_tool_use")
+    {
+        return Ok(None);
+    }
+
+    let state = krabb_core::context::State {
+        provider: "anthropic".into(),
+        model: model.into(),
+        data: serde_json::to_string(blocks)?,
+    };
+
+    if !state.valid() {
+        return Err(krabb_core::Error::Limit("Anthropic continuation is too large.".into()));
+    }
+
+    Ok(Some(state))
+}
+
+pub(super) fn replay(
+    message: &krabb_core::Message,
+    model: &str,
+) -> krabb_core::Result<Option<Vec<Value>>> {
+    let Some(state) = message.content.iter().find_map(|part| match part {
+        Content::Context { state } if state.provider == "anthropic" && state.model == model => {
+            Some(state)
+        }
+
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+
+    if !state.valid() {
+        return Err(krabb_core::Error::Protocol("Invalid Anthropic continuation.".into()));
+    }
+
+    let blocks: Vec<Value> = serde_json::from_str(&state.data)?;
+
+    for block in &blocks {
+        if !matches!(
+            block["type"].as_str(),
+            Some(
+                "text"
+                    | "thinking"
+                    | "redacted_thinking"
+                    | "server_tool_use"
+                    | "web_search_tool_result"
+                    | "tool_use"
+            )
+        ) || block["type"] == "tool_use"
+            && (!block["input"].is_object()
+                || block["id"].as_str().is_none_or(str::is_empty)
+                || block["name"].as_str().is_none_or(str::is_empty))
+        {
+            return Err(krabb_core::Error::Protocol(
+                "Invalid Anthropic continuation block.".into(),
+            ));
+        }
+    }
+
+    for part in &message.content {
+        if let Content::ToolCall { name, args, id, .. } = part
+            && !blocks.iter().any(|block| {
+                block["type"] == "tool_use"
+                    && block["name"].as_str() == Some(name)
+                    && &block["input"] == args
+                    && id.as_deref().is_some_and(|id| block["id"] == id)
+            })
+        {
+            return Err(krabb_core::Error::Protocol(
+                "Anthropic continuation does not match its calls.".into(),
+            ));
+        }
+    }
+
+    Ok(Some(blocks))
 }
 
 #[cfg(test)]

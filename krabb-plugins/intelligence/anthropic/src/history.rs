@@ -18,6 +18,37 @@ pub(super) fn messages(
             finish(&mut output, &mut pending);
         }
 
+        if message.role == Role::Assistant
+            && let Some(blocks) = search::replay(message, &model::resolve(&input.model))?
+        {
+            for block in &blocks {
+                if block["type"] == "tool_use" {
+                    pending.push_back((
+                        block["name"].as_str().unwrap().into(),
+                        block["id"].as_str().unwrap().into(),
+                    ));
+                }
+            }
+
+            output.push(json!({"role":"assistant", "content":blocks}));
+            let mut retained = VecDeque::new();
+
+            for (name, id) in pending.drain(..) {
+                if message.content.iter().any(|part| {
+                    matches!(part, Content::ToolCall { id:Some(expected), .. } if expected == &id)
+                }) {
+                    retained.push_back((name, id));
+                } else {
+                    result(&mut output, json!({"type":"tool_result", "tool_use_id":id,
+                        "content":"Execution status is unknown; do not retry automatically."
+                    }));
+                }
+            }
+
+            pending = retained;
+            continue;
+        }
+
         let (_, mut values) = legacy_messages(std::slice::from_ref(message))?;
         let mut value = values.remove(0);
 

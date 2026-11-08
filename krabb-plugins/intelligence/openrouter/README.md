@@ -43,3 +43,8 @@ endpoints advertising it, with routing fallback disabled. The account-level web
 plugin is explicitly disabled so unsupported models do not invoke another search
 service. Replies retain source links; summary turns disable search and tools.
 See [context and search](../../../krabb-docs/providers.md#context) for limits.
+
+Reasoning-enabled models retain their opaque continuation data across tool calls
+in both HTTP modes. This data stays hidden from channel replies and is replayed
+only for the same model. Summary requests preserve mandatory model reasoning;
+the default DeepSeek configuration still disables optional reasoning.

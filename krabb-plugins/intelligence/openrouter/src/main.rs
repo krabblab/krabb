@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod context;
+mod continuation;
 mod model;
 mod search;
 
@@ -137,7 +138,6 @@ fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_
         body["max_tokens"] = generation.output.into();
 
         if generation.summary {
-            body["reasoning"] = json!({"enabled":false});
             body["tools"] = json!([]);
         }
     }
@@ -170,7 +170,7 @@ async fn complete(
     let status = response.status();
     let body = collect(response.bytes_stream()).await?;
 
-    response_body(id, status, serde_json::from_slice(&body)?)
+    response_model(id, status, serde_json::from_slice(&body)?, &model::resolve(&input.model, None))
 }
 
 async fn stream(
@@ -203,7 +203,7 @@ async fn stream(
         )));
     }
 
-    stream_body(id, response.bytes_stream(), emitter).await
+    stream_model(id, response.bytes_stream(), emitter, &model::resolve(&input.model, None)).await
 }
 
 fn headers() -> krabb_core::Result<reqwest::header::HeaderMap> {
@@ -290,10 +290,11 @@ fn tools(input: &ModelRequest) -> Vec<Value> {
         .collect()
 }
 
-async fn stream_body<S, C, E>(
+async fn stream_model<S, C, E>(
     id: u64,
     mut stream: S,
     emitter: &mut Emitter,
+    model: &str,
 ) -> krabb_core::Result<Option<Response>>
 where
     S: Stream<Item = Result<C, E>> + Unpin,
@@ -308,6 +309,7 @@ where
     let mut bytes: usize = 0;
     let mut emitted = 0;
     let mut complete = false;
+    let mut reasoning = continuation::Reasoning::default();
 
     'stream: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
@@ -327,7 +329,7 @@ where
         while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
             let line = buffer.drain(..=end).collect::<Vec<_>>();
 
-            if stream_line(&line, &mut text, &mut pending, &mut calls)? {
+            if stream_reasoning(&line, &mut text, &mut pending, &mut calls, &mut reasoning)? {
                 complete = true;
                 buffer.clear();
                 break 'stream;
@@ -340,7 +342,7 @@ where
     }
 
     if !buffer.is_empty() {
-        complete = stream_line(&buffer, &mut text, &mut pending, &mut calls)?;
+        complete = stream_reasoning(&buffer, &mut text, &mut pending, &mut calls, &mut reasoning)?;
     }
 
     if !complete {
@@ -350,7 +352,7 @@ where
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;
-    let events = calls
+    let mut events = calls
         .into_values()
         .map(|(name, args, call_id)| {
             let args = if args.is_empty() { json!({}) } else { serde_json::from_str(&args)? };
@@ -376,6 +378,8 @@ where
         ));
     }
 
+    reasoning.attach(model, &mut events)?;
+
     response(
         id,
         serde_json::to_value(ModelReply {
@@ -389,11 +393,12 @@ where
     )
 }
 
-fn stream_line(
+fn stream_reasoning(
     line: &[u8],
     text: &mut String,
     pending: &mut String,
     calls: &mut BTreeMap<usize, (String, String, String)>,
+    reasoning: &mut continuation::Reasoning,
 ) -> krabb_core::Result<bool> {
     let line = std::str::from_utf8(line)
         .map_err(|_| krabb_core::Error::Denied("OpenRouter stream was not UTF-8.".into()))?;
@@ -413,6 +418,8 @@ fn stream_line(
     }
 
     let delta = &value["choices"][0]["delta"];
+
+    reasoning.collect(delta)?;
 
     if let Some(value) = delta["content"].as_str() {
         text.push_str(value);
@@ -473,10 +480,11 @@ async fn emit(
     Ok(())
 }
 
-fn response_body(
+fn response_model(
     id: u64,
     status: reqwest::StatusCode,
     body: Value,
+    model: &str,
 ) -> krabb_core::Result<Option<Response>> {
     if !status.is_success() {
         return Err(krabb_core::Error::Denied(format!(
@@ -527,6 +535,11 @@ fn response_body(
         ));
     }
 
+    let mut reasoning = continuation::Reasoning::default();
+
+    reasoning.collect(&choice["message"])?;
+    reasoning.attach(model, &mut events)?;
+
     response(
         id,
         serde_json::to_value(ModelReply {
@@ -538,6 +551,39 @@ fn response_body(
             events,
         })?,
     )
+}
+
+#[cfg(test)]
+async fn stream_body<S, C, E>(
+    id: u64,
+    stream: S,
+    emitter: &mut Emitter,
+) -> krabb_core::Result<Option<Response>>
+where
+    S: Stream<Item = Result<C, E>> + Unpin,
+    C: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    stream_model(id, stream, emitter, "fixture").await
+}
+
+#[cfg(test)]
+fn stream_line(
+    line: &[u8],
+    text: &mut String,
+    pending: &mut String,
+    calls: &mut BTreeMap<usize, (String, String, String)>,
+) -> krabb_core::Result<bool> {
+    stream_reasoning(line, text, pending, calls, &mut continuation::Reasoning::default())
+}
+
+#[cfg(test)]
+fn response_body(
+    id: u64,
+    status: reqwest::StatusCode,
+    body: Value,
+) -> krabb_core::Result<Option<Response>> {
+    response_model(id, status, body, "fixture")
 }
 
 fn response(id: u64, result: Value) -> krabb_core::Result<Option<Response>> {

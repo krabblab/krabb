@@ -41,3 +41,7 @@ and truncates only afterward if necessary. Native web search is enabled for
 supported models; paused searches are continued within bounded request/output
 limits and return source links. Summary turns disable search and tools.
 See [context and search](../../../krabb-docs/providers.md#context) for limits.
+
+When native search leads to a client tool call, the original search blocks remain
+in bounded opaque continuation state for the next request. This preserves search
+results without exposing encrypted provider data in channel replies.

@@ -140,3 +140,108 @@ fn summaries_disable_search_and_server_deltas_never_become_host_tools() {
         "text"
     );
 }
+
+#[tokio::test]
+async fn mixed_search_and_client_tools_preserve_native_blocks_and_interrupted_actions() {
+    let pause = paused();
+    let mut answer = answer();
+
+    answer["stop_reason"] = "tool_use".into();
+
+    answer["content"].as_array_mut().unwrap().push(json!({
+        "type":"tool_use", "id":"read-1", "name":"read", "input":{"path":"notes"},
+    }));
+
+    let mut native = pause["content"].as_array().unwrap().clone();
+
+    native.extend_from_slice(answer["content"].as_array().unwrap());
+
+    let (base, server) =
+        krabb_test::http::responses(vec![(200, pause.to_string()), (200, answer.to_string())])
+            .await;
+
+    let mut request = input();
+
+    let response =
+        generate(&reqwest::Client::new(), 1, &request, "fixture", &base).await.unwrap().unwrap();
+
+    let reply: ModelReply = serde_json::from_value(response.result.unwrap()).unwrap();
+
+    server.await.unwrap();
+
+    let content = reply
+        .events
+        .into_iter()
+        .map(|event| match event {
+            Event::Tool { name, args, id, thought_signature } => {
+                Content::ToolCall { name, args, id, thought_signature }
+            }
+
+            Event::Context { state } => Content::Context { state },
+            _ => panic!("Unexpected event"),
+        })
+        .collect();
+
+    let assistant = Message {
+        id: "assistant".into(),
+        session: "fixture".into(),
+        role: Role::Assistant,
+        sender: None,
+        content,
+    };
+
+    let saved = serde_json::to_string(&assistant).unwrap();
+
+    request.messages.push(serde_json::from_str(&saved).unwrap());
+
+    request.messages.push(Message {
+        id: "result".into(),
+        session: "fixture".into(),
+        role: Role::Tool,
+        sender: None,
+        content: vec![Content::Text { text: "notes".into() }],
+    });
+
+    let body = request_body(&request, false).unwrap();
+
+    assert_eq!(body["messages"][1]["content"], json!(native));
+    assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "read-1");
+
+    assert!(
+        !request.messages[1]
+            .content
+            .iter()
+            .map(Content::render)
+            .collect::<String>()
+            .contains("opaque")
+    );
+
+    if let Content::ToolCall { args, .. } = &mut request.messages[1].content[0] {
+        *args = json!({"path":"changed"});
+    }
+
+    assert!(request_body(&request, false).is_err());
+
+    request.messages[1].content.retain(|part| !matches!(part, Content::ToolCall { .. }));
+
+    let pruned = request_body(&request, false).unwrap();
+
+    assert!(
+        pruned["messages"][2]["content"][0]["content"].as_str().unwrap().contains("do not retry")
+    );
+
+    request.model = "other-model".into();
+
+    assert!(!request_body(&request, false).unwrap().to_string().contains("opaque"));
+    assert!(continuation("model", &json!(null)).is_err());
+
+    assert!(
+        continuation(
+            "model",
+            &json!([
+                {"type":"server_tool_use", "data":"x".repeat(256*1024)}, {"type":"tool_use"},
+            ])
+        )
+        .is_err()
+    );
+}
