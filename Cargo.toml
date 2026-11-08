@@ -7,6 +7,7 @@ members = [
     "krabb-libs/file",
     "krabb-libs/process",
     "krabb-libs/test",
+    "krabb-libs/openai",
     "krabb-runtime",
     "krabb",
     "krabb-daemon",
@@ -48,6 +49,7 @@ readme = "README.md"
 publish = false
 
 [workspace.dependencies]
+krabb-openai = { path = "krabb-libs/openai" }
 krabb-text = { path = "krabb-libs/text" }
 krabb-test = { path = "krabb-libs/test" }
 base64 = "0.23"

@@ -20,7 +20,9 @@ Changing the saved host does not require reinstalling the Krabb service.
 Use a base URL without `/api` or `/v1`; the plugin appends `/api/chat`. Loopback
 refers to the machine or container running the Krabb daemon.
 
-Setup prompts for `KRABB_OLLAMA_API_KEY` first, then `KRABB_OLLAMA_HOST`. For local
+Setup prompts for the API key, host, thinking mode, and context length, in that order.
+Thinking defaults to `false` for a lightweight setup; context length defaults to
+`auto`, leaving the allocation to Ollama. For local
 use, press Enter at the API-key prompt to leave it empty and clear any previously
 saved key. The local Ollama server requires no key. Cloud use requires a valid key.
 Nonempty environment values override saved settings. Remove old overrides before
@@ -37,6 +39,7 @@ krabb ollama setup
 ```
 
 Enter the API key and press Enter at the host prompt to accept `https://ollama.com`.
+Accept `false` for thinking and `auto` for context length unless you need an override.
 Direct cloud access does not require installing Ollama, starting a local server,
 or downloading a model. Your account must have access and sufficient allowance or
 credits for the selected model; a public catalog listing does not prove account
@@ -79,6 +82,8 @@ Run `krabb ollama setup`, press Enter at the API-key prompt, and explicitly ente
 `http://127.0.0.1:11434` at the host prompt. Pressing Enter at the host prompt selects
 cloud. For a separate server, use its
 reachable base URL. Remote requests carrying a key require HTTPS.
+Accept `false` for thinking and `auto` for context length, or use the controls
+described below.
 
 Select the installed model for Telegram:
 
@@ -118,6 +123,74 @@ your available memory. The plugin rejects completed streams containing neither
 visible text nor tool calls, so an empty reply becomes a failed turn rather than
 a blank channel message. Its HTTP timeout is five minutes; daemon turns share a
 five-minute overall budget across model calls and tools, and remain cancellable.
+
+### Thinking And Context
+
+`krabb ollama setup` saves these controls alongside the host and reloads the
+plugin. They apply to all requests through this Ollama plugin, including explicit
+model selections, in both streaming and non-streaming mode.
+
+| Setting | Default | Accepted values |
+| --- | --- | --- |
+| `KRABB_OLLAMA_THINK` | `false` | `auto`, `true`, `false`, `low`, `medium`, `high` |
+| `KRABB_OLLAMA_CONTEXT_LENGTH` | `auto` | `auto` or a positive 32-bit token count |
+
+Thinking is disabled by default for all selected models. Choose `true` to enable
+it, a supported named level, or `auto` to leave the choice to Ollama. Thinking
+levels and the ability to disable thinking depend on the selected model; choose
+values it supports. Models that require thinking need `auto` or a supported level. See
+[Ollama's thinking controls](https://docs.ollama.com/capabilities/thinking).
+An explicit context length sends `options.num_ctx`; it does not change the model's maximum
+supported context or the output-token limit.
+
+Krabb uses [shared context preparation](../../../krabb-docs/providers.md#context)
+for Ollama and every other intelligence provider. It reserves up to 4096 tokens
+for generation, at most half the context, summarizes older turns when needed,
+and truncates only if the summarized request still exceeds the budget. Saved
+history remains separate from the summary. System instructions, tools, and the
+current user/tool exchange are protected; oversized required inputs produce an
+actionable error rather than silently losing instructions.
+
+With `auto`, Krabb reads the running model's allocation from `/api/ps` when
+available, falling back to 4096 for an unloaded model or an unsupported endpoint.
+An explicit setting is useful when the server uses another allocation. Neither
+`auto` nor compaction forces a larger allocation. Text and image budgeting is an
+estimate, so model tokenization and output quality still matter. Thinking can
+remain enabled, but it shares the reserved generation space and takes extra time.
+
+For a local `qwen3.5:0.8b` smoke test, run `krabb ollama setup` and enter:
+
+| Prompt | Value |
+| --- | --- |
+| `KRABB_OLLAMA_API_KEY` | Press Enter |
+| `KRABB_OLLAMA_HOST` | `http://127.0.0.1:11434` |
+| `KRABB_OLLAMA_THINK` | Press Enter for `false`; use `true` to enable thinking |
+| `KRABB_OLLAMA_CONTEXT_LENGTH` | `4096` |
+
+This retains a small 4K context for low-resource hosts and budgets the outgoing
+history to leave generation room. Thinking is off by default to reduce reasoning
+latency; disabling it is not required for history budgeting.
+It is a starting point for this small-model test,
+not a universal requirement or a guarantee for long histories or output quality.
+Larger contexts need more RAM/VRAM; model size and maximum context are
+separate properties. Check `ollama show <model-tag>` for the model's reported
+capacity and `ollama ps` for the allocated context. GPU-backed models use the same
+controls. Cloud servers may impose their own context limits.
+
+After updating from a plugin that only declared the host setting, review and
+reinstall the plugin once to accept the added settings. For a repository-linked
+installation, run from the repository root:
+
+```sh
+cargo build --locked -p krabb-plugin-ollama
+krabb plugin install ollama --link --yes
+krabb ollama setup
+```
+
+Released installations should reinstall the updated released plugin using the
+install command at the top of this page. No Krabb service reinstallation is needed.
+Nonempty environment overrides take precedence over values saved by setup;
+remove those overrides before using setup to control these settings.
 
 ## Existing Service Overrides
 
@@ -165,6 +238,6 @@ model names always win, including cloud model tags used through a local proxy.
 
 The local Qwen 4B must already be installed. Both selected models support images
 and tools; cloud calls require authentication and account access. Krabb never downloads
-models or retries with a different model. Default models disable thinking and cap
-generation at 4096 tokens. See [default models](../../../krabb-docs/providers.md#default-models)
+models or retries with a different model. Thinking is off unless explicitly
+configured otherwise. Generation is capped at the host-reserved output budget, up to 4096 tokens. See [default models](../../../krabb-docs/providers.md#default-models)
 for current catalog sources and the verification date.

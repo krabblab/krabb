@@ -280,12 +280,15 @@ async fn generate_on(
         return Err(denied("Codex is not signed in. Run krabb codex login first."));
     }
 
-    let tools = dynamic_tools(&input.tools)?;
-    let allowed = input.tools.iter().map(|tool| tool.name.clone()).collect();
+    let summary = input.generation.is_some_and(|value| value.summary);
+    let specs = if summary { &[][..] } else { input.tools.as_slice() };
+
+    let tools = dynamic_tools(specs)?;
+    let allowed = specs.iter().map(|tool| tool.name.clone()).collect();
     let root = workspace(input.workspace.as_deref())?;
     let root = root.to_string_lossy().into_owned();
     let instructions = instructions(&input.messages)?;
-    let tool_guidance = tool_guidance(&input.tools);
+    let tool_guidance = tool_guidance(specs);
     let config = server.call("config/read", json!({"includeLayers": false, "cwd": root})).await?;
     let mcp_servers = disabled_mcp(&config)?;
 
@@ -306,7 +309,7 @@ async fn generate_on(
                     "{tool_guidance}\n\n{instructions}"
                 ),
                 "config": {
-                    "web_search": "live",
+                    "web_search": if input.generation.is_none_or(|value| value.search && !value.summary) { "live" } else { "disabled" },
                     "features": {
                         "shell_tool": false,
                         "browser_use": false,
@@ -421,6 +424,8 @@ fn prompt(messages: &[Message]) -> krabb_core::Result<Vec<Value>> {
 
         for content in &message.content {
             match content {
+                Content::Context { .. } => {}
+
                 Content::Text { text } => {
                     output.push(json!({"type": "text", "text": format!("{text}\n")}));
                 }
@@ -1751,6 +1756,7 @@ done
                 .generate(
                     1,
                     ModelRequest {
+                        generation: None,
                         model: "fixture".into(),
                         workspace: Some(root.display().to_string()),
                         messages: vec![],
@@ -1825,6 +1831,7 @@ done
                 .generate(
                     id,
                     ModelRequest {
+                        generation: (index == models.len() - 1).then_some(krabb_core::context::Generation { output:512, summary:true, search:true }),
                         model: (*model).into(),
                         workspace: Some(root.display().to_string()),
                         messages: vec![Message {
@@ -1894,8 +1901,15 @@ done
         let requests: Vec<serde_json::Value> =
             requests.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
 
-        for thread in requests.iter().filter(|request| request["method"] == "thread/start") {
-            assert_eq!(thread["params"]["config"]["web_search"], "live");
+        for (index, thread) in
+            requests.iter().filter(|request| request["method"] == "thread/start").enumerate()
+        {
+            let summary = index == models.len() - 1;
+
+            assert_eq!(
+                thread["params"]["config"]["web_search"],
+                if summary { "disabled" } else { "live" }
+            );
 
             assert_eq!(
                 thread["params"]["config"]["mcp_servers"],
@@ -1904,7 +1918,11 @@ done
                 })
             );
 
-            assert_eq!(thread["params"]["dynamicTools"][0]["name"], "read");
+            if summary {
+                assert_eq!(thread["params"]["dynamicTools"], json!([]));
+            } else {
+                assert_eq!(thread["params"]["dynamicTools"][0]["name"], "read");
+            }
         }
 
         let reads: Vec<_> =

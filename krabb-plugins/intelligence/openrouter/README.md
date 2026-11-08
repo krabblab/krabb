@@ -36,3 +36,10 @@ before relying on this adapter in production.
 Implicit selections (`default`, legacy `unset`, or blank) use `deepseek/deepseek-v4.1-flash`.
 Explicit model names take precedence. See [default models](../../../krabb-docs/providers.md#default-models)
 for the verification date, catalog sources, and usage limits.
+
+Model and endpoint metadata supply the shared host context budget. Older turns
+are summarized before any final truncation. Native search is enabled only on
+endpoints advertising it, with routing fallback disabled. The account-level web
+plugin is explicitly disabled so unsupported models do not invoke another search
+service. Replies retain source links; summary turns disable search and tools.
+See [context and search](../../../krabb-docs/providers.md#context) for limits.

@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod citation;
+pub use citation::citation;
+
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd as End};
 
 pub const LIMIT: usize = 256 * 1024;

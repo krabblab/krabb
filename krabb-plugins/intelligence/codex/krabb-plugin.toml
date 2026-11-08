@@ -1,8 +1,12 @@
 id = "codex"
 version = "0.1.0"
-capabilities = ["model", "vision"]
+capabilities = ["model", "vision", "context"]
 permissions = ["network"]
 secrets = ["KRABB_CODEX_KEY"]
+
+[[settings]]
+name = "KRABB_CODEX_CONTEXT_LENGTH"
+default = "auto"
 
 [[commands]]
 name = "codex"

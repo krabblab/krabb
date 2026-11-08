@@ -32,3 +32,11 @@ or a fragment.
 
 See [deployment validation](../../../krabb-docs/providers.md#deployment-validation)
 before relying on this adapter in production.
+
+Model metadata supplies the shared host context budget. Older turns are
+summarized before any final truncation. Google Search grounding is enabled by
+default for supported models. Gemini 3 can combine grounding with function tools;
+Gemini 2 uses grounding only when no function tools are supplied. Signed native
+continuations and source links survive tool exchanges. Summary turns disable
+search and function tools.
+See [context and search](../../../krabb-docs/providers.md#context) for limits.

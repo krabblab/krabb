@@ -41,6 +41,7 @@ use tracing::{debug, error, info, warn};
 
 pub(crate) mod approval;
 mod channels;
+mod compaction;
 mod context;
 #[cfg(test)]
 mod context_tests;
@@ -1609,21 +1610,8 @@ impl Manifest {
 
         if capabilities.len() != self.capabilities.len()
             || self.capabilities.iter().any(|capability| {
-                !(matches!(
-                    capability.as_str(),
-                    "model"
-                        | "vision"
-                        | "channel"
-                        | "store"
-                        | "memory"
-                        | "scheduler"
-                        | "tool"
-                        | "mcp"
-                        | "speech"
-                        | "client"
-                        | "resource"
-                        | "agent"
-                ) || self.id == "timer" && capability == "timer")
+                !(serde_json::from_value::<Capability>(Value::String(capability.clone())).is_ok()
+                    || self.id == "timer" && capability == "timer")
             })
         {
             return Err("Plugin capabilities must be known and unique.".into());
@@ -2719,9 +2707,13 @@ async fn model_at(
     let result = async {
         let workspace = workspace_root_at(root);
         let protocol = process.hello.protocol;
-        let response = process
-            .call(model_request(2, &model, &messages, &[], Some(&workspace), protocol)?)
-            .await?;
+        let request = if process.hello.capabilities.contains(&Capability::Context) {
+            context_request(2, &model, &messages, &[], Some(&workspace))?
+        } else {
+            model_request(2, &model, &messages, &[], Some(&workspace), protocol)?
+        };
+
+        let response = process.call(request).await?;
         let value = response.result.ok_or_else(|| {
             response
                 .error
@@ -7224,6 +7216,7 @@ pub(crate) async fn unload_plugin(
 fn capability_name(capability: &Capability) -> &'static str {
     match capability {
         Capability::Model => "model",
+        Capability::Context => "context",
         Capability::Vision => "vision",
         Capability::Channel => "channel",
         Capability::Store => "store",
@@ -7398,8 +7391,10 @@ fn env_for(
         "KRABB_WHISPER",
         "KRABB_WHISPER_COMMAND",
         "KRABB_CODEX_BASE_URL",
+        "KRABB_CODEX_CONTEXT_LENGTH",
         "KRABB_OPENAI_BASE_URL",
         "KRABB_OPENAI_MODEL",
+        "KRABB_OPENAI_CONTEXT_LENGTH",
         "KRABB_ACP_COMMAND",
         "KRABB_ACP_ARGS",
         "KRABB_A2A_AGENT_CARD",
@@ -8485,7 +8480,7 @@ async fn bridge_with_media(
                         }
                     } else {
                         let prepared = store.sessions.get(&session_name).map(|session| {
-                            let mut history = session.messages.clone();
+                            let mut history = session.context();
 
                             if !existing {
                                 history.push(message.clone());
@@ -9157,7 +9152,7 @@ async fn resolve_media(
                 *uri = clip(resolved, META_LIMIT);
             }
 
-            Content::Text { .. } | Content::ToolCall { .. } => {}
+            Content::Text { .. } | Content::ToolCall { .. } | Content::Context { .. } => {}
         }
     }
 
@@ -9518,10 +9513,13 @@ fn bound(mut content: Vec<Content>) -> Vec<Content> {
     content.retain(
         |item| !matches!(item, Content::ToolCall { args, .. } if validate_tool_args(args).is_err()),
     );
+    content.retain(|item| !matches!(item, Content::Context { state } if !state.valid()));
     let mut text = TEXT_LIMIT;
 
     for item in &mut content {
         match item {
+            Content::Context { .. } => {}
+
             Content::Text { text: value } => {
                 *value = clip(std::mem::take(value), text);
                 text = text.saturating_sub(value.len());
@@ -11724,7 +11722,7 @@ async fn answer(
         call,
         failed_tool,
         tool_failures,
-        notices,
+        notices.clone(),
         scheduled_destination,
         schedule_run_id,
         registry,
@@ -11732,6 +11730,19 @@ async fn answer(
     .await;
 
     cleanup.finish().await?;
+
+    let compacted = provider.process.lock().await.as_ref().and_then(|process| {
+        process.context.record(model, workspace.and_then(Path::to_str), session)
+    });
+
+    if let Some(compacted) = compacted
+        && sessions.lock().map_err(|_| "Session lock is poisoned.")?.compact(session, &compacted)?
+    {
+        let _ = notices.try_send(StreamNotice::System(
+            "Earlier conversation compacted for continuity.".into(),
+        ));
+    }
+
     result
 }
 
@@ -11837,8 +11848,11 @@ async fn answer_with_registry(
     messages.insert(0, messaging::context(session, destination));
 
     for step in 0..=TOOL_STEPS {
-        let request =
-            model_request(*call, model, &messages, &specs, workspace, provider.hello.protocol)?;
+        let request = if provider.supports(Capability::Context) {
+            context_request(*call, model, &messages, &specs, workspace)?
+        } else {
+            model_request(*call, model, &messages, &specs, workspace, provider.hello.protocol)?
+        };
 
         let mut notes = Vec::new();
         let mut delivered = String::new();
@@ -12186,6 +12200,27 @@ async fn answer_with_registry(
     Err("The turn exceeded the tool step limit.".into())
 }
 
+fn context_request(
+    call: u64,
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolSpec],
+    workspace: Option<&Path>,
+) -> Result<Request, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(Request::call(
+        call,
+        "generate",
+        serde_json::to_value(ModelRequest {
+            generation: None,
+            model: model.into(),
+            workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
+            messages: messages.to_vec(),
+            stream: true,
+            tools: tools.to_vec(),
+        })?,
+    ))
+}
+
 fn model_request(
     call: u64,
     model: &str,
@@ -12200,17 +12235,7 @@ fn model_request(
         let request_messages =
             if supports_tool_calls(protocol) { history.clone() } else { legacy_messages(&history) };
 
-        let request = Request::call(
-            call,
-            "generate",
-            serde_json::to_value(ModelRequest {
-                model: model.into(),
-                workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
-                messages: request_messages,
-                stream: true,
-                tools: tools.to_vec(),
-            })?,
-        );
+        let request = context_request(call, model, &request_messages, tools, workspace)?;
 
         if serde_json::to_vec(&request)?.len().saturating_add(1) <= krabb_core::jsonl::MAX {
             return Ok(request);
@@ -12267,7 +12292,7 @@ fn assistant(reply: &ModelReply) -> String {
                 }
             }
 
-            Event::Tool { .. } => {}
+            Event::Tool { .. } | Event::Context { .. } => {}
 
             Event::Error { .. } => {}
         }
@@ -12278,6 +12303,12 @@ fn assistant(reply: &ModelReply) -> String {
 
 fn model_content(reply: &ModelReply) -> Result<Vec<Content>, &'static str> {
     for event in &reply.events {
+        if let Event::Context { state } = event
+            && !state.valid()
+        {
+            return Err("Invalid model continuation.");
+        }
+
         if let Event::Tool { name, args, id, thought_signature } = event {
             validate_tool_args(args)?;
             validate_tool_metadata(name, id.as_deref(), thought_signature.as_deref())?;
@@ -12285,6 +12316,7 @@ fn model_content(reply: &ModelReply) -> Result<Vec<Content>, &'static str> {
     }
 
     let mut content = Vec::new();
+
     let text = assistant(reply);
 
     if !text.is_empty() {
@@ -12292,6 +12324,10 @@ fn model_content(reply: &ModelReply) -> Result<Vec<Content>, &'static str> {
     }
 
     content.extend(reply.events.iter().filter_map(|event| {
+        if let Event::Context { state } = event {
+            return Some(Content::Context { state: state.clone() });
+        }
+
         let Event::Tool { name, args, id, thought_signature } = event else {
             return None;
         };
@@ -12363,7 +12399,7 @@ async fn forward_stream(
         }
 
         Some(Event::Tool { name, .. }) => StreamNotice::Tool(name),
-        Some(Event::Error { .. }) | None => return Ok(()),
+        Some(Event::Error { .. } | Event::Context { .. }) | None => return Ok(()),
     };
 
     notices.send(notice).await.map_err(|_| "The channel stream receiver is unavailable.")
@@ -14081,8 +14117,10 @@ const SERVICE_VARIABLES: &[&str] = &[
     "KRABB_WHISPER",
     "KRABB_WHISPER_COMMAND",
     "KRABB_CODEX_BASE_URL",
+    "KRABB_CODEX_CONTEXT_LENGTH",
     "KRABB_OPENAI_BASE_URL",
     "KRABB_OPENAI_MODEL",
+    "KRABB_OPENAI_CONTEXT_LENGTH",
     "KRABB_ACP_COMMAND",
     "KRABB_ACP_ARGS",
     "KRABB_A2A_AGENT_CARD",
@@ -14098,6 +14136,8 @@ const SERVICE_VARIABLES: &[&str] = &[
     "KRABB_SIGNAL_COMMAND",
     "KRABB_SLACK_CHANNELS",
     "KRABB_OLLAMA_HOST",
+    "KRABB_OLLAMA_THINK",
+    "KRABB_OLLAMA_CONTEXT_LENGTH",
     "KRABB_DISCORD_GATEWAY_URL",
     "KRABB_DISCORD_INTENTS",
     "KRABB_WHATSAPP_PHONE",
@@ -16864,11 +16904,9 @@ async fn plugin(
             let mut outcomes = Vec::new();
             let action = if linked { "Linking" } else { "Installing" };
 
-            let spinner =
-                if json { None } else { terminal::Spinner::start(format!("{action} plugins...")) };
-
             for source in sources {
                 let id = source.id.clone();
+                let spinner = terminal::progress(format!("{action} plugin {id}..."), json);
 
                 let existing_version =
                     read_manifest(&root.join("plugins").join(&id)).map(|manifest| manifest.version);
@@ -16877,6 +16915,11 @@ async fn plugin(
 
                 match link(source, linked) {
                     Ok(manifest) => {
+                        drop(spinner);
+
+                        let _progress =
+                            terminal::progress(format!("Activating plugin {id}..."), json);
+
                         let state = match activate_at(&root, &manifest.id).await {
                             Ok(activation) => {
                                 if activation.is_some() {
@@ -16937,8 +16980,6 @@ async fn plugin(
                     }
                 }
             }
-
-            drop(spinner);
 
             if json {
                 let failed = errors.len();
@@ -17001,14 +17042,13 @@ async fn plugin(
 
             let root = home();
 
-            let spinner =
-                if !json { terminal::Spinner::start("Uninstalling plugins...") } else { None };
-
             let mut outcomes = Vec::new();
             let mut errors = Vec::new();
             let mut display_rows = Vec::new();
 
             for id in &ids {
+                let _progress = terminal::progress(format!("Uninstalling plugin {id}..."), json);
+
                 match uninstall_plugin_at(&root, id, name.force).await {
                     Ok(outcome) => {
                         let version = outcome["version"]
@@ -17040,8 +17080,6 @@ async fn plugin(
                     }
                 }
             }
-
-            drop(spinner);
 
             if json {
                 if ids.len() == 1 {
@@ -17506,17 +17544,24 @@ async fn update_plugins_at(
             return Ok(());
         }
     } else if !root.join(".plugin-update-preview/preview.json").is_file() {
-        preview_updates_at_inner(root, false, false)?;
+        preview_updates_at_inner(root, json, false)?;
     }
 
+    let spinner = terminal::progress("Preparing plugin updates...", json);
     let previews = load_update_preview_snapshot_at(root)?;
     let changed = previews.candidates.keys().cloned().collect::<Vec<_>>();
 
     if changed.is_empty() {
+        drop(spinner);
+
         return update_at_with_previews(root, json, &previews.candidates, true);
     }
 
-    let Some(active) = active_at(root).await? else {
+    let active = active_at(root).await?;
+
+    drop(spinner);
+
+    let Some(active) = active else {
         return update_at_with_previews(root, json, &previews.candidates, true);
     };
 
@@ -17564,13 +17609,20 @@ where
     let mut unloaded = Vec::with_capacity(active.len());
 
     for id in &active {
-        match unload(id.clone()).await {
+        let spinner =
+            terminal::progress(format!("Updating plugins: waiting for {id} to unload..."), json);
+
+        let result = unload(id.clone()).await;
+
+        drop(spinner);
+
+        match result {
             Ok(Some(value)) if value["unloaded"] == true => unloaded.push(id.clone()),
 
             Ok(Some(_)) => {}
 
             Ok(None) => {
-                let restore = restore_plugins(&unloaded, &mut activate).await;
+                let restore = restore_plugins(&unloaded, json, &mut activate).await;
 
                 return Err(format!(
                     "The daemon became unavailable before {id} could be unloaded.{}",
@@ -17580,7 +17632,7 @@ where
             }
 
             Err(error) => {
-                let restore = restore_plugins(&unloaded, &mut activate).await;
+                let restore = restore_plugins(&unloaded, json, &mut activate).await;
 
                 return Err(format!(
                     "Could not unload {id} before updating plugins: {}.{}",
@@ -17597,7 +17649,7 @@ where
         None => update_at(root, json, true),
     };
 
-    let restore = restore_plugins(&unloaded, &mut activate).await;
+    let restore = restore_plugins(&unloaded, json, &mut activate).await;
 
     match (update, restore.is_empty()) {
         (Ok(()), true) => Ok(()),
@@ -17621,13 +17673,15 @@ where
     }
 }
 
-async fn restore_plugins<A>(ids: &[String], activate: &mut A) -> String
+async fn restore_plugins<A>(ids: &[String], json: bool, activate: &mut A) -> String
 where
     A: FnMut(String) -> PluginTask,
 {
     let mut failures = Vec::new();
 
     for id in ids {
+        let _progress = terminal::progress(format!("Reloading plugin {id}..."), json);
+
         match activate(id.clone()).await {
             Ok(Some(_)) => {}
             Ok(None) => failures.push(format!(
@@ -17670,14 +17724,12 @@ fn update_with_commit(
     preview_only: bool,
     mut commit: impl FnMut(&Path, &Lock) -> Result<(), PluginError>,
 ) -> Result<(), PluginError> {
+    let spinner = terminal::progress("Updating plugins...", json);
     let _lock = lock_at(home_root, ".plugins.lock")?;
     let mut lock = load_lock_at(home_root)?;
     let mut rows = Vec::new();
     let mut failed = false;
     let ids = lock.plugins.keys().cloned().collect::<Vec<_>>();
-
-    let spinner =
-        if json || ids.is_empty() { None } else { terminal::Spinner::start("Updating plugins...") };
 
     for id in ids {
         let previous_lock = lock.clone();
@@ -17841,6 +17893,7 @@ fn preview_updates_at_inner(
     json: bool,
     display: bool,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let spinner = terminal::progress("Checking for plugin updates...", json);
     let _lock = lock_at(home_root, ".plugins.lock")?;
     let lock = load_lock_at(home_root)?;
     let mut updates = Vec::new();
@@ -17854,12 +17907,6 @@ fn preview_updates_at_inner(
     std::fs::write(preview_root.join("preview.json"), b"{}")?;
 
     let mut errors = Vec::new();
-
-    let spinner = if display && !json && !lock.plugins.is_empty() {
-        terminal::Spinner::start("Checking for plugin updates...")
-    } else {
-        None
-    };
 
     for (id, entry) in &lock.plugins {
         let candidate = match inspect_update(home_root, id, entry) {

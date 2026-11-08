@@ -27,6 +27,8 @@ pub(super) fn messages(
 
             for (position, item) in message.content.iter().enumerate() {
                 match item {
+                    Content::Context { .. } => {}
+
                     Content::ToolCall { name, args, id, .. } => {
                         let id = id.clone().unwrap_or_else(|| format!("call_{index}_{position}"));
                         pending.push_back((name.clone(), id.clone()));
@@ -109,6 +111,7 @@ fn legacy_messages(input: &[Message]) -> krabb_core::Result<(String, Vec<serde_j
 
         for content in &message.content {
             match content {
+                Content::Context { .. } => {}
                 Content::Text { text } => blocks.push(json!({"type": "text", "text": text})),
 
                 Content::Image { uri, alt } if message.role != krabb_core::types::Role::System => {

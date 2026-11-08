@@ -7,6 +7,8 @@ vendor-specific fields inside the plugin process.
 ## Table Of Contents
 
 - [Models](#models)
+- [Context](#context)
+- [Search](#search)
 - [Channels](#channels)
 - [Platform Setup](#platform-setup)
 - [Deployment Validation](#deployment-validation)
@@ -18,7 +20,7 @@ vendor-specific fields inside the plugin process.
 
 | Plugin | Service | Credential route |
 | --- | --- | --- |
-| `codex` | OpenAI-compatible chat completions or Codex app-server | `KRABB_CODEX_KEY` or Codex-managed sign-in; optional `KRABB_CODEX_BASE_URL` |
+| `codex` | OpenAI Responses / Chat Completions or Codex app-server | `KRABB_CODEX_KEY` or Codex-managed sign-in; optional `KRABB_CODEX_BASE_URL` |
 | `openai` | OpenAI API | `KRABB_OPENAI_KEY`; optional `KRABB_OPENAI_MODEL` and `KRABB_OPENAI_BASE_URL` |
 | `anthropic` | Anthropic Messages | `KRABB_ANTHROPIC_KEY` or encrypted credentials; optional `KRABB_ANTHROPIC_BASE_URL` |
 | `gemini` | Gemini Developer API | `KRABB_GEMINI_KEY` or encrypted credentials |
@@ -63,8 +65,10 @@ selections remain unchanged; saved `unset` sessions use these adapter defaults.
 Codex sign-in now pins Luna instead of inheriting the account's model default.
 
 Luna Chat Completions requests disable reasoning (required for tool calling) and cap
-completion tokens at 4096. Ollama's selected default models disable thinking and
-cap generation at 4096 tokens. OpenRouter's DeepSeek default disables reasoning
+completion tokens at 4096. Ollama disables thinking unless explicitly overridden
+through setup; its selected default models cap generation at 4096 tokens. Ollama's
+[thinking and context controls](../krabb-plugins/intelligence/ollama/README.md#thinking-and-context)
+also apply to explicit model selections. OpenRouter's DeepSeek default disables reasoning
 and caps output at 4096 tokens. Anthropic retains its 4096-token output limit.
 These choices reduce incidental usage; they are not an aggregate spending limit.
 Gemini's default stays on the current Flash-Lite even for old transcripts. Historical
@@ -83,14 +87,6 @@ to be installed; other providers and API-key authentication do not require it.
 The adapter validates app-server responses and fails closed if required
 operations are incompatible. Run `krabb codex login` or
 `krabb codex login --device` to authenticate.
-
-Codex sign-in turns explicitly request live web search rather than inheriting
-Codex's cached-search default. This is provider-hosted retrieval, separate from
-Krabb's optional `fetch` tool and local sandbox network access. API-key adapters
-do not gain built-in web search from this setting. When the tools plugin is
-installed and channel tools are enabled, the agent is instructed to prefer
-`fetch` for an exact HTTPS URL. Missing search results and cache misses are
-retrieval limitations, not evidence that a repository does not exist.
 
 OpenAI and OpenRouter send the full tool catalog supplied by the host. The
 runtime permits up to 16 tool invocations per turn, counted once each across
@@ -117,6 +113,79 @@ to a session are retained in its protected media area.
 Codex sign-in forwards normalized screenshot results as app-server image items,
 with the complete response bounded by the protocol frame limit. Gemini preserves
 inline screenshot pixels alongside function responses and legacy tool history.
+
+## Context
+
+All six intelligence plugins use the same host context preparation. Before a
+request, Krabb reserves output space, summarizes older conversation turns, and
+reuses that summary. It tries provider-native compaction when advertised, then
+portable summarization if unavailable or rejected. Only when the summarized
+request still exceeds its budget does Krabb remove older complete turns. System
+instructions, tool definitions, and the current user/tool exchange remain intact.
+If those alone exceed the budget, the turn fails with guidance to shorten the
+input, disable unused tools, or increase the context.
+
+This applies to channels, TUI, CLI requests, scheduled turns, and model calls from
+agent/client bridges. Daemon sessions persist summaries separately from their
+bounded raw transcript; viewing history does not replace it with the summary.
+Resetting a session clears its summary. Summaries retain useful continuity but
+can omit details. They are also refreshed before the retained history fills up.
+
+| Provider | Context budget | Compaction |
+| --- | --- | --- |
+| Anthropic | Model metadata | Native when advertised; portable fallback |
+| Gemini | Model metadata | Portable summary |
+| Ollama | Explicit setting, otherwise running model allocation; 4096 fallback | Portable summary |
+| OpenAI / Codex | Documented model-family catalog, with an explicit override | Portable summary; Codex sign-in also has its own harness context management |
+| OpenRouter | Model metadata and native-search endpoint limits | Portable summary |
+
+OpenAI and Codex setup accept `KRABB_OPENAI_CONTEXT_LENGTH` and
+`KRABB_CODEX_CONTEXT_LENGTH`: `auto` uses the catalog, or enter a token count
+greater than one for a compatible deployment. Unknown model families use 4096
+until overridden. Hosted OpenAI search limits the usable context to 128000 tokens.
+Ollama's `auto` never increases the server allocation; an explicit setting sends
+`options.num_ctx`. See its [setup guide](../krabb-plugins/intelligence/ollama/README.md#thinking-and-context).
+
+Budgeting uses a conservative text estimate with allowances for templates, tool
+schemas, and images, not each model's exact tokenizer. API adapters reserve up to
+4096 output tokens, at most half a small context; reasoning consumes this space
+as well. Codex sign-in delegates generation limits to its harness. Summarization
+is bounded to 16 batches within the turn deadline and disables tools and search.
+It adds model work only when needed and can incur provider usage charges. A model
+that cannot produce a summary fails the turn instead of silently discarding history.
+Model metadata and summary caches are bounded; metadata refreshes after five minutes.
+
+## Search
+
+Native web search is enabled by default for supported models. The model decides
+whether a request needs it; a link in an answer alone does not prove a search ran.
+Krabb preserves source links in replies and does not install or substitute a
+separate search service when native search is unavailable.
+
+| Provider | Native search behavior |
+| --- | --- |
+| OpenAI / Codex API key | Responses `web_search` for supported model families |
+| Codex sign-in | Live web search through Codex app-server |
+| Anthropic | Web search when model metadata advertises support |
+| Gemini | Google Search grounding; Gemini 3 can combine it with function tools |
+| OpenRouter | Only endpoints advertising native search, with routing fallback disabled |
+| Ollama | No native chat search; no fallback service |
+
+Gemini 2 supports grounding when no function tools are supplied; it cannot combine
+both in one request. OpenRouter's default web plugin is disabled to prevent its
+third-party search fallback. A compatible OpenAI API endpoint must implement
+Responses and native search for a model advertised as supporting them. Provider
+account access, regional restrictions, and search charges still apply. See the
+[OpenAI search guide](https://developers.openai.com/api/docs/guides/tools-web-search),
+[Anthropic search guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool),
+[Gemini grounding guide](https://ai.google.dev/gemini-api/docs/generate-content/google-search),
+and [OpenRouter server tools](https://openrouter.ai/docs/guides/features/server-tools/web-search).
+
+Provider search never becomes a local shell or filesystem call. Signed provider
+continuations stay opaque and are replayed only for their originating provider
+and model. Anthropic paused searches are buffered until complete; other adapters
+can stream visible text. Summary requests disable search. The optional Krabb
+`fetch` tool remains available for exact HTTPS URLs when channel tools are enabled.
 
 ## Channels
 

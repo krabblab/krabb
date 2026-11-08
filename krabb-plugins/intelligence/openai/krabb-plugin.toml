@@ -1,8 +1,12 @@
 id = "openai"
 version = "0.1.0"
-capabilities = ["model", "vision"]
+capabilities = ["model", "vision", "context"]
 permissions = ["network"]
 secrets = ["KRABB_OPENAI_KEY"]
+
+[[settings]]
+name = "KRABB_OPENAI_CONTEXT_LENGTH"
+default = "auto"
 
 [protocol]
 major = 0

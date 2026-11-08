@@ -34,3 +34,10 @@ before relying on this adapter in production.
 Implicit selections (`default`, legacy `unset`, or blank) use `claude-haiku-5-5`.
 Explicit model names take precedence. See [default models](../../../krabb-docs/providers.md#default-models)
 for the verification date, catalog sources, and usage limits.
+
+Model metadata supplies context limits and native compaction/search support.
+Krabb tries native compaction when available, falls back to portable summaries,
+and truncates only afterward if necessary. Native web search is enabled for
+supported models; paused searches are continued within bounded request/output
+limits and return source links. Summary turns disable search and tools.
+See [context and search](../../../krabb-docs/providers.md#context) for limits.

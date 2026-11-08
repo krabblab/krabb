@@ -865,6 +865,7 @@ impl RunInput {
 
     fn model_request(&self) -> Value {
         json!(ModelRequest {
+            generation: None,
             model: std::env::var("KRABB_MODEL").unwrap_or_default(),
             workspace: std::env::var("KRABB_ROOT").ok(),
             messages: self.messages.clone(),
@@ -923,6 +924,8 @@ impl RunInput {
                 }
 
                 Event::Error { message } => error = Some(message.clone()),
+
+                Event::Context { .. } => {}
             }
         }
 

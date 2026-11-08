@@ -39,7 +39,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
             protocol: Protocol { major: 0, minor: 1 },
             id: "codex".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: vec![Capability::Model, Capability::Vision],
+            capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],
             commands: vec![CommandSpec {
                 name: "codex".into(),
                 description: "Manage Codex sign-in and list available models.".into(),
@@ -79,6 +79,17 @@ async fn generate_with_session(
         let text = codex::command(&params, emitter).await?;
 
         return Ok(Some(Response::ok(id, json!({"text": text}))));
+    }
+
+    if method == "model.info" {
+        let model = model::resolve(params["model"].as_str().unwrap_or("default"));
+
+        let profile = krabb_openai::profile(
+            &model,
+            &std::env::var("KRABB_CODEX_CONTEXT_LENGTH").unwrap_or_default(),
+        )?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
     }
 
     if method != "generate" {
@@ -122,6 +133,14 @@ fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_
 
     model::configure(&mut body);
 
+    if let Some(generation) = input.generation {
+        body["max_completion_tokens"] = generation.output.into();
+
+        if generation.summary {
+            body["tools"] = json!([]);
+        }
+    }
+
     Ok(body)
 }
 
@@ -132,6 +151,14 @@ async fn generate_request(
     key: &str,
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
+    if input.generation.is_some_and(|value| {
+        value.search || (value.summary && krabb_openai::search(&model::resolve(&input.model)))
+    }) {
+        let api = krabb_openai::responses::Api { client, key, base, provider: "codex" };
+
+        return api.generate(id, &input, &model::resolve(&input.model), None).await;
+    }
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
@@ -157,6 +184,14 @@ async fn stream_request(
     base: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
+    if input.generation.is_some_and(|value| {
+        value.search || (value.summary && krabb_openai::search(&model::resolve(&input.model)))
+    }) {
+        let api = krabb_openai::responses::Api { client, key, base, provider: "codex" };
+
+        return api.generate(id, &input, &model::resolve(&input.model), Some(emitter)).await;
+    }
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
@@ -249,6 +284,7 @@ fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<serde_json::Value>> 
                         "text": alt.as_deref().unwrap_or("[Image attachment.]"),
                     })),
 
+                    Content::Context { .. } => {},
                     content => parts.push(json!({"type": "text", "text": content.render()})),
                 }
             }
@@ -650,6 +686,7 @@ mod tests {
 
     fn model() -> ModelRequest {
         ModelRequest {
+            generation: None,
             model: "test".into(),
             workspace: None,
             messages: vec![

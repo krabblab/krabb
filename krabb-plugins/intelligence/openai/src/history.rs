@@ -51,6 +51,7 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
                 let text = message
                     .content
                     .iter()
+                    .filter(|item| !matches!(item, Content::Context { .. }))
                     .map(|item| match item {
                         Content::Image { alt, .. } => {
                             alt.clone().unwrap_or_else(|| "[Image attachment.]".into())
@@ -104,6 +105,7 @@ fn legacy_messages(input: &[Message]) -> krabb_core::Result<Vec<Value>> {
 
         for item in &message.content {
             match item {
+                Content::Context { .. } => {},
                 Content::Text { text } => parts.push(json!({"type":"text","text":text})),
 
                 Content::Image { uri, .. } if message.role != Role::System => {

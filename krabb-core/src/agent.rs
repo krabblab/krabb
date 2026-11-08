@@ -23,9 +23,18 @@ pub fn turn<M: Model>(model: &mut M, messages: &[Message], steps: usize) -> Resu
 
     let events = model.reply(messages)?;
     let mut text = String::new();
+    let mut context = Vec::new();
 
     for event in events.into_iter().take(steps) {
         match event {
+            Event::Context { state } => {
+                if !state.valid() {
+                    return Err(Error::Limit("Invalid model continuation.".into()));
+                }
+
+                context.push(Content::Context { state });
+            }
+
             Event::Text { text: part } => text.push_str(&part),
             Event::Done { text: done } => text = done,
             Event::Error { message } => return Err(Error::Denied(message)),
@@ -34,12 +43,14 @@ pub fn turn<M: Model>(model: &mut M, messages: &[Message], steps: usize) -> Resu
         }
     }
 
+    context.insert(0, Content::Text { text });
+
     Ok(Message {
         id: "reply".into(),
         session: messages.first().map_or_else(|| "session".into(), |m| m.session.clone()),
         role: Role::Assistant,
         sender: None,
-        content: vec![Content::Text { text }],
+        content: context,
     })
 }
 
@@ -62,9 +73,18 @@ pub fn run<M: Model, T: Tool>(
         let mut text = String::new();
         let mut calls = Vec::new();
         let mut called = false;
+        let mut context = Vec::new();
 
         for event in events {
             match event {
+                Event::Context { state } => {
+                    if !state.valid() {
+                        return Err(Error::Limit("Invalid model continuation.".into()));
+                    }
+
+                    context.push(Content::Context { state });
+                }
+
                 Event::Text { text: part } => text.push_str(&part),
                 Event::Done { text: done } => text = done,
                 Event::Error { message } => return Err(Error::Denied(message)),
@@ -90,7 +110,7 @@ pub fn run<M: Model, T: Tool>(
 
             text.push_str(&marker);
 
-            let mut content = Vec::new();
+            let mut content = std::mem::take(&mut context);
 
             if !text.is_empty() {
                 content.push(Content::Text { text: text.clone() });
@@ -142,12 +162,14 @@ pub fn run<M: Model, T: Tool>(
         }
 
         if !called {
+            context.insert(0, Content::Text { text });
+
             return Ok(Message {
                 id: "reply".into(),
                 session: history.first().map_or_else(|| "session".into(), |m| m.session.clone()),
                 role: Role::Assistant,
                 sender: None,
-                content: vec![Content::Text { text }],
+                content: context,
             });
         }
     }

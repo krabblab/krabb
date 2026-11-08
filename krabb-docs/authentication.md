@@ -72,6 +72,9 @@ Settings can declare a visible default; press Enter to accept it. For example,
 WhatsApp setup also asks for the phone number ID, versioned Graph API URL, and
 listener address (default `127.0.0.1:8787`). Ollama setup asks for the API key and
 host (default `https://ollama.com`; use `http://127.0.0.1:11434` for a local server).
+It then asks for thinking mode (default `false`) and context length (default `auto`).
+See [Ollama controls](../krabb-plugins/intelligence/ollama/README.md#thinking-and-context)
+for supported values and a local smoke-test configuration.
 These settings are saved in the same encrypted store and supplied when the daemon
 starts or reloads the plugin, without service-file changes. A terminal is required,
 even with `--json`; tokens
@@ -79,6 +82,10 @@ cannot be arguments or piped input. Escape or Ctrl-C cancels without saving.
 Multiline and oversized values are rejected.
 Prompt labels show the declared environment variable names and public manifest
 defaults, never stored values. An empty setting is rejected when no default exists.
+
+OpenAI and Codex setup also accept a context budget: `auto` uses the documented
+model-family catalog, or enter a token count greater than one for your deployment.
+See [shared context preparation](providers.md#context).
 
 Setup replaces the entered secrets and settings and preserves others using
 locked, crash-safe encrypted writes. Its output identifies whether the encryption key is in the

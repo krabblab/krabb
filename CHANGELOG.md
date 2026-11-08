@@ -7,6 +7,9 @@ Semantic Versioning.
 
 ### Added
 
+- Compact conversation history across intelligence providers before truncating it.
+- Enable native web search for supported models.
+- Configure Ollama thinking and context through setup.
 - Change channel models live while preserving conversations.
 - Allow daemon model requests to use the full five-minute turn budget.
 - Clear saved plugin keys through interactive setup.

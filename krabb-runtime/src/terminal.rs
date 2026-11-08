@@ -10,6 +10,30 @@ use std::{
 
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+pub(crate) fn progress(message: impl Into<String>, json: bool) -> Option<Spinner> {
+    progress_to(message.into(), json, io::stderr().is_terminal(), Box::new(io::stderr()))
+}
+
+fn progress_to(
+    message: String,
+    json: bool,
+    interactive: bool,
+    mut writer: Box<dyn Write + Send>,
+) -> Option<Spinner> {
+    if json {
+        return None;
+    }
+
+    if interactive {
+        return Some(Spinner::spawn(message, writer));
+    }
+
+    let _ = writeln!(writer, "{message}");
+    let _ = writer.flush();
+
+    None
+}
+
 pub(crate) struct Spinner {
     running: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -29,10 +53,16 @@ impl Spinner {
         let running = Arc::new(AtomicBool::new(true));
         let worker_running = Arc::clone(&running);
         let writer = Arc::new(Mutex::new(writer));
+
+        if let Ok(mut writer) = writer.lock() {
+            let _ = write!(writer, "\r⠋ {message}");
+            let _ = writer.flush();
+        }
+
         let worker_writer = Arc::clone(&writer);
         let worker = thread::spawn(move || {
             const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            let mut frame = 0;
+            let mut frame = 1;
 
             while worker_running.load(Ordering::Relaxed) {
                 if let Ok(mut writer) = worker_writer.lock() {
@@ -73,11 +103,9 @@ mod tests {
     use std::{
         io::{self, Write},
         sync::{Arc, Mutex},
-        thread,
-        time::Duration,
     };
 
-    use super::Spinner;
+    use super::progress_to;
 
     struct Buffer(Arc<Mutex<Vec<u8>>>);
 
@@ -94,12 +122,17 @@ mod tests {
     }
 
     #[test]
-    fn spinner_animates_in_place_and_clears_when_dropped() {
+    fn spinner_starts_immediately_and_clears_when_dropped() {
         let output = Arc::new(Mutex::new(Vec::new()));
-        let spinner =
-            Spinner::spawn("Installing plugins...".into(), Box::new(Buffer(Arc::clone(&output))));
+        let spinner = progress_to(
+            "Installing plugins...".into(),
+            false,
+            true,
+            Box::new(Buffer(Arc::clone(&output))),
+        );
 
-        thread::sleep(Duration::from_millis(10));
+        assert!(String::from_utf8(output.lock().unwrap().clone()).unwrap().contains("Installing"));
+
         drop(spinner);
 
         let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
@@ -107,5 +140,35 @@ mod tests {
         assert!(output.contains("⠋ Installing plugins..."));
         assert!(output.ends_with("\r\x1b[2K"));
         assert!(!output.contains('\n'));
+    }
+
+    #[test]
+    fn redirected_progress_is_one_plain_line() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let spinner = progress_to(
+            "Updating plugins...".into(),
+            false,
+            false,
+            Box::new(Buffer(Arc::clone(&output))),
+        );
+
+        assert!(spinner.is_none());
+        assert_eq!(*output.lock().unwrap(), b"Updating plugins...\n");
+    }
+
+    #[test]
+    fn json_progress_is_silent_in_terminals_and_pipes() {
+        for interactive in [true, false] {
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let spinner = progress_to(
+                "Uninstalling plugins...".into(),
+                true,
+                interactive,
+                Box::new(Buffer(Arc::clone(&output))),
+            );
+
+            assert!(spinner.is_none());
+            assert!(output.lock().unwrap().is_empty());
+        }
     }
 }

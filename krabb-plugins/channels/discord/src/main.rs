@@ -564,6 +564,8 @@ async fn send_content(
                 let _ = mime;
             }
 
+            Content::Context { .. } => {}
+
             Content::ToolCall { .. } => {
                 let text = item.render();
 

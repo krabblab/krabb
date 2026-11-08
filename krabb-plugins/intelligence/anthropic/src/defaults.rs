@@ -13,6 +13,7 @@ async fn default_models_reach_both_http_paths_without_fallback() {
             let (base, server) = krabb_test::http::capture().await;
 
             let input = ModelRequest {
+                generation: None,
                 model: model.into(),
                 workspace: None,
                 stream,

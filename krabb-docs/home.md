@@ -21,3 +21,4 @@ Use these guides to install, configure, operate, and extend Krabb.
 17. [Functional Test Matrix](../FUNCTIONAL.md) — tested crates and plugins across platforms.
 18. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.
 19. [Storage](storage.md) — home layout, ownership, retention, and migration.
+20. [Resources](resources.md) — basic memory and CPU footprint for minimal setups.

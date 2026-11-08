@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod context;
 mod model;
+mod search;
 
 mod history;
 use history::messages;
@@ -42,7 +44,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
             protocol: Protocol { major: 0, minor: 1 },
             id: "openrouter".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            capabilities: vec![Capability::Model, Capability::Vision],
+            capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],
             commands: vec![],
         },
         move |request, emitter| {
@@ -62,6 +64,17 @@ async fn generate(
         Request::Call { id, method, params, .. } => (id, method, params),
         Request::Note { .. } => return Ok(None),
     };
+
+    if method == "model.info" {
+        let model = model::resolve(
+            params["model"].as_str().unwrap_or("default"),
+            std::env::var("KRABB_OPENROUTER_MODEL").ok().as_deref(),
+        );
+
+        let profile = context::profile(client, &model, &credential()?, &base_url()?).await?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+    }
 
     if method != "generate" {
         return Ok(None);
@@ -120,6 +133,15 @@ fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_
 
     model::configure(&mut body);
 
+    if let Some(generation) = input.generation {
+        body["max_tokens"] = generation.output.into();
+
+        if generation.summary {
+            body["reasoning"] = json!({"enabled":false});
+            body["tools"] = json!([]);
+        }
+    }
+
     Ok(body)
 }
 
@@ -130,11 +152,15 @@ async fn complete(
     key: &str,
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
+    let mut body = request_body(&input, false)?;
+
+    search::configure(client, &input, &mut body, key, base).await?;
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .headers(headers()?)
         .bearer_auth(key)
-        .json(&request_body(&input, false)?)
+        .json(&body)
         .send()
         .await
         .map_err(|error| {
@@ -155,11 +181,15 @@ async fn stream(
     base: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
+    let mut body = request_body(&input, true)?;
+
+    search::configure(client, &input, &mut body, key, base).await?;
+
     let response = client
         .post(format!("{base}/chat/completions"))
         .headers(headers()?)
         .bearer_auth(key)
-        .json(&request_body(&input, true)?)
+        .json(&body)
         .send()
         .await
         .map_err(|error| {
@@ -389,6 +419,14 @@ fn stream_line(
         pending.push_str(value);
     }
 
+    for link in search::citations(delta) {
+        if !text.contains(&link) {
+            let citation = format!(" {link}");
+            text.push_str(&citation);
+            pending.push_str(&citation);
+        }
+    }
+
     if let Some(values) = delta["tool_calls"].as_array() {
         for value in values {
             let index = value["index"]
@@ -451,7 +489,13 @@ fn response_body(
         krabb_core::Error::Denied("OpenRouter response contained no choices.".into())
     })?;
 
-    let text = choice["message"]["content"].as_str().unwrap_or_default().to_owned();
+    let mut text = choice["message"]["content"].as_str().unwrap_or_default().to_owned();
+
+    for link in search::citations(&choice["message"]) {
+        text.push(' ');
+        text.push_str(&link);
+    }
+
     let mut events = Vec::new();
 
     for value in choice["message"]["tool_calls"].as_array().into_iter().flatten() {
@@ -543,6 +587,7 @@ mod tests {
 
     fn model() -> ModelRequest {
         ModelRequest {
+            generation: None,
             model: "test/model".into(),
             workspace: None,
             messages: vec![

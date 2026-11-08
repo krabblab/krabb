@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+krabb-text.workspace = true
 krabb-log.workspace = true
 krabb-core = { path = "../../../krabb-core" }
 reqwest.workspace = true

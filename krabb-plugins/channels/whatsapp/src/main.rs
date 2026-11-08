@@ -767,6 +767,8 @@ async fn send(app: &App, params: &Value) -> krabb_core::Result<Value> {
                 .map_err(|_| krabb_core::Error::Denied("send.content is invalid.".into()))?;
 
             result = match item {
+                Content::Context { .. } => continue,
+
                 Content::Text { text } => {
                     graph(
                         app,
