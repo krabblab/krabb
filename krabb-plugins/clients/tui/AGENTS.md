@@ -27,12 +27,17 @@ cargo build --locked -p krabb-plugin-tui
 ## Implementation Conventions
 
 Keep commands explicit, bound input and output, preserve the help command, and
-report daemon or capability failures without leaking state.
+report daemon or capability failures without leaking state. Reuse daemon command
+semantics and authorization; keep terminal rendering local. Follow the shared CLI
+output vocabulary and hierarchy while adapting to an interactive layout. Handle
+narrow terminals, long values, empty states, and progress without hiding errors or
+losing input. Preserve keyboard navigation and readable output without color.
 
 ## Testing And Validation
 
 Test command parsing, session controls, approvals, delivery controls, model
-selection, workspace validation, and daemon-unavailable fallbacks.
+selection, workspace validation, daemon-unavailable fallbacks, and representative
+output layouts using deterministic fixtures.
 
 ## Free Region
 
@@ -41,7 +46,7 @@ interactive semantics.
 
 ## Further Context
 
-See the parent plugin guidance and [README.md](README.md).
+See [parent plugin guidance](../../AGENTS.md) and [README.md](README.md).
 
 ---
 

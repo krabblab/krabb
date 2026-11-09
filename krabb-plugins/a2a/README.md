@@ -1,5 +1,9 @@
 # A2A
 
+> **Experimental:** This plugin is not fully tested and is outside the supported
+> v0.1 scope. See the [functional test matrix](../../FUNCTIONAL.md) for the
+> components included in v0.1.
+
 The A2A plugin is a client for the released Agent2Agent Protocol 1.0 JSON-RPC
 binding. Configure `KRABB_A2A_AGENT_CARD` with an agent-card URL, then use
 `krabb a2a discover`, `krabb a2a send PROMPT`, `krabb a2a status --task ID`,

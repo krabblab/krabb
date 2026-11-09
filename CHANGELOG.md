@@ -9,7 +9,6 @@ Semantic Versioning.
 
 - Update plugins through a graceful handover with declaration review and rollback.
 - Handle oversized histories without repeated failure replies.
-
 - Compact conversation history across intelligence providers before truncating it.
 - Enable native web search for supported models.
 - Configure Ollama thinking and context through setup.

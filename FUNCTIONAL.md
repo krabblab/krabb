@@ -1,6 +1,6 @@
 # Functional Test Matrix
 
-Track successful end-to-end checks for each user-testable crate and plugin,
+Track successful end-to-end checks for each v0.1 user-testable crate and plugin,
 regardless of operating system or architecture. Mark `[x]` after the component
 passes on an installed system; `[ ]` means functional success is not yet recorded.
 Builds, unit tests, and protocol handshakes alone do not qualify.
@@ -28,18 +28,12 @@ plugins and do not have separate manual checks.
 
 | Plugin     | Tested |
 | ---------- | ------ |
-| A2A        | [ ]    |
-| ACP        | [ ]    |
-| AG-UI      | [ ]    |
 | Anthropic  | [x]    |
-| Browser    | [ ]    |
 | Codex      | [x]    |
-| Computer   | [ ]    |
 | Discord    | [x]    |
 | Gemini     | [x]    |
-| MCP        | [ ]    |
 | Memory     | [x]    |
-| Ollama     | [ ]    |
+| Ollama     | [x]    |
 | OpenAI     | [x]    |
 | OpenRouter | [x]    |
 | Scheduler  | [x]    |
@@ -50,4 +44,3 @@ plugins and do not have separate manual checks.
 | Tools      | [x]    |
 | TUI        | [x]    |
 | WhatsApp   | [x]    |
-| Whisper    | [ ]    |

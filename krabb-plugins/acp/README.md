@@ -1,5 +1,9 @@
 # ACP
 
+> **Experimental:** This plugin is not fully tested and is outside the supported
+> v0.1 scope. See the [functional test matrix](../../FUNCTIONAL.md) for the
+> components included in v0.1.
+
 ACP connects Krabb to an external process that implements the stable Agent
 Client Protocol v1 over newline-delimited JSON-RPC on stdin and stdout.
 

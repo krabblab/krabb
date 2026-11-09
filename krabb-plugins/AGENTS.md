@@ -9,9 +9,9 @@
 ## Mission And Repository Map
 
 Each plugin crate is one process with a manifest, README, and binary. The
-`intelligence/` and `channels/` directories group provider and channel
-plugins; manifests, not folder names, declare each plugin capability. The
-runtime loads plugins through the public core JSON-RPC contract.
+`intelligence/`, `channels/`, and `clients/` directories group integrations.
+Manifests, not folder names, declare each plugin capability. The runtime loads
+plugins through the public core JSON-RPC contract.
 
 ## Non-Negotiables
 
@@ -31,12 +31,19 @@ cargo build -p krabb-plugin-codex --locked
 ## Implementation Conventions
 
 Use one-word plugin IDs, simple names, typed errors, bounded requests, and
-comments only when explaining a non-obvious reason.
+comments only when explaining a non-obvious reason. Reuse host installation,
+credentials, approvals, updates, and supervision rather than implementing parallel
+control paths. Keep optional work lazy and context payloads bounded. Distinguish
+process separation from OS sandboxing and document actual capability limits.
 
 ## Testing And Validation
 
 Test handshake, unknown methods, malformed requests, provider errors, timeout,
 and deterministic fake responses. Never call paid APIs in CI.
+
+## Further Context
+
+Inherit [root guidance](../AGENTS.md).
 
 ## Free Region
 

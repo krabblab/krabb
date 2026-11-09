@@ -8,10 +8,9 @@
 
 ## Mission And Repository Map
 
-Own the `krabb` CLI entrypoint: command parsing, setup, configuration
-selection, and delegation to `krabb-runtime`. Host lifecycle, plugin
-discovery, authenticated IPC, native services, and update activation belong to
-the runtime library.
+Own the thin `krabb` CLI entrypoint and exit-status propagation. Command parsing,
+setup, configuration selection, host lifecycle, authenticated IPC, services, and
+update activation belong to `krabb-runtime`.
 
 ## Non-Negotiables
 
@@ -32,12 +31,17 @@ cargo test -p krabb
 ## Implementation Conventions
 
 Use simple command and function names, four spaces, typed errors, explicit
-confirmation for destructive changes, and comments only for reasons.
+confirmation for destructive changes, and comments only for reasons. Route output
+changes through the shared runtime command path; do not duplicate renderers here.
 
 ## Testing And Validation
 
 Test CLI parsing, config safety, manifest discovery, JSON output, missing
 capabilities, and update failures without external services.
+
+## Further Context
+
+Inherit [root guidance](../AGENTS.md).
 
 ## Free Region
 

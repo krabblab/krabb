@@ -9,8 +9,8 @@ protocol.
 - `krabb-runtime` owns host orchestration, daemon state, IPC, and plugin
   lifecycle; `krabb` and `krabb-daemon` are thin entrypoints.
 - `krabb-libs/file` owns shared crash-safe filesystem primitives.
-- `krabb-plugins` owns process integrations. `krabb-plugins/intelligence/` and `krabb-plugins/channels/`
-  group providers and channels; manifests declare capabilities. A2A, ACP,
+- `krabb-plugins` owns process integrations. `krabb-plugins/intelligence/`,
+  `krabb-plugins/channels/`, and `krabb-plugins/clients/` group integrations. A2A, ACP,
   AG-UI, MCP, memory, stores, tools, scheduler, speech, and TUI are plugins.
 - `krabb-docs/`, `krabb-scripts/`, `.github/`, and release files own user guidance,
   automation, and project support.
@@ -50,6 +50,22 @@ filesystem primitives in `krabb-libs/file`, and provider/channel/capability
 behavior in its plugin. Update `krabb-docs/`, tests, and `CHANGELOG.md` with
 public behavior changes.
 
+## Engineering Principles
+
+- Choose the simplest complete solution; justify new abstractions, dependencies,
+  settings, and processes.
+- Reuse shared contracts and lifecycle behavior. Keep authorization, durable state,
+  and coordination host-owned; optional capabilities belong in plugins.
+- Keep workflows short, defaults useful, and language clear. Align CLI/TUI spacing,
+  hierarchy, progress, errors, and next actions with plugin output.
+- Bound idle overhead, active work, context, and storage. Measure resource claims;
+  separate host costs from inference and plugins.
+- Design state changes and upgrades for interruption, compatibility checks, and
+  recovery. Preserve user data and permissions.
+- Enforce security and resource limits in code; prompts and skills are guidance.
+- Treat [ROADMAP.md](ROADMAP.md) as planned acceptance criteria, not shipped support.
+  Deliver tested increments without speculative scaffolding.
+
 ## Implementation Conventions
 
 Use four spaces, a 100-column limit, typed errors, bounded async work,
@@ -58,9 +74,10 @@ files. Public protocol changes require compatibility tests.
 
 ## Testing And Validation
 
-Run `make verify` before handoff. Automated tests must not call paid provider
-APIs. Test protocol framing, malformed plugins, path policy, approvals,
-crashes, retries, and update rollback.
+Run `make verify` for code changes. For documentation-only changes, check
+links, whitespace, and applicable guidance validation without the full build.
+Automated tests must not call paid provider APIs. Test protocol framing, malformed
+plugins, path policy, approvals, crashes, retries, and update rollback.
 
 ## Common Change Playbooks
 

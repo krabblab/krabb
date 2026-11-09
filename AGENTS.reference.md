@@ -4,10 +4,32 @@
 
 - Agentskill Version: `2.1.0`.
 - Evidence Schema Version: `4`.
-- Repository Revision: `546ccdf8aa89ef4964b702439cd0dd8893477789`.
+- Repository Revision: `e0db408f112573f60614e7b02c47f1929822a2a7`.
 - Configuration: default signature enabled.
 - Maintainer-Confirmed Decisions: capability-free core; process plugins over JSONL; Apache-2.0; one-word naming where clear; Lefthook pre-commit gates; Gitfleet-style releases; the implementation ledger is authoritative.
-- Unresolved Uncertainty: vendor OAuth terms and the final native service implementation remain platform-specific implementation work.
+- Unresolved Uncertainty: vendor OAuth terms remain provider-specific. Roadmap capabilities require
+  implementation evidence; full host upgrades, migrations, and rollback must not be inferred from
+  existing plugin update safeguards.
+
+## Maintainer Principles And Evidence
+
+The maintainer confirmed simplicity, consistent CLI/TUI output, low resource use,
+shared implementations, safe upgrades, credential cleanup on uninstall, and
+verified recovery as development requirements. ROADMAP.md records future scope;
+it does not establish that these features already ship. Documentation-only work
+uses targeted checks; Rust edits retain full verification and coverage gates.
+
+This update used Agentskill 2.1.0 scope discovery and evidence (schema 4), with
+signature auto and deep workflow scope for existing managed root, runtime, CLI,
+plugin, and TUI guidance. Evidence facts `configuration.signature`,
+`tool.rust.formatter`, and `test.command.1` were checked against configuration
+and Makefile. Direct inspection covered Cargo.toml, krabb/src/main.rs,
+krabb-core/src/agent.rs, runtime setup and updates, plugin update tests, and TUI
+entrypoints. The working tree included the maintainer's uncommitted roadmap.
+
+Root principles are inherited; scoped guidance adds local responsibilities.
+Generated guidance preserves each Free Region. No runtime personality templates
+or newly suggested guidance scopes are part of this update.
 
 ## Boundaries And Ownership
 

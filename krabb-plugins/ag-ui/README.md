@@ -1,5 +1,9 @@
 # AG-UI Plugin
 
+> **Experimental:** This plugin is not fully tested and is outside the supported
+> v0.1 scope. See the [functional test matrix](../../FUNCTIONAL.md) for the
+> components included in v0.1.
+
 The AG-UI plugin serves a local HTTP endpoint that accepts AG-UI run input and
 streams events as chunked server-sent events. It calls the configured Krabb
 model through the host. The listener binds to `127.0.0.1:8787` by default; set

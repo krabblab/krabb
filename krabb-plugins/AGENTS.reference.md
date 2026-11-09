@@ -4,15 +4,20 @@
 
 - Agentskill Version: `2.1.0`.
 - Evidence Schema Version: `4`.
-- Repository Revision: `546ccdf8aa89ef4964b702439cd0dd8893477789`.
+- Repository Revision: `e0db408f112573f60614e7b02c47f1929822a2a7`.
 - Configuration: inherited from the repository root; default signature enabled.
-- Maintainer-Confirmed Decisions: adopt krabb-plugins as a nested scope; all official capabilities are separate process plugins and release in lockstep with the core.
+- Maintainer-Confirmed Decisions: retain plugin capability boundaries and shared host lifecycle
+  machinery. Current official artifacts release together; independent component releases
+  are planned.
 - Unresolved Uncertainty: none specific to this scope.
+
+Evidence: workspace Cargo.toml, [packaging workflow](../.github/workflows/package.yml), manifests,
+and maintainer decisions recorded in [root reference](../AGENTS.reference.md).
 
 ## Boundary
 
 Child plugin IDs and manifests define installation and capability discovery.
-The `intelligence/` and `channels/` paths are organizational groupings,
+The `intelligence/`, `channels/`, and `clients/` paths are organizational groupings,
 not capability boundaries. Each process uses `krabb_core::plugin::serve` or
 `serve_with`, emits only JSON-RPC protocol frames on stdout, and negotiates
 protocol `0.1`.

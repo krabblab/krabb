@@ -1,5 +1,9 @@
 # Browser Plugin
 
+> **Experimental:** This plugin is not fully tested and is outside the supported
+> v0.1 scope. See the [functional test matrix](../../FUNCTIONAL.md) for the
+> components included in v0.1.
+
 The browser plugin provides isolated Chromium sessions through Playwright. The
 Krabb process plugin is Rust; a long-lived Node.js worker owns Playwright and
 the browser process. Browser sessions use clean contexts and do not inherit a

@@ -1,5 +1,9 @@
 # Computer Plugin
 
+> **Experimental:** This plugin is not fully tested and is outside the supported
+> v0.1 scope. See the [functional test matrix](../../FUNCTIONAL.md) for the
+> components included in v0.1.
+
 The computer plugin provides bounded pointer, keyboard, window-list, and
 screenshot tools. Linux runs an isolated X11 session owned by the plugin.
 macOS and Windows can use an interactive backend that controls the signed-in

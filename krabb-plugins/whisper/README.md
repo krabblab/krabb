@@ -1,5 +1,9 @@
 # Whisper
 
+> **Experimental:** This plugin is not fully tested and is outside the supported
+> v0.1 scope. See the [functional test matrix](../../FUNCTIONAL.md) for the
+> components included in v0.1.
+
 Install the released plugin with:
 
 ```sh

@@ -58,6 +58,9 @@ run it in the background.
 | Speech | Transcribes voice recordings with a local Whisper-compatible executable. | Whisper |
 | Terminal Client | Provides an interactive terminal interface to the daemon. | TUI |
 
+Plugins outside the [v0.1 functional test matrix](FUNCTIONAL.md) are experimental,
+not fully tested, and outside the supported v0.1 scope. Their READMEs identify this status.
+
 All plugins are optional. Intelligence plugins live in
 `krabb-plugins/intelligence/`; channel plugins live in
 `krabb-plugins/channels/`; client plugins, including TUI, live in

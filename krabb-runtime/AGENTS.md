@@ -29,7 +29,15 @@ cargo clippy --locked -p krabb-runtime --all-targets -- -D warnings
 ## Implementation Conventions
 
 Use explicit lifecycle phases, typed errors, authenticated local IPC, and
-small helpers. Do not duplicate CLI or daemon entrypoint logic here.
+small functions. Keep command behavior shared here and executable entrypoints thin.
+
+Keep setup, lifecycle, and update behavior reusable across interfaces. Explain
+settings and effective configuration in user-facing output; report readiness and
+partial failures truthfully. For persisted-state or upgrade changes, validate
+compatibility, stage before replacement, and test recovery after interruption.
+Preserve credentials during updates; plugin uninstall must remove its managed
+credentials and grants without deleting unrelated state. Track unimplemented
+requirements in ROADMAP.md rather than claiming the planned updater already exists.
 
 ## Testing And Validation
 
@@ -43,7 +51,7 @@ when lifecycle or IPC contracts change.
 
 ## Further Context
 
-See the root guidance and [README.md](README.md).
+See [root guidance](../AGENTS.md) and [README.md](README.md).
 
 ---
 
