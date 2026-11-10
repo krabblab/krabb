@@ -150,7 +150,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
             let reserved = method == "session.append_reserved";
             let owner = if reserved { Some(required_text(&params, "owner")?) } else { None };
 
-            let message: Message = serde_json::from_value(params["message"].clone())?;
+            let mut message: Message = serde_json::from_value(params["message"].clone())?;
 
             if message.session != id {
                 return Err(Error::Denied("Message session does not match.".into()));
@@ -164,6 +164,21 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
 
             if reserved && session.reservation_owner.as_deref() != owner {
                 return Err(Error::Denied("Session reservation is unavailable.".into()));
+            }
+
+            if let Some(target) = params.get("reply_to").filter(|value| !value.is_null()) {
+                let target = target.as_str().ok_or_else(|| {
+                    Error::Denied("reply_to must be a message ID or last.".into())
+                })?;
+
+                let reply = krabb_core::reply::Reply::select(&session.messages, target)
+                    .ok_or_else(|| {
+                        Error::Denied(
+                            "The referenced message is unavailable in this session.".into(),
+                        )
+                    })?;
+
+                message.content.insert(0, krabb_core::Content::Text { text: reply.context() });
             }
 
             session.messages.push(message);

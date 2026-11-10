@@ -475,6 +475,17 @@ impl RunStream {
             reply.text.clone()
         };
 
+        if !self.text.is_empty() && !final_text.starts_with(&self.text) {
+            if self.message_open {
+                events.push(json!({"type":"TEXT_MESSAGE_END","messageId":self.message_id}));
+                self.message_open = false;
+            }
+
+            self.text.clear();
+            self.index += 1;
+            self.message_id = format!("{}-message-{}", run.run_id, self.index);
+        }
+
         if let Some(missing) = final_text.strip_prefix(&self.text)
             && !missing.is_empty()
         {
@@ -712,7 +723,7 @@ impl RunInput {
             krabb_core::Error::Protocol("AG-UI messages must be an array.".into())
         })?;
 
-        let mut messages = Vec::new();
+        let mut messages: Vec<Message> = Vec::new();
 
         for (index, item) in source.iter().enumerate() {
             let role = match item["role"].as_str().unwrap_or_default() {
@@ -773,6 +784,36 @@ impl RunInput {
                         .or_else(|| Some(format!("ag-ui-{index}-tool-{call_index}"))),
                     thought_signature: None,
                 });
+            }
+
+            if let Some(value) = item.get("reply").filter(|value| !value.is_null()) {
+                if role != Role::User {
+                    return Err(krabb_core::Error::Protocol(
+                        "Only user messages can include a reply reference.".into(),
+                    ));
+                }
+
+                let mut reply = serde_json::from_value::<krabb_core::reply::Reply>(value.clone())
+                    .ok()
+                    .and_then(krabb_core::reply::Reply::normalized)
+                    .ok_or_else(|| {
+                        krabb_core::Error::Protocol("AG-UI reply reference is invalid.".into())
+                    })?;
+
+                if reply.text.is_none() {
+                    reply = messages
+                        .iter()
+                        .rev()
+                        .find(|message| message.id == reply.id)
+                        .and_then(krabb_core::reply::Reply::message)
+                        .unwrap_or(reply);
+                }
+
+                if reply.text.is_none() {
+                    reply.text = Some("[Referenced message unavailable.]".into());
+                }
+
+                content.insert(0, Content::Text { text: reply.context() });
             }
 
             if content.is_empty() {
@@ -977,6 +1018,7 @@ impl RunInput {
 #[cfg(test)]
 mod tests {
     mod admission;
+    mod replies;
 
     #[test]
     fn validates_authentication_configuration() {

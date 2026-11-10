@@ -161,6 +161,7 @@ enum EngineEvent {
     SystemText(String),
     RequestFailed(String),
     SystemNotice(String),
+    Progress(String),
     AssistantFinished,
     GenerationFinished { interrupted: bool },
 }
@@ -1188,7 +1189,7 @@ where
                 continue;
             }
 
-            if line.starts_with('/') {
+            if line.starts_with('/') && !line.starts_with("/reply ") {
                 output
                     .write_all(format!("Unknown TUI command: {}. Use /help to see available commands.\n> ", line.split_whitespace().next().unwrap_or(line)).as_bytes())
                     .await?;
@@ -1203,7 +1204,17 @@ where
                 continue;
             }
 
-            let terminal_command = line.strip_prefix('!');
+            let (line, reply_to) = if let Some(reply) = line.strip_prefix("/reply ") {
+                let Some((target, text)) = reply.split_once(' ').filter(|(target, text)| !target.is_empty() && !text.trim().is_empty()) else {
+                    output.write_all(b"Usage: /reply <last|message-id> <message>\n> ").await?;
+                    output.flush().await?;
+                    continue;
+                };
+
+                (text, Some(target))
+            } else { (line, None) };
+
+            let terminal_command = if reply_to.is_none() { line.strip_prefix('!') } else { None };
 
             if terminal_command.is_some_and(|command| command.trim().is_empty()) {
                 output.write_all(b"Usage: !<shell command>\n> ").await?;
@@ -1265,8 +1276,19 @@ where
 
             messages = current_session.messages;
 
+            let reply = if let Some(target) = reply_to {
+                let Some(reply) = krabb_core::reply::Reply::select(&messages, target) else {
+                    reservation.release().await?;
+                    output.write_all(b"That message is unavailable in this session. Choose another message or use /reply last.\n> ").await?;
+                    output.flush().await?;
+                    continue;
+                };
+
+                Some(reply)
+            } else { None };
+
             sequence = sequence.saturating_add(1);
-            let user = Message {
+            let mut user = Message {
                 id: message_id("user", sequence),
                 session: session.clone(),
                 role: Role::User,
@@ -1277,7 +1299,7 @@ where
             if let Err(error) = host(
                 home.clone(),
                 "session.append_reserved".into(),
-                serde_json::json!({"id": session, "owner": reservation.owner, "message": user}),
+                serde_json::json!({"id": session, "owner": reservation.owner, "message": user, "reply_to": reply_to}),
             )
             .await
             {
@@ -1299,6 +1321,10 @@ where
                 }
 
                 continue;
+            }
+
+            if let Some(reply) = reply {
+                user.content.insert(0, Content::Text { text: reply.context() });
             }
 
             messages.push(user);
@@ -1915,6 +1941,7 @@ fn has_capability(home: &str, capability: &str) -> bool {
 fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
     let commands = [
         ("/help", "Show commands available in this session."),
+        ("/reply <last|message-id> <message>", "Include the selected message as reply context."),
         ("/history list|clear|help", "Show or clear saved TUI input history."),
         ("/status", "Show whether the background runtime is running."),
         ("/plugin [page]", "Browse installed plugins."),
@@ -4180,7 +4207,7 @@ fn final_reply_suffix<'a>(streamed: &str, final_text: &'a str) -> &'a str {
     if streamed.is_empty() {
         final_text
     } else {
-        final_text.strip_prefix(streamed).unwrap_or_default()
+        final_text.strip_prefix(streamed).unwrap_or(final_text)
     }
 }
 
@@ -4251,6 +4278,7 @@ async fn control_with_stream(
 
         let system_output = method == "session.command";
         let mut streamed = String::new();
+        let mut progress_shown = false;
 
         loop {
             let response: IpcResponse = jsonl::read(&mut input, jsonl::MAX)
@@ -4295,6 +4323,19 @@ async fn control_with_stream(
                     continue;
                 }
 
+                if value["event"] == "tool" {
+                    if !progress_shown && let Some(events) = &events {
+                        let _ = events.send(EngineEvent::Progress(
+                            "I'm working on your request. I'll send the answer when it's ready."
+                                .into(),
+                        ));
+                    }
+
+                    progress_shown = true;
+                    streamed.clear();
+                    continue;
+                }
+
                 if value["event"] == "system" {
                     if let (Some(events), Some(text)) = (&events, value["text"].as_str()) {
                         let _ = events.send(EngineEvent::SystemText(text.to_owned()));
@@ -4305,6 +4346,7 @@ async fn control_with_stream(
 
                 if value["event"] == "text" {
                     if let Some(text) = value["text"].as_str() {
+                        progress_shown = false;
                         streamed.push_str(text);
 
                         if !text.is_empty()
@@ -4861,6 +4903,7 @@ fn sentence(value: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod replies;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -6658,11 +6701,78 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn separates_tool_progress_and_preserves_a_nonstreamed_final_answer() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let root = std::env::temp_dir().join(format!(
+            "krabb-tui-progress-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        std::fs::write(root.join("run/ipc.token"), "fixture-token").unwrap();
+        std::fs::write(
+            root.join("run/ipc.port"),
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .unwrap();
+
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            let mut request = String::new();
+            socket.read_line(&mut request).await.unwrap();
+
+            for result in [
+                json!({"event":"text", "text":"I'll check that."}),
+                json!({"event":"tool", "name":"read"}),
+                json!({"event":"tool", "name":"read"}),
+                json!({"done":true, "text":"Here is the complete answer."}),
+            ] {
+                let frame = json!({"jsonrpc":"2.0", "id":1, "result":result});
+                socket.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+            }
+        });
+
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        super::control_with_stream(
+            root.to_str().unwrap(),
+            "session.answer",
+            json!({"id":"main"}),
+            Some(events),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("stream control failed"));
+        server.await.unwrap();
+
+        assert_eq!(
+            receiver.recv().await,
+            Some(super::EngineEvent::AssistantText("I'll check that.".into()))
+        );
+
+        assert!(matches!(receiver.recv().await, Some(super::EngineEvent::Progress(_))));
+        assert_eq!(
+            receiver.recv().await,
+            Some(super::EngineEvent::AssistantText("Here is the complete answer.".into()))
+        );
+
+        assert!(receiver.try_recv().is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
-    fn final_reply_does_not_repeat_or_replace_text_already_streamed() {
+    fn final_reply_keeps_answers_after_a_different_progress_prefix() {
         assert_eq!(super::final_reply_suffix("Hello", "Hello world"), " world");
         assert_eq!(super::final_reply_suffix("Hello world", "Hello world"), "");
-        assert_eq!(super::final_reply_suffix("Hello", "A duplicated final reply"), "");
+        assert_eq!(
+            super::final_reply_suffix("Hello", "A duplicated final reply"),
+            "A duplicated final reply"
+        );
+
         assert_eq!(super::final_reply_suffix("", "Non-streamed reply"), "Non-streamed reply");
     }
 

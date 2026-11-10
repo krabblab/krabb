@@ -632,7 +632,7 @@ where
                         app.push_request_failure(&text);
                     }
 
-                    Some(crate::EngineEvent::SystemNotice(text)) => {
+                    Some(crate::EngineEvent::SystemNotice(text) | crate::EngineEvent::Progress(text)) => {
                         app.push_system(&text);
                     }
 
@@ -753,7 +753,9 @@ where
                     app.finish_streamed_interactions();
                 }
 
-                crate::EngineEvent::SystemNotice(text) => app.push_system(&text),
+                crate::EngineEvent::SystemNotice(text) | crate::EngineEvent::Progress(text) => {
+                    app.push_system(&text)
+                }
 
                 crate::EngineEvent::GenerationStarted => {}
 

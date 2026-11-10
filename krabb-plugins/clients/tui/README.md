@@ -93,3 +93,9 @@ by the intelligence plugin to its small model. Existing sessions retain their
 model; `--model <id>` or `/model set <id>` changes it. Sessions saved as `unset`
 can also generate using the provider default. See
 [selection precedence](../../../krabb-docs/configuration.md#provider-and-model-precedence).
+
+Use `/reply last <message>` to quote the last assistant answer, or
+`/reply <message-id> <message>` for a specific message in the active session.
+`krabb session show <id> --json` exposes message IDs. The selected text is sent as
+bounded reference context alongside the new message. Replying to a system notice
+requires its exact ID; `/reply last` skips system notices.

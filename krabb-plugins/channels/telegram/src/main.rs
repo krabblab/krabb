@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use krabb_core::reply::Reply;
+
 mod formatting;
 
 use krabb_core::{
@@ -144,6 +146,7 @@ async fn call_with(
 
         Operation::Send { chat, text, thread } => {
             let mut result = serde_json::Value::Null;
+            let mut references = Vec::new();
 
             let parts = if params["format"] == "markdown" {
                 formatting::parts(&text, params["draft"] == true)
@@ -160,7 +163,20 @@ async fn call_with(
                     })?);
                 }
 
+                let sent_text = body["text"].as_str().unwrap_or_default().to_owned();
                 result = send(client, &format!("{base}/sendMessage"), body).await?;
+
+                if let Some(reply) = Reply::from_parts(
+                    &result["message_id"],
+                    &serde_json::Value::Null,
+                    Some(&sent_text),
+                ) {
+                    references.push(reply);
+                }
+            }
+
+            if result.is_object() {
+                result["references"] = json!(references);
             }
 
             result
@@ -709,6 +725,8 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
 
     Some(json!({
         "id": update["update_id"],
+        "message": message["message_id"],
+        "reply": Reply::from_parts(&message["reply_to_message"]["message_id"], &message["reply_to_message"]["from"]["id"], message["quote"]["text"].as_str().or_else(|| message["reply_to_message"]["text"].as_str()).or_else(|| message["reply_to_message"]["caption"].as_str())),
         "chat": chat,
         "kind": kind,
         "private": kind == "private",
@@ -723,6 +741,8 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
+    mod replies;
+
     use krabb_test::logging;
 
     #[test]

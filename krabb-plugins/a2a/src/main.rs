@@ -101,11 +101,26 @@ impl A2aRequest {
         let mut stream = None;
         let mut return_immediately = false;
         let mut prompt = Vec::new();
+        let mut quote = None;
 
         while index < args.len() {
             let value = args[index].as_str().unwrap_or_default();
 
             match value {
+                "--quote" => {
+                    index += 1;
+
+                    quote = Some(
+                        args.get(index)
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.is_empty())
+                            .ok_or_else(|| {
+                                krabb_core::Error::Denied("--quote requires text.".into())
+                            })?
+                            .to_owned(),
+                    );
+                }
+
                 "--card" => {
                     index += 1;
                     card = args.get(index).and_then(Value::as_str).map(str::to_owned);
@@ -138,7 +153,7 @@ impl A2aRequest {
             return Err(krabb_core::Error::Denied(format!("Unknown A2A action: {action}.")));
         }
 
-        let prompt = prompt.join(" ").trim().to_owned();
+        let mut prompt = prompt.join(" ").trim().to_owned();
 
         if action == "send" && prompt.is_empty() {
             return Err(krabb_core::Error::Denied("An A2A message is required.".into()));
@@ -148,6 +163,15 @@ impl A2aRequest {
             && task.as_deref().is_none_or(str::is_empty)
         {
             return Err(krabb_core::Error::Denied("An A2A task ID is required.".into()));
+        }
+
+        if quote.is_some() && action != "send" {
+            return Err(krabb_core::Error::Denied("--quote is only supported for send.".into()));
+        }
+
+        if let Some(text) = quote {
+            let reply = krabb_core::reply::Reply::new("quoted".into(), None, Some(text)).unwrap();
+            prompt = format!("{}\n\n{prompt}", reply.context());
         }
 
         Ok(Self { action, card, context, task, prompt, stream, return_immediately })
@@ -648,6 +672,8 @@ fn event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
+    mod replies;
+
     use super::{
         A2aConfig, A2aRequest, artifact_text, execute_with, rpc_endpoint, task_summary, task_text,
         validate_url,

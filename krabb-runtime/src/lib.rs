@@ -1364,6 +1364,8 @@ struct Ask {
     provider: Option<String>,
     #[arg(long, help = "Model identifier (overrides environment and config).")]
     model: Option<String>,
+    #[arg(long, help = "Quoted message supplied as bounded reference context.")]
+    quote: Option<String>,
     #[arg(required = true, trailing_var_arg = true, help = "Prompt words.")]
     prompt: Vec<String>,
 }
@@ -2630,13 +2632,18 @@ async fn generate_at(
         selection::client(&config, "cli", (ask.provider.as_deref(), ask.model.as_deref()));
     let plugin = model_plugin_at(root, &provider)?;
     let prompt = ask.prompt.join(" ");
-    let message = Message {
+    let mut message = Message {
         id: "user".into(),
         session: session.into(),
         role: Role::User,
         sender: Some(session.into()),
         content: vec![Content::Text { text: prompt }],
     };
+
+    if let Some(text) = ask.quote {
+        let reply = krabb_core::reply::Reply::new("quoted".into(), None, Some(text)).unwrap();
+        message.content.insert(0, Content::Text { text: reply.context() });
+    }
 
     let mut messages = context_at("cli", &root.join("data/system"));
     messages.push(message);
@@ -7914,7 +7921,10 @@ async fn bridge_with_media(
 
             match sent {
                 Ok(response) if response.error.is_none() && response.result.is_some() => {
-                    sessions.lock().map_err(|_| "Session lock is poisoned.")?.ack(&delivery.id)?;
+                    sessions
+                        .lock()
+                        .map_err(|_| "Session lock is poisoned.")?
+                        .delivered(&delivery.id, response.result.as_ref().unwrap())?;
                     debug!(channel = delivery_channel_id, "Channel delivery acknowledged.");
                 }
 
@@ -8445,6 +8455,41 @@ async fn bridge_with_media(
                     error!(session = %session_name, error = %diagnostic(sentence(error.to_string())), "Message routing failed.");
                     break;
                 } else {
+                    if !queued_event {
+                        let reference_text = message
+                            .content
+                            .iter()
+                            .map(Content::render)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+
+                        if let Some(reply) = serde_json::from_value::<krabb_core::reply::Reply>(
+                            event["reply"].clone(),
+                        )
+                        .ok()
+                        .and_then(krabb_core::reply::Reply::normalized)
+                        {
+                            let reply = store.sessions[&session_name].resolve_reply(reply);
+                            message.content.insert(0, Content::Text { text: reply.context() });
+                            message.content = bound(std::mem::take(&mut message.content));
+                        }
+
+                        let native_id = crate::event_id(&event["message"])
+                            .or_else(|| crate::event_id(&event["id"]));
+
+                        if let Some(reply) = native_id.and_then(|id| {
+                            krabb_core::reply::Reply::new(
+                                id,
+                                message.sender.clone(),
+                                Some(reference_text),
+                            )
+                        }) {
+                            store.remember_reply(&session_name, reply)?;
+                        }
+
+                        retry_message = message.clone();
+                    }
+
                     if provider.supports(Capability::Vision)
                         && media::admitted(&store, &message, queued_event)
                     {
@@ -8766,7 +8811,15 @@ async fn bridge_with_media(
                             }
                         }
 
-                        _ = activity.tick(), if typing && output.message_id.is_none() => {
+                        _ = activity.tick() => {
+                            if !output.sent && output.updated.elapsed() >= Duration::from_secs(4) {
+                                output.dirty = true;
+                            }
+
+                            if !typing {
+                                continue;
+                            }
+
                             tokio::select! {
                                 biased;
                                 _ = stop.notified() => break Err("The turn was interrupted.".into()),
@@ -8839,7 +8892,7 @@ async fn bridge_with_media(
                         role: Role::Assistant,
                         sender: None,
                         content: vec![Content::Text {
-                            text: "I could not complete that turn.".into(),
+                            text: "I couldn't finish your request. Please try again. If it keeps happening, check the model connection with krabb doctor.".into(),
                         }],
                     };
                     {
@@ -8855,7 +8908,7 @@ async fn bridge_with_media(
                             channel_id,
                             &chat,
                             thread.clone(),
-                            "I could not complete that turn.",
+                            "I couldn't finish your request. Please try again. If it keeps happening, check the model connection with krabb doctor.",
                         ) {
                             Ok(()) => true,
 
@@ -9003,8 +9056,11 @@ async fn bridge_with_media(
                     .lock()
                     .map_err(|_| "Session lock is poisoned.")?
                     .uncertain(&delivery_id, message)?;
-            } else if sent.result.is_some() {
-                sessions.lock().map_err(|_| "Session lock is poisoned.")?.ack(&delivery_id)?;
+            } else if let Some(result) = sent.result.as_ref() {
+                sessions
+                    .lock()
+                    .map_err(|_| "Session lock is poisoned.")?
+                    .delivered(&delivery_id, result)?;
                 debug!(channel = channel_id, "Channel delivery acknowledged.");
             }
 
@@ -11503,48 +11559,25 @@ impl std::fmt::Display for ModelRejection {
 impl std::error::Error for ModelRejection {}
 
 struct StreamOutput {
-    text: String,
-    display: String,
-    message_id: Option<String>,
     dirty: bool,
     disabled: bool,
+    sent: bool,
     updated: tokio::time::Instant,
 }
 
 impl StreamOutput {
     fn new() -> Self {
-        Self {
-            text: String::new(),
-            display: String::new(),
-            message_id: None,
-            dirty: false,
-            disabled: false,
-            updated: tokio::time::Instant::now(),
-        }
+        Self { dirty: false, disabled: false, sent: false, updated: tokio::time::Instant::now() }
     }
 
     fn apply(&mut self, notice: StreamNotice) {
-        match notice {
-            StreamNotice::Text(text) => {
-                self.text = clip(format!("{}{}", self.text, text), TEXT_LIMIT);
-                self.display.clone_from(&self.text);
-            }
-
-            StreamNotice::Tool(name) => {
-                self.text.clear();
-                self.display = format!("Working with {}…", clip(name, META_LIMIT));
-            }
-
-            StreamNotice::System(_) => {}
-
-            StreamNotice::Approval { .. } => {}
+        if matches!(notice, StreamNotice::Tool(_)) && !self.sent {
+            self.dirty = true;
         }
-
-        self.dirty = !self.display.is_empty();
     }
 
     fn ready(&self) -> bool {
-        self.dirty && self.updated.elapsed() >= std::time::Duration::from_millis(500)
+        self.dirty && self.updated.elapsed() >= Duration::from_millis(500)
     }
 }
 
@@ -11560,105 +11593,61 @@ async fn flush_stream(
     thread: Option<&str>,
     call: &mut u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if !output.dirty || output.disabled {
+    if !output.dirty || output.disabled || output.sent {
         return Ok(());
     }
 
-    if !stream_fits(channel_id, &output.display) {
-        output.dirty = false;
-        return Ok(());
-    }
+    let progress_id = format!("{delivery_id}-progress");
+    let text = "I'm working on your request. I'll send the answer when it's ready.";
 
-    let mut request = if let Some(message_id) = output.message_id.as_deref() {
-        sessions
-            .lock()
-            .map_err(|_| "Session lock is poisoned.")?
-            .stream_sending(delivery_id, output.display.clone())?;
-        Request::call(
-            *call,
-            "edit",
-            edit_params(channel_id, delivery_id, chat, message_id, &output.display, thread)?,
-        )
-    } else {
-        let private = sessions
-            .lock()
-            .map_err(|_| "Session lock is poisoned.")?
-            .sessions
-            .get(session)
-            .ok_or("Session was not found.")?
-            .private;
-        sessions.lock().map_err(|_| "Session lock is poisoned.")?.start_stream(
-            session,
-            delivery_id,
+    let private = {
+        let mut store = sessions.lock().map_err(|_| "Session lock is poisoned.")?;
+        let private = store.sessions.get(session).ok_or("Session was not found.")?.private;
+
+        store.queue_delivery(
+            &progress_id,
             channel_id,
             chat,
+            private,
             thread.map(str::to_owned),
-            output.display.clone(),
+            text,
         )?;
-        send_request(channel_id, *call, delivery_id, chat, private, &output.display, thread)?
+        store.sending(&progress_id)?;
+        private
     };
 
-    if let Request::Call { params, .. } = &mut request {
-        params["draft"] = serde_json::json!(true);
-    }
-
-    let response = channel.call(request).await;
+    let request = send_request(channel_id, *call, &progress_id, chat, private, text, thread)?;
 
     *call = call.saturating_add(1);
+    output.sent = true;
+    output.dirty = false;
 
-    let response = match response {
-        Ok(response) if response.error.is_none() => response,
+    let result = channel.call(request).await;
+    let mut store = sessions.lock().map_err(|_| "Session lock is poisoned.")?;
 
-        Ok(response) => {
-            let message = response.error.map_or_else(
-                || "Channel rejected the stream update.".into(),
-                |error| error.message,
-            );
-            sessions
-                .lock()
-                .map_err(|_| "Session lock is poisoned.")?
-                .uncertain(delivery_id, sentence(message.clone()))?;
+    match result {
+        Ok(response) if response.error.is_none() => store.delivered(
+            &progress_id,
+            response.result.as_ref().unwrap_or(&serde_json::Value::Null),
+        )?,
+
+        result => {
+            let message = match result {
+                Ok(response) => response.error.unwrap().message,
+                Err(error) => error.to_string(),
+            };
+
+            store.uncertain(&progress_id, sentence(message.clone()))?;
             return Err(message.into());
         }
-
-        Err(error) => {
-            let message = sentence(error.to_string());
-            sessions
-                .lock()
-                .map_err(|_| "Session lock is poisoned.")?
-                .uncertain(delivery_id, message.clone())?;
-            return Err(message.into());
-        }
-    };
-
-    if output.message_id.is_none() {
-        let message_id =
-            response.result.as_ref().and_then(|result| channel_message_id(channel_id, result));
-
-        let Some(message_id) = message_id else {
-            let message = "Channel returned no stream message ID.";
-            sessions
-                .lock()
-                .map_err(|_| "Session lock is poisoned.")?
-                .uncertain(delivery_id, message)?;
-            return Err(message.into());
-        };
-
-        sessions
-            .lock()
-            .map_err(|_| "Session lock is poisoned.")?
-            .stream_started(delivery_id, message_id.clone())?;
-
-        output.message_id = Some(message_id);
-    } else {
-        sessions.lock().map_err(|_| "Session lock is poisoned.")?.stream_updated(delivery_id)?;
     }
 
-    output.dirty = false;
     output.updated = tokio::time::Instant::now();
+
     Ok(())
 }
 
+#[cfg(test)]
 fn stream_fits(channel: &str, text: &str) -> bool {
     let text = messaging::render(channel, text);
 
@@ -11669,6 +11658,7 @@ fn stream_fits(channel: &str, text: &str) -> bool {
     }
 }
 
+#[cfg(test)]
 fn channel_message_id(channel: &str, result: &serde_json::Value) -> Option<String> {
     match channel {
         "telegram" => result["message_id"].as_i64().map(|id| id.to_string()),
@@ -12009,7 +11999,14 @@ async fn answer_with_registry(
 
         merge_stream(&mut parsed, notes);
         keep_one_mutation(&mut parsed.events);
-        parsed.text = clip(parsed.text, TEXT_LIMIT);
+
+        if parsed.text.len() > TEXT_LIMIT {
+            let notice =
+                "\n\nThis answer reached the response limit. Ask me to continue for the rest.";
+
+            parsed.text = clip(parsed.text, TEXT_LIMIT - notice.len());
+            parsed.text.push_str(notice);
+        }
 
         streaming |= !delivered.is_empty();
 
@@ -16516,7 +16513,13 @@ fn write_command_event(
     stdout: &mut impl std::io::Write,
     stderr: &mut impl std::io::Write,
 ) {
-    if let Some(text) = command_event_text(request) {
+    if matches!(stream_event(request.clone()), Some(Event::Tool { .. })) {
+        let _ = writeln!(
+            stderr,
+            "\nI'm working on your request. I'll send the answer when it's ready."
+        );
+        let _ = stderr.flush();
+    } else if let Some(text) = command_event_text(request) {
         let output: &mut dyn std::io::Write = if json { stderr } else { stdout };
 
         let _ = output.write_all(text.as_bytes());
@@ -24242,6 +24245,23 @@ done
     }
 
     #[test]
+    fn command_tool_progress_preserves_machine_readable_output() {
+        let event = Request::Note {
+            jsonrpc: "2.0".into(),
+            method: "event".into(),
+            params: serde_json::json!({"event": {"kind":"tool", "name":"read", "args":{}}}),
+        };
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        super::write_command_event(&event, true, &mut stdout, &mut stderr);
+
+        assert!(stdout.is_empty());
+        assert!(String::from_utf8(stderr).unwrap().contains("working on your request"));
+    }
+
+    #[test]
     fn json_commands_route_streamed_instructions_to_stderr() {
         let event = Request::Note {
             jsonrpc: "2.0".into(),
@@ -26624,6 +26644,14 @@ done
         assert!(help.contains("--provider <PROVIDER>"));
         assert!(help.contains("--model <MODEL>"));
         assert!(!help.contains("--plugin"));
+        assert!(help.contains("--quote <QUOTE>"));
+
+        let quoted =
+            Cli::try_parse_from(["krabb", "ask", "--quote", "earlier answer", "explain"]).unwrap();
+
+        assert!(
+            matches!(quoted.command, Command::Ask(super::Ask { quote: Some(quote), prompt, .. }) if quote == "earlier answer" && prompt == ["explain"])
+        );
 
         let cli = Cli::try_parse_from([
             "krabb",
@@ -27780,7 +27808,14 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn streams_text_through_a_persisted_channel_message() {
+    async fn keeps_progress_separate_from_the_final_channel_answer() {
+        for channel in ["telegram", "discord", "slack", "signal", "whatsapp", "custom"] {
+            check_progress_delivery(channel).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn check_progress_delivery(channel_id: &str) {
         let root = test_root("stream-channel");
 
         fs::create_dir_all(&root).unwrap();
@@ -27823,7 +27858,7 @@ done
         super::flush_stream(
             &mut output,
             &channel,
-            "telegram",
+            channel_id,
             &sessions,
             "main",
             "telegram-1",
@@ -27839,7 +27874,7 @@ done
         super::flush_stream(
             &mut output,
             &channel,
-            "telegram",
+            channel_id,
             &sessions,
             "main",
             "telegram-1",
@@ -27853,13 +27888,41 @@ done
         {
             let store = sessions.lock().unwrap();
 
-            assert_eq!(store.outbox[0].message_id.as_deref(), Some("99"));
-            assert_eq!(store.outbox[0].text, "answer");
-            assert_eq!(store.outbox[0].status, super::state::DeliveryStatus::Streaming);
-            assert_eq!(
-                fs::read_to_string(&log).unwrap().lines().collect::<Vec<_>>(),
-                ["send", "edit"]
-            );
+            assert!(store.outbox.is_empty());
+            assert!(store.sessions["main"].stream_delivery.is_none());
+            assert_eq!(fs::read_to_string(&log).unwrap().lines().collect::<Vec<_>>(), ["send"]);
+        }
+
+        let text = "long answer 🦀 ".repeat(500);
+
+        {
+            let mut store = sessions.lock().unwrap();
+
+            store
+                .reply(
+                    "main",
+                    Message {
+                        id: "final".into(),
+                        session: "main".into(),
+                        role: Role::Assistant,
+                        sender: None,
+                        content: vec![Content::Text { text: text.clone() }],
+                    },
+                    "telegram-1",
+                    channel_id,
+                    "7",
+                    None,
+                    &text,
+                )
+                .unwrap();
+
+            let request = super::delivery_request(channel_id, 8, &store.outbox[0]).unwrap();
+            let Request::Call { method, params, .. } = request else { panic!() };
+
+            assert_eq!(method, "send");
+            assert_eq!(params["text"], text);
+            assert!(params.get("draft").is_none());
+            assert!(params.get("message").is_none());
         }
 
         channel.stop().await.unwrap();
@@ -27869,7 +27932,7 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn keeps_failed_stream_sends_uncertain() {
+    async fn failed_progress_does_not_block_the_final_answer() {
         let root = test_root("stream-failure");
 
         fs::create_dir_all(&root).unwrap();
@@ -27942,8 +28005,14 @@ done
                 )
                 .unwrap();
             assert_eq!(store.outbox[0].status, super::state::DeliveryStatus::Uncertain);
-            assert_eq!(store.outbox[0].text, "complete");
-            assert!(store.outbox[0].message_id.is_none());
+            assert_eq!(store.outbox[0].id, "telegram-1-progress");
+            assert_eq!(store.outbox[1].text, "complete");
+            assert_eq!(store.outbox[1].status, super::state::DeliveryStatus::Pending);
+            assert!(store.outbox[1].message_id.is_none());
+            assert!(matches!(
+                super::delivery_request("telegram", 8, &store.outbox[1]).unwrap(),
+                Request::Call { method, .. } if method == "send"
+            ));
         }
 
         channel.stop().await.unwrap();
@@ -30336,6 +30405,7 @@ fn main() {
         assert_eq!(
             super::generate_at(
                 super::Ask {
+                    quote: None,
                     provider: Some("fake".into()),
                     model: Some("test".into()),
                     prompt: vec!["greet".into(), "world".into()],
@@ -30360,6 +30430,7 @@ fn main() {
         assert_eq!(
             super::generate_at(
                 super::Ask {
+                    quote: None,
                     provider: Some("fake".into()),
                     model: Some("test".into()),
                     prompt: vec!["still".into(), "works".into()],
@@ -30380,6 +30451,7 @@ fn main() {
         assert!(
             super::ask_at(
                 super::Ask {
+                    quote: None,
                     provider: Some("fake".into()),
                     model: Some("test".into()),
                     prompt: vec!["again".into()],

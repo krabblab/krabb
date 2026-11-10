@@ -213,3 +213,6 @@ The handshake advertises `formats: ["markdown"]`. Requests with
 Requests without this field keep their existing text semantics. Unsupported
 Markdown structures remain readable text. The runtime preserves source Markdown
 for scheduled deliveries and retries.
+
+Signal quotes preserve the original timestamp, author and supplied text.
+Missing reference text is marked unavailable; replies do not change sender permissions.

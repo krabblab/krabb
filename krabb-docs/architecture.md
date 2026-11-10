@@ -209,8 +209,11 @@ the host forwards Markdown to capable adapters and converts it to readable plain
 text for legacy channels. Platform rendering and chunking belong to each adapter,
 using shared bounded parsing primitives from `krabb-text`. Persisted deliveries keep
 the original source and negotiate again at delivery, so a plugin change does not
-lose formatting. Streaming previews carry `draft: true` and render only the first
-chunk; final delivery edits it and sends overflow once. Provider-independent research
+lose formatting. Tool work and slow turns receive one separate progress message.
+Progress uses its own durable delivery record; a failed progress send cannot block
+the final answer. Typing refreshes until the turn ends where supported. Final answers
+use fresh messages and adapter chunking, preserving completion notifications. Terminal
+clients retain streamed text and separate tool progress from the final answer. Provider-independent research
 guidance requires checking the exact supplied URL and reporting actual tool results.
 
 The host reads `KRABB_HOME/data/system/KRAB.md` and `KLAW.md` as bounded system
@@ -417,3 +420,11 @@ The scheduler's `receipt` RPC reconciles a crash after report acknowledgement.
 Unchanged immutable records are verified and reused during catalog saves. Plain workspace file ownership is stored under `data/workspaces/files.json`.
 Private conversation state stays under `data/workspaces/conversations/<conversation>`. See
 [Storage](storage.md) for directory ownership, retention, and migration boundaries.
+
+Reply context uses normalized, bounded message snapshots rather than provider wire
+objects. Supplied quotes are preserved; ID-only quotes resolve within the originating
+session. Outgoing chunk receipts retain native IDs so WhatsApp references can resolve
+after restart. Snapshots follow the session's existing isolated storage and are cleared
+with its history. Slack resolves a thread parent within the configured channel at
+most once per delivered event. Missing targets remain explicit context, and quoted
+content never changes policy, roles, or approval requirements.

@@ -23,3 +23,7 @@ Untrusted RPC origins are rejected before sending task content, even without a t
 OAuth and A2A
 server mode are not implemented. It rejects non-HTTPS endpoints except
 loopback fixtures and never follows redirects.
+
+Add `--quote "Earlier message"` to a message request to include bounded reference
+context alongside the prompt. The adapter sends ordinary protocol text; it does
+not require the external agent to support a Krabb-specific message type.

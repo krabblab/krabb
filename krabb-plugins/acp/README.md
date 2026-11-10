@@ -24,3 +24,7 @@ callback. Agents execute their own tools and retain their own session
 semantics. External agents must implement ACP v1. Responses must end with a newline
 and fit within the 4 MiB frame limit, including that newline. The read is bounded even
 when an agent never terminates its output line.
+
+Add `--quote "Earlier message"` to a message request to include bounded reference
+context alongside the prompt. The adapter sends ordinary protocol text; it does
+not require the external agent to support a Krabb-specific message type.

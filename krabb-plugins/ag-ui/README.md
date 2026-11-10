@@ -32,3 +32,10 @@ Disconnecting a run cancels its pending host request; the host restarts the
 configured model process to clear its in-flight protocol stream. Human approval
 for frontend tools remains the frontend's responsibility. The host still
 selects the model and applies its configured policy.
+
+Krabb supports an optional `reply` extension on user messages: an object with `id`,
+optional `sender`, and optional `text`. Supplied quoted text is bounded to 4096 UTF-8
+bytes; ID-only references resolve from earlier messages in the same run input.
+Missing targets are marked unavailable. Standard AG-UI inputs without this extension
+remain unchanged. A final answer that differs from its streamed prefix starts a new
+assistant message, preserving both the earlier progress and the complete final text.

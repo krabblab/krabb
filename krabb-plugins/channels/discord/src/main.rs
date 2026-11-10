@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use krabb_core::reply::Reply;
+
 mod formatting;
 mod typing;
 
@@ -237,9 +239,11 @@ async fn call_with_state(
         Operation::Send { channel, text, content } => {
             if params["format"] == "markdown" {
                 let mut result = Value::Null;
+                let mut references = Vec::new();
 
                 for body in formatting::parts(&text, params["draft"] == true) {
                     if body["content"] != "" {
+                        let sent_text = body["content"].as_str().unwrap_or_default().to_owned();
                         result = message(
                             client,
                             reqwest::Method::POST,
@@ -248,11 +252,21 @@ async fn call_with_state(
                             body,
                         )
                         .await?;
+
+                        if let Some(reply) =
+                            Reply::from_parts(&result["id"], &Value::Null, Some(&sent_text))
+                        {
+                            references.push(reply);
+                        }
                     }
                 }
 
                 if !content.is_empty() {
                     result = send_content(client, &channel, "", &content, token, base).await?;
+                }
+
+                if result.is_object() {
+                    result["references"] = json!(references);
                 }
 
                 result
@@ -945,27 +959,56 @@ async fn message(
     token: &str,
     body: Value,
 ) -> krabb_core::Result<Value> {
-    let request = client.request(method, url).header(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bot {token}")).map_err(|error| {
-            krabb_core::Error::Denied(format!("Discord token is invalid: {error}."))
-        })?,
-    );
+    for attempt in 0..=2 {
+        let request = client.request(method.clone(), &url).header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bot {token}")).map_err(|error| {
+                krabb_core::Error::Denied(format!("Discord token is invalid: {error}."))
+            })?,
+        );
 
-    let request = if body.is_null() { request } else { request.json(&body) };
+        let request = if body.is_null() { request } else { request.json(&body) };
 
-    let response = request
-        .send()
-        .await
-        .map_err(|error| krabb_core::Error::Denied(format!("Discord request failed: {error}.")))?;
+        let response = request.send().await.map_err(|_| {
+            krabb_core::Error::Denied("Discord request failed; delivery may be uncertain.".into())
+        })?;
 
-    let status = response.status();
-    let body = read(response).await?;
+        let status = response.status();
 
-    let body: Value = serde_json::from_str(&body)
-        .map_err(|error| krabb_core::Error::Denied(format!("Discord response failed: {error}.")))?;
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<f64>().ok());
 
-    response_body(status, body)
+        let response_text = read(response).await?;
+
+        let value: Value = serde_json::from_str(&response_text)
+            .map_err(|_| krabb_core::Error::Denied("Discord response failed.".into()))?;
+
+        if attempt < 2
+            && let Some(delay) = retry_delay(status, &value, retry_after)
+        {
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+
+        return response_body(status, value);
+    }
+
+    unreachable!("the final attempt returns its result")
+}
+
+fn retry_delay(status: reqwest::StatusCode, body: &Value, header: Option<f64>) -> Option<Duration> {
+    if status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+
+    body["retry_after"]
+        .as_f64()
+        .or(header)
+        .filter(|seconds| seconds.is_finite() && (0.0..=5.0).contains(seconds))
+        .map(Duration::from_secs_f64)
 }
 
 async fn gateway(
@@ -975,6 +1018,7 @@ async fn gateway(
     base: &str,
 ) -> krabb_core::Result<serde_json::Value> {
     let url = std::env::var("KRABB_DISCORD_GATEWAY_URL").unwrap_or_else(|_| gateway_url(base));
+
     let mut state = gateway_state.lock().await;
 
     let awaiting_acknowledgement = state.pending_sequence.is_some();
@@ -1556,6 +1600,9 @@ fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
 
     Some(json!({
         "id": message_id,
+        "reply": if value["message_reference"]["channel_id"].as_str().is_none_or(|id| id == channel) && value["referenced_message"]["channel_id"].as_str().is_none_or(|id| id == channel) {
+            Reply::from_parts(&value["message_reference"]["message_id"], &value["referenced_message"]["author"]["id"], value["referenced_message"]["content"].as_str())
+        } else { Reply::from_parts(&value["message_reference"]["message_id"], &Value::Null, Some("[Referenced message is outside this conversation.]")) },
         "chat": channel,
         "kind": if value["guild_id"].is_string() { "guild" } else { "private" },
         "private": !value["guild_id"].is_string(),
@@ -1701,6 +1748,10 @@ mod tests {
     mod logging;
 
     mod recovery;
+
+    mod delivery;
+
+    mod replies;
 
     use super::{
         Action, BODY_LIMIT, GatewayState, Operation, acknowledge, action, approval_request, call,

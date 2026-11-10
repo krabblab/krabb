@@ -7,6 +7,8 @@ Semantic Versioning.
 
 ### Added
 
+- Include quoted messages as context when replying across channels and terminal clients.
+- Receive separate progress and fresh final answers with completion notifications.
 - Update plugins through a graceful handover with declaration review and rollback.
 - Handle oversized histories without repeated failure replies.
 - Compact conversation history across intelligence providers before truncating it.
