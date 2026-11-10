@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use krabb_core::reply::Reply;
+
 mod typing;
 
 use krabb_core::types::{Content, Request, Response};
@@ -713,7 +715,7 @@ fn normalize(value: &Value) -> Vec<Value> {
                     continue;
                 }
 
-                events.push(json!({"id":id,"chat":sender,"private":true,"sender":sender,"text":text,"content":content}));
+                events.push(json!({"id":id,"reply":Reply::from_parts(&message["context"]["id"], &message["context"]["from"], None),"chat":sender,"private":true,"sender":sender,"text":text,"content":content}));
             }
         }
     }
@@ -743,6 +745,7 @@ async fn send(app: &App, params: &Value) -> krabb_core::Result<Value> {
     let token = token()?;
     let base = graph_url()?;
     let mut result = Value::Null;
+    let mut references = Vec::new();
 
     let parts =
         if params["format"] == "markdown" { formatted_parts(text) } else { chunks(text, 4_000) };
@@ -759,6 +762,12 @@ async fn send(app: &App, params: &Value) -> krabb_core::Result<Value> {
             json!({"messaging_product":"whatsapp","to":chat,"type":"text","text":{"body":part}}),
         )
         .await?;
+
+        if let Some(reply) =
+            Reply::from_parts(&result["messages"][0]["id"], &Value::Null, Some(&part))
+        {
+            references.push(reply);
+        }
     }
 
     if let Some(values) = params["content"].as_array() {
@@ -809,6 +818,10 @@ async fn send(app: &App, params: &Value) -> krabb_core::Result<Value> {
 
     if result.is_null() {
         return Err(krabb_core::Error::Denied("send.text is required.".into()));
+    }
+
+    if result.is_object() {
+        result["references"] = json!(references);
     }
 
     Ok(result)
@@ -913,23 +926,63 @@ async fn send_media_at(
 }
 
 async fn graph(app: &App, url: &str, token: &str, body: Value) -> krabb_core::Result<Value> {
-    let response =
-        app.client.post(url).bearer_auth(token).json(&body).send().await.map_err(|error| {
-            krabb_core::Error::Denied(format!("WhatsApp request failed: {error}."))
+    for attempt in 0..=2 {
+        let response =
+            app.client.post(url).bearer_auth(token).json(&body).send().await.map_err(|error| {
+                krabb_core::Error::Denied(format!("WhatsApp request failed: {error}."))
+            })?;
+
+        let status = response.status();
+
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+
+        let response_bytes =
+            collect(response.bytes_stream(), BODY_LIMIT, "WhatsApp response").await?;
+
+        let parsed = serde_json::from_slice::<Value>(&response_bytes);
+        let value = parsed.as_ref().ok().cloned().unwrap_or(Value::Null);
+
+        if attempt < 2
+            && let Some(delay) = retry_delay(status, &value, retry_after)
+        {
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+
+        let body = parsed.map_err(|error| {
+            krabb_core::Error::Denied(format!("WhatsApp response failed: {error}."))
         })?;
 
-    let status = response.status();
-    let body = collect(response.bytes_stream(), BODY_LIMIT, "WhatsApp response").await?;
+        if !status.is_success() || body.get("error").is_some() {
+            return Err(krabb_core::Error::Denied("WhatsApp rejected the request.".into()));
+        }
 
-    let body: Value = serde_json::from_slice(&body).map_err(|error| {
-        krabb_core::Error::Denied(format!("WhatsApp response failed: {error}."))
-    })?;
-
-    if !status.is_success() || body.get("error").is_some() {
-        return Err(krabb_core::Error::Denied("WhatsApp rejected the request.".into()));
+        return Ok(body);
     }
 
-    Ok(body)
+    unreachable!("the final attempt returns its result")
+}
+
+fn retry_delay(status: reqwest::StatusCode, body: &Value, header: Option<u64>) -> Option<Duration> {
+    if body["messages"].as_array().is_some_and(|messages| !messages.is_empty()) {
+        return None;
+    }
+
+    let code = body["error"]["code"].as_u64();
+
+    if status != reqwest::StatusCode::TOO_MANY_REQUESTS
+        && !(status.is_client_error() && matches!(code, Some(130429 | 131056)))
+    {
+        return None;
+    }
+
+    let seconds = header.unwrap_or(if code == Some(131056) { 6 } else { 1 });
+
+    (seconds <= 6).then(|| Duration::from_secs(seconds))
 }
 
 async fn media(app: &App, uri: &str) -> krabb_core::Result<Value> {
@@ -1192,6 +1245,8 @@ fn media_root() -> krabb_core::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     mod persistence;
+
+    mod replies;
 
     use super::{
         App, BODY_LIMIT, HEADER_LIMIT, INBOX_BYTES_LIMIT, Inbox, MEDIA_LIMIT, MEDIA_TTL,

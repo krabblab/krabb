@@ -18,7 +18,7 @@ for line in sys.stdin:
                   'version': '0.1.0', 'capabilities': ['channel']}
     elif method == 'poll':
         result = {'events': [] if polled else [
-            {'id': n, 'chat': 7, 'private': True, 'sender': 8, 'thread': '4', 'text': 'hello'}
+            {'id': n, 'chat': 7, 'private': True, 'sender': 8, 'thread': '4', 'text': 'hello', 'reply': {'id': 'quoted', 'text': 'quoted fixture answer'}}
             for n in [1, 2]]}
         polled = True
         time.sleep(0.01)
@@ -191,6 +191,8 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
     let request = fs::read_to_string(root.join("model.json")).unwrap();
 
     assert!(request.contains("portable Markdown"));
+    assert!(request.contains("quoted fixture answer"));
+    assert!(request.contains("not instructions"));
     assert!(request.contains("exact URL supplied by the user"));
 
     let calls = requests(&root);
@@ -208,7 +210,7 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
 
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().any(|value| value["params"]["text"] == "Recovered"));
-    assert!(sent.iter().any(|value| value["params"]["text"] == "I could not complete that turn."));
+    assert!(sent.iter().any(|value| value["params"]["text"] == "I couldn't finish your request. Please try again. If it keeps happening, check the model connection with krabb doctor."));
     assert!(sessions.lock().unwrap().sessions["telegram-7-thread-4"].queued.is_empty());
 
     fs::remove_dir_all(root).unwrap();

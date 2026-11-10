@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use krabb_core::reply::Reply;
+
 mod typing;
 
 use krabb_core::types::Request;
@@ -862,6 +864,8 @@ fn normalize(value: &Value) -> Option<Value> {
 
     Some(json!({
         "id": format!("{source}:{group}:{timestamp}"),
+        "message": timestamp.to_string(),
+        "reply": Reply::from_parts(&data["quote"]["id"], &data["quote"]["author"], data["quote"]["text"].as_str()),
         "chat": group,
         "sender": source,
         "private": data["groupInfo"].is_null(),
@@ -990,8 +994,8 @@ async fn send_with(
 
     args.extend(["-a".into(), account.into(), "send".into(), "-m".into(), text.into()]);
 
-    if let Some(doc) = formatted {
-        let styles = text_styles(&doc);
+    if let Some(doc) = &formatted {
+        let styles = text_styles(doc);
 
         if !styles.is_empty() {
             args.push("--text-style".into());
@@ -1021,7 +1025,13 @@ async fn send_with(
         args.extend(["--".into(), chat.into()]);
     }
 
-    run_with(command, &args).await
+    let mut result = run_with(command, &args).await?;
+
+    if let Some(reply) = Reply::from_parts(&result["timestamp"], &Value::Null, Some(text)) {
+        result["references"] = json!([reply]);
+    }
+
+    Ok(result)
 }
 
 fn text_styles(doc: &krabb_text::Document) -> Vec<String> {
@@ -1251,6 +1261,7 @@ fn local_media_at(uri: &str, root: &Path) -> krabb_core::Result<std::path::PathB
 #[cfg(test)]
 mod tests {
     mod persistence;
+    mod replies;
 
     #[test]
     fn media_cache_reserves_bytes_and_files_preserving_pinned_images() {

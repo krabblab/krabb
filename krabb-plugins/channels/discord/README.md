@@ -35,7 +35,10 @@ heartbeats, ignores bot authors, normalizes text and attachments, and sends repl
 API. Gateway session state is persisted under `KRABB_HOME` and advances only
 after the host acknowledges an accepted event. Outgoing text is split at
 Discord's message limit; `edit` updates the first existing message and sends
-any remaining chunks to the same channel or thread.
+any remaining chunks to the same channel or thread. The host sends separate progress
+for tool work and slow turns, keeps typing active until completion, and delivers
+final answers as fresh messages so completion can trigger a notification. Progress
+failures do not block final delivery.
 `KRABB_DISCORD_GATEWAY_URL` and `KRABB_DISCORD_INTENTS` are optional
 overrides for local integration tests.
 
@@ -58,3 +61,11 @@ The handshake advertises `formats: ["markdown"]`. Requests with
 Requests without this field keep their existing text semantics. Unsupported
 Markdown structures remain readable text. The runtime preserves source Markdown
 for scheduled deliveries and retries.
+
+Explicit HTTP 429 message rejections are retried at most twice using Discord's
+`retry_after` delay (or `Retry-After` header), up to five seconds per wait. Only
+the rejected operation is retried; delivered chunks and uncertain requests are
+not replayed automatically.
+
+Discord replies preserve quoted bot or user text; references outside the current channel are marked unavailable.
+Missing reference text is marked unavailable; replies do not change sender permissions.

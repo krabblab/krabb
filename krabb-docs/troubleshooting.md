@@ -45,10 +45,15 @@ workspace, or `krabb worktree disable discord --force` to use the shared
 conversation storage again. Replace `discord` with the affected channel. Both commands
 restart the running daemon when `--force` is supplied. For a client such as TUI, add `--client`.
 
-If the bot replies “I could not complete that turn,” delivery is working; check
-the daemon log for the model failure. Codex personal sign-in uses its configured
+If the bot replies “I couldn't finish your request,” try sending the request again.
+If it keeps happening, run `krabb doctor` and check the daemon log for the model failure.
+A response-limit notice means you can ask the agent to continue the answer. Codex personal sign-in uses its configured
 default when no model is selected. Explicit provider rejections end the turn
 without automatic replay; correct the model or account settings before retrying.
+
+Long Discord replies are split into messages. Short rate-limit rejections retry
+only the rejected chunk. Longer delays or failed transports leave delivery uncertain;
+check the channel before retrying a delivery to avoid duplicate messages.
 
 ## Tools Are Unavailable
 

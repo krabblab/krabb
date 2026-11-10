@@ -506,3 +506,20 @@ Ordinary file operations use the tools plugin's `visible` wrapper with `method`,
 cannot overwrite foreign ownership. Unknown files require an operator assignment.
 Old direct calls remain available for trusted standalone callers. See
 [Visibility And Worktrees](sharing.md) for configuration and capability boundaries.
+
+Channel events may include an additive `reply` object with `id`, optional `sender`,
+and optional `text`. IDs and senders are bounded to 256 bytes; quoted text is bounded
+to 4096 UTF-8 bytes with a visible clipping marker. An optional `message` field holds
+the native message ID when it differs from the event cursor (for example Telegram).
+Older events without these fields remain valid. Adapters normalize provider fields
+before emitting this contract. References do not alter sender roles or authorization.
+
+Successful sends may return an additive `references` array of these objects, one per
+sent text chunk. The host stores up to 128 snapshots in the matching session, using
+its channel, chat and thread route. ID-only replies resolve from this history; missing
+references are explicitly marked unavailable. Clearing session history removes the
+snapshots. The host does not fetch arbitrary channels or attachment URLs for quotes.
+
+Authenticated IPC `session.append` and `session.append_reserved` accept an optional
+`reply_to` message ID or `last`. Targets are resolved from that session's own history
+and saved with the user message, preserving context across client restarts.

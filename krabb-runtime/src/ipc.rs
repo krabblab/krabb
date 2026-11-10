@@ -504,7 +504,14 @@ async fn session_answer(
 
     let response = match result {
         Ok(reply) => IpcResponse::ok(request.id, json!({"done": true, "text": reply.text})),
-        Err(error) => IpcResponse::fail(request.id, -32000, error.to_string()),
+        Err(error) => IpcResponse::fail(
+            request.id,
+            -32000,
+            format!(
+                "I couldn't finish your request: {} Please try again. If it keeps happening, run krabb doctor to check the model connection.",
+                super::sentence(error.to_string())
+            ),
+        ),
     };
 
     write_frame(output, response).await
@@ -1810,7 +1817,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let id = request.params["id"]
                 .as_str()
                 .ok_or_else(|| invalid("session.append.id is required."))?;
-            let message: Message = serde_json::from_value(request.params["message"].clone())
+            let mut message: Message = serde_json::from_value(request.params["message"].clone())
                 .map_err(|error| invalid(&format!("session.append.message is invalid: {error}")))?;
 
             if message.session != id
@@ -1830,6 +1837,18 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
 
             if session.inflight.is_some() || reserved != (session.status == "working") {
                 return Err(invalid("Session is already working."));
+            }
+
+            if let Some(target) = request.params.get("reply_to").filter(|value| !value.is_null()) {
+                let target = target
+                    .as_str()
+                    .ok_or_else(|| invalid("reply_to must be a message ID or last."))?;
+
+                let reply = krabb_core::reply::Reply::select(&session.messages, target)
+                    .ok_or_else(|| {
+                        not_found("The referenced message is unavailable in this session.")
+                    })?;
+                message.content.insert(0, Content::Text { text: reply.context() });
             }
 
             if reserved {
@@ -5834,3 +5853,7 @@ for line in sys.stdin:
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/replies.rs"]
+mod replies;

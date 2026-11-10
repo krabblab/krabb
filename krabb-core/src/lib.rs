@@ -7,6 +7,7 @@ pub mod error;
 pub mod jsonl;
 pub mod plugin;
 pub mod policy;
+pub mod reply;
 pub mod schedule;
 pub mod scope;
 pub mod session;

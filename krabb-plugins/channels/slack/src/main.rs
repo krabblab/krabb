@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use krabb_core::reply::Reply;
+
 mod formatting;
 mod typing;
 
@@ -587,51 +589,76 @@ async fn api_at(
         return Err(krabb_core::Error::Denied("Slack API requests require HTTPS.".into()));
     }
 
-    let response =
-        client.post(url).bearer_auth(token).json(&body).send().await.map_err(|error| {
-            krabb_core::Error::Denied(format!("Slack request failed: {error}."))
-        })?;
+    for attempt in 0..=2 {
+        let response =
+            client.post(url.clone()).bearer_auth(token).json(&body).send().await.map_err(
+                |error| krabb_core::Error::Denied(format!("Slack request failed: {error}.")),
+            )?;
 
-    let status = response.status();
+        let status = response.status();
 
-    let retry_after = response
-        .headers()
-        .get("retry-after")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
 
-    let body = collect_api_body(response.bytes_stream()).await?;
+        let response_bytes = collect_api_body(response.bytes_stream()).await?;
 
-    let value: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
+        let value: Value = match serde_json::from_slice(&response_bytes) {
+            Ok(value) => value,
 
-        Err(_error) if status.as_u16() == 429 => {
-            let retry_after = retry_after.unwrap_or_default();
+            Err(_error) if status.as_u16() == 429 => {
+                let retry_after =
+                    retry_after.unwrap_or(if method == "chat.postMessage" { 1 } else { 0 });
+
+                if method == "chat.postMessage" && attempt < 2 && retry_after <= 5 {
+                    tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                    continue;
+                }
+
+                return Err(krabb_core::Error::Denied(format!(
+                    "Slack request rate limited; retry_after={retry_after}."
+                )));
+            }
+
+            Err(error) => {
+                return Err(krabb_core::Error::Denied(format!(
+                    "Slack response was invalid: {error}."
+                )));
+            }
+        };
+
+        if status.as_u16() == 429 || value["error"] == "ratelimited" {
+            let retry_after = value["retry_after"]
+                .as_u64()
+                .or(retry_after)
+                .unwrap_or(if method == "chat.postMessage" { 1 } else { 0 });
+
+            if value["ok"] != true
+                && method == "chat.postMessage"
+                && attempt < 2
+                && retry_after <= 5
+            {
+                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
             return Err(krabb_core::Error::Denied(format!(
                 "Slack request rate limited; retry_after={retry_after}."
             )));
         }
 
-        Err(error) => {
-            return Err(krabb_core::Error::Denied(format!("Slack response was invalid: {error}.")));
+        if !status.is_success() || value["ok"] != true {
+            return Err(krabb_core::Error::Denied(
+                value["error"].as_str().unwrap_or("Slack rejected the request.").into(),
+            ));
         }
-    };
 
-    if status.as_u16() == 429 || value["error"] == "ratelimited" {
-        let retry_after = value["retry_after"].as_u64().or(retry_after).unwrap_or_default();
-
-        return Err(krabb_core::Error::Denied(format!(
-            "Slack request rate limited; retry_after={retry_after}."
-        )));
+        return Ok(value);
     }
 
-    if !status.is_success() || value["ok"] != true {
-        return Err(krabb_core::Error::Denied(
-            value["error"].as_str().unwrap_or("Slack rejected the request.").into(),
-        ));
-    }
-
-    Ok(value)
+    unreachable!("the final attempt returns its result")
 }
 
 async fn collect_api_body<S, C>(mut stream: S) -> krabb_core::Result<Vec<u8>>
@@ -724,7 +751,7 @@ async fn poll(app: &App, token: &str) -> krabb_core::Result<Value> {
 }
 
 async fn poll_at(app: &App, token: &str, channels: &str, base: &str) -> krabb_core::Result<Value> {
-    if let Some(event) = app.inbox.lock().await.pending_event() {
+    if let Some(event) = pending_history(app, token, channels, base).await {
         return Ok(json!({"events": [event]}));
     }
 
@@ -877,6 +904,10 @@ async fn poll_at(app: &App, token: &str, channels: &str, base: &str) -> krabb_co
 
             let text = message["text"].as_str().unwrap_or_default();
             let content = remember_files(&message, &app.attachments).await;
+            let reply = message["thread_ts"]
+                .as_str()
+                .filter(|parent| *parent != timestamp)
+                .and_then(|id| Reply::new(id.into(), None, None));
 
             if text.is_empty() && content.is_empty() {
                 if scanned.as_deref().is_none_or(|value| slack_timestamp_after(timestamp, value)) {
@@ -894,6 +925,7 @@ async fn poll_at(app: &App, token: &str, channels: &str, base: &str) -> krabb_co
                     "private": channel.starts_with('D'),
                     "text": text,
                     "thread": message["thread_ts"].as_str(),
+                    "reply": reply,
                     "content": content,
                 }),
                 Some(channel.to_owned()),
@@ -930,9 +962,10 @@ async fn poll_at(app: &App, token: &str, channels: &str, base: &str) -> krabb_co
         history_succeeded(&app.history).await;
     }
 
-    Ok(json!({
-        "events": app.inbox.lock().await.pending_event().into_iter().collect::<Vec<_>>(),
-    }))
+    let channels = channels.join(",");
+    let event = pending_history(app, token, &channels, base).await;
+
+    Ok(json!({ "events": event.into_iter().collect::<Vec<_>>() }))
 }
 
 async fn acknowledge_envelope(stream: &mut Socket, envelope: &str) -> krabb_core::Result<()> {
@@ -1099,6 +1132,7 @@ async fn socket_poll_at(
 
     let text = event["text"].as_str().unwrap_or_default();
     let content = remember_files(event, &app.attachments).await;
+    let reply = thread_reply(app, token, chat, event, base).await;
 
     if text.is_empty() && content.is_empty() {
         if let Some(envelope) = envelope.as_deref() {
@@ -1115,6 +1149,7 @@ async fn socket_poll_at(
         "private": chat.starts_with('D'),
         "text": text,
         "thread": event["thread_ts"].as_str(),
+        "reply": reply,
         "content": content,
     });
 
@@ -1356,6 +1391,46 @@ fn safe_name(value: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+async fn pending_history(app: &App, token: &str, channels: &str, base: &str) -> Option<Value> {
+    let event = { app.inbox.lock().await.pending_event() };
+    let mut event = event?;
+    let chat = event["chat"].as_str()?;
+
+    if channel_allowed(channels, chat) && !event["reply"].is_null() {
+        let original = json!({"ts":event["id"], "thread_ts":event["thread"]});
+        event["reply"] = json!(thread_reply(app, token, chat, &original, base).await);
+    }
+
+    Some(event)
+}
+
+async fn thread_reply(
+    app: &App,
+    token: &str,
+    chat: &str,
+    event: &Value,
+    base: &str,
+) -> Option<Reply> {
+    let parent = event["thread_ts"].as_str().filter(|id| Some(*id) != event["ts"].as_str())?;
+    let mut reply = Reply::new(parent.into(), None, None)?;
+
+    if let Ok(result) = api_at(
+        &app.client,
+        token,
+        "conversations.replies",
+        json!({"channel":chat,"ts":parent,"limit":1}),
+        base,
+    )
+    .await
+        && let Some(message) = result["messages"].as_array().and_then(|messages| messages.first())
+        && message["ts"] == parent
+    {
+        reply = Reply::from_parts(&message["ts"], &message["user"], message["text"].as_str())?;
+    }
+
+    Some(reply)
+}
+
 #[cfg(not(test))]
 async fn send(client: &reqwest::Client, token: &str, params: &Value) -> krabb_core::Result<Value> {
     send_at(client, token, params, "https://slack.com/api").await
@@ -1377,11 +1452,18 @@ async fn send_at(
 
     if params["format"] == "markdown" {
         let mut result = Value::Null;
+        let mut references = Vec::new();
 
         for body in formatting::bodies(channel, text, &params["thread"]) {
+            let text = body["text"].as_str().unwrap_or_default().to_owned();
             result = api_at(client, token, "chat.postMessage", body, base).await?;
+
+            if let Some(reply) = Reply::from_parts(&result["ts"], &Value::Null, Some(&text)) {
+                references.push(reply);
+            }
         }
 
+        result["references"] = json!(references);
         return Ok(result);
     }
 
@@ -1397,6 +1479,7 @@ async fn send_at(
 
 #[cfg(test)]
 mod tests {
+    mod replies;
     use std::time::SystemTime;
     mod bots;
 

@@ -63,3 +63,6 @@ The handshake advertises `formats: ["markdown"]`. Requests with
 Requests without this field keep their existing text semantics. Unsupported
 Markdown structures remain readable text. The runtime preserves source Markdown
 for scheduled deliveries and retries.
+
+WhatsApp quoted message IDs resolve from bounded session history, including sent text chunks after restart. HTTP 429 and native throughput or pair-rate rejections retry only the rejected operation, at most twice with waits bounded to six seconds.
+Missing reference text is marked unavailable; replies do not change sender permissions.

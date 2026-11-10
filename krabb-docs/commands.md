@@ -439,7 +439,7 @@ Use `krabb plugin list` and `krabb doctor` to inspect installed capabilities.
 For one-shot model requests, run (`--provider` and `--model` are optional):
 
 ```sh
-krabb ask [--provider <id>] [--model <name>] <prompt...>
+krabb ask [--provider <id>] [--model <name>] [--quote <text>] <prompt...>
 ```
 
 Place options before the prompt. To start a prompt with a hyphen, use `--`,
@@ -470,3 +470,13 @@ krabb workspace reference.pdf --owner global
 ```
 
 See [Visibility And Worktrees](sharing.md) for grants and file access rules.
+
+Reply to the last assistant answer in TUI with `/reply last Explain the second point`,
+or select an exact message with `/reply <message-id> <message>`. Message IDs are
+available in `krabb session show <id> --json`. Selection stays within the active
+session; missing targets produce an actionable error. A quoted `!` remains model
+input and does not invoke a shell. For a one-shot request, use
+`krabb ask --quote "Earlier message" "Explain this"`. Quotes are bounded snapshots.
+
+The ACP and A2A message commands also accept `--quote <text>`; A2A supports it on
+`send`. For example: `krabb a2a send --quote "Earlier answer" "Explain this"`.

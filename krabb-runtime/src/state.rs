@@ -1,3 +1,4 @@
+mod replies;
 mod runs;
 pub use runs::{Receipt, Run, Target};
 
@@ -103,6 +104,8 @@ pub struct Session {
     #[serde(default = "direct")]
     pub private: bool,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub references: Vec<krabb_core::reply::Reply>,
     #[serde(default)]
     pub compacted_through: Option<String>,
     #[serde(default)]
@@ -543,6 +546,7 @@ impl Store {
                     thread: None,
                     private: true,
                     messages: Vec::new(),
+                    references: Vec::new(),
                     compacted_through: None,
                     compacted_context: None,
                     context_usage: None,
@@ -994,6 +998,7 @@ impl Store {
         self.change(|store| {
             if let Some(session) = store.sessions.get_mut(id) {
                 session.messages.clear();
+                session.references.clear();
                 session.compacted_through = None;
                 session.compacted_context = None;
                 session.context_usage = None;
@@ -1326,6 +1331,7 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub fn start_stream(
         &mut self,
         session: &str,
@@ -1395,6 +1401,7 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub fn stream_sending(&mut self, id: &str, text: impl Into<String>) -> std::io::Result<()> {
         let text = text.into();
 
@@ -1406,6 +1413,7 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub fn stream_started(
         &mut self,
         id: &str,
@@ -1421,6 +1429,7 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub fn stream_updated(&mut self, id: &str) -> std::io::Result<()> {
         self.update_delivery(id, |delivery| {
             delivery.status = DeliveryStatus::Streaming;
@@ -1801,6 +1810,7 @@ impl Store {
                     thread: source.thread,
                     private: source.private,
                     messages,
+                    references: source.references,
                     compacted_through: source.compacted_through,
                     compacted_context,
                     context_usage: source.context_usage,
@@ -1939,6 +1949,7 @@ impl Store {
         Ok((session_ids, delivery_count))
     }
 
+    #[cfg(test)]
     pub fn ack(&mut self, id: &str) -> std::io::Result<()> {
         if let Some(index) = self.outbox.iter().position(|delivery| delivery.id == id) {
             self.change(|store| {
@@ -3766,6 +3777,7 @@ mod tests {
                 thread: None,
                 private: true,
                 messages: Vec::new(),
+                references: Vec::new(),
                 compacted_through: None,
                 compacted_context: None,
                 context_usage: None,

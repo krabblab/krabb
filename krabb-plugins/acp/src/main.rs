@@ -77,12 +77,27 @@ impl RunRequest {
             std::env::var_os("KRABB_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
 
         let mut prompt = Vec::new();
+        let mut quote = None;
         let mut index = 0;
 
         while index < args.len() {
             let value = args[index].as_str().unwrap_or_default();
 
             match value {
+                "--quote" => {
+                    index += 1;
+
+                    quote = Some(
+                        args.get(index)
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.is_empty())
+                            .ok_or_else(|| {
+                                krabb_core::Error::Denied("--quote requires text.".into())
+                            })?
+                            .to_owned(),
+                    );
+                }
+
                 "--session" => {
                     index += 1;
                     session = args.get(index).and_then(Value::as_str).map(str::to_owned);
@@ -107,7 +122,7 @@ impl RunRequest {
             index += 1;
         }
 
-        let prompt = prompt.join(" ").trim().to_owned();
+        let mut prompt = prompt.join(" ").trim().to_owned();
 
         if prompt.is_empty() {
             return Err(krabb_core::Error::Denied("An ACP prompt is required.".into()));
@@ -115,6 +130,12 @@ impl RunRequest {
 
         if session.as_ref().is_some_and(|value| !safe_id(value)) {
             return Err(krabb_core::Error::Denied("The ACP session ID is invalid.".into()));
+        }
+
+        if let Some(text) = quote {
+            let reply = krabb_core::reply::Reply::new("quoted".into(), None, Some(text)).unwrap();
+
+            prompt = format!("{}\n\n{prompt}", reply.context());
         }
 
         Ok(Self { prompt, session, workspace })
@@ -559,6 +580,7 @@ async fn write_message(writer: &mut ChildStdin, message: Value) -> krabb_core::R
 
 #[cfg(test)]
 mod tests {
+    mod replies;
     #[cfg(unix)]
     use super::run_command;
 

@@ -59,9 +59,11 @@ edit, allowing final overflow delivery to continue without replaying the edit.
 
 Outgoing text is split at Telegram's message limit. An `edit` updates the first
 message and sends any remaining chunks in the same topic.
-While waiting for the first reply, Krabb sends a best-effort typing indicator
-to the same chat and topic. It refreshes every four seconds and stops when
-streaming begins or the turn ends. Typing failures do not fail the model turn.
+While working, Krabb sends a best-effort typing indicator to the same chat and
+topic every four seconds until the turn ends. Tool work and slow turns receive a
+separate progress message. Completed answers arrive as fresh messages, split at the
+message limit, so completion can trigger a notification. Typing or progress failures
+do not block the final answer.
 
 Explicit rate-limit rejections with `retry_after` of at most five seconds are
 retried at most twice, for the current API operation only. Longer delays and
@@ -69,3 +71,6 @@ ambiguous transport failures are reported to the host without automatic replay.
 Malformed success responses fail instead of acknowledging delivery. Error
 messages include the status/code and retry delay, not arbitrary upstream text.
 See [deployment validation](../../../krabb-docs/providers.md#deployment-validation).
+
+Telegram replies preserve reply identity, sender and the selected quote, text or caption.
+Missing reference text is marked unavailable; replies do not change sender permissions.
