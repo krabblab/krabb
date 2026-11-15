@@ -21,7 +21,9 @@ krabb telegram setup
 ```
 
 Enter the bot token at `KRABB_TELEGRAM_TOKEN`. Telegram uses long polling, so
-no public webhook is needed. Send the bot a direct message to test the reply.
+no public webhook is needed. During an active response, the runtime requests
+one-second server polls so progress and control receipts can share the
+connection. Send the bot a direct message to test the reply.
 
 See [shared setup](../../../krabb-docs/authentication.md#plugin-setup) for encrypted
 storage, daemon activation, environment overrides, and service configuration;

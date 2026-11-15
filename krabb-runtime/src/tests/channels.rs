@@ -68,6 +68,450 @@ fn requests(root: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+const GENERATION: &str = concat!(
+    "        time.sleep(0.8)\n",
+    "        if generated == 1:\n",
+    "            response['error'] = {'code': -32000, 'message': 'Unsupported model: synthetic'}\n",
+    "        else:\n",
+    "            response['result'] = {'text': '**Recovered**', 'stop': 'stop'}",
+);
+
+#[tokio::test]
+async fn busy_channel_intake_delivers_status_and_preserves_new_questions() {
+    let root = test_root("channel-busy-task-control");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let (_, poll) = CHANNEL.split_once("    elif method == 'poll':\n").unwrap();
+    let (poll, _) = poll.split_once("    elif method == 'typing':\n").unwrap();
+
+    let script = CHANNEL.replace(
+        poll,
+        r#"        offset = request['params']['offset']
+        events = []
+        if offset < 2:
+            events = [(1, 'prepare the report')]
+        elif offset < 4 and (root / 'generated').exists():
+            assert request['params']['wait_seconds'] == 1
+            events = [(n, text) for n, text in [(2, '/task'),
+                       (3, 'a different question')] if n >= offset]
+        result = {'events': [{'id': n, 'chat': 7, 'private': True, 'sender': 8,
+                              'thread': '4', 'text': text} for n, text in events]}
+"#,
+    );
+
+    let model_script = MODEL.replace(
+        GENERATION,
+        r#"        if generated == 1:
+            while not (root / 'release-model').exists():
+                time.sleep(0.01)
+        response['result'] = {'text': 'Answer ' + str(generated), 'stop': 'stop'}"#,
+    );
+
+    let channel = Process::start_with("python3", ["-u", "-c", &script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let model = Process::start_with("python3", ["-u", "-c", &model_script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let plugins = registry([channel, model]).await;
+
+    let sessions = Arc::new(Mutex::new(
+        crate::state::Store::load(root.join("data/sessions/index.json")).unwrap(),
+    ));
+
+    let stop = Arc::new(Stop::new());
+    let signal = Arc::clone(&stop);
+    let observed = root.clone();
+    let saved = Arc::clone(&sessions);
+
+    let monitor = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if requests(&observed).iter().any(|request| {
+                    request["method"] == "send"
+                        && request["params"]["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("running"))
+                }) {
+                    let store = saved.lock().unwrap();
+
+                    assert_eq!(store.jobs.len(), 1);
+                    assert_eq!(
+                        store.jobs.values().next().unwrap().status,
+                        crate::state::JobStatus::Running
+                    );
+
+                    assert_eq!(store.sessions["telegram-7-thread-4"].queued[0].id, "3");
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            fs::write(observed.join("release-model"), "go").unwrap();
+
+            loop {
+                if requests(&observed).iter().any(|request| {
+                    request["method"] == "send" && request["params"]["text"] == "Answer 2"
+                }) {
+                    signal.signal();
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+
+    tokio::time::timeout(
+        Duration::from_secs(7),
+        crate::bridge(
+            &plugins,
+            "telegram",
+            "fixture",
+            "model",
+            Arc::clone(&sessions),
+            Arc::clone(&stop),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            BTreeMap::new(),
+            crate::ApprovalMode::Off,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    monitor.await.unwrap();
+    stop_registry(&plugins).await;
+
+    let store = sessions.lock().unwrap();
+    let session = &store.sessions["telegram-7-thread-4"];
+
+    assert_eq!(fs::read_to_string(root.join("generated")).unwrap(), "2");
+    assert!(session.queued.is_empty());
+    assert_eq!(store.jobs.len(), 2);
+    assert!(session.context().iter().all(|message| message.id != "2"));
+    assert!(session.context().iter().any(|message| message.id == "3"));
+}
+
+#[tokio::test]
+async fn a_busy_channel_pauses_the_report_and_answers_the_next_question_once() {
+    let root = test_root("channel-busy-pause");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let (_, poll) = CHANNEL.split_once("    elif method == 'poll':\n").unwrap();
+    let (poll, _) = poll.split_once("    elif method == 'typing':\n").unwrap();
+
+    let script = CHANNEL.replace(
+        poll,
+        r#"        offset = request['params']['offset']
+        events = []
+        if offset < 2:
+            events = [(1, 'prepare the report')]
+        elif offset < 4 and (root / 'task-id').exists():
+            task = (root / 'task-id').read_text()
+            events = [(n, text) for n, text in [(2, '/task pause ' + task),
+                       (3, 'a different question')] if n >= offset]
+        result = {'events': [{'id': n, 'chat': 7, 'private': True, 'sender': 8,
+                              'thread': '4', 'text': text} for n, text in events]}
+"#,
+    );
+
+    let model_script = MODEL.replace(
+        GENERATION,
+        r#"        if generated == 1:
+            while not (root / 'release-model').exists():
+                time.sleep(0.01)
+        response['result'] = {'text': 'Answer ' + str(generated), 'stop': 'stop'}"#,
+    );
+
+    let channel = Process::start_with("python3", ["-u", "-c", &script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let model = Process::start_with("python3", ["-u", "-c", &model_script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let plugins = registry([channel, model]).await;
+
+    let sessions = Arc::new(Mutex::new(
+        crate::state::Store::load(root.join("data/sessions/index.json")).unwrap(),
+    ));
+
+    let stop = Arc::new(Stop::new());
+    let signal = Arc::clone(&stop);
+    let observed = root.clone();
+    let saved = Arc::clone(&sessions);
+
+    let sent = move |root: &Path, text: &str| {
+        requests(root).iter().any(|request| {
+            request["method"] == "send"
+                && request["params"]["text"].as_str().is_some_and(|sent| sent.contains(text))
+        })
+    };
+
+    let monitor = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let running = saved
+                    .lock()
+                    .unwrap()
+                    .jobs
+                    .values()
+                    .next()
+                    .map(|job| job.id.clone())
+                    .filter(|_| observed.join("generated").exists());
+
+                if let Some(id) = running {
+                    fs::write(observed.join("task-id"), id).unwrap();
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            while !sent(&observed, "Pause requested") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            fs::write(observed.join("release-model"), "go").unwrap();
+
+            while !requests(&observed)
+                .iter()
+                .any(|request| request["params"]["delivery"] == "telegram-3")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            signal.signal();
+        })
+        .await
+        .unwrap();
+    });
+
+    tokio::time::timeout(
+        Duration::from_secs(35),
+        crate::bridge(
+            &plugins,
+            "telegram",
+            "fixture",
+            "model",
+            Arc::clone(&sessions),
+            Arc::clone(&stop),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            BTreeMap::new(),
+            crate::ApprovalMode::Off,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    monitor.await.unwrap();
+    stop_registry(&plugins).await;
+
+    let answers = requests(&root)
+        .iter()
+        .filter(|request| {
+            request["method"] == "send"
+                && request["params"]["text"].as_str().is_some_and(|text| text.starts_with("Answer"))
+        })
+        .map(|request| request["params"]["delivery"].clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(answers, [json!("telegram-3")]);
+
+    let store = sessions.lock().unwrap();
+    let report = store.jobs.values().find(|job| job.instruction.contains("prepare the report"));
+
+    assert_eq!(report.unwrap().status, crate::state::JobStatus::Paused);
+    assert!(store.sessions["telegram-7-thread-4"].queued.is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_poll_during_a_turn_does_not_stop_channel_intake() {
+    let root = test_root("channel-intake-poll-failure");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let (_, poll) = CHANNEL.split_once("    elif method == 'poll':\n").unwrap();
+    let (poll, _) = poll.split_once("    elif method == 'typing':\n").unwrap();
+
+    let script = CHANNEL.replace(
+        poll,
+        r#"        offset = request['params']['offset']
+        events = []
+        if offset < 2:
+            events = [(1, 'prepare the report')]
+        elif (root / 'generated').exists() and not (root / 'failed-poll').exists():
+            (root / 'failed-poll').write_text('once')
+            print(json.dumps({'jsonrpc': '2.0', 'id': request['id'],
+                              'error': {'code': -32000, 'message': 'Temporary poll failure.'}}),
+                  flush=True)
+            continue
+        elif offset < 3 and (root / 'failed-poll').exists():
+            events = [(2, '/task')]
+        result = {'events': [{'id': n, 'chat': 7, 'private': True, 'sender': 8,
+                              'thread': '4', 'text': text} for n, text in events]}
+"#,
+    );
+
+    let model_script = MODEL.replace(
+        GENERATION,
+        r#"        while not (root / 'release-model').exists():
+            time.sleep(0.01)
+        response['result'] = {'text': 'Answer ' + str(generated), 'stop': 'stop'}"#,
+    );
+
+    let channel = Process::start_with("python3", ["-u", "-c", &script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let model = Process::start_with("python3", ["-u", "-c", &model_script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let plugins = registry([channel, model]).await;
+
+    let sessions = Arc::new(Mutex::new(
+        crate::state::Store::load(root.join("data/sessions/index.json")).unwrap(),
+    ));
+
+    let stop = Arc::new(Stop::new());
+    let signal = Arc::clone(&stop);
+    let observed = root.clone();
+
+    let sent = |root: &Path, text: &str| {
+        requests(root).iter().any(|request| {
+            request["method"] == "send"
+                && request["params"]["text"].as_str().is_some_and(|sent| sent.contains(text))
+        })
+    };
+
+    let monitor = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while !sent(&observed, "running") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            fs::write(observed.join("release-model"), "go").unwrap();
+
+            while !sent(&observed, "Answer 1") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            signal.signal();
+        })
+        .await
+        .unwrap();
+    });
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        crate::bridge(
+            &plugins,
+            "telegram",
+            "fixture",
+            "model",
+            Arc::clone(&sessions),
+            Arc::clone(&stop),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            BTreeMap::new(),
+            crate::ApprovalMode::Off,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    monitor.await.unwrap();
+    stop_registry(&plugins).await;
+
+    assert!(root.join("failed-poll").exists());
+}
+
+#[tokio::test]
+async fn controls_and_delivery_remain_available_when_the_intelligence_provider_is_missing() {
+    let root = test_root("channel-task-control-outage");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let script = CHANNEL.replace("'text': 'hello'", "'text': '/task' if n == 2 else 'hello'");
+
+    let channel = Process::start_with("python3", ["-u", "-c", &script, root.to_str().unwrap()])
+        .await
+        .unwrap();
+
+    let plugins = registry([channel]).await;
+
+    let sessions =
+        Arc::new(Mutex::new(crate::state::Store::load(root.join("sessions.json")).unwrap()));
+
+    let stop = Arc::new(Stop::new());
+    let signal = Arc::clone(&stop);
+    let observed = root.clone();
+
+    let monitor = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                if requests(&observed).iter().any(|request| request["method"] == "send") {
+                    signal.signal();
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::bridge(
+            &plugins,
+            "telegram",
+            "missing-provider",
+            "model",
+            Arc::clone(&sessions),
+            Arc::clone(&stop),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            BTreeMap::new(),
+            crate::ApprovalMode::Off,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    monitor.await.unwrap();
+    stop_registry(&plugins).await;
+
+    let store = sessions.lock().unwrap();
+    let session = &store.sessions["telegram-7-thread-4"];
+
+    let sent = requests(&root)
+        .into_iter()
+        .filter(|request| request["method"] == "send")
+        .collect::<Vec<_>>();
+
+    assert_eq!(session.queued.len(), 1);
+    assert_eq!(session.queued[0].id, "1");
+    assert!(store.known("telegram", "1"));
+    assert!(store.known("telegram", "2"));
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0]["params"]["text"].as_str().unwrap().contains("no unfinished tasks"));
+    assert_eq!(sent[0]["params"]["thread"], "4");
+    assert!(session.context().is_empty());
+}
+
 #[test]
 fn sends_edits_and_queued_deliveries_negotiate_formatting() {
     let text = "**Krabb**: [repository](https://github.com/krabblab/krabb)";
@@ -117,12 +561,6 @@ fn sends_edits_and_queued_deliveries_negotiate_formatting() {
     assert_eq!(params["format"], "markdown");
     assert_eq!(params["thread"], "4");
     assert_eq!(store.outbox[0].text, text);
-
-    let references =
-        format!("{}\n\n[s]: https://example.com/{}", "[s][s] ".repeat(50), "x".repeat(100));
-
-    assert!(references.len() < 4096);
-    assert!(!crate::stream_fits("telegram", &references));
 }
 
 #[tokio::test]
@@ -210,7 +648,8 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
 
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().any(|value| value["params"]["text"] == "Recovered"));
-    assert!(sent.iter().any(|value| value["params"]["text"] == "I couldn't finish your request. Please try again. If it keeps happening, check the model connection with krabb doctor."));
+    assert!(sent.iter().any(|value| value["params"]["text"] == crate::tasks::ERROR));
+
     assert!(sessions.lock().unwrap().sessions["telegram-7-thread-4"].queued.is_empty());
 
     fs::remove_dir_all(root).unwrap();
@@ -551,7 +990,7 @@ async fn stalled_channel_and_missing_provider_do_not_block_other_channels_or_shu
     stop_registry(&plugins).await;
     completed.unwrap();
 
-    assert!(concurrent_requests(&root, "whatsapp", "poll").is_empty());
+    assert!(!concurrent_requests(&root, "whatsapp", "poll").is_empty());
     assert_eq!(concurrent_requests(&root, "telegram", "send").len(), 1);
 
     fs::remove_dir_all(root).unwrap();
@@ -719,7 +1158,8 @@ async fn workspace_failure_worker() {
         if prepared {
             let stored = crate::state::Store::load(root.join("data/sessions/index.json")).unwrap();
 
-            assert_eq!(stored.sessions.len(), 2);
+            assert_eq!(stored.sessions.values().filter(|session| !session.is_work()).count(), 2);
+            assert_eq!(stored.jobs.len(), 2);
 
             let request = fs::read_to_string(root.join("model.json")).unwrap();
 
@@ -728,7 +1168,7 @@ async fn workspace_failure_worker() {
 
             let mut paths = BTreeSet::new();
 
-            for session in stored.sessions.values() {
+            for session in stored.sessions.values().filter(|session| !session.is_work()) {
                 let path = session.isolated.as_ref().unwrap();
 
                 paths.insert(path.clone());
@@ -772,7 +1212,7 @@ async fn workspace_failure_worker() {
 
     assert!(
         crate::queue_during_turn(
-            &channel, "telegram", "unset", &event, &policy, &sessions, &mut 0, &mut 100
+            &channel, "telegram", "unset", &event, &policy, &sessions, &mut 0, &mut 100, None
         )
         .await
         .unwrap()

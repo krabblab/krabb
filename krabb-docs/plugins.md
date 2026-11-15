@@ -13,6 +13,7 @@ use another language if they implement the JSON-RPC 2.0 protocol.
 - [Create A Custom Plugin](#create-a-custom-plugin)
 - [Install And Update Lifecycle](#install-and-update-lifecycle)
 - [Agent Interoperability](#agent-interoperability)
+- [Runner](#runner)
 
 ## Manifest
 
@@ -134,6 +135,69 @@ providers only supply limits and integrations. `ModelRequest.generation` carries
 `output`, `summary`, and `search`. Summary requests must disable tools and search.
 An advertised capability with invalid metadata fails closed. Legacy plugins without
 `context` keep their existing request path and do not receive automatic budgeting.
+
+Model metadata may include optional `execution` information: `deployment`
+(`unknown`, `local`, or `remote`), an opaque `identity`, and explicit `streaming`,
+`cancellation`, `usage`, `recoverable`, and `deadlines` booleans. The identity must
+change with the deployment/model/configuration and must not contain an endpoint
+URL or credential. Ollama also exposes this object through `model.execution`.
+Cancellation means confirmed cessation of provider computation; closing an HTTP
+request alone does not establish that guarantee.
+
+After deadline negotiation, `generation.limits` can contain `first_millis`,
+`idle_millis`, and `total_millis`. Each must be positive, first and idle cannot
+exceed total, and total cannot exceed 86,400,000 milliseconds. These are bounds
+for an individual inference call, independent of a durable task's lifetime.
+The host restricts admitted limits to its remaining allowance and preserves them
+through context preparation and summary generation. Automatic forwarding requires
+an output allowance; providers without a context window can receive explicitly
+admitted generation metadata. Requested deadlines fail when the provider does
+not advertise support. Legacy requests omit the new fields.
+
+A provider that also advertises `renewal` can receive `generation.limits.ceiling_millis`
+on streaming calls: the highest total the host may later admit. The provider
+applies its transport timeout at that ceiling but enforces `total_millis`. During
+the call the host may send the note `generation.renew` with `id` (the call ID) and a
+larger `total_millis` no greater than the ceiling. The host first persists the
+extension in the task account, renews only after real output since its last check,
+renews at most three times by half the original total, and never renews a silent
+call. Providers without `renewal` keep their fixed admitted envelope.
+
+Ollama applies the admitted HTTP timeout instead of its default client timeout,
+enforces silent-prefill and inactivity limits, and keeps its total limit fixed
+unless a valid renewal raises it within the admitted ceiling.
+Text, reasoning-token progress, and changed tool content count as activity;
+transport heartbeats and unchanged tool snapshots do not. Reasoning text is not
+retained or displayed. Execution metadata refreshes after a provider restart.
+The host selects an allowance using bounded local timing observations and
+conservative priors. Optional `ModelReply.timing` reports `load_millis`,
+`prefill_millis`, and `decode_millis`; missing phases remain unknown. The host
+rejects impossible reports from learning. Ollama converts final response timings
+from nanoseconds, and excludes cached prefill from fresh-prompt rate learning.
+The cache holds at most 64 profiles and 32 observations per profile, expiring after
+seven days. Rate estimates require eight reports and at least 512 input or 128
+output tokens, using the conservative 90th percentile. A 50% plus two-second
+margin applies. Configuration identity and context-window changes isolate samples.
+
+Local and unknown priors allow 120 seconds for cold loading, 100 milliseconds per
+input token, and one second per planned output token; remote priors use five
+seconds, two milliseconds, and 50 milliseconds respectively. Predictions also
+include warm floors and separate inactivity limits. These priors and synthetic
+held-out fixtures are not hardware performance guarantees. Requests predicted to
+exceed the remaining hard allowance fail before generation. Current forecasts
+use 512 planned output tokens for fast work and 1,024 for other work, plus summary
+preparation where required; the provider's actual output bound is preserved.
+Attempt observations distinguish completion, failure, host timeout, cancellation,
+interruption, and intentional handoff. Incomplete attempts retain bounded elapsed
+time with unknown token usage and phase timings; this is a censored observation,
+not a zero-cost charge or a measured decode rate. Recent failures reduce confidence
+and use at least the fallback priors without shortening measured rates retained
+in history. Both phase rates need eight valid fresh reports after the last failure
+to restore measured confidence. Cancelled and handed-off attempts do not mark the
+provider as failed. Cancellation records a local request outcome and does not
+confirm that remote computation stopped. Unknown adapter failure causes stay
+unknown rather than being classified from message text. Measured responsiveness
+and resource benchmarks are tracked in the [roadmap](../ROADMAP.md).
 
 Optional `Event::Context` and `Content::Context` carry a bounded opaque `state`
 with `provider`, `model`, and `data`. Only the matching provider/model may interpret
@@ -258,6 +322,52 @@ defense in depth and do not replace an operating-system egress boundary. See
 The [Computer plugin guide](../krabb-plugins/computer/README.md) covers its
 Linux isolated display and opt-in macOS/Windows desktop modes. A virtual display
 does not confine processes, files, or network access.
+
+### Asynchronous Operations
+
+Plugins can expose optional operation endpoints alongside their existing
+capabilities. `operation.list` returns an `operations` array of normalized specs.
+Each spec provides its input schema and declares cancellation support. Hosts
+discover this interface once per runner process before using it.
+
+| Method | Input | Result |
+| --- | --- | --- |
+| `operation.start` | `id`, `name`, `arguments` | Normalized operation receipt |
+| `operation.inspect` | `name`, `handle` | Current state and any final result |
+| `operation.cancel` | `name`, `handle` | Backend state after the cancellation request |
+| `operation.result` | `name`, `handle` | Terminal receipt or an error while work continues |
+
+A receipt contains `state`, an optional opaque `handle`, an optional normalized
+tool `result`, and optional `detail`. Active states require a handle. Successful
+completion requires a result. Start arguments are limited to 64 KiB, handles to
+4 KiB, and receipts to 256 KiB. An error response to `operation.start` means
+nothing started, so the task continues. Unknown outcomes require reconciliation
+before another external start. The host owns authorization and durable coordination.
+Adapters own external handles and wire payloads. The A2A adapter implements these
+endpoints with endpoint pinning and authenticated status retrieval.
+
+For durable foreground and background tasks with tool permission, the runtime
+offers discovered operations as `operation_<plugin>_<name>`. Isolated workspaces
+and scheduled runs do not expose this interface. The configured mutation approval
+policy applies before admission. The model supplies a contextual acknowledgement;
+the host saves intent before dispatch and the receipt before handoff. Monitoring
+uses no inference and backs off to at most five minutes between inspections.
+Adapter outages retry inspection of the saved handle, not the external start.
+An operation past the optional `operations.max_seconds` allowance receives a
+cancellation request when supported and blocks for review once it settles. A
+cancellation call that fails or is refused is sent again; one interrupted by a
+restart is reconciled by inspection instead.
+
+Pause fences further productive actions. Without backend pause support, running
+external work keeps the task pausing until it settles. A backend waiting for input
+also provides a pause boundary; minimal receipt inspection can continue while paused.
+Cancellation requests are dispatched at most once, followed by inspection of the
+actual state; a running receipt does not mean effective cancellation. A lost start
+receipt or unknown outcome blocks related work for review. Terminal receipts are
+collected once and included as external data when inference resumes. The task has
+no lifetime deadline, although each inspection has a bounded transport allowance.
+Backend input requests are surfaced as blockers; sending additional input through
+an existing external handle is not yet supported.
 
 ## Create A Custom Plugin
 
@@ -522,4 +632,19 @@ snapshots. The host does not fetch arbitrary channels or attachment URLs for quo
 
 Authenticated IPC `session.append` and `session.append_reserved` accept an optional
 `reply_to` message ID or `last`. Targets are resolved from that session's own history
-and saved with the user message, preserving context across client restarts.
+and saved with the user message, preserving context across client restarts. The
+response returns the saved `message`, so clients show the same reference the model reads.
+
+## Runner
+
+The optional [runner plugin](../krabb-plugins/runner/README.md) provides extended
+background operations. Its `runner` handshake capability and `operation.list`
+declarations control tool availability. Ordinary minimal continuation and generic
+host task controls do not require runner. The scheduler supplies independent timed
+and recurring triggers. The host retains one task catalog, journals, receipts,
+accounting, and delivery path for both execution modes.
+
+The initial `delegate` operation uses the A2A transport library with runner's own
+configuration and declared secret. Saved handles survive plugin replacement or
+absence; unsupported operations do not fall back to synchronous retries. Existing
+A2A operation handles remain reconcilable, but new extended work goes through runner.

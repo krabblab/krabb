@@ -307,6 +307,24 @@ operational and resource baselines before structural changes.
 - Resolve known high and medium reliability findings; strengthen queue ownership,
   cancellation, persistence, plugin recovery, and delivery reconciliation. Keep
   repeated failures bounded and avoid duplicate failure replies or restart loops.
+- Keep fast, thoughtful, and background request classes. Minimal host continuation
+  and optional runner extended operations share durability and one host registry;
+  neither depends on scheduler triggers.
+- Publish measured host control-acknowledgement latency (proposed p95 within one
+  second) and foreground/background wait under a documented reference load and
+  hardware. Run opt-in local-model cold-start, pressure, and long wall-clock soak
+  benchmarks outside CI before claiming end-to-end responsiveness.
+- Extend durable foreground and background work with natural-language pause,
+  resume, cancellation, and steering in the originating conversation. Preserve
+  durable task identity across reconnections without cross-chat task interaction.
+  Existing context-sharing visibility does not grant task-control authority.
+- Replace fixed request cutoffs with measured provider/model allowances and separate
+  inference, operation, waiting, cleanup, and user spending limits. Support slow
+  local inference and operations that outlive a turn without retrying uncertain
+  effects or requiring the scheduler.
+- Verify task controls under busy inference, duplicate commands, stale workers,
+  permission changes, day-long downtime, and delivery backpressure. Measure control
+  responsiveness and fairness; protect paused work and reconcile external receipts.
 - Extend `krabb-migrations` fault coverage and recovery diagnostics for increasingly
   complex state changes. Exercise disk exhaustion, partial writes, process
   termination, and recovery failures across host and plugin migration boundaries.

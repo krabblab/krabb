@@ -4,40 +4,36 @@ pub(super) use destinations::{destination, parse, schema, update};
 pub(super) use runs::{destinations, publish};
 
 use super::*;
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct Origin {
-    pub channel: String,
-    pub chat: String,
-    pub session: String,
-    pub thread: Option<String>,
-    pub private: Option<bool>,
-    pub sender: Option<String>,
-    #[serde(default)]
-    pub roles: Vec<String>,
-}
-
-impl Origin {
-    pub fn scope(&self) -> String {
-        conversation_scope(&self.channel, &self.chat, self.thread.as_deref())
-    }
-}
+pub(crate) use crate::origin::Origin;
 
 pub fn origin(context: &Value) -> Result<Option<Origin>, PluginError> {
-    if context["origin"].is_null() || context["origin"]["channel"] == "cli" {
+    if context["origin"].is_null() {
         return Ok(None);
     }
 
     let mut value = context["origin"].clone();
 
-    if value["channel"] == "tui" && value["chat"].is_null() {
+    let source = value
+        .get("source")
+        .filter(|source| !source.is_null())
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| "PAUSED: The schedule's origin is invalid.")?
+        .unwrap_or_else(|| sharing::principal(value["channel"].as_str().unwrap_or_default()));
+
+    if matches!(&source, sharing::Principal::Client(id) if id == client::CLI) {
+        return Ok(None);
+    }
+
+    if matches!(source, sharing::Principal::Client(_)) && value["chat"].is_null() {
         value["chat"] = value["session"].clone();
     }
 
     let origin: Origin =
         serde_json::from_value(value).map_err(|_| "PAUSED: The schedule's origin is invalid.")?;
 
-    if !valid(&origin.channel) || !valid(&origin.session) || origin.chat.is_empty() {
+    if !valid(&origin.integration) || !valid(&origin.session) || origin.chat.is_empty() {
         return Err("PAUSED: The schedule's origin is invalid.".into());
     }
 
@@ -52,7 +48,8 @@ pub fn policy(config: &Config, context: &Value, workspace: &Path) -> Result<(), 
     }
 
     let origin = origin(context)?;
-    let Some(origin) = origin.filter(|origin| origin.channel != "cli") else {
+
+    let Some(origin) = origin else {
         if context["shell"] == true && !config.tui_shell() {
             return Err("PAUSED: Shell access for this schedule is now disabled.".into());
         }
@@ -60,19 +57,23 @@ pub fn policy(config: &Config, context: &Value, workspace: &Path) -> Result<(), 
         return Ok(());
     };
 
-    let owner = sharing::principal(&origin.channel);
+    let owner = origin.source();
 
     if sharing::isolated(config, &owner) {
         return Err("PAUSED: The originating integration now requires worktree isolation.".into());
     }
 
-    let (tools, shell) = if origin.channel == "tui" {
-        let local = config.clients.get("tui").cloned().unwrap_or_default();
-        (local.tools, config.tui_shell())
+    let (tools, shell) = if let sharing::Principal::Client(id) = &owner {
+        let local = config.clients.get(id).cloned().unwrap_or_default();
+        (local.tools, config.client_shell(id))
     } else {
+        let sharing::Principal::Channel(id) = &owner else {
+            return Err("PAUSED: The schedule has no user endpoint.".into());
+        };
+
         let mut local = config
             .channels
-            .get(&origin.channel)
+            .get(id)
             .cloned()
             .ok_or("PAUSED: The originating channel is no longer configured.")?;
         local.mention = None;
@@ -160,6 +161,23 @@ pub async fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unreadable_origin_source_pauses_the_schedule() {
+        let context = |source| {
+            serde_json::json!({"origin":{
+                "source":source, "channel":"telegram", "chat":"7", "session":"conversation"
+            }})
+        };
+
+        let error = origin(&context(serde_json::json!("unknown.kind"))).unwrap_err().to_string();
+
+        assert!(error.starts_with("PAUSED:"), "{error}");
+
+        let absent = origin(&context(serde_json::Value::Null)).unwrap().unwrap();
+
+        assert_eq!(absent.source(), sharing::principal("telegram"));
+    }
 
     #[test]
     fn execution_rechecks_origin_policy_without_granting_new_capabilities() {

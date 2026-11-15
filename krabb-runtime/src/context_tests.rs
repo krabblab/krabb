@@ -26,7 +26,13 @@ fn fixture() -> (Config, state::Store) {
         ("old-3", "old", "unconfigured"),
     ] {
         store.ensure(id, "test").unwrap();
-        store.route(id, channel, id, None, true).unwrap();
+
+        if client::known(channel) {
+            store.client(id, channel).unwrap();
+        } else {
+            store.route(id, channel, id, None, true).unwrap();
+        }
+
         store
             .push(
                 id,
@@ -75,6 +81,17 @@ fn typed_scopes_validate_sources_and_preserve_defaults() {
 #[test]
 fn chat_context_is_directional_bounded_and_excludes_worktrees() {
     let (config, mut store) = fixture();
+
+    store
+        .record_control(
+            "telegram-1",
+            "task-status",
+            "telegram",
+            "what is still running?",
+            "A restricted task preview.",
+        )
+        .unwrap();
+
     let mut messages = Vec::new();
 
     context::append(
@@ -108,6 +125,7 @@ fn chat_context_is_directional_bounded_and_excludes_worktrees() {
     let text = serde_json::to_string(&messages).unwrap();
 
     assert!(text.contains("telegram context"));
+    assert!(!text.contains("A restricted task preview"));
     assert!(!text.contains("private discord"));
 
     store.sessions.get_mut("tui-main").unwrap().isolated = Some(PathBuf::from("isolated"));
@@ -128,7 +146,14 @@ fn chat_context_is_directional_bounded_and_excludes_worktrees() {
 fn memory_and_data_scopes_are_independent_and_worktrees_override_them() {
     let (mut config, _) = fixture();
     let own = "provider:telegram:1";
-    let params = sharing::memory_params(&config, "telegram", own, false);
+
+    let params = sharing::params(
+        &config,
+        &sharing::principal("telegram"),
+        own,
+        false,
+        sharing::Data::Memory,
+    );
 
     assert!(sharing::visible(&params, own));
     assert!(!sharing::visible(&params, "tui:main"));
@@ -139,20 +164,33 @@ fn memory_and_data_scopes_are_independent_and_worktrees_override_them() {
         resources: vec![krabb_core::visibility::Resource::Global],
     }]);
 
-    let params = sharing::memory_params(&config, "telegram", own, false);
+    let params = sharing::params(
+        &config,
+        &sharing::principal("telegram"),
+        own,
+        false,
+        sharing::Data::Memory,
+    );
 
     assert!(sharing::visible(&params, "tui:main"));
     assert!(!sharing::visible(&params, "provider:discord:2"));
     assert!(!sharing::visible(&params, "provider:old:3"));
     assert!(sharing::visible(&params, "global"));
 
-    let params = sharing::memory_params(&config, "telegram", own, true);
+    let params =
+        sharing::params(&config, &sharing::principal("telegram"), own, true, sharing::Data::Memory);
 
     assert!(!sharing::visible(&params, "tui:main"));
     assert!(!sharing::visible(&params, "global"));
 
     assert!(!sharing::visible(
-        &sharing::params(&config, "telegram", own, false, sharing::Data::Records),
+        &sharing::params(
+            &config,
+            &sharing::principal("telegram"),
+            own,
+            false,
+            sharing::Data::Records
+        ),
         "tui:main"
     ));
 }
@@ -217,7 +255,8 @@ fn schedules_receive_their_origin_context_without_exporting_other_private_chats(
     config.clients.get_mut("tui").unwrap().visibility = Some(Vec::new());
 
     let origin = schedules::Origin {
-        channel: "telegram".into(),
+        source: None,
+        integration: "telegram".into(),
         chat: "telegram-1".into(),
         session: "telegram-1".into(),
         thread: None,
@@ -228,7 +267,7 @@ fn schedules_receive_their_origin_context_without_exporting_other_private_chats(
 
     let mut messages = Vec::new();
 
-    context::schedule(&mut messages, &store, "schedule-1", &origin, &config);
+    context::origin(&mut messages, &store, "schedule-1", &origin, &config);
 
     let text = serde_json::to_string(&messages).unwrap();
 
@@ -244,7 +283,7 @@ fn schedules_receive_their_origin_context_without_exporting_other_private_chats(
     }]);
 
     messages.clear();
-    context::schedule(&mut messages, &store, "schedule-1", &origin, &config);
+    context::origin(&mut messages, &store, "schedule-1", &origin, &config);
 
     let text = serde_json::to_string(&messages).unwrap();
 

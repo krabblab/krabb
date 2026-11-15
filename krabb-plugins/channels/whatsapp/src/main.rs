@@ -775,6 +775,8 @@ async fn send(app: &App, params: &Value) -> krabb_core::Result<Value> {
             let item: Content = serde_json::from_value(value.clone())
                 .map_err(|_| krabb_core::Error::Denied("send.content is invalid.".into()))?;
 
+            let rendered = item.render();
+
             result = match item {
                 Content::Context { .. } => continue,
 
@@ -812,6 +814,12 @@ async fn send(app: &App, params: &Value) -> krabb_core::Result<Value> {
                     }),
                 )
                 .await?,
+            };
+
+            if let Some(reply) =
+                Reply::from_parts(&result["messages"][0]["id"], &Value::Null, Some(&rendered))
+            {
+                references.push(reply);
             }
         }
     }
@@ -928,17 +936,11 @@ async fn send_media_at(
 async fn graph(app: &App, url: &str, token: &str, body: Value) -> krabb_core::Result<Value> {
     for attempt in 0..=2 {
         let response =
-            app.client.post(url).bearer_auth(token).json(&body).send().await.map_err(|error| {
-                krabb_core::Error::Denied(format!("WhatsApp request failed: {error}."))
-            })?;
+            app.client.post(url).bearer_auth(token).json(&body).send().await.map_err(sent)?;
 
         let status = response.status();
 
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok());
+        let retry_after = krabb_http::retry_after(response.headers());
 
         let response_bytes =
             collect(response.bytes_stream(), BODY_LIMIT, "WhatsApp response").await?;
@@ -965,6 +967,20 @@ async fn graph(app: &App, url: &str, token: &str, body: Value) -> krabb_core::Re
     }
 
     unreachable!("the final attempt returns its result")
+}
+
+/// A send that may have reached WhatsApp is uncertain, so the host does not repeat it.
+fn sent(error: reqwest::Error) -> krabb_core::Error {
+    let connected = !error.is_connect();
+
+    match krabb_http::transport(&error, "WhatsApp") {
+        krabb_core::Error::Failed { failure, message } if failure.kind.retryable() && connected => {
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::Uncertain)
+                .error(format!("{message} Delivery may be uncertain."))
+        }
+
+        error => error,
+    }
 }
 
 fn retry_delay(status: reqwest::StatusCode, body: &Value, header: Option<u64>) -> Option<Duration> {
@@ -1808,6 +1824,38 @@ mod tests {
         assert!(verify_with(b"body", Some("md5=bad"), "secret").is_err());
         assert!(!allowed_url("https://example.com/media"));
         assert!(media_ref(&json!("bad id")).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_send_lost_after_connecting_is_uncertain_and_a_refused_one_is_not() {
+        let Some(listener) = loopback_listener().await else {
+            return;
+        };
+
+        let address = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+        });
+
+        let app = App {
+            client: test_client(),
+            queue: std::sync::Arc::new(tokio::sync::Mutex::new(Inbox::default())),
+        };
+
+        let lost = graph(&app, &format!("http://{address}"), "token", json!({})).await;
+
+        server.await.unwrap();
+
+        assert!(matches!(lost, Err(krabb_core::Error::Failed { failure, .. })
+            if failure.kind == krabb_core::failure::Kind::Uncertain));
+
+        let refused = graph(&app, &format!("http://{address}"), "token", json!({})).await;
+
+        assert!(matches!(refused, Err(krabb_core::Error::Failed { failure, .. })
+            if failure.kind != krabb_core::failure::Kind::Uncertain));
     }
 
     #[tokio::test]

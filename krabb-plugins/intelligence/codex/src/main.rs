@@ -165,15 +165,18 @@ async fn generate_request(
         .json(&request_body(&input, false)?)
         .send()
         .await
-        .map_err(|error| krabb_core::Error::Denied(format!("OpenAI request failed: {error}.")))?;
+        .map_err(|error| krabb_http::transport(&error, "OpenAI"))?;
 
-    let status = response.status();
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "OpenAI").await);
+    }
+
     let body = read(response, "OpenAI").await?;
 
     let body: serde_json::Value = serde_json::from_str(&body)
         .map_err(|error| krabb_core::Error::Denied(format!("OpenAI response failed: {error}.")))?;
 
-    response_body(id, status, body)
+    response_body(id, body)
 }
 
 async fn stream_request(
@@ -198,17 +201,13 @@ async fn stream_request(
         .json(&request_body(&input, true)?)
         .send()
         .await
-        .map_err(|error| krabb_core::Error::Denied(format!("OpenAI stream failed: {error}.")))?;
+        .map_err(|error| krabb_http::transport(&error, "OpenAI"))?;
 
-    let status = response.status();
-
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenAI stream was rejected with {status}."
-        )));
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "OpenAI").await);
     }
 
-    stream_body(id, status, response.bytes_stream(), emitter).await
+    stream_body(id, response.bytes_stream(), emitter).await
 }
 
 async fn read(response: reqwest::Response, provider: &str) -> krabb_core::Result<String> {
@@ -225,7 +224,8 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
-            krabb_core::Error::Denied(format!("{provider} response failed: {error}."))
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
+                .error(format!("{provider} response failed: {error}."))
         })?;
 
         if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes.len()) {
@@ -356,7 +356,6 @@ struct ToolDelta {
 
 async fn stream_body<S, C, E>(
     id: u64,
-    status: reqwest::StatusCode,
     mut stream: S,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>>
@@ -365,12 +364,6 @@ where
     C: AsRef<[u8]>,
     E: std::fmt::Display,
 {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenAI stream was rejected with {status}."
-        )));
-    }
-
     let mut buffered = Vec::new();
     let mut bytes = 0_usize;
     let mut text = String::new();
@@ -387,7 +380,8 @@ where
                 let Some(chunk) = chunk else { break };
 
                 let chunk = chunk.map_err(|error| {
-                    krabb_core::Error::Denied(format!("OpenAI stream failed: {error}."))
+                    krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                        .error(format!("OpenAI stream failed: {error}."))
                 })?;
 
                 if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes) {
@@ -456,6 +450,7 @@ where
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: "stream".into(),
             input: None,
@@ -533,18 +528,7 @@ async fn emit(
     Ok(())
 }
 
-fn response_body(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: serde_json::Value,
-) -> krabb_core::Result<Option<Response>> {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenAI rejected the request: {}.",
-            body["error"]["message"].as_str().unwrap_or("request failed")
-        )));
-    }
-
+fn response_body(id: u64, body: serde_json::Value) -> krabb_core::Result<Option<Response>> {
     let choice = body["choices"]
         .as_array()
         .and_then(|choices| choices.first())
@@ -583,6 +567,7 @@ fn response_body(
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: choice["finish_reason"].as_str().unwrap_or("stop").into(),
             input: usage["prompt_tokens"].as_u64(),
@@ -739,8 +724,7 @@ mod tests {
 
         let (output, mut events) = tokio::sync::mpsc::channel(256);
         let mut emitter = Emitter::new(output);
-        let result =
-            stream_body(1, reqwest::StatusCode::OK, chunks, &mut emitter).await.unwrap().unwrap();
+        let result = stream_body(1, chunks, &mut emitter).await.unwrap().unwrap();
 
         assert_eq!(result.result.unwrap()["text"], text.repeat(300));
         let mut count = 0;
@@ -858,7 +842,6 @@ mod tests {
     async fn generates_from_a_compatible_response() {
         let result = response_body(
             7,
-            reqwest::StatusCode::OK,
             json!({"choices":[{"message":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}),
         )
         .unwrap()
@@ -871,7 +854,6 @@ mod tests {
     fn parses_tool_calls() {
         let result = response_body(
             7,
-            reqwest::StatusCode::OK,
             json!({
                 "choices": [{"message": {"content": null, "tool_calls": [{
                     "function": {"name": "read", "arguments": "{\\\"path\\\":\\\"note\\\"}"}
@@ -888,12 +870,7 @@ mod tests {
     async fn rejects_provider_and_request_errors() {
         let client = reqwest::Client::new();
 
-        assert!(
-            response_body(1, reqwest::StatusCode::UNAUTHORIZED, json!({"error":{"message":"no"}}))
-                .is_err()
-        );
-
-        assert!(response_body(1, reqwest::StatusCode::OK, json!({})).is_err());
+        assert!(response_body(1, json!({})).is_err());
         assert!(
             generate_request(&client, 1, model(), "secret", "http://127.0.0.1:1/v1").await.is_err()
         );
@@ -944,20 +921,10 @@ mod tests {
                 .is_err()
         );
 
-        assert!(response_body(1, reqwest::StatusCode::OK, json!({"choices":[]})).is_err());
-        assert!(
-            response_body(1, reqwest::StatusCode::OK, json!({"choices":[{"message":{}}]}),)
-                .is_err()
-        );
+        assert!(response_body(1, json!({"choices":[]})).is_err());
+        assert!(response_body(1, json!({"choices":[{"message":{}}]}),).is_err());
 
-        assert!(
-            response_body(
-                1,
-                reqwest::StatusCode::OK,
-                json!({"choices":[{"message":{"content":"done"}}]})
-            )
-            .is_ok()
-        );
+        assert!(response_body(1, json!({"choices":[{"message":{"content":"done"}}]})).is_ok());
     }
 
     #[tokio::test]
@@ -973,23 +940,15 @@ mod tests {
             Ok(b"data: [DONE]\n".to_vec()),
         ]);
 
-        let result =
-            stream_body(2, reqwest::StatusCode::OK, chunks, &mut emitter).await.unwrap().unwrap();
+        let result = stream_body(2, chunks, &mut emitter).await.unwrap().unwrap();
 
         assert_eq!(result.result.unwrap()["text"], "ok");
         assert_eq!(events.recv().await.unwrap()["params"]["event"]["text"], "ok");
 
         let (mut emitter, _) = quiet_emitter();
-        let chunks = stream::iter(vec![Ok::<_, std::io::Error>(Vec::new())]);
-
-        assert!(
-            stream_body(2, reqwest::StatusCode::BAD_REQUEST, chunks, &mut emitter).await.is_err()
-        );
-
-        let (mut emitter, _) = quiet_emitter();
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(b"data: nope\n".to_vec())]);
 
-        assert!(stream_body(2, reqwest::StatusCode::OK, chunks, &mut emitter).await.is_err());
+        assert!(stream_body(2, chunks, &mut emitter).await.is_err());
     }
 
     #[tokio::test]
@@ -1012,8 +971,7 @@ mod tests {
             Ok(format!("data: {second}\ndata: [DONE]\n").into_bytes()),
         ]);
 
-        let result =
-            stream_body(3, reqwest::StatusCode::OK, chunks, &mut emitter).await.unwrap().unwrap();
+        let result = stream_body(3, chunks, &mut emitter).await.unwrap().unwrap();
 
         assert_eq!(result.result.unwrap()["events"][0]["name"], "read");
     }

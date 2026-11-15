@@ -2,12 +2,17 @@ use crate::*;
 
 #[test]
 fn retains_final_answers_after_a_different_streamed_prefix() {
-    let run = RunInput::parse(&json!({"threadId":"thread","runId":"run","messages":[{"id":"u","role":"user","content":"hello"}]})).unwrap();
+    let run = RunInput::parse(&json!({"threadId":"thread","runId":"run","messages":[
+        {"id":"u","role":"user","content":"hello"}
+    ]}))
+    .unwrap();
+
     let mut stream = RunStream::new(&run);
 
     stream.push(&run, json!({"kind":"text","text":"I'll check that."})).unwrap();
 
     let reply = ModelReply {
+        timing: None,
         text: "Complete final answer".into(),
         stop: "stop".into(),
         input: None,
@@ -23,6 +28,50 @@ fn retains_final_answers_after_a_different_streamed_prefix() {
     assert_ne!(events[0]["messageId"], events[1]["messageId"]);
     assert_eq!(events[2]["delta"], "Complete final answer");
     assert!(stream.fallback(&run, &reply).unwrap().is_empty());
+}
+
+#[test]
+fn a_clipped_final_answer_adds_only_its_limit_notice_after_the_stream() {
+    let run = RunInput::parse(&json!({"threadId":"thread","runId":"run","messages":[
+        {"id":"u","role":"user","content":"hello"}
+    ]}))
+    .unwrap();
+
+    let mut stream = RunStream::new(&run);
+
+    stream.push(&run, json!({"kind":"text","text":"A long streamed answer"})).unwrap();
+
+    let reply = ModelReply {
+        timing: None,
+        text: format!("A long…{}", krabb_core::types::CLIP_NOTICE),
+        stop: "stop".into(),
+        input: None,
+        output: None,
+        context_usage: None,
+        events: vec![],
+    };
+
+    let events = stream.fallback(&run, &reply).unwrap();
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["delta"], krabb_core::types::CLIP_NOTICE);
+}
+
+#[test]
+fn an_empty_message_with_a_reply_reference_is_not_a_user_turn() {
+    let run = RunInput::parse(&json!({"threadId":"thread","runId":"run","messages":[
+        {"id":"a","role":"assistant","content":"earlier answer"},
+        {"id":"u","role":"user","content":"","reply":{"id":"a"}}
+    ]}))
+    .unwrap();
+
+    assert_eq!(run.messages.len(), 1);
+
+    let assistant = RunInput::parse(&json!({"threadId":"thread","runId":"run","messages":[
+        {"id":"a","role":"assistant","content":"","reply":{"id":"u"}}
+    ]}));
+
+    assert!(assistant.is_err());
 }
 
 #[test]

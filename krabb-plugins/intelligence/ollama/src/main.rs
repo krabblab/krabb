@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 mod context;
+mod execution;
+mod failure;
 mod model;
 
 use krabb_core::{
@@ -59,8 +61,31 @@ async fn generate(
 ) -> krabb_core::Result<Option<Response>> {
     let (id, method, params) = match request {
         Request::Call { id, method, params, .. } => (id, method, params),
-        Request::Note { .. } => return Ok(None),
+
+        Request::Note { method, params, .. } => {
+            if method == krabb_core::execution::RENEW {
+                execution::renew(&params)?;
+            }
+
+            return Ok(None);
+        }
     };
+
+    if method == krabb_core::execution::INFO {
+        let host =
+            std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+
+        let profile = execution::profile(
+            &host,
+            &model::resolve(params["model"].as_str().unwrap_or("default"), &host),
+            &std::env::var("KRABB_OLLAMA_DEPLOYMENT").unwrap_or_default(),
+            &std::env::var("KRABB_OLLAMA_REVISION").unwrap_or_default(),
+            &std::env::var("KRABB_OLLAMA_THINK").unwrap_or_default(),
+            &std::env::var("KRABB_OLLAMA_CONTEXT_LENGTH").unwrap_or_default(),
+        )?;
+
+        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+    }
 
     if method == "model.info" {
         let host =
@@ -98,11 +123,40 @@ async fn generate_at(
     host: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
-    if input.stream {
-        stream_request(client, id, input, host, emitter).await
+    let limits = execution::limits(&input)?;
+    let stream = input.stream;
+
+    // Only a stream shows the progress that earns renewals, so only it watches for them.
+    let watch =
+        limits.filter(|_| stream).map(|limits| execution::Watch::new(id, limits)).transpose()?;
+
+    let call = async {
+        if stream {
+            stream_request(client, id, input, host, emitter, watch).await
+        } else {
+            let request = generate_request(client, id, input, host);
+
+            let Some(limits) = limits else { return request.await };
+
+            // A plain reply's first output is the whole answer, so host admission sets its
+            // first-output limit to the total for non-streaming work.
+            tokio::time::timeout(Duration::from_millis(limits.first_millis), request)
+                .await
+                .map_err(|_| failure::timeout(krabb_core::execution::Expiry::First.to_string()))?
+        }
+    };
+
+    let Some(limits) = limits else { return call.await };
+
+    let bound = if stream {
+        limits.ceiling_millis.unwrap_or(limits.total_millis)
     } else {
-        generate_request(client, id, input, host).await
-    }
+        limits.total_millis
+    };
+
+    tokio::time::timeout(Duration::from_millis(bound), call)
+        .await
+        .map_err(|_| failure::timeout(krabb_core::execution::Expiry::Total.to_string()))?
 }
 
 fn request_body(
@@ -153,30 +207,33 @@ async fn request(
 ) -> krabb_core::Result<Option<Response>> {
     let key = credential();
     let host = validate_host(host, key.is_some())?;
-    let mut post = client.post(format!("{host}/api/chat"));
+    let limits = execution::limits(&input)?;
+    let mut post = execution::request(client.post(format!("{host}/api/chat")), limits);
 
     if let Some(key) = key {
         post = post.bearer_auth(key);
     }
 
-    let response =
-        post.json(&request_body(&input, &host, stream)?).send().await.map_err(|error| {
-            let kind = if stream { "stream" } else { "request" };
+    let response = post
+        .json(&request_body(&input, &host, stream)?)
+        .send()
+        .await
+        .map_err(|error| krabb_http::transport(&error, "Ollama"))?;
 
-            krabb_core::Error::Denied(format!("Ollama {kind} failed: {error}."))
-        })?;
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Ollama").await);
+    }
 
-    let status = response.status();
     let body = read(response, "Ollama").await?;
 
     if stream {
-        return stream_body(id, status, &body);
+        return stream_body(id, &body);
     }
 
     let body: serde_json::Value = serde_json::from_str(&body)
         .map_err(|error| krabb_core::Error::Denied(format!("Ollama response failed: {error}.")))?;
 
-    response_body(id, status, body)
+    response_body(id, body)
 }
 
 async fn read(response: reqwest::Response, provider: &str) -> krabb_core::Result<String> {
@@ -193,7 +250,8 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
-            krabb_core::Error::Denied(format!("{provider} response failed: {error}."))
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
+                .error(format!("{provider} response failed: {error}."))
         })?;
 
         if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes.len()) {
@@ -216,10 +274,25 @@ struct ToolDelta {
     arguments: serde_json::Value,
 }
 
+#[cfg(test)]
 async fn live_stream<S, C, E>(
+    id: u64,
+    stream: S,
+    emitter: &mut Emitter,
+) -> krabb_core::Result<Option<Response>>
+where
+    S: Stream<Item = Result<C, E>> + Unpin,
+    C: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    live_stream_with_watch(id, stream, emitter, None).await
+}
+
+async fn live_stream_with_watch<S, C, E>(
     id: u64,
     mut stream: S,
     emitter: &mut Emitter,
+    mut watch: Option<execution::Watch>,
 ) -> krabb_core::Result<Option<Response>>
 where
     S: Stream<Item = Result<C, E>> + Unpin,
@@ -234,18 +307,30 @@ where
     let mut complete = false;
     let mut tools = BTreeMap::<usize, ToolDelta>::new();
     let mut stop = "stop".to_string();
+    let mut timing = None;
     let mut input_tokens = None;
     let mut output_tokens = None;
     let mut ticker = tokio::time::interval(Duration::from_millis(80));
     ticker.tick().await;
 
     'stream: loop {
+        let deadline = watch.as_ref().map(execution::Watch::deadline).unwrap_or_else(|| {
+            tokio::time::Instant::now() + Duration::from_millis(krabb_core::execution::MAX_MILLIS)
+        });
+
         tokio::select! {
+            biased;
+
+            _ = tokio::time::sleep_until(deadline), if watch.is_some() => {
+                watch.as_mut().unwrap().observe(false)?;
+            }
+
             chunk = stream.next() => {
                 let Some(chunk) = chunk else { break };
 
                 let chunk = chunk.map_err(|error| {
-                    krabb_core::Error::Denied(format!("Ollama stream failed: {error}."))
+                    krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                        .error(format!("Ollama stream failed: {error}."))
                 })?;
 
                 if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes) {
@@ -260,7 +345,7 @@ where
                 while let Some(end) = buffered.iter().position(|byte| *byte == b'\n') {
                     let line = buffered.drain(..=end).collect::<Vec<_>>();
 
-                    if ollama_line(
+                    let (finished, progress, reported) = ollama_line(
                         &line,
                         &mut text,
                         &mut pending,
@@ -268,7 +353,13 @@ where
                         &mut stop,
                         &mut input_tokens,
                         &mut output_tokens,
-                    )? {
+                    )?;
+
+                    timing = reported.or(timing);
+
+                    if let Some(watch) = &mut watch { watch.observe(progress)?; }
+
+                    if finished {
                         complete = true;
                         buffered.clear();
                         break 'stream;
@@ -287,7 +378,7 @@ where
     }
 
     if !buffered.is_empty() {
-        complete = ollama_line(
+        let (finished, progress, reported) = ollama_line(
             &buffered,
             &mut text,
             &mut pending,
@@ -296,6 +387,14 @@ where
             &mut input_tokens,
             &mut output_tokens,
         )?;
+
+        timing = reported.or(timing);
+
+        if let Some(watch) = &mut watch {
+            watch.observe(progress)?;
+        }
+
+        complete = finished;
     }
 
     if !complete {
@@ -338,6 +437,7 @@ where
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing,
             text,
             stop,
             input: input_tokens,
@@ -356,9 +456,9 @@ fn ollama_line(
     stop: &mut String,
     input_tokens: &mut Option<u64>,
     output_tokens: &mut Option<u64>,
-) -> krabb_core::Result<bool> {
+) -> krabb_core::Result<(bool, bool, Option<krabb_core::execution::Timing>)> {
     if line.iter().all(u8::is_ascii_whitespace) {
-        return Ok(false);
+        return Ok((false, false, None));
     }
 
     let line = std::str::from_utf8(line).map_err(|error| {
@@ -371,8 +471,11 @@ fn ollama_line(
         return Err(krabb_core::Error::Denied(format!("Ollama stream failed: {error}.")));
     }
 
+    let mut progress = value["message"]["thinking"].as_str().is_some_and(|text| !text.is_empty());
+
     if let Some(part) = value["message"]["content"].as_str() {
         append_text(part, text, pending)?;
+        progress |= !part.is_empty();
     }
 
     if let Some(calls) = value["message"]["tool_calls"].as_array() {
@@ -397,10 +500,12 @@ fn ollama_line(
             let tool = tools.entry(index).or_default();
 
             if let Some(name) = call["function"]["name"].as_str() {
+                progress |= tool.name != name;
                 tool.name = name.into();
             }
 
             if !call["function"]["arguments"].is_null() {
+                progress |= tool.arguments != call["function"]["arguments"];
                 tool.arguments = call["function"]["arguments"].clone();
             }
         }
@@ -412,7 +517,10 @@ fn ollama_line(
 
     *input_tokens = value["prompt_eval_count"].as_u64().or(*input_tokens);
     *output_tokens = value["eval_count"].as_u64().or(*output_tokens);
-    Ok(value["done"] == true)
+    let done = value["done"] == true;
+    let timing = if done { execution::timing(&value)? } else { None };
+
+    Ok((done, progress, timing))
 }
 
 fn append_text(part: &str, text: &mut String, pending: &mut String) -> krabb_core::Result<()> {
@@ -492,29 +600,44 @@ async fn stream_request(
     input: ModelRequest,
     host: &str,
     emitter: &mut Emitter,
+    mut watch: Option<execution::Watch>,
 ) -> krabb_core::Result<Option<Response>> {
     let key = credential();
     let host = validate_host(host, key.is_some())?;
-    let mut post = client.post(format!("{host}/api/chat"));
+    let limits = execution::limits(&input)?;
+    let mut post = execution::request(client.post(format!("{host}/api/chat")), limits);
 
     if let Some(key) = key {
         post = post.bearer_auth(key);
     }
 
-    let response =
-        post.json(&request_body(&input, &host, true)?).send().await.map_err(|error| {
-            krabb_core::Error::Denied(format!("Ollama stream failed: {error}."))
-        })?;
+    if let Some(watch) = &mut watch {
+        watch.observe(false)?;
+    }
+
+    let pending = post.json(&request_body(&input, &host, true)?).send();
+    let response = if let Some(watch) = &mut watch {
+        tokio::pin!(pending);
+
+        loop {
+            match tokio::time::timeout_at(watch.deadline(), &mut pending).await {
+                Ok(response) => break response,
+
+                Err(_) => watch.observe(false)?,
+            }
+        }
+    } else {
+        pending.await
+    }
+    .map_err(|error| krabb_http::transport(&error, "Ollama"))?;
 
     let status = response.status();
 
     if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Ollama stream was rejected with {status}."
-        )));
+        return Err(krabb_http::rejected(response, "Ollama").await);
     }
 
-    live_stream(id, response.bytes_stream(), emitter).await
+    live_stream_with_watch(id, response.bytes_stream(), emitter, watch).await
 }
 
 fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<serde_json::Value>> {
@@ -607,17 +730,7 @@ fn tools(input: &ModelRequest) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn stream_body(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: &str,
-) -> krabb_core::Result<Option<Response>> {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Ollama stream was rejected with {status}."
-        )));
-    }
-
+fn stream_body(id: u64, body: &str) -> krabb_core::Result<Option<Response>> {
     let mut text = String::new();
     let mut stop = "stream".to_string();
 
@@ -640,6 +753,7 @@ fn stream_body(
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop,
             input: None,
@@ -650,18 +764,7 @@ fn stream_body(
     )
 }
 
-fn response_body(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: serde_json::Value,
-) -> krabb_core::Result<Option<Response>> {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Ollama rejected the request: {}.",
-            body["error"].as_str().unwrap_or("request failed")
-        )));
-    }
-
+fn response_body(id: u64, body: serde_json::Value) -> krabb_core::Result<Option<Response>> {
     let text = body["message"]["content"].as_str().unwrap_or_default().to_string();
     let events = body["message"]["tool_calls"]
         .as_array()
@@ -690,6 +793,7 @@ fn response_body(
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: execution::timing(&body)?,
             text,
             stop: body["done_reason"].as_str().unwrap_or("stop").into(),
             input: body["prompt_eval_count"].as_u64(),
@@ -807,14 +911,12 @@ mod tests {
 
     #[test]
     fn parses_success_and_failure_responses() {
-        let result = response_body(3, reqwest::StatusCode::OK, json!({"message":{"content":"done"},"done_reason":"stop","prompt_eval_count":2,"eval_count":4})).unwrap().unwrap();
+        let result = response_body(3, json!({"message":{"content":"done"},"done_reason":"stop","prompt_eval_count":2,"eval_count":4})).unwrap().unwrap();
 
         assert_eq!(result.result.unwrap()["text"], "done");
-        assert!(response_body(3, reqwest::StatusCode::BAD_REQUEST, json!({"error":"no"})).is_err());
-        assert!(response_body(3, reqwest::StatusCode::OK, json!({})).is_err());
+        assert!(response_body(3, json!({})).is_err());
         let tool = response_body(
             3,
-            reqwest::StatusCode::OK,
             json!({"message":{"tool_calls":[{"function":{"name":"read","arguments":{"path":"note"}}}]}}),
         )
         .unwrap()
@@ -874,7 +976,6 @@ mod tests {
     fn parses_stream_events() {
         let result = stream_body(
             4,
-            reqwest::StatusCode::OK,
             "{\"message\":{\"content\":\"hel\"},\"done\":false}\n{\"message\":{\"content\":\"lo\"},\"done_reason\":\"stop\"}\n",
         )
         .unwrap()
@@ -884,8 +985,7 @@ mod tests {
 
         assert_eq!(reply["text"], "hello");
         assert_eq!(reply["stop"], "stop");
-        assert!(stream_body(4, reqwest::StatusCode::BAD_REQUEST, "").is_err());
-        assert!(stream_body(4, reqwest::StatusCode::OK, "invalid\n").is_err());
+        assert!(stream_body(4, "invalid\n").is_err());
     }
 
     #[tokio::test]
@@ -918,15 +1018,13 @@ mod tests {
                 .is_err()
         );
 
-        assert!(response_body(3, reqwest::StatusCode::OK, json!({"message":{}})).is_err());
-        assert!(response_body(3, reqwest::StatusCode::BAD_REQUEST, json!({})).is_err());
+        assert!(response_body(3, json!({"message":{}})).is_err());
     }
 
     #[test]
     fn parses_stream_chunks() {
         let result = stream_body(
             1,
-            reqwest::StatusCode::OK,
             "{\"message\":{\"content\":\"hello\"},\"done\":false}\n{\"message\":{},\"done\":true,\"done_reason\":\"stop\"}\n",
         )
         .unwrap()

@@ -13,13 +13,21 @@ pub struct Destination {
 
 impl Destination {
     pub fn validate(&self) -> Result<(), String> {
-        let identifier = |value: &str| {
-            !value.is_empty()
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        };
+        self.validate_channel()?;
 
+        if self.channel == crate::client::TUI
+            && (!self.chat.starts_with("tui-")
+                || !identifier(&self.chat)
+                || self.private
+                || self.thread.is_some())
+        {
+            return Err("TUI destinations require a local session ID without a thread.".into());
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_channel(&self) -> Result<(), String> {
         let address = |value: &str| {
             !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
         };
@@ -31,17 +39,15 @@ impl Destination {
             return Err("Schedule destination is invalid.".into());
         }
 
-        if self.channel == "tui"
-            && (!self.chat.starts_with("tui-")
-                || !identifier(&self.chat)
-                || self.private
-                || self.thread.is_some())
-        {
-            return Err("TUI destinations require a local session ID without a thread.".into());
-        }
-
         Ok(())
     }
+}
+
+fn identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 impl std::str::FromStr for Destination {

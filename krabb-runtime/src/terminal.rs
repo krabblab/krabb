@@ -8,7 +8,36 @@ use std::{
     time::Duration,
 };
 
+use unicode_width::UnicodeWidthChar;
+
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+fn draw(writer: &mut dyn Write, frame: &str, message: &str, columns: u16) {
+    let mut remaining = usize::from(columns.saturating_sub(1));
+    let mut line = String::from("\r\x1b[2K");
+
+    for character in frame.chars().chain(" ".chars()).chain(message.chars()) {
+        if character.is_control() {
+            continue;
+        }
+
+        let width = character.width().unwrap_or(0);
+
+        if width > remaining {
+            break;
+        }
+
+        line.push(character);
+        remaining -= width;
+    }
+
+    let _ = writer.write_all(line.as_bytes());
+    let _ = writer.flush();
+}
+
+fn columns() -> u16 {
+    crossterm::terminal::size().map(|(columns, _)| columns).unwrap_or(80)
+}
 
 pub(crate) fn progress(message: impl Into<String>, json: bool) -> Option<Spinner> {
     progress_to(message.into(), json, io::stderr().is_terminal(), Box::new(io::stderr()))
@@ -55,8 +84,7 @@ impl Spinner {
         let writer = Arc::new(Mutex::new(writer));
 
         if let Ok(mut writer) = writer.lock() {
-            let _ = write!(writer, "\r⠋ {message}");
-            let _ = writer.flush();
+            draw(&mut **writer, "⠋", &message, columns());
         }
 
         let worker_writer = Arc::clone(&writer);
@@ -66,8 +94,7 @@ impl Spinner {
 
             while worker_running.load(Ordering::Relaxed) {
                 if let Ok(mut writer) = worker_writer.lock() {
-                    let _ = write!(writer, "\r{} {message}", FRAMES[frame]);
-                    let _ = writer.flush();
+                    draw(&mut **writer, FRAMES[frame], &message, columns());
                 }
 
                 frame = (frame + 1) % FRAMES.len();
@@ -105,7 +132,52 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use super::progress_to;
+    use unicode_width::UnicodeWidthStr;
+
+    use super::{draw, progress_to};
+
+    #[test]
+    fn frames_fit_narrow_terminals_and_preserve_unicode() {
+        for columns in [0, 1, 2, 3, 4, 8, 40, 80, 120] {
+            let mut output = Vec::new();
+
+            draw(&mut output, "⠋", "Updating 界e\u{301}🦀 plugin...", columns);
+
+            let output = String::from_utf8(output).unwrap();
+            let line = output.strip_prefix("\r\x1b[2K").unwrap();
+
+            assert!(line.width() <= usize::from(columns.saturating_sub(1)));
+            assert!(!line.contains(['\r', '\n', '\x1b']));
+        }
+
+        let mut output = Vec::new();
+
+        draw(&mut output, "⠋", "界e\u{301}", 7);
+
+        assert_eq!(String::from_utf8(output).unwrap(), "\r\x1b[2K⠋ 界e\u{301}");
+    }
+
+    #[test]
+    fn shorter_frames_clear_previous_text() {
+        let mut output = Vec::new();
+
+        draw(&mut output, "⠋", "Updating plugins...", 80);
+        draw(&mut output, "⠙", "Done", 80);
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\r\x1b[2K⠋ Updating plugins...\r\x1b[2K⠙ Done"
+        );
+    }
+
+    #[test]
+    fn frames_do_not_emit_message_control_characters() {
+        let mut output = Vec::new();
+
+        draw(&mut output, "⠋", "Updating\nplugin\r\t\x1b\x07", 80);
+
+        assert_eq!(String::from_utf8(output).unwrap(), "\r\x1b[2K⠋ Updatingplugin");
+    }
 
     struct Buffer(Arc<Mutex<Vec<u8>>>);
 

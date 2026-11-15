@@ -16,13 +16,10 @@ pub(super) async fn profile(
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map_err(|_| krabb_core::Error::Denied("Gemini model discovery failed.".into()))?;
+        .map_err(|error| krabb_http::transport(&error, "Gemini"))?;
 
     if !response.status().is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Gemini model discovery was rejected with {}.",
-            response.status(),
-        )));
+        return Err(krabb_http::rejected(response, "Gemini").await);
     }
 
     metadata(&serde_json::from_slice(&super::collect_response(response).await?)?, &model)
@@ -39,6 +36,7 @@ fn metadata(body: &serde_json::Value, model: &str) -> krabb_core::Result<Profile
 
     window.input()?;
     Ok(Profile {
+        execution: None,
         window: Some(window),
         compact: false,
         search: model.starts_with("gemini-2.") || model.starts_with("gemini-3"),

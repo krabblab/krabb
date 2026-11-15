@@ -22,6 +22,7 @@ async fn configured_thinking_and_context_reach_streaming_and_plain_requests() {
 
         let input = ModelRequest {
             generation: Some(krabb_core::context::Generation {
+                limits: None,
                 output: 512,
                 summary: false,
                 search: false,

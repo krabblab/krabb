@@ -4,13 +4,15 @@ mod data;
 mod date;
 #[cfg(test)]
 mod offline;
+mod recovery;
+mod transport;
 mod ui;
 
 #[cfg(test)]
 use krabb_core::plugin::Process;
 
 use krabb_core::{
-    jsonl,
+    client, jsonl,
     plugin::serve_with,
     types::{
         Capability, CommandSpec, Content, Hello, IpcRequest, IpcResponse, Message, Protocol,
@@ -97,11 +99,11 @@ fn hello() -> Hello {
     Hello {
         formats: vec![],
         protocol: Protocol::CURRENT,
-        id: "tui".into(),
+        id: client::TUI.into(),
         version: env!("CARGO_PKG_VERSION").into(),
         capabilities: vec![Capability::Client],
         commands: vec![CommandSpec {
-            name: "tui".into(),
+            name: client::TUI.into(),
             description: "Open the TUI; the Krabb daemon must be running.".into(),
             interactive: true,
         }],
@@ -161,6 +163,9 @@ enum EngineEvent {
     SystemText(String),
     RequestFailed(String),
     SystemNotice(String),
+    ControlNotice(String),
+    InputQueued { input: String, receipt: String },
+    InputRejected { input: String, reason: String },
     Progress(String),
     AssistantFinished,
     GenerationFinished { interrupted: bool },
@@ -317,7 +322,7 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
         None => temporary_run_namespace()?,
     };
 
-    let result = run_once(
+    let mut result = run_once(
         home.clone(),
         plugin,
         model,
@@ -328,17 +333,15 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
     )
     .await;
 
-    if temporary_session {
-        let cleanup = daemon_control(
-            home,
-            "session.delete".into(),
-            serde_json::json!({"id": session, "deep": true}),
-        )
-        .await;
-
-        if result.is_ok() {
-            cleanup?;
+    if temporary_session
+        && let Some(retained) = recovery::cleanup(&home, &session, daemon_control).await
+        && let Ok(reply) = &mut result
+    {
+        if !reply.is_empty() {
+            reply.push('\n');
         }
+
+        reply.push_str(&retained);
     }
 
     result
@@ -474,6 +477,14 @@ where
     C: Fn(String, String, Value) -> F + Copy + Send + Sync + 'static,
     F: Future<Output = krabb_core::Result<Value>> + Send + 'static,
 {
+    if krabb_core::task::command(prompt.trim()) {
+        ensure_session(&home, &session, &model, host).await?;
+
+        if let Some(reply) = task_message(&home, &session, prompt.trim(), &mut 0, host).await {
+            return reply;
+        }
+    }
+
     let (mut input, engine_input) = duplex(16 * 1024);
 
     let (_output, engine_output) = duplex(64 * 1024);
@@ -501,10 +512,12 @@ where
 
     let mut reply = String::new();
     let mut failed = false;
+    let mut receipt = None;
 
     while let Ok(event) = event_rx.try_recv() {
         match event {
             EngineEvent::AssistantText(text) => reply.push_str(&text),
+            EngineEvent::ControlNotice(text) => receipt = Some(text),
 
             EngineEvent::RequestFailed(_) | EngineEvent::SystemNotice(_) => failed = true,
 
@@ -516,7 +529,7 @@ where
         return Err(krabb_core::Error::Denied("The one-shot request did not complete.".into()));
     }
 
-    Ok(reply)
+    Ok(if reply.is_empty() { receipt.unwrap_or_default() } else { reply })
 }
 
 async fn run_with<R, W, C, F>(
@@ -559,6 +572,14 @@ where
 
     let mut messages = initial_session.messages;
     let mut workspace = initial_session.workspace;
+
+    if let Ok(Some(saved)) = recovery::recent(&home, &session, &messages, host).await
+        && !matches!(saved["task"]["state"].as_str(), Some("completed" | "cancelled" | "failed"))
+        && let Some(notice) = recovery::notice(&saved)
+    {
+        announce(engine_events.as_ref(), &mut output, EngineEvent::ControlNotice(notice), "\n")
+            .await?;
+    }
 
     let inventory = host(home.clone(), "plugin.list".into(), serde_json::json!({}))
         .await
@@ -614,6 +635,20 @@ where
 
             if line == "/quit" || line == "/exit" {
                 break;
+            }
+
+            if let Some(result) = task_message(&home, &session, line, &mut sequence, host).await {
+                let message = control_text(result);
+
+                announce(
+                    engine_events.as_ref(),
+                    &mut output,
+                    EngineEvent::ControlNotice(message),
+                    "\n> ",
+                )
+                .await?;
+
+                continue;
             }
 
             if line == "/help" {
@@ -1189,7 +1224,9 @@ where
                 continue;
             }
 
-            if line.starts_with('/') && !line.starts_with("/reply ") {
+            let reply = reply_command(line);
+
+            if line.starts_with('/') && reply.is_none() {
                 output
                     .write_all(format!("Unknown TUI command: {}. Use /help to see available commands.\n> ", line.split_whitespace().next().unwrap_or(line)).as_bytes())
                     .await?;
@@ -1204,15 +1241,17 @@ where
                 continue;
             }
 
-            let (line, reply_to) = if let Some(reply) = line.strip_prefix("/reply ") {
-                let Some((target, text)) = reply.split_once(' ').filter(|(target, text)| !target.is_empty() && !text.trim().is_empty()) else {
+            let (line, reply_to) = match reply {
+                Some(Some((target, text))) => (text, Some(target)),
+
+                Some(None) => {
                     output.write_all(b"Usage: /reply <last|message-id> <message>\n> ").await?;
                     output.flush().await?;
                     continue;
-                };
+                }
 
-                (text, Some(target))
-            } else { (line, None) };
+                None => (line, None),
+            };
 
             let terminal_command = if reply_to.is_none() { line.strip_prefix('!') } else { None };
 
@@ -1233,11 +1272,24 @@ where
                 Ok(value) => value["owner"].as_str().map(str::to_owned),
 
                 Err(error) => {
-                    let message = if error
-                        .to_string()
-                        .to_ascii_lowercase()
-                        .contains("already working")
-                    {
+                    if reply_to.is_none() && !line.starts_with('/') && !line.starts_with('!')
+                        && error.to_string().contains(krabb_core::types::SESSION_BUSY) {
+                        let event = enqueue_input(
+                            &home,
+                            &session,
+                            &plugin,
+                            line,
+                            &mut sequence,
+                            host,
+                        )
+                        .await;
+
+                        announce(engine_events.as_ref(), &mut output, event, "\n> ").await?;
+
+                        continue;
+                    }
+
+                    let message = if error.to_string().contains(krabb_core::types::SESSION_BUSY) {
                         "Krabb is already working in this session. Wait for the current turn to finish."
                             .to_owned()
                     } else {
@@ -1292,41 +1344,53 @@ where
                 id: message_id("user", sequence),
                 session: session.clone(),
                 role: Role::User,
-                sender: Some("tui".into()),
+                sender: Some(client::TUI.into()),
                 content: vec![Content::Text { text: line.into() }],
             };
 
-            if let Err(error) = host(
+            let appended = host(
                 home.clone(),
                 "session.append_reserved".into(),
                 serde_json::json!({"id": session, "owner": reservation.owner, "message": user, "reply_to": reply_to}),
             )
-            .await
-            {
-                let _ = reservation.release().await;
+            .await;
 
-                let message = format!("Turn was not saved: {}.", sentence(error.to_string()));
+            let appended = match appended {
+                Ok(appended) => appended,
 
-                if let Some(events) = &engine_events {
-                    let _ = events.send(EngineEvent::SystemNotice(message));
-                    output.write_all(b"> ").await?;
-                } else {
-                    output.write_all(format!("{message}\n> ").as_bytes()).await?;
+                Err(error) => {
+                    let _ = reservation.release().await;
+
+                    let message = format!("Turn was not saved: {}.", sentence(error.to_string()));
+
+                    if let Some(events) = &engine_events {
+                        let _ = events.send(EngineEvent::SystemNotice(message));
+                        output.write_all(b"> ").await?;
+                    } else {
+                        output.write_all(format!("{message}\n> ").as_bytes()).await?;
+                    }
+
+                    output.flush().await?;
+
+                    if stop_after_generation {
+                        break;
+                    }
+
+                    continue;
                 }
+            };
 
-                output.flush().await?;
+            match serde_json::from_value::<Message>(appended["message"].clone()) {
+                Ok(saved) if saved.id == user.id => user = saved,
 
-                if stop_after_generation {
-                    break;
+                _ => {
+                    if let Some(reply) = reply {
+                        user.content = reply.quote(std::mem::take(&mut user.content));
+                    }
                 }
-
-                continue;
             }
 
-            if let Some(reply) = reply {
-                user.content.insert(0, Content::Text { text: reply.context() });
-            }
-
+            let request_identity = user.id.clone();
             messages.push(user);
 
             if let Some(events) = &engine_events {
@@ -1339,7 +1403,8 @@ where
                     serde_json::json!({"id": session, "owner": reservation.owner}),
                 )
             } else {
-                ("session.answer", serde_json::json!({"id": session, "plugin": plugin}))
+                ("session.answer", serde_json::json!({"id": session, "plugin": plugin,
+                    "client": client::TUI, "request":request_identity}))
             };
 
             let streaming_turn = streaming_host.is_some() && engine_events.is_some();
@@ -1366,8 +1431,29 @@ where
                         let command = command.trim();
 
                         if command == "/quit" || command == "/exit" {
-                            let _ = host(home.clone(), "session.cancel".into(), serde_json::json!({"id": session})).await;
+                            let _ = host(
+                                home.clone(),
+                                "session.cancel".into(),
+                                serde_json::json!({"id": session, "turn": true}),
+                            )
+                            .await;
                             break (Err(krabb_core::Error::Denied("Generation interrupted".into())), true);
+                        }
+
+                        if let Some(result) =
+                            task_message(&home, &session, command, &mut sequence, host).await
+                        {
+                            let message = control_text(result);
+
+                            announce(
+                                engine_events.as_ref(),
+                                &mut output,
+                                EngineEvent::ControlNotice(message),
+                                "\n",
+                            )
+                            .await?;
+
+                            continue;
                         }
 
                         if command == "/approvals" || command.starts_with("/approve") || command.starts_with("/deny") {
@@ -1399,6 +1485,25 @@ where
                             continue;
                         }
 
+                        if !command.starts_with('/')
+                            && !command.starts_with('!')
+                            && !command.is_empty()
+                        {
+                            let event = enqueue_input(
+                                &home,
+                                &session,
+                                &plugin,
+                                command,
+                                &mut sequence,
+                                host,
+                            )
+                            .await;
+
+                            announce(engine_events.as_ref(), &mut output, event, "\n").await?;
+
+                            continue;
+                        }
+
                         output.write_all(b"A turn is still running. Use /approvals, /approve <id>, /deny <id>, or Esc to cancel.\n").await?;
                         output.flush().await?;
                     }
@@ -1407,11 +1512,20 @@ where
                         let _ = host(
                             home.clone(),
                             "session.cancel".into(),
-                            serde_json::json!({"id": session}),
+                            serde_json::json!({"id": session, "turn":true}),
                         ).await;
                         break (Err(krabb_core::Error::Denied("Generation interrupted".into())), true);
                     }
                 }
+            };
+
+            let response = if response.is_err() && !interrupted && terminal_command.is_none() {
+                match recovery::lookup(&home, &session, &request_identity, host).await {
+                    Ok(Some(saved)) if recovery::useful(&saved) => Ok(saved),
+                    _ => response,
+                }
+            } else {
+                response
             };
 
             let _ = reservation.release().await;
@@ -1420,9 +1534,21 @@ where
 
             match response {
                 Ok(value) => {
+                    if let Some(notice) = recovery::notice(&value) {
+                        announce(
+                            engine_events.as_ref(),
+                            &mut output,
+                            EngineEvent::ControlNotice(notice),
+                            "\n",
+                        )
+                        .await?;
+                    }
+
                     let reply = value["text"].as_str().unwrap_or_default();
 
-                    if !reply.is_empty() && !streaming_turn {
+                    let restored = value["recovered"] == true || value["replayed"] == true;
+
+                    if !reply.is_empty() && (!streaming_turn || restored) {
                         if let Some(events) = &engine_events {
                             let _ = events.send(EngineEvent::AssistantText(reply.to_owned()));
                         } else {
@@ -1564,7 +1690,7 @@ where
     let value = host(home.into(), "session.get".into(), serde_json::json!({"id": id})).await?;
 
     if !reserved && (value["status"] == "working" || value["inflight"] == true) {
-        return Err(krabb_core::Error::Denied("Session is already working.".into()));
+        return Err(krabb_core::Error::Denied(krabb_core::types::SESSION_BUSY.into()));
     }
 
     let model = value["model"]
@@ -1942,6 +2068,8 @@ fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
     let commands = [
         ("/help", "Show commands available in this session."),
         ("/reply <last|message-id> <message>", "Include the selected message as reply context."),
+        ("/task [pause|resume|cancel|approve|deny <id>]", "List or control saved tasks."),
+        ("/task steer|defer|extend <id> <value>", "Redirect, delay, or extend a task."),
         ("/history list|clear|help", "Show or clear saved TUI input history."),
         ("/status", "Show whether the background runtime is running."),
         ("/plugin [page]", "Browse installed plugins."),
@@ -2230,7 +2358,7 @@ where
         id: message_id("user", *sequence),
         session: session.into(),
         role: Role::User,
-        sender: Some("tui".into()),
+        sender: Some(client::TUI.into()),
         content: vec![Content::Text { text: command.into() }],
     };
 
@@ -4166,6 +4294,114 @@ fn schedule_id() -> u64 {
         .map_or(0, |duration| duration.as_nanos().min(u64::MAX as u128) as u64)
 }
 
+async fn enqueue_input<C, F>(
+    home: &str,
+    session: &str,
+    plugin: &str,
+    input: &str,
+    sequence: &mut u64,
+    host: C,
+) -> EngineEvent
+where
+    C: Fn(String, String, Value) -> F,
+    F: Future<Output = krabb_core::Result<Value>>,
+{
+    *sequence = sequence.saturating_add(1);
+    let result = host(
+        home.into(),
+        "session.enqueue".into(),
+        serde_json::json!({
+            "session":session, "client":client::TUI, "plugin":plugin,
+            "id":message_id("queued", *sequence), "text":input,
+        }),
+    )
+    .await;
+
+    match result {
+        Ok(value) if value["task"].as_str().is_some() => EngineEvent::InputQueued {
+            input: input.into(),
+            receipt: format!("Request saved as {}.", value["task"].as_str().unwrap()),
+        },
+
+        Ok(_) => EngineEvent::InputRejected {
+            input: input.into(),
+            reason: "The daemon returned an invalid admission receipt. Check task status before \
+                retrying."
+                .into(),
+        },
+
+        Err(error) => EngineEvent::InputRejected {
+            input: input.into(),
+            reason: format!("Could not confirm that the request was saved: {error}"),
+        },
+    }
+}
+
+fn printable(event: &EngineEvent) -> &str {
+    match event {
+        EngineEvent::InputQueued { receipt, .. } => receipt,
+        EngineEvent::InputRejected { reason, .. } => reason,
+        EngineEvent::ControlNotice(text) => text,
+        _ => "",
+    }
+}
+
+/// Sends an event to the interface, or prints its text followed by `end` without one.
+async fn announce<W: AsyncWrite + Unpin>(
+    events: Option<&mpsc::UnboundedSender<EngineEvent>>,
+    output: &mut W,
+    event: EngineEvent,
+    end: &str,
+) -> std::io::Result<()> {
+    if let Some(events) = events {
+        let _ = events.send(event);
+        return Ok(());
+    }
+
+    output.write_all(format!("{}{end}", printable(&event)).as_bytes()).await?;
+    output.flush().await
+}
+
+async fn task_message<C, F>(
+    home: &str,
+    session: &str,
+    text: &str,
+    sequence: &mut u64,
+    host: C,
+) -> Option<krabb_core::Result<String>>
+where
+    C: Fn(String, String, Value) -> F,
+    F: Future<Output = krabb_core::Result<Value>>,
+{
+    if !krabb_core::task::command(text) {
+        return None;
+    }
+
+    *sequence = sequence.saturating_add(1);
+    let params = serde_json::json!({"session":session, "client":client::TUI,
+        "id":message_id("control", *sequence), "text":text});
+
+    let response = host(home.into(), "task.message".into(), params).await;
+
+    if response.as_ref().is_ok_and(|value| value["handled"] != true) {
+        return None;
+    }
+
+    Some(response.and_then(|value| {
+        value["text"].as_str().map(str::to_owned).ok_or_else(|| {
+            krabb_core::Error::Protocol(
+                "The daemon returned an invalid task control receipt.".into(),
+            )
+        })
+    }))
+}
+
+fn control_text(result: krabb_core::Result<String>) -> String {
+    result.unwrap_or_else(|error| {
+        format!("Could not confirm the task control: {error}. Check the task status.")
+    })
+}
+
 fn message_id(role: &str, sequence: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4203,11 +4439,13 @@ fn stream_text(request: Request) -> Option<String> {
     params["event"]["text"].as_str().map(str::to_owned)
 }
 
-fn final_reply_suffix<'a>(streamed: &str, final_text: &'a str) -> &'a str {
-    if streamed.is_empty() {
-        final_text
-    } else {
-        final_text.strip_prefix(streamed).unwrap_or(final_text)
+/// The text that completes a streamed answer. A final answer that replaces the stream starts its
+/// own paragraph, since a terminal cannot take back text it already printed.
+fn final_reply_suffix(streamed: &str, final_text: &str) -> String {
+    match krabb_core::types::continuation(streamed, final_text) {
+        Some(suffix) => suffix.to_owned(),
+        None if streamed.is_empty() => final_text.to_owned(),
+        None => format!("\n\n{final_text}"),
     }
 }
 
@@ -4240,7 +4478,7 @@ async fn control(
 async fn control_with_stream(
     home: &str,
     method: &str,
-    params: Value,
+    mut params: Value,
     events: Option<mpsc::UnboundedSender<EngineEvent>>,
 ) -> std::result::Result<Value, ControlError> {
     let token = tokio::fs::read_to_string(krabb_file::location(
@@ -4263,32 +4501,57 @@ async fn control_with_stream(
     .map_err(|error| krabb_core::Error::Denied(format!("The daemon port is invalid: {error}.")))?;
 
     let streaming_turn = matches!(method, "session.answer" | "session.command");
+    let negotiate = method == "session.answer";
+
+    if negotiate && let Some(params) = params.as_object_mut() {
+        params.insert(krabb_core::execution::ENVELOPE.into(), Value::Bool(true));
+    }
+
+    let wait = if streaming_turn {
+        STREAMING_TURN_TIMEOUT
+    } else if method == "session.compact" {
+        COMPACTION_TIMEOUT
+    } else {
+        CONTROL_TIMEOUT
+    };
+
+    let mut deadline = transport::Deadline::new(wait);
 
     let exchange = async {
-        let stream = TcpStream::connect(("127.0.0.1", port))
+        let stream = timeout(CONTROL_TIMEOUT, TcpStream::connect(("127.0.0.1", port)))
             .await
+            .map_err(|_| ControlError::Unavailable(transport::expired()))?
             .map_err(|error| ControlError::Unavailable(error.into()))?;
 
         let (input, output) = stream.into_split();
         let mut input = BufReader::new(input);
         let mut output = output;
-        jsonl::write(&mut output, &IpcRequest::call(1, token.trim(), method, params))
-            .await
-            .map_err(|error| ControlError::Failed(krabb_core::Error::Denied(error.to_string())))?;
+        timeout(
+            CONTROL_TIMEOUT,
+            jsonl::write(&mut output, &IpcRequest::call(1, token.trim(), method, params)),
+        )
+        .await
+        .map_err(|_| ControlError::Failed(transport::expired()))?
+        .map_err(|error| ControlError::Failed(krabb_core::Error::Denied(error.to_string())))?;
 
         let system_output = method == "session.command";
         let mut streamed = String::new();
-        let mut progress_shown = false;
 
         loop {
-            let response: IpcResponse = jsonl::read(&mut input, jsonl::MAX)
-                .await
-                .map_err(ControlError::Failed)?
-                .ok_or_else(|| {
-                    ControlError::Failed(krabb_core::Error::Denied(
-                        "The daemon closed the IPC connection.".into(),
-                    ))
-                })?;
+            deadline.check().map_err(ControlError::Failed)?;
+
+            let response: IpcResponse =
+                tokio::time::timeout_at(deadline.expires(), jsonl::read(&mut input, jsonl::MAX))
+                    .await
+                    .map_err(|_| ControlError::Failed(transport::expired()))?
+                    .map_err(ControlError::Failed)?
+                    .ok_or_else(|| {
+                        ControlError::Failed(krabb_core::Error::Denied(
+                            "The daemon closed the IPC connection.".into(),
+                        ))
+                    })?;
+
+            deadline.check().map_err(ControlError::Failed)?;
 
             if !response.valid() || response.id != 1 {
                 return Err(ControlError::Failed(krabb_core::Error::Denied(
@@ -4305,6 +4568,11 @@ async fn control_with_stream(
                     "The daemon returned an empty response.".into(),
                 )));
             };
+
+            if negotiate && value["event"] == krabb_core::execution::ENVELOPE {
+                deadline.accept(&value["budget"]).map_err(ControlError::Failed)?;
+                continue;
+            }
 
             if streaming_turn {
                 if value["event"] == "approval" {
@@ -4324,21 +4592,19 @@ async fn control_with_stream(
                 }
 
                 if value["event"] == "tool" {
-                    if !progress_shown && let Some(events) = &events {
-                        let _ = events.send(EngineEvent::Progress(
-                            "I'm working on your request. I'll send the answer when it's ready."
-                                .into(),
-                        ));
-                    }
-
-                    progress_shown = true;
                     streamed.clear();
                     continue;
                 }
 
                 if value["event"] == "system" {
                     if let (Some(events), Some(text)) = (&events, value["text"].as_str()) {
-                        let _ = events.send(EngineEvent::SystemText(text.to_owned()));
+                        let notice = if value["progress"] == true {
+                            EngineEvent::Progress(text.to_owned())
+                        } else {
+                            EngineEvent::SystemText(text.to_owned())
+                        };
+
+                        let _ = events.send(notice);
                     }
 
                     continue;
@@ -4346,7 +4612,6 @@ async fn control_with_stream(
 
                 if value["event"] == "text" {
                     if let Some(text) = value["text"].as_str() {
-                        progress_shown = false;
                         streamed.push_str(text);
 
                         if !text.is_empty()
@@ -4365,6 +4630,10 @@ async fn control_with_stream(
                     continue;
                 }
 
+                if value["replayed"] == true && value["done"] != true {
+                    return Ok(value);
+                }
+
                 if value["done"] == true {
                     let final_text = value["text"].as_str().unwrap_or(&streamed);
 
@@ -4373,9 +4642,9 @@ async fn control_with_stream(
 
                         if !suffix.is_empty() {
                             let event = if system_output {
-                                EngineEvent::SystemText(suffix.to_owned())
+                                EngineEvent::SystemText(suffix)
                             } else {
-                                EngineEvent::AssistantText(suffix.to_owned())
+                                EngineEvent::AssistantText(suffix)
                             };
 
                             let _ = events.send(event);
@@ -4394,19 +4663,7 @@ async fn control_with_stream(
         }
     };
 
-    let wait = if streaming_turn {
-        STREAMING_TURN_TIMEOUT
-    } else if method == "session.compact" {
-        COMPACTION_TIMEOUT
-    } else {
-        CONTROL_TIMEOUT
-    };
-
-    timeout(wait, exchange).await.map_err(|_| {
-        ControlError::Failed(krabb_core::Error::Denied(
-            "The daemon did not respond in time.".into(),
-        ))
-    })?
+    exchange.await
 }
 
 fn daemon_streaming_control(
@@ -4899,6 +5156,23 @@ fn sentence(value: String) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => "Unknown error".into(),
     }
+}
+
+/// Reads `/reply <target> <message>`: `None` for other input, and `Some(None)` when the command
+/// lacks its target or message.
+fn reply_command(line: &str) -> Option<Option<(&str, &str)>> {
+    let rest = line.strip_prefix("/reply")?;
+
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+
+    Some(
+        rest.trim_start()
+            .split_once(char::is_whitespace)
+            .map(|(target, text)| (target, text.trim_start()))
+            .filter(|(target, text)| !target.is_empty() && !text.trim().is_empty()),
+    )
 }
 
 #[cfg(test)]
@@ -6686,6 +6960,520 @@ mod tests {
         super::local_aware(home, method, params).await
     }
 
+    async fn task_control_fixture(
+        home: String,
+        method: String,
+        params: serde_json::Value,
+    ) -> krabb_core::Result<serde_json::Value> {
+        if method == "session.answer" {
+            std::fs::write(std::path::Path::new(&home).join("inference-busy"), b"busy").unwrap();
+            std::future::pending::<()>().await;
+        }
+
+        if method == "session.enqueue" {
+            assert_eq!(params["text"], "Explain the second dataset");
+            assert_eq!(params["client"], krabb_core::client::TUI);
+            return Ok(json!({"task":"job-queued", "status":"queued"}));
+        }
+
+        if method == "task.message" {
+            assert!(std::path::Path::new(&home).join("inference-busy").exists());
+            assert_eq!(params["client"], krabb_core::client::TUI);
+            assert_eq!(params["session"], "default");
+
+            if params["text"] == "/task defer job-42 2030-11-12T09:00 Europe/Rome" {
+                return Ok(json!({"handled":true,
+                    "text":"Resume saved for 2030-11-12 09:00 Europe/Rome."}));
+            }
+
+            assert_eq!(params["text"], "/task pause job-42");
+            return Ok(
+                json!({"handled":true, "text":"Pause requested. The current step is stopping \
+                    safely."}),
+            );
+        }
+
+        mock_control(home, method, params).await
+    }
+
+    #[tokio::test]
+    async fn a_reply_to_a_busy_session_is_not_queued_without_its_reference() {
+        async fn host(
+            home: String,
+            method: String,
+            params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            match method.as_str() {
+                "session.reserve" => {
+                    Err(krabb_core::Error::Denied(krabb_core::types::SESSION_BUSY.into()))
+                }
+
+                "session.enqueue" => panic!("a reply was queued without its reference"),
+                _ => mock_control(home, method, params).await,
+            }
+        }
+
+        use tokio::io::duplex;
+        let root =
+            std::env::temp_dir().join(format!("krabb-tui-busy-reply-{}", super::schedule_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut input, receiver) = duplex(4096);
+        let (output, _rendered) = duplex(16 * 1024);
+        let (_interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+        let engine = tokio::spawn(super::run_with(
+            receiver,
+            output,
+            super::EngineConfig {
+                home: root.display().to_string(),
+                plugin: "codex".into(),
+                model: "base".into(),
+                model_override: None,
+                session: "default".into(),
+            },
+            host,
+            super::EngineEvents { engine: Some(events), ..Default::default() },
+            interrupts,
+        ));
+
+        input.write_all(b"/reply last what about this one?\n").await.unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::SystemNotice(
+                "Krabb is already working in this session. Wait for the current turn to finish."
+                    .into()
+            ))
+        );
+
+        input.write_all(b"/quit\n").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_text_in_any_language_is_left_for_the_model() {
+        async fn host(
+            _home: String,
+            method: String,
+            _params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            panic!("ordinary text reached {method}");
+        }
+
+        let mut sequence = 0;
+
+        for text in ["continue", "metti in pausa il report", "pause the report"] {
+            assert!(
+                super::task_message("/tmp/krabb", "default", text, &mut sequence, host)
+                    .await
+                    .is_none()
+            );
+        }
+
+        assert_eq!(sequence, 0);
+    }
+
+    #[tokio::test]
+    async fn one_shot_task_status_returns_the_saved_receipt_without_model_discovery() {
+        async fn host(
+            home: String,
+            method: String,
+            params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            assert!(!matches!(method.as_str(), "plugin.list" | "session.answer"));
+
+            if method == "task.message" {
+                assert_eq!(params["text"], "/task");
+                return Ok(json!({"handled":true,"text":"The report is paused."}));
+            }
+
+            mock_control(home, method, params).await
+        }
+
+        let receipt = super::run_once(
+            "/tmp/krabb".into(),
+            "missing".into(),
+            "model".into(),
+            None,
+            "default".into(),
+            "/task".into(),
+            host,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(receipt, "The report is paused.");
+    }
+
+    #[tokio::test]
+    async fn a_lost_answer_reply_recovers_the_stable_request_without_generating_again() {
+        async fn host(
+            home: String,
+            method: String,
+            params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            let root = std::path::Path::new(&home);
+
+            if method == "session.answer" {
+                assert!(!root.join("generated").exists());
+                let request = params["request"].as_str().unwrap();
+                std::fs::write(root.join("request"), request).unwrap();
+                std::fs::write(root.join("generated"), "1").unwrap();
+                return Err(krabb_core::Error::Denied("The connection was lost.".into()));
+            }
+
+            if method == "task.receipt" {
+                assert_eq!(
+                    params["request"],
+                    std::fs::read_to_string(root.join("request")).unwrap()
+                );
+                let state = std::fs::read_to_string(root.join("state")).unwrap();
+                let text = (state == "completed").then_some("The exact saved report.");
+
+                return Ok(json!({"found":true,"task":{"id":"job-1","state":state},"text":text}));
+            }
+
+            mock_control(home, method, params).await
+        }
+
+        let root = std::env::temp_dir().join(format!("krabb-tui-recover-{}", super::schedule_id()));
+
+        for state in ["completed", "running", "blocked"] {
+            let home = root.join(state);
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("state"), state).unwrap();
+            let reply = super::run_once(
+                home.display().to_string(),
+                "codex".into(),
+                "model".into(),
+                None,
+                "default".into(),
+                "Prepare the report.".into(),
+                host,
+            )
+            .await
+            .unwrap();
+
+            if state == "completed" {
+                assert_eq!(reply, "The exact saved report.");
+            } else {
+                assert!(reply.contains(state));
+                assert!(reply.contains("job-1"));
+            }
+
+            assert_eq!(std::fs::read_to_string(home.join("generated")).unwrap(), "1");
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_streamed_turn_shows_the_recovered_final_answer_after_its_stream_fails() {
+        fn streaming(
+            _home: String,
+            _method: String,
+            _params: serde_json::Value,
+            events: tokio::sync::mpsc::UnboundedSender<super::EngineEvent>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = krabb_core::Result<serde_json::Value>> + Send>,
+        > {
+            Box::pin(async move {
+                let _ = events.send(super::EngineEvent::AssistantText("The exact".into()));
+
+                Err(krabb_core::Error::Denied("The connection was lost.".into()))
+            })
+        }
+
+        async fn host(
+            home: String,
+            method: String,
+            params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            if method == "task.receipt" {
+                return Ok(json!({"found":true,"task":{"id":"job-1","state":"completed"},
+                    "text":"The exact saved report."}));
+            }
+
+            mock_control(home, method, params).await
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("krabb-tui-stream-recover-{}", super::schedule_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut input, receiver) = tokio::io::duplex(4096);
+        let (output, _rendered) = tokio::io::duplex(16 * 1024);
+        let (_interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+
+        let engine = tokio::spawn(super::run_with(
+            receiver,
+            output,
+            super::EngineConfig {
+                home: root.display().to_string(),
+                plugin: "codex".into(),
+                model: "base".into(),
+                model_override: None,
+                session: "default".into(),
+            },
+            host,
+            super::EngineEvents {
+                engine: Some(events),
+                streaming_host: Some(streaming),
+                ..Default::default()
+            },
+            interrupts,
+        ));
+
+        input.write_all(b"Prepare the report.\n").await.unwrap();
+
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(super::EngineEvent::AssistantText(text)) = notifications.recv().await
+                    && text == "The exact saved report."
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+
+        input.write_all(b"/quit\n").await.unwrap();
+        drop(input);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), engine).await;
+        std::fs::remove_dir_all(root).unwrap();
+
+        assert!(recovered.is_ok(), "the recovered answer must be shown");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_client_recovers_saved_work_from_host_history_without_starting_inference() {
+        async fn host(
+            home: String,
+            method: String,
+            params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            assert_ne!(method, "session.answer");
+
+            if method == "session.get" {
+                return Ok(json!({"id":params["id"],"model":"base","workspace":null,
+                    "status":"working","inflight":false,"messages":[{
+                        "id":"stable-1","session":"default","role":"user","sender":"tui",
+                        "content":[{"kind":"text","text":"Prepare the report."}]}, {
+                        "id":"control-1","session":"default","role":"user","sender":"tui",
+                        "content":[{"kind":"text","text":"pause the report"}]}]}));
+            }
+
+            if method == "task.receipt" {
+                if params["request"] == "control-1" {
+                    return Ok(json!({"found":false}));
+                }
+
+                assert_eq!(params["request"], "stable-1");
+                return Ok(
+                    json!({"found":true,"task":{"id":"job-42","state":"waiting"},"text":null}),
+                );
+            }
+
+            mock_control(home, method, params).await
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("krabb-tui-reconnect-{}", super::schedule_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut input, reader) = tokio::io::duplex(1024);
+        let (output, _rendered) = tokio::io::duplex(4096);
+        let (_interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+        let engine = tokio::spawn(super::run_with(
+            reader,
+            output,
+            super::EngineConfig {
+                home: root.display().to_string(),
+                plugin: "codex".into(),
+                model: "base".into(),
+                model_override: None,
+                session: "default".into(),
+            },
+            host,
+            super::EngineEvents { engine: Some(events), ..Default::default() },
+            interrupts,
+        ));
+
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(1), notifications.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(notice, super::EngineEvent::ControlNotice(text)
+            if text.contains("job-42") && text.contains("waiting")));
+        input.write_all(b"/quit\n").await.unwrap();
+        engine.await.unwrap().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn plain_output_prints_task_control_notices_while_inference_is_busy() {
+        use tokio::io::duplex;
+        let root =
+            std::env::temp_dir().join(format!("krabb-tui-plain-control-{}", super::schedule_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut input, receiver) = duplex(4096);
+        let (output, mut rendered) = duplex(16 * 1024);
+        let (interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+        let engine = tokio::spawn(super::run_with(
+            receiver,
+            output,
+            super::EngineConfig {
+                home: root.display().to_string(),
+                plugin: "codex".into(),
+                model: "base".into(),
+                model_override: None,
+                session: "default".into(),
+            },
+            task_control_fixture,
+            super::EngineEvents::default(),
+            interrupts,
+        ));
+
+        input.write_all(b"prepare the report\n").await.unwrap();
+
+        while !root.join("inference-busy").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        input.write_all(b"/task pause job-42\n").await.unwrap();
+
+        let mut text = String::new();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !text.contains("Pause requested. The current step is stopping safely.\n") {
+                let mut chunk = [0; 1024];
+                let read = rendered.read(&mut chunk).await.unwrap();
+
+                text.push_str(&String::from_utf8_lossy(&chunk[..read]));
+            }
+        })
+        .await
+        .unwrap();
+
+        interrupt.send(()).unwrap();
+        drop(input);
+
+        let drain = tokio::spawn(async move { rendered.read_to_string(&mut text).await });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        drain.await.unwrap().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exact_task_commands_are_received_while_inference_is_busy() {
+        use tokio::io::duplex;
+        let root =
+            std::env::temp_dir().join(format!("krabb-tui-task-control-{}", super::schedule_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut input, receiver) = duplex(4096);
+        let (output, mut rendered) = duplex(16 * 1024);
+        let (interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+        let engine = tokio::spawn(super::run_with(
+            receiver,
+            output,
+            super::EngineConfig {
+                home: root.display().to_string(),
+                plugin: "codex".into(),
+                model: "base".into(),
+                model_override: None,
+                session: "default".into(),
+            },
+            task_control_fixture,
+            super::EngineEvents { engine: Some(events), ..Default::default() },
+            interrupts,
+        ));
+        input.write_all(b"prepare the report\n").await.unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::GenerationStarted)
+        );
+
+        input.write_all(b"Explain the second dataset\n").await.unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::InputQueued {
+                input: "Explain the second dataset".into(),
+                receipt: "Request saved as job-queued.".into(),
+            })
+        );
+
+        assert!(!engine.is_finished());
+
+        input.write_all(b"/task pause job-42\n").await.unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::ControlNotice(
+                "Pause requested. The current step is stopping safely.".into()
+            ))
+        );
+
+        assert!(!engine.is_finished());
+
+        input.write_all(b"/task defer job-42 2030-11-12T09:00 Europe/Rome\n").await.unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::ControlNotice(
+                "Resume saved for 2030-11-12 09:00 Europe/Rome.".into()
+            ))
+        );
+
+        assert!(!engine.is_finished());
+
+        interrupt.send(()).unwrap();
+
+        loop {
+            if matches!(
+                notifications.recv().await,
+                Some(super::EngineEvent::GenerationFinished { .. })
+            ) {
+                break;
+            }
+        }
+
+        input.write_all(b"/quit\n").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let mut text = String::new();
+        rendered.read_to_string(&mut text).await.unwrap();
+
+        assert!(!text.contains("A turn is still running"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn extracts_text_stream_events() {
         let event = krabb_core::types::Request::Note {
@@ -6726,10 +7514,16 @@ mod tests {
             let mut request = String::new();
             socket.read_line(&mut request).await.unwrap();
 
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+
+            assert_eq!(request["params"][krabb_core::execution::ENVELOPE], true);
+
             for result in [
+                json!({"event":krabb_core::execution::ENVELOPE, "budget":{"total_millis":900_000}}),
                 json!({"event":"text", "text":"I'll check that."}),
                 json!({"event":"tool", "name":"read"}),
                 json!({"event":"tool", "name":"read"}),
+                json!({"event":"system", "progress":true, "text":"I'll check the file."}),
                 json!({"done":true, "text":"Here is the complete answer."}),
             ] {
                 let frame = json!({"jsonrpc":"2.0", "id":1, "result":result});
@@ -6753,7 +7547,11 @@ mod tests {
             Some(super::EngineEvent::AssistantText("I'll check that.".into()))
         );
 
-        assert!(matches!(receiver.recv().await, Some(super::EngineEvent::Progress(_))));
+        assert_eq!(
+            receiver.recv().await,
+            Some(super::EngineEvent::Progress("I'll check the file.".into()))
+        );
+
         assert_eq!(
             receiver.recv().await,
             Some(super::EngineEvent::AssistantText("Here is the complete answer.".into()))
@@ -6770,10 +7568,16 @@ mod tests {
         assert_eq!(super::final_reply_suffix("Hello world", "Hello world"), "");
         assert_eq!(
             super::final_reply_suffix("Hello", "A duplicated final reply"),
-            "A duplicated final reply"
+            "\n\nA duplicated final reply"
         );
 
         assert_eq!(super::final_reply_suffix("", "Non-streamed reply"), "Non-streamed reply");
+        let clipped = format!("Hello…{}", krabb_core::types::CLIP_NOTICE);
+
+        assert_eq!(
+            super::final_reply_suffix("Hello world", &clipped),
+            krabb_core::types::CLIP_NOTICE
+        );
     }
 
     #[test]

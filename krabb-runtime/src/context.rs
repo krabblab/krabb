@@ -42,16 +42,15 @@ pub(super) fn append(
     append_with_owner(messages, store, current, scope, config, None);
 }
 
-pub(super) fn schedule(
+pub(super) fn origin(
     messages: &mut Vec<Message>,
     store: &state::Store,
     current: &str,
-    origin: &schedules::Origin,
+    origin: &crate::origin::Origin,
     config: &Config,
 ) {
-    permissions(messages, current, &sharing::principal(&origin.channel), config);
-    let scope =
-        sharing::sources(config, &sharing::principal(&origin.channel), sharing::Data::Context);
+    permissions(messages, current, &origin.source(), config);
+    let scope = sharing::sources(config, &origin.source(), sharing::Data::Context);
     append_with_owner(messages, store, current, &scope, config, Some(&origin.session));
 }
 
@@ -105,7 +104,7 @@ fn append_with_owner(
         .sessions
         .values()
         .filter(|session| {
-            if session.id == current || session.scheduled || session.isolated.is_some() {
+            if session.id == current || session.is_work() || session.isolated.is_some() {
                 return false;
             }
 
@@ -125,8 +124,7 @@ fn append_with_owner(
 
     for session in candidates.into_iter().take(8) {
         for message in session
-            .messages
-            .iter()
+            .conversation()
             .rev()
             .filter(|message| matches!(message.role, Role::User | Role::Assistant))
             .take(8)

@@ -28,6 +28,8 @@ impl State {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Generation {
     pub output: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<crate::execution::Limits>,
     #[serde(default)]
     pub summary: bool,
     #[serde(default)]
@@ -59,6 +61,8 @@ impl Window {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Profile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::execution::Profile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<Window>,
     #[serde(default)]
     pub compact: bool,
@@ -82,6 +86,11 @@ pub struct CompactRequest {
 pub struct CompactReply {
     pub text: String,
 }
+
+/// Estimated framing cost of one message, tool, or tool call.
+pub const OVERHEAD: u64 = 16;
+
+const IMAGE: u64 = 768;
 
 /// A conservative estimate, not a substitute for a provider's tokenizer.
 pub fn text_tokens(text: &str) -> u64 {
@@ -114,18 +123,18 @@ pub fn estimate(messages: &[Message], tools: &[ToolSpec]) -> u64 {
         sum.saturating_add(text_tokens(&tool.name))
             .saturating_add(tool.description.as_deref().map_or(0, text_tokens))
             .saturating_add(value_tokens(&tool.schema))
-            .saturating_add(16)
+            .saturating_add(OVERHEAD)
     });
 
     messages.iter().fold(tools, |sum, message| {
-        message.content.iter().fold(sum.saturating_add(16), |sum, content| {
+        message.content.iter().fold(sum.saturating_add(OVERHEAD), |sum, content| {
             let tokens = match content {
                 Content::Text { text } => text_tokens(text),
-                Content::Image { .. } => 768,
+                Content::Image { .. } => IMAGE,
                 Content::Context { state } => text_tokens(&state.data),
 
                 Content::ToolCall { name, args, .. } => {
-                    text_tokens(name).saturating_add(value_tokens(args)).saturating_add(16)
+                    text_tokens(name).saturating_add(value_tokens(args)).saturating_add(OVERHEAD)
                 }
 
                 content => text_tokens(&content.render()),

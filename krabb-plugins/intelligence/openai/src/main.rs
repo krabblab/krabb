@@ -163,12 +163,15 @@ async fn complete(
         .json(&request_body(&input, false)?)
         .send()
         .await
-        .map_err(|error| krabb_core::Error::Denied(format!("OpenAI request failed: {error}.")))?;
+        .map_err(|error| krabb_http::transport(&error, "OpenAI"))?;
 
-    let status = response.status();
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "OpenAI").await);
+    }
+
     let body = collect(response.bytes_stream()).await?;
 
-    response_body(id, status, serde_json::from_slice(&body)?)
+    response_body(id, serde_json::from_slice(&body)?)
 }
 
 async fn stream(
@@ -193,13 +196,10 @@ async fn stream(
         .json(&request_body(&input, true)?)
         .send()
         .await
-        .map_err(|error| krabb_core::Error::Denied(format!("OpenAI stream failed: {error}.")))?;
+        .map_err(|error| krabb_http::transport(&error, "OpenAI"))?;
 
     if !response.status().is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenAI stream was rejected with {}.",
-            response.status()
-        )));
+        return Err(krabb_http::rejected(response, "OpenAI").await);
     }
 
     stream_body(id, response.bytes_stream(), emitter).await
@@ -215,7 +215,8 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
-            krabb_core::Error::Denied(format!("OpenAI response failed: {error}."))
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
+                .error(format!("OpenAI response failed: {error}."))
         })?;
 
         if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes.len()) {
@@ -276,7 +277,8 @@ where
 
     'stream: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
-            krabb_core::Error::Denied(format!("OpenAI stream failed: {error}."))
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                .error(format!("OpenAI stream failed: {error}."))
         })?;
 
         bytes = bytes.saturating_add(chunk.as_ref().len());
@@ -342,6 +344,7 @@ where
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: "stream".into(),
             input: None,
@@ -426,18 +429,7 @@ async fn emit(
     Ok(())
 }
 
-fn response_body(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: Value,
-) -> krabb_core::Result<Option<Response>> {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenAI rejected the request: {}.",
-            body["error"]["message"].as_str().unwrap_or("request failed")
-        )));
-    }
-
+fn response_body(id: u64, body: Value) -> krabb_core::Result<Option<Response>> {
     let choice = body["choices"]
         .as_array()
         .and_then(|values| values.first())
@@ -478,6 +470,7 @@ fn response_body(
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: choice["finish_reason"].as_str().unwrap_or("stop").into(),
             input: body["usage"]["prompt_tokens"].as_u64(),
@@ -758,38 +751,28 @@ mod tests {
         assert!(validate_base_url("http://api.example/v1").is_err());
         assert!(credential().is_err());
         assert!(response(1, json!({"ok": true})).unwrap().is_some());
-        assert!(response_body(1, reqwest::StatusCode::OK, json!({"choices": []})).is_err());
+        assert!(response_body(1, json!({"choices": []})).is_err());
     }
 
     #[test]
     fn parses_complete_and_tool_replies() {
         let response = response_body(
             1,
-            reqwest::StatusCode::OK,
             json!({"choices":[{"message":{"content":"done","tool_calls":[{"function":{"name":"read","arguments":"{\"path\":\"note\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}),
         ).unwrap().unwrap();
 
         assert_eq!(response.result.as_ref().unwrap()["text"], "done");
         assert_eq!(response.result.as_ref().unwrap()["events"][0]["name"], "read");
-        assert!(response_body(1, reqwest::StatusCode::UNAUTHORIZED, json!({})).is_err());
-        assert!(response_body(1, reqwest::StatusCode::OK, json!({})).is_err());
+        assert!(response_body(1, json!({})).is_err());
         assert!(response_body(
             1,
-            reqwest::StatusCode::OK,
             json!({"choices":[{"message":{"tool_calls":[{"function":{"name":"read","arguments":"not-json"}}]}}]}),
         ).is_err());
 
-        assert!(
-            response_body(1, reqwest::StatusCode::OK, json!({"choices":[{"message":{}}]})).is_err()
-        );
+        assert!(response_body(1, json!({"choices":[{"message":{}}]})).is_err());
 
-        let default_stop = response_body(
-            2,
-            reqwest::StatusCode::OK,
-            json!({"choices":[{"message":{"content":"ok"}}]}),
-        )
-        .unwrap()
-        .unwrap();
+        let default_stop =
+            response_body(2, json!({"choices":[{"message":{"content":"ok"}}]})).unwrap().unwrap();
 
         assert_eq!(default_stop.result.unwrap()["stop"], "stop");
     }

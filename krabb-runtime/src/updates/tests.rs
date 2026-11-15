@@ -297,3 +297,32 @@ fn image_cleanup_keeps_leased_generations_and_reclaims_abandoned_files() {
 
     assert!(!binary.exists());
 }
+
+#[test]
+fn image_cleanup_defers_an_orphaned_image_that_cannot_be_removed() {
+    let fixture = Fixture::new();
+    let images = fixture.root.join("run/plugin-images");
+    let orphaned = images.join("orphaned");
+    let abandoned = images.join("abandoned");
+
+    for directory in [&orphaned, &abandoned] {
+        fs::create_dir_all(directory).unwrap();
+        fs::write(directory.join("binary"), "stale").unwrap();
+    }
+
+    Image::clean_with(&fixture.root, |path| {
+        if path == orphaned {
+            return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        }
+
+        fs::remove_dir_all(path)
+    })
+    .unwrap();
+
+    assert!(orphaned.join("binary").is_file());
+    assert!(!abandoned.exists());
+
+    Image::clean(&fixture.root).unwrap();
+
+    assert!(!orphaned.exists());
+}

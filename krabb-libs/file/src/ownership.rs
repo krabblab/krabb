@@ -14,10 +14,16 @@ struct Catalog {
 
 /// A locked provenance catalog. Unknown files are private until explicitly assigned an owner.
 pub struct Ownership {
-    _lock: File,
+    lock: File,
     path: PathBuf,
     root: String,
     catalog: Catalog,
+}
+
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        let _ = self.lock.unlock();
+    }
 }
 
 impl Ownership {
@@ -45,7 +51,7 @@ impl Ownership {
             .unwrap_or_default();
 
         Ok(Self {
-            _lock: lock,
+            lock,
             path,
             root: std::fs::canonicalize(root)?.to_string_lossy().into_owned(),
             catalog,
@@ -96,6 +102,45 @@ impl Ownership {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_ownership_releases_the_lock_even_with_an_inherited_descriptor() {
+        let home =
+            std::env::temp_dir().join(format!("krabb-ownership-inherited-{}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&home);
+        let root = home.join("workspace");
+
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut ownership = Ownership::open(&home, &root).unwrap();
+
+        ownership.assign(Path::new("notes.txt"), "channels.telegram").unwrap();
+
+        let inherited = ownership.lock.try_clone().unwrap();
+
+        assert!(Ownership::open(&home, &root).is_err());
+
+        drop(ownership);
+
+        let mut replacement = Ownership::open(&home, &root).unwrap();
+
+        assert_eq!(replacement.owner(Path::new("notes.txt")), Some("channels.telegram"));
+
+        replacement.assign(Path::new("notes.txt"), "channels.discord").unwrap();
+        drop(inherited);
+
+        assert!(Ownership::open(&home, &root).is_err());
+
+        drop(replacement);
+
+        assert_eq!(
+            Ownership::open(&home, &root).unwrap().owner(Path::new("notes.txt")),
+            Some("channels.discord")
+        );
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn ownership_matches_native_paths_across_reloads() {

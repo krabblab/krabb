@@ -65,3 +65,20 @@ async fn terminal_reply_preserves_context_and_treats_bang_as_text() {
 
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn reply_commands_show_usage_unless_a_target_and_message_follow() {
+    assert_eq!(
+        reply_command("/reply last  what about it?"),
+        Some(Some(("last", "what about it?")))
+    );
+
+    assert_eq!(reply_command("/reply\tm-1\tagain"), Some(Some(("m-1", "again"))));
+
+    assert_eq!(reply_command("/reply"), Some(None));
+    assert_eq!(reply_command("/reply last"), Some(None));
+    assert_eq!(reply_command("/reply last   "), Some(None));
+
+    assert_eq!(reply_command("/replying"), None);
+    assert_eq!(reply_command("hello"), None);
+}

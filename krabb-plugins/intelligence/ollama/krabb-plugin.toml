@@ -16,6 +16,8 @@ default = "false"
 name = "KRABB_OLLAMA_CONTEXT_LENGTH"
 default = "auto"
 
+# Advanced execution hints: KRABB_OLLAMA_DEPLOYMENT and KRABB_OLLAMA_REVISION.
+
 [protocol]
 major = 0
 minor = 1

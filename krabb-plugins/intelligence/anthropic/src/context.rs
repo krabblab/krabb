@@ -25,7 +25,12 @@ pub(super) async fn profile(
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map_err(|_| krabb_core::Error::Denied("Anthropic model discovery failed.".into()))?;
+        .map_err(|error| krabb_http::transport(&error, "Anthropic"))?;
+
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Anthropic").await);
+    }
+
     let body = read(response).await?;
 
     metadata(&body)
@@ -40,6 +45,7 @@ fn metadata(body: &Value) -> krabb_core::Result<Profile> {
     window.input()?;
 
     Ok(Profile {
+        execution: None,
         window: Some(window),
         compact: body["capabilities"]["compaction"]["supported"] == true,
         search: body["capabilities"]["server_tools"]["web_search"]["supported"] == true,
@@ -55,7 +61,12 @@ pub(super) async fn compact(
     let input = ModelRequest {
         model: super::model::resolve(&request.model),
         workspace: None,
-        generation: Some(Generation { output: request.max_tokens, summary: true, search: false }),
+        generation: Some(Generation {
+            limits: None,
+            output: request.max_tokens,
+            summary: true,
+            search: false,
+        }),
         messages: request.messages,
         stream: false,
         tools: vec![],
@@ -73,7 +84,12 @@ pub(super) async fn compact(
             "compaction":{"type":"summarize", "instructions":format!("Keep the summary within {} tokens.", request.max_tokens)}}))
         .send()
         .await
-        .map_err(|_| krabb_core::Error::Denied("Anthropic compaction failed.".into()))?;
+        .map_err(|error| krabb_http::transport(&error, "Anthropic"))?;
+
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Anthropic").await);
+    }
+
     let body = read(response).await?;
     let text = body["content"]
         .as_array()

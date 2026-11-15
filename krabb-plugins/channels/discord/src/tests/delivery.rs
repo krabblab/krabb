@@ -26,7 +26,7 @@ fn bounds_rate_limit_waits_and_requires_an_explicit_rejection() {
 
 #[tokio::test]
 async fn retries_the_rejected_chunk_without_replaying_delivered_chunks() {
-    for statuses in [vec![200, 429, 200], vec![429, 429, 429], vec![500]] {
+    for statuses in [vec![200, 429, 200], vec![200, 1429, 200], vec![429, 429, 429], vec![500]] {
         let succeeds = statuses.last() == Some(&200);
 
         let expected = if succeeds {
@@ -71,10 +71,13 @@ async fn retries_the_rejected_chunk_without_replaying_delivered_chunks() {
                 socket.read_exact(&mut body).await.unwrap();
                 let body: Value = serde_json::from_slice(&body).unwrap();
                 chunks.push(body["content"].as_str().unwrap().to_owned());
-                let response =
-                    if status == 429 { json!({"retry_after":0}) } else { json!({"id":"9"}) }
-                        .to_string();
-                socket.get_mut().write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+                let (status, header, response) = match status {
+                    1429 => (429, "Retry-After: 0\r\n", "<html>Slow down</html>".to_owned()),
+                    429 => (429, "", json!({"retry_after":0}).to_string()),
+                    status => (status, "", json!({"id":"9"}).to_string()),
+                };
+
+                socket.get_mut().write_all(format!("HTTP/1.1 {status} Fixture\r\n{header}Content-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
             }
 
             chunks
@@ -99,4 +102,123 @@ async fn retries_the_rejected_chunk_without_replaying_delivered_chunks() {
 
         assert_eq!(chunks, expected);
     }
+}
+
+#[tokio::test]
+async fn a_plain_send_records_its_message_for_later_replies() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = BufReader::new(socket);
+        let mut line = String::new();
+        let mut length = 0;
+
+        loop {
+            line.clear();
+            socket.read_line(&mut line).await.unwrap();
+
+            if line == "\r\n" {
+                break;
+            }
+
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+
+        let mut body = vec![0; length];
+        socket.read_exact(&mut body).await.unwrap();
+
+        let response = json!({"id":"9"}).to_string();
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+            response.len()
+        );
+
+        socket.get_mut().write_all(reply.as_bytes()).await.unwrap();
+    });
+
+    let client =
+        reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
+
+    let response = call_with(
+        &client,
+        1,
+        "send".into(),
+        json!({"channel":"1", "text":"plain answer"}),
+        "fixture-token",
+        &base,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    server.await.unwrap();
+
+    let references = &response.result.unwrap()["references"];
+
+    assert_eq!(references[0]["id"], "9");
+    assert_eq!(references[0]["text"], "plain answer");
+}
+
+#[tokio::test]
+async fn an_unreachable_discord_reports_its_transport_cause() {
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", closed.local_addr().unwrap());
+
+    drop(closed);
+
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let error =
+        message(&client, reqwest::Method::GET, format!("{base}/gateway"), "fixture", Value::Null)
+            .await
+            .unwrap_err();
+
+    assert!(error.to_string().contains("could not be reached"), "{error}");
+
+    let error = message(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/channels/1/messages"),
+        "fixture",
+        json!({"content":"hello"}),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        krabb_core::Error::Failed { failure, .. }
+            if failure.kind == krabb_core::failure::Kind::Transient
+    ));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 1024];
+        let _ = socket.read(&mut request).await;
+    });
+
+    let error = message(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/channels/1/messages"),
+        "fixture",
+        json!({"content":"hello"}),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        krabb_core::Error::Failed { failure, .. }
+            if failure.kind == krabb_core::failure::Kind::Uncertain
+    ));
 }

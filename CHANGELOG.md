@@ -7,6 +7,17 @@ Semantic Versioning.
 
 ### Added
 
+- Approve or deny a saved task's pending action after restarts.
+- Retry throttled or unavailable intelligence providers automatically.
+- Answer conversations before queued background work on a shared model.
+- Extend a saved task's inference allowance on request.
+- Cap each saved task's cumulative token use.
+- Recover accepted requests after client disconnection.
+- Resume saved tasks at explicit or relative times without the scheduler.
+- Run extended background operations through the optional runner plugin.
+- Save new questions while another response runs.
+- Control saved tasks in any language, or with `/task` commands when the model is busy.
+- Answer simple requests directly and deliver complex background tasks automatically.
 - Include quoted messages as context when replying across channels and terminal clients.
 - Receive separate progress and fresh final answers with completion notifications.
 - Update plugins through a graceful handover with declaration review and rollback.

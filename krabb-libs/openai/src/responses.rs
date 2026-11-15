@@ -40,15 +40,10 @@ impl Api<'_> {
             .json(&body)
             .send()
             .await
-            .map_err(|error| {
-                Error::Denied(format!("OpenAI Responses request failed: {}.", error.without_url()))
-            })?;
+            .map_err(|error| krabb_http::transport(&error, "OpenAI Responses"))?;
 
         if !response.status().is_success() {
-            return Err(Error::Denied(format!(
-                "OpenAI Responses request was rejected with {}.",
-                response.status()
-            )));
+            return Err(krabb_http::rejected(response, "OpenAI Responses").await);
         }
 
         let reply = if let Some(emitter) = emitter {
@@ -192,6 +187,7 @@ fn reply(value: &Value, model: &str, provider: &str) -> Result<ModelReply> {
     }
 
     Ok(ModelReply {
+        timing: None,
         text,
         events,
         stop: if called {

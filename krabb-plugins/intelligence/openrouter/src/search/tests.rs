@@ -10,7 +10,7 @@ fn input() -> ModelRequest {
         model: "author/model".into(),
         workspace: None,
         stream: false,
-        generation: Some(Generation { output: 2048, summary: false, search: true }),
+        generation: Some(Generation { limits: None, output: 2048, summary: false, search: true }),
         tools: vec![],
         messages: vec![Message {
             id: "1".into(),

@@ -116,6 +116,9 @@ jobs:
           - name: A2A Plugin
             package: krabb-plugin-a2a
 
+          - name: Runner Plugin
+            package: krabb-plugin-runner
+
           - name: AG-UI Plugin
             package: krabb-plugin-ag-ui
 

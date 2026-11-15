@@ -84,7 +84,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
             let session = store.session_mut(id)?;
 
             if session.status == "working" {
-                return Err(Error::Denied("Session is already working.".into()));
+                return Err(Error::Denied(krabb_core::types::SESSION_BUSY.into()));
             }
 
             session.status = "working".into();
@@ -159,7 +159,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
             let session = store.session_mut(id)?;
 
             if reserved != (session.status == "working") {
-                return Err(Error::Denied("Session is already working.".into()));
+                return Err(Error::Denied(krabb_core::types::SESSION_BUSY.into()));
             }
 
             if reserved && session.reservation_owner.as_deref() != owner {
@@ -178,8 +178,10 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
                         )
                     })?;
 
-                message.content.insert(0, krabb_core::Content::Text { text: reply.context() });
+                message.content = reply.quote(std::mem::take(&mut message.content));
             }
+
+            let saved = serde_json::to_value(&message)?;
 
             session.messages.push(message);
 
@@ -197,7 +199,7 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
 
             save(&path, &store)?;
 
-            Ok(json!({"id": id, "backend": "local"}))
+            Ok(json!({"id": id, "backend": "local", "message": saved}))
         }
 
         "session.clear" => {
@@ -671,13 +673,15 @@ mod tests {
             .is_err()
         );
 
-        control(
+        let appended = control(
             &home,
             "session.append_reserved",
             json!({"id": "main", "owner": owner, "message": message}),
         )
         .await
         .unwrap();
+
+        assert_eq!(appended["message"], message);
 
         control(&home, "session.release", json!({"id": "main", "owner": owner})).await.unwrap();
 

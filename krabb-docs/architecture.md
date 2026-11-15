@@ -94,10 +94,59 @@ or interrupting a turn. Channel-created sessions follow configuration unless the
 model is explicitly pinned. Legacy sessions without pin metadata inherit channel
 configuration; local sessions and scheduled selections keep their existing behavior.
 
-Model generation receives the remaining overall turn budget instead of a separate
-120-second plugin-call limit. Channel and daemon-owned TUI turns remain bounded to
-300 seconds and retain cancellation and cleanup behavior. Providers can enforce
-shorter HTTP deadlines; Ollama permits 300 seconds for slow local generation.
+Model admission separates bounded queue wait from active generation. For providers
+advertising deadline support, a deterministic policy uses deployment/model timing
+observations and conservative priors. The host holds the provider slot across
+metadata lookup, prediction, context preparation, and dispatch; queue waiting does
+not reset the caller deadline. Summary calls and final generation receive the
+remaining admitted allowance. Ollama applies it to HTTP and stream timers, and
+provider restart invalidates cached execution metadata. Legacy providers retain
+one-, five-, and ten-minute class allowances. Jobs have no overall lifetime limit.
+
+Timing observations are a bounded, reconstructible cache, independent of task state and authority.
+They contain phase measurements and token counts, not prompts. A bounded trace records completed,
+failed, timed-out, cancelled, interrupted, and handed-off attempts. Dropped futures retain censored
+observations with unknown usage; rejected admission has no execution observation. Recent failures
+reduce estimator confidence without granting resources. Durable inference allowance accounting is
+stored separately in the job catalog. Each admitted call reserves before dispatch, settles confirmed
+occupied time after completion, and retains uncertain exposure after interruption. Task ceilings
+remain binding across retries and restart. Owned tool/approval waiting has a separate meter
+boundary; waiting does not become confirmed active inference usage. Authenticated local IPC grants
+can increase a settled tracked ceiling within host policy, with task revision checks, account
+sequence checks, and durable receipts. Pending accounts are protected from retention. Ordinary model
+task tools cannot grant resources. Token/currency charges, conversational grant UI, reconciliation,
+other request routes, renewal, typed adapter failure phases, and fairness remain planned. Clients
+opting into execution metadata receive a finite request envelope; the TUI honors it without
+rendering metadata or renewing it on progress. Older clients receive their existing wire behavior,
+and newer clients preserve their fallback when an older daemon sends no envelope.
+
+Optional asynchronous operations persist intent and a backend handle, then release
+inference. The worker inspects that handle with bounded calls and backoff, without
+an operation lifetime deadline. It collects a terminal receipt once before admitting
+more productive work. Pause and cancellation keep their requested state until
+existing external work settles; lost start receipts block replay for review.
+
+Foreground and background execution share host task records. Foreground admission
+persists a private context journal, and a saved result can be delivered after a
+lost client connection without running inference again. The host does not parse
+natural language. The model interprets task requests in any language and calls the
+`job` tool; the host enforces conversation scope, approval policy, revisions, and
+allowance limits.
+Exact `/task` commands are the language-neutral fallback: authenticated
+`task.message` and channel intake apply them outside ordinary work admission, so
+they work while the model is busy or unavailable. Commands preserve the active
+conversation lease and are excluded from model context. Channel intake continues
+during model execution, queues later questions durably, and sends command receipts
+through the outbox. Channel latency still depends on the adapter's polling and
+delivery behavior. Channel cancellation keeps the answer future alive through
+provider cleanup and task settlement before later queued work can run.
+
+Authenticated `session.enqueue` admits client questions independently of occupied
+work slots. The request, task identity, and private context commit together.
+Request IDs deduplicate repeated submissions. The worker serializes foreground
+requests from the same conversation and includes the preceding completed answer
+when preparing queued context. Client interruption can target the current turn
+without cancelling queued questions.
 Runtime and shared-library calls stay in-process; Runtime-to-plugin JSON-RPC
 and client-to-daemon IPC cross process boundaries. The `krabb-libs/` crates
 are compiled into their consumers, so plugins depend only on the libraries
@@ -209,12 +258,75 @@ the host forwards Markdown to capable adapters and converts it to readable plain
 text for legacy channels. Platform rendering and chunking belong to each adapter,
 using shared bounded parsing primitives from `krabb-text`. Persisted deliveries keep
 the original source and negotiate again at delivery, so a plugin change does not
-lose formatting. Tool work and slow turns receive one separate progress message.
-Progress uses its own durable delivery record; a failed progress send cannot block
-the final answer. Typing refreshes until the turn ends where supported. Final answers
-use fresh messages and adapter chunking, preserving completion notifications. Terminal
-clients retain streamed text and separate tool progress from the final answer. Provider-independent research
-guidance requires checking the exact supplied URL and reporting actual tool results.
+lose formatting. Fast requests answer directly, even when the provider is slow.
+For thoughtful work requiring research, verification, calculation, or generation,
+the model supplies one contextual message through the host-owned `task` tool.
+Elapsed time and tool activity alone never create waiting messages.
+Background execution has two capability modes with the same durability guarantees.
+Minimal execution uses ordinary bounded, checkpointed agent turns in the host.
+Extended execution uses the optional [runner plugin](../krabb-plugins/runner/README.md).
+The host owns one generic registry, durable identity/checkpoints, permissions,
+resource accounting, control receipts, recovery coordination, and pending delivery.
+Runner owns extended execution machinery and negotiates start, inspection/events,
+supported interruption, and collection capabilities. Core contains only normalized
+contracts. Scheduler triggers are independent of either mode.
+
+New extended tools are advertised only for runner and its negotiated operations.
+The initial runner operation delegates to a durable external A2A backend using the
+existing transport library. Saved legacy adapter handles still reconcile through
+the same host path. Runner absence does not disable generic task controls; pause
+and cancel record intent until effective interruption is confirmed. Unsupported
+extended work is never downgraded into repeated synchronous attempts.
+
+Substantial multi-stage autonomous work can use `background` mode before performing side effects.
+The host applies the conversation's approval policy, saves the goal in its session catalog, and only
+then acknowledges the handoff. This worker is independent of the scheduler plugin; the scheduler
+continues to own time-based triggers. Up to two background steps run concurrently and share
+workspace coordination with scheduled work. Checkpoints record completed work, the next action, and
+optional meaningful updates. They can yield immediately or wait up to a day before the next step.
+Typed transient failures retry with persisted backoff, honoring bounded provider retry guidance.
+Every HTTP intelligence adapter classifies a rejected status and `Retry-After` through the shared
+`krabb-http` library before reading the body, so throttling and outages retry while authentication,
+quota, and invalid requests block. Each provider admits model and compaction calls through one turn
+queue. Interactive requests lead; background and scheduled requests receive the next turn after
+three consecutive interactive admissions while they wait. Expired waiters leave the queue. Three
+consecutive failures block for review; productive checkpoints reset the streak. Retry waits and
+cumulative inference charges survive pause/resume and restart. Unknown, permanent, and uncertain
+failures do not authorize automatic retry. Interruptions after a possible mutation pause instead of
+replaying the action. Job status, checkpoints, and pending notices survive restart. Tool receipts
+and checkpoint transitions share an atomic snapshot.
+
+Client and channel identities use the normalized `Principal` type. Local client notifications append
+to their session; messaging channel notifications also use the durable outbox. Built-in client IDs
+are shared constants, and additional client identities use the same typed path. Older routing fields
+remain readable for compatibility. Authenticated local IPC exposes `task.list`, `task.control`, and
+`task.defer`; commands include a stable command ID and expected revision. This path has separate
+admission capacity and bypasses inference and plugin update locks. Local daemon authority can
+inspect or control saved jobs; channel tools remain restricted to the originating conversation.
+`task.receipt` finds an admitted client request by conversation and stable user-message ID without
+inference, including when the provider is unavailable. Foreground and queued admission share
+identity checks; conflicting retained identities require review. The TUI uses this path after a lost
+response and when reopening saved active work. Foreground connection guards release their owned
+session lease on abandonment and before final response writing. Standalone compaction keeps the
+client's explicit lease. IPC response and progress writes have a separate ten-second delivery limit;
+a stalled reader cannot hold them open indefinitely or renew inference time. `session.cleanup`
+preserves client conversations still required by protected tasks. Conversational task discovery and
+controls remain bound to their originating chat. Existing visibility and context sharing do not
+grant task-control rights. Richer conversational intent handling remains planned work. One-off
+resume times belong to the task catalog, independently of recurring scheduler triggers. The host
+retains an absolute instant and timezone, pauses through the same stop fence, and releases due work
+only after effective pause. Startup catches up once; it does not replay missed intervals or reset
+the task's budget. Manual controls can override the timer, and execution revalidates the captured
+authority before resuming. The destination is fixed to the origin. Optional progress is deduplicated
+and limited to one update per minute; completion and blockers bypass that rate limit. Pending
+notifications are published atomically with their transcript and delivery records. The session
+answer and command APIs accept an explicit configured `client` identity, defaulting to TUI for older
+clients; a command uses that client's shell setting. Completion requires a checkpoint confirming the
+entire goal. Progress uses its own durable delivery record; a failed progress send cannot block the
+final answer. Typing refreshes until the turn ends where supported. Final answers use fresh messages
+and adapter chunking, preserving completion notifications. Terminal clients retain streamed text and
+separate contextual progress from the final answer. Provider-independent research guidance requires
+checking the exact supplied URL and reporting actual tool results.
 
 The host reads `KRABB_HOME/data/system/KRAB.md` and `KLAW.md` as bounded system
 context at the start of each turn. It appends the session's bounded transcript
@@ -367,9 +479,11 @@ retain their state, including browser and desktop sessions.
 Daemon-owned TUI turns, typed commands, and manual compaction pin their session reservation
 in memory through execution, persistence, and cleanup. TUI answers and typed commands acknowledge
 cancellation and retire their token after process cleanup, including when streaming fails.
-Automatic compaction and generation share a 300-second turn deadline, within the TUI's
-310-second request timeout. Failed or cancelled compaction waits for provider request cleanup
-before subsequent generation; manual compaction uses the same cleanup path.
+Automatic compaction and generation share the admitted request deadline. The TUI
+negotiates a finite envelope for answers and retains its 310-second fallback for
+older daemons. Manual compaction retains its separate five-minute host allowance.
+Failed or cancelled compaction waits for provider request cleanup before subsequent
+generation; manual compaction uses the same cleanup path.
 Recovery cannot reclaim a pinned reservation;
 the guard releases it when the turn exits. This ownership is never persisted, so abandoned
 reservations remain recoverable after a daemon restart.
@@ -425,6 +539,7 @@ Reply context uses normalized, bounded message snapshots rather than provider wi
 objects. Supplied quotes are preserved; ID-only quotes resolve within the originating
 session. Outgoing chunk receipts retain native IDs so WhatsApp references can resolve
 after restart. Snapshots follow the session's existing isolated storage and are cleared
-with its history. Slack resolves a thread parent within the configured channel at
-most once per delivered event. Missing targets remain explicit context, and quoted
+with its history. Slack quotes a thread parent within the configured channel only
+for the first message it sees in that thread. Telegram ignores the implicit reply to
+a forum topic's creation message. Missing targets remain explicit context, and quoted
 content never changes policy, roles, or approval requirements.

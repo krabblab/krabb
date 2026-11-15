@@ -75,10 +75,76 @@ tools = true
 shell = false
 theme = true
 
+[inference]
+max_seconds = 3600
+queue_seconds = 60
+
+[operations]
+max_seconds = 86400
+
 [scheduler]
 timezone = "Europe/Rome"
 missed = "skip"
 ```
+
+Channel IDs cannot reuse a built-in client name (`tui` or `cli`), and the CLI
+shares data under visibility rules only when `[clients.cli]` is configured.
+
+Optional `operations.max_seconds` bounds how long an accepted external operation
+may stay active, independently of inference (unset by default). Past it, the host
+requests cancellation once where the backend supports it, keeps inspecting the
+saved handle until the operation settles, saves its receipt, and blocks the task
+for a decision instead of continuing automatically.
+
+`inference.max_seconds` bounds a request's active envelope (1–86400 seconds,
+default 3600); `queue_seconds` bounds provider admission wait (1–300, default 60).
+The request also retains its caller deadline. These settings do not create a
+lifetime deadline for durable jobs. Providers without negotiated deadline support
+retain their legacy class limits.
+
+If the predicted inference cannot fit the admitted envelope, the saved task blocks
+before generation with a reason to split the request or change its authorized
+limit. It does not retry the same deterministic admission refusal, accumulate
+retry context, or charge an inference call that never started. Actual timeouts
+and interrupted calls retain their separate accounting and recovery behavior.
+
+Optional `inference.task_tokens` caps cumulative input and output tokens for each saved
+host task, following the current setting so raising it lets a blocked task resume. Each
+step reserves its estimated input before dispatch and then records the provider's
+reported counts; missing counts are charged from host estimates, kept separately, never
+as zero. A request the provider refuses before generating, such as a rate limit,
+releases its reservation. A step whose estimated input does not fit blocks before
+dispatch, as does one that would leave no room for output. Requests carry no output
+limit, so the last admitted step's output can exceed the cap; the task then blocks
+before its next step. A request without a saved task keeps no account; it is refused
+only when its estimated input alone reaches the allowance. Currency cost is not
+estimated: provider prices are not reported.
+
+Optional `inference.task_seconds` caps cumulative inference admission for each saved
+host task. It is unset by default. The task retains its captured allowance across
+retries, pause/resume, and restart; changing or removing the global setting does
+not change an existing task's captured allowance. `inference.task_ceiling_seconds`
+(default `86400`, at least `task_seconds`) is the most `/task extend` can raise a
+task to; lowering it also restricts the subsequent admission of existing tasks.
+Host admission queue time and owned tool/approval waiting
+are excluded from confirmed active-use measurements. Incomplete attempts retain their admitted
+reservation as unresolved exposure, rather than treating unknown use as free work
+or charging daemon downtime as observed computation.
+
+Price and local CPU budgets are separate and remain in the execution plan. Existing tasks from older
+catalogs retain unknown earlier usage; they cannot claim a fresh finite allowance. Requests without
+durable task identity, such as a scheduled run or standalone compaction, are single attempts: each
+is bounded by `inference.task_seconds` but keeps no cumulative account. A schedule retry is a
+separately authorized run with its own bound. The `krabb code`, ACP, and AG-UI hosts run a private
+provider process per session; each raw generation they request is stopped at `inference.max_seconds`
+or `inference.task_seconds`, whichever is lower, without a cumulative task account. Authenticated
+local administrators can grant a larger captured ceiling through `task.budget` while the task is
+paused, blocked, or idle. In the originating conversation, the model or `/task extend <id>
+<minutes>` grants up to 24 hours at a time within `inference.task_ceiling_seconds`. A task migrated
+from a version without usage tracking has unknown earlier use; such a grant reviews it and sets its
+first known ceiling above all use still recorded. The grant must fit current host policy and retain
+prior use and unresolved exposure. It leaves task state unchanged; resume remains a separate user
+action. Conversational grant UI and reconciliation of untracked or unresolved usage remain planned.
 
 The scheduler timezone is the default for cron expressions; ask for a timezone
 when it is not configured. `missed` controls what happens to tasks that became
@@ -123,7 +189,11 @@ Approval modes are:
   Approvals show complete arguments: up to 512 JSON bytes for tool calls or 1,024
   for schedules including captured context, within a 2,000-byte message. Oversized
   requests are rejected; shorten them to review in full. ACP uses the same limits
-  and includes the host-selected workspace.
+  and includes the host-selected workspace. The proposed action is also saved
+  with its task. If the button expires, the turn is interrupted, or the daemon
+  restarts, the task waits for a decision instead of running again. Reply
+  `approve` or `deny` in the original conversation; the decision has no expiry,
+  survives restart, and runs the saved action at most once.
 - `auto`: Permit mutating tool calls without an interactive confirmation.
 
 Use `prompt` for interactive Telegram and Discord channels. Use `auto` only

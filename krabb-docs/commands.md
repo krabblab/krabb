@@ -207,6 +207,25 @@ manage structured records. `/store` remains as a compatibility alias. See the
 [TUI guide](../krabb-plugins/clients/tui/README.md) for controls, sessions, and client
 commands.
 
+To manage a saved task, ask in your own words; the model controls tasks in this
+conversation. Exact commands also work while the model is busy or unavailable:
+
+| Command | Effect |
+| --- | --- |
+| `/task` | List unfinished tasks in this conversation. |
+| `/task pause\|resume\|cancel <id>` | Control one task. |
+| `/task approve\|deny <id>` | Decide a saved action; only the user can. |
+| `/task steer <id> <instruction>` | Add a clarification to the task's goal. |
+| `/task defer <id> <time> <timezone>` | Resume the task at an exact time. |
+| `/task extend <id> <minutes>` | Raise the task's inference allowance. |
+
+Only the saved action runs after approval, and cancellation discards it. Task
+results still arrive in the conversation where work began.
+
+You can enter another question while a response is running. The daemon saves it
+with a task ID and answers it after the active foreground turn settles. Esc
+interrupts the current turn and preserves separately queued requests.
+
 Typed `!command` shell execution requires `clients.tui.shell` and is supported on Linux
 and Windows. Other platforms reject typed shell commands because descendant containment
 is unavailable for this execution path. Esc waits for process cleanup before completing
@@ -228,6 +247,7 @@ paths, Git revisions, or HTTPS archives with a `#sha256=` digest. `--link` is
 for local development builds. Installation validates each manifest and stages
 files before activation; a running daemon loads new plugins over local IPC.
 Interactive install, uninstall, update, and import operations show an in-place spinner.
+Progress stays on one terminal line, with long messages clipped to fit its width.
 Plugin install, uninstall, and update also print plain status lines to stderr
 when it is redirected. Update progress covers checking sources, preparing the
 update, and validating each replacement while its current process stays loaded.
@@ -480,3 +500,106 @@ input and does not invoke a shell. For a one-shot request, use
 
 The ACP and A2A message commands also accept `--quote <text>`; A2A supports it on
 `send`. For example: `krabb a2a send --quote "Earlier answer" "Explain this"`.
+
+## Request Recovery
+
+The TUI sends the saved user-message ID with a foreground answer request. If its
+reply is lost, it looks up that accepted request without generating again. A new
+client instance checks the latest saved TUI request for active work on reopening.
+Completed results come from the retained task; running or blocked work returns
+its actual state. A missing receipt does not authorize a fresh execution.
+
+Authenticated local clients can call `task.receipt` with
+`{"session":"tui-work","client":"tui","request":"saved-message-id"}`.
+The response has `found`; retained tasks also include `task: {id, state}`,
+`provider`, and nullable `text`. Text is exposed only for a verified reporting or
+completed result. When retention has removed the task, the response is
+`{"found":true,"expired":true,"task":{id,state}}` with no text, and answering or
+queueing that request ID again is refused instead of running it a second time.
+Lookup bypasses occupied work slots and plugin-update locks.
+`session.answer` accepts the same stable ID as optional `request`; a repeated
+accepted request returns its receipt or saved answer before provider discovery,
+with `done` true only when the saved answer is final.
+Without `request`, the host uses the conversation's saved last user message from
+that client as the identity, so a client that resends after a lost reply also
+receives the saved result instead of a second execution.
+Repeated reserved message appends are idempotent while the saved message remains;
+reusing its identity with different content is rejected.
+Unknown IDs must match the latest saved user message before admission. Reusing an
+accepted identity with a different provider is rejected.
+
+Receipt lookup uses the conversation's captured client identity and retained task
+records. Unknown IDs return `found: false`; conflicting legacy records require
+review. Lookup remains bounded by task retention. Conversational task discovery
+and controls belong to the originating conversation; existing context-sharing
+visibility grants do not grant task-control rights. Older daemons without receipt
+lookup retain their existing behavior.
+
+One-shot TUI requests keep temporary conversations when saved work, pending results,
+or uncertain effects still need them, and print a reopen command. The host's
+`session.cleanup` endpoint takes `id` and returns `deleted: false` while the client
+conversation is needed; otherwise it removes the idle conversation and private
+records. Ordinary deletion also rejects protected task state. If cleanup is
+unavailable or its result cannot be confirmed, the client reports that uncertainty
+and provides a command to check the conversation. It does not claim deletion or retention.
+
+## Deferred Task Resume
+
+Ask the model to resume a task later, or send an exact command such as
+`/task defer job-3 2030-11-12T09:00 Europe/Rome` or
+`/task defer job-3 2030-11-12T09:00:00+01:00`. The model resolves relative times
+and asks when the timezone is unknown. The host saves the instant and
+timezone, pauses the task, and resumes eligible work when due without the scheduler
+plugin or another message. If the daemon is offline then, it resumes after startup.
+The original goal, budget, checkpoint, and delivery destination remain attached to
+the same task. An operation still stopping must settle before productive work resumes.
+
+Ask for status to see the saved resume time. Manual pause, immediate resume, or
+cancellation clears it; steering preserves it. Unknown timezones, ambiguous or
+nonexistent daylight-saving times, and past times do not change the task.
+
+Authenticated local clients can also call `task.defer` with `id` and
+`command: {id, revision, when: {at, timezone}}`. `at` is whole Unix seconds;
+`timezone` is a valid named zone or UTC offset. Use the current task revision and
+a stable command ID for retries. The response includes a durable receipt and
+current state. Repeating the request returns its retained receipt without
+rescheduling. `task.list` exposes the active `resume` time. These host controls
+bypass occupied execution slots and plugin-update locks; they do not call a model.
+Saved authority is revalidated before execution, and uncertain effects require
+review instead of automatic resume.
+
+## Task Inference Grants
+
+In the conversation where a task began, ask the model to extend it or send
+`/task extend job-3 30`. Each grant raises its captured inference ceiling by up
+to 24 hours, within the host
+`inference.task_ceiling_seconds` ceiling. The task's state does not change; resume it
+separately if it is paused or blocked.
+
+Authenticated local clients can inspect `task.list` and grant a larger cumulative
+inference ceiling with `task.budget`. The payload contains `id` and `grant`:
+
+```json
+{
+  "id": "job-123",
+  "grant": {
+    "id": "grant-123",
+    "revision": 4,
+    "sequence": 2,
+    "limit_millis": 7200000
+  }
+}
+```
+
+Use the task revision and sequence from the current listing and a stable grant ID
+for retries. The amount is the new total ceiling. Grants preserve confirmed use
+and unresolved exposure, fit the configured host ceiling, and leave pause/block
+state unchanged. A changed task, active reservation, untracked historical usage,
+terminal task, or conflicting request ID rejects the grant. Receipts survive restart;
+duplicate requests return the retained receipt. Receipt history holds 32 grants.
+If the proposed total exceeds `inference.task_seconds`, an administrator must first
+raise the host ceiling and restart the daemon to load that policy. This change
+alone does not raise the saved task's ceiling. Resume the saved task separately
+after reviewing the grant receipt. This API uses local
+daemon administrative authority and bypasses occupied work slots. Model task tools
+cannot call it. Conversational grant UI and usage reconciliation remain planned.

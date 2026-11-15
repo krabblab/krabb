@@ -58,8 +58,10 @@ async fn socket_acknowledges_bot_messages_without_admitting_them() {
         *app.socket.lock().await = Some(socket);
 
         for index in 0..4 {
-            let events =
-                socket_poll_at(&app, "fixture", "D1", "http://127.0.0.1").await.unwrap().unwrap();
+            let events = socket_poll_at(&app, "fixture", "D1", "http://127.0.0.1", SOCKET_WAIT)
+                .await
+                .unwrap()
+                .unwrap();
 
             if index == 2 {
                 assert_eq!(events.len(), 1);

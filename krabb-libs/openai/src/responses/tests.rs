@@ -10,7 +10,7 @@ fn input() -> ModelRequest {
         model: "gpt-6-luna".into(),
         workspace: None,
         stream: false,
-        generation: Some(Generation { output: 2048, search: true, summary: false }),
+        generation: Some(Generation { limits: None, output: 2048, search: true, summary: false }),
         tools: vec![ToolSpec {
             name: "read".into(),
             description: Some("Read a file".into()),

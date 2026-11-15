@@ -21,13 +21,10 @@ pub(super) async fn profile(
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map_err(|_| krabb_core::Error::Denied("OpenRouter model discovery failed.".into()))?;
+        .map_err(|error| krabb_http::transport(&error, "OpenRouter"))?;
 
     if !response.status().is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenRouter model discovery was rejected with {}.",
-            response.status(),
-        )));
+        return Err(krabb_http::rejected(response, "OpenRouter").await);
     }
 
     let body: Value = serde_json::from_slice(&super::collect(response.bytes_stream()).await?)?;
@@ -56,7 +53,7 @@ fn metadata(body: &Value) -> krabb_core::Result<Profile> {
     let window = Window { tokens, output: output.min(4096).min(tokens / 2) };
 
     window.input()?;
-    Ok(Profile { window: Some(window), compact: false, search: false })
+    Ok(Profile { execution: None, window: Some(window), compact: false, search: false })
 }
 
 #[cfg(test)]

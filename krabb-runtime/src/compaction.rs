@@ -1,6 +1,7 @@
 mod continuation;
 mod frame;
 mod summary;
+mod timing;
 pub(crate) use continuation::Key;
 
 use std::collections::VecDeque;
@@ -29,6 +30,8 @@ pub(crate) struct Record {
     pub summary: Message,
 }
 
+const PROFILE_TTL: Duration = Duration::from_secs(300);
+
 #[derive(Default)]
 pub(crate) struct Context {
     profiles: VecDeque<(String, Instant, Profile)>,
@@ -37,6 +40,17 @@ pub(crate) struct Context {
 }
 
 impl Context {
+    pub fn cached(&self, model: &str) -> Option<Profile> {
+        self.profiles
+            .iter()
+            .find(|(name, time, _)| name == model && time.elapsed() < PROFILE_TTL)
+            .map(|(_, _, profile)| profile.clone())
+    }
+
+    pub fn invalidate(&mut self) {
+        self.profiles.clear();
+    }
+
     pub fn capture(&mut self, key: Option<Key>, response: &krabb_core::types::Response) {
         if let Some(key) = key {
             self.continuations.capture(key, response);
@@ -103,19 +117,79 @@ impl Context {
             return Ok(());
         };
 
-        if method != "generate" || !process.hello.capabilities.contains(&Capability::Context) {
+        if method != "generate" {
+            return Ok(());
+        }
+
+        if !process.hello.capabilities.contains(&Capability::Context) {
+            if params["generation"].get("limits").is_some_and(|value| !value.is_null()) {
+                return Err(Error::Denied(
+                    "The provider does not advertise inference deadlines.".into(),
+                ));
+            }
+
             return Ok(());
         }
 
         let mut input: ModelRequest = serde_json::from_value(params.take())?;
+        let requested = input.generation.and_then(|generation| generation.limits);
+
+        if let Some(limits) = requested {
+            limits.validate()?;
+        }
+
         self.continuations.restore(&mut input);
         let profile = self.profile(process, &input.model, *id, deadline).await?;
+        let limits = if profile.execution.as_ref().is_some_and(|profile| profile.deadlines) {
+            let remaining = timing::remaining(deadline);
+
+            if remaining == 0 {
+                return Err(Error::Limit(krabb_core::execution::Expiry::Total.to_string()));
+            }
+
+            let default = krabb_core::execution::Limits {
+                first_millis: remaining,
+                idle_millis: remaining,
+                total_millis: remaining,
+                ceiling_millis: None,
+            };
+
+            Some(requested.unwrap_or(default).restrict(remaining)?)
+        } else if requested.is_some() {
+            return Err(Error::Denied(
+                "The provider does not advertise inference deadlines.".into(),
+            ));
+        } else {
+            None
+        };
+
         let Some(window) = profile.window else {
+            match &mut input.generation {
+                Some(generation) => generation.limits = limits,
+
+                None => {
+                    input.generation = limits.map(|limits| Generation {
+                        output: crate::inference::WINDOW_OUTPUT,
+                        limits: Some(limits),
+                        summary: false,
+                        search: false,
+                    });
+                }
+            }
+
+            timing::restrict(&mut input, deadline)?;
             *params = serde_json::to_value(input)?;
             return Ok(());
         };
 
         let budget = window.input()?;
+        input.generation = Some(Generation {
+            limits,
+            output: input.generation.map_or(window.output, |value| value.output.min(window.output)),
+            summary: input.generation.is_some_and(|value| value.summary),
+            search: profile.search && !input.generation.is_some_and(|value| value.summary),
+        });
+
         let session =
             input.messages.last().map(|message| message.session.clone()).unwrap_or_default();
         let record = self.record(&input.model, input.workspace.as_deref(), &session);
@@ -152,29 +226,20 @@ impl Context {
             }
         }
 
-        input.generation = Some(Generation {
-            output: input.generation.map_or(window.output, |value| value.output.min(window.output)),
-            summary: input.generation.is_some_and(|value| value.summary),
-            search: profile.search && !input.generation.is_some_and(|value| value.summary),
-        });
-
+        timing::restrict(&mut input, deadline)?;
         *params = serde_json::to_value(input)?;
         Ok(())
     }
 
-    async fn profile(
+    pub(crate) async fn profile(
         &mut self,
         process: &mut Process,
         model: &str,
         id: u64,
         deadline: Instant,
     ) -> Result<Profile> {
-        if let Some((_, _, profile)) = self
-            .profiles
-            .iter()
-            .find(|(name, time, _)| name == model && time.elapsed() < Duration::from_secs(300))
-        {
-            return Ok(profile.clone());
+        if let Some(profile) = self.cached(model) {
+            return Ok(profile);
         }
 
         let response = process
@@ -188,6 +253,10 @@ impl Context {
 
         if let Some(window) = profile.window {
             window.input()?;
+        }
+
+        if let Some(execution) = &profile.execution {
+            execution.validate()?;
         }
 
         self.profiles.retain(|(name, _, _)| name != model);
@@ -345,7 +414,7 @@ fn result(response: krabb_core::types::Response) -> Result<serde_json::Value> {
     response.result.ok_or_else(|| {
         response.error.map_or_else(
             || Error::Protocol("The model returned no context response.".into()),
-            |error| Error::Denied(error.message),
+            krabb_core::failure::decode,
         )
     })
 }

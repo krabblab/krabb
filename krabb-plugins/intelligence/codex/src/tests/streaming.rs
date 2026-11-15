@@ -9,7 +9,7 @@ async fn parse(
 ) -> krabb_core::Result<Option<Response>> {
     let stream = futures_util::stream::iter(chunks);
 
-    crate::stream_body(7, reqwest::StatusCode::OK, stream, emitter).await
+    crate::stream_body(7, stream, emitter).await
 }
 
 fn fixture() -> contract::Fixture {
@@ -163,7 +163,7 @@ async fn terminal_marker_completes_with_pending_transport() {
         let mut emitter = Emitter::new(output);
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            crate::stream_body(7, reqwest::StatusCode::OK, stream, &mut emitter),
+            crate::stream_body(7, stream, &mut emitter),
         )
         .await
         .expect("terminal marker must complete without transport EOF")

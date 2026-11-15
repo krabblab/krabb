@@ -18,6 +18,7 @@ const TARGET_LIMIT: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct Target {
+    pub source: krabb_core::scope::Principal,
     pub channel: String,
     pub chat: String,
     pub thread: Option<String>,
@@ -84,7 +85,7 @@ impl Gate {
 
         let mut nonce = [0_u8; ID_BYTES];
         getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-        let id = hex(&nonce);
+        let id = crate::digest::hex(&nonce);
         let expires = now.saturating_add(LIFE.as_secs());
         let (answer, receiver) = oneshot::channel();
         let (completion, _) = watch::channel(());
@@ -226,7 +227,7 @@ impl Gate {
 
 fn token(key: &[u8; 32], id: &str, pending: &Pending, action: u8) -> io::Result<String> {
     let signature = signature(key, id, pending, action)?;
-    Ok(format!("{id}.{}.{}", hex(&signature), action as char))
+    Ok(format!("{id}.{}.{}", crate::digest::hex(&signature), action as char))
 }
 
 fn signature(
@@ -279,16 +280,6 @@ fn decode(value: &str) -> Option<(&str, u8, [u8; MAC_BYTES])> {
     Some((id, action, bytes))
 }
 
-fn hex(bytes: &[u8]) -> String {
-    let mut value = String::with_capacity(bytes.len() * 2);
-
-    for byte in bytes {
-        value.push_str(&format!("{byte:02x}"));
-    }
-
-    value
-}
-
 fn now() -> io::Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -303,6 +294,7 @@ mod tests {
 
     fn target() -> Target {
         Target {
+            source: krabb_core::scope::Principal::Channel("telegram".into()),
             channel: "telegram".into(),
             chat: "8".into(),
             thread: Some("4".into()),
@@ -362,9 +354,11 @@ mod tests {
         let mut gate = Gate::new().unwrap();
         let mut source = target();
         source.channel = "tui".into();
+        source.source = krabb_core::scope::Principal::Client(krabb_core::client::TUI.into());
         let workspace = Some("/workspace".into());
         let mut destination = source.clone();
         destination.channel = "telegram".into();
+        destination.source = krabb_core::scope::Principal::Channel("telegram".into());
         destination.session = "another-conversation".into();
 
         for approved in [true, false] {
@@ -374,7 +368,8 @@ mod tests {
             assert_eq!(gate.resolve_local(&id, approved), Some(approved));
             assert_eq!(challenge.answer.await.unwrap(), approved);
             assert_eq!(
-                gate.decision(&destination, &workspace, |previous| previous.channel == "tui"),
+                gate.decision(&destination, &workspace, |previous| previous.source
+                    == source.source),
                 Some(approved)
             );
 

@@ -51,18 +51,10 @@ pub(super) async fn generate(
             .json(&body)
             .send()
             .await
-            .map_err(|error| {
-                krabb_core::Error::Denied(format!(
-                    "Anthropic search request failed: {}.",
-                    error.without_url()
-                ))
-            })?;
-        let status = response.status();
+            .map_err(|error| krabb_http::transport(&error, "Anthropic"))?;
 
-        if !status.is_success() {
-            return Err(krabb_core::Error::Denied(format!(
-                "Anthropic search was rejected with {status}."
-            )));
+        if !response.status().is_success() {
+            return Err(krabb_http::rejected(response, "Anthropic").await);
         }
 
         let raw = read(response, "Anthropic").await?;
@@ -89,7 +81,7 @@ pub(super) async fn generate(
             reply["usage"]["input_tokens"] = input_tokens.into();
             reply["usage"]["output_tokens"] = output_tokens.into();
             let state = continuation(&model::resolve(&input.model), &reply["content"])?;
-            let mut response = response_body(id, status, reply)?;
+            let mut response = response_body(id, reply)?;
 
             if let Some(state) = state {
                 let events = response

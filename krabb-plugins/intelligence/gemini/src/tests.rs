@@ -834,7 +834,7 @@ async fn transport_failure_omits_credentials() {
             .unwrap_err()
             .to_string();
 
-    assert!(error.contains("Gemini request failed"));
+    assert!(error.contains("Gemini transport failed"));
     assert!(!error.contains("dummy-secret-key"));
     assert!(!error.contains("key="));
 }

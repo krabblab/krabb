@@ -263,6 +263,10 @@ async fn call_with_state(
 
                 if !content.is_empty() {
                     result = send_content(client, &channel, "", &content, token, base).await?;
+
+                    let sent = serde_json::from_value::<Vec<Reply>>(result["references"].take());
+
+                    references.extend(sent.unwrap_or_default());
                 }
 
                 if result.is_object() {
@@ -475,7 +479,12 @@ fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Opt
                 .into(),
         })),
 
-        "poll" => Ok(Some(Operation::Poll(params["timeout"].as_u64().unwrap_or(25)))),
+        "poll" => {
+            let wait = params["wait_seconds"].as_u64().or_else(|| params["timeout"].as_u64());
+
+            Ok(Some(Operation::Poll(wait.unwrap_or(25).min(25))))
+        }
+
         "ack" => Ok(Some(Operation::Ack(
             params["sequence"]
                 .as_u64()
@@ -521,6 +530,8 @@ async fn send_content(
 ) -> krabb_core::Result<Value> {
     let mut result = Value::Null;
 
+    let mut references = Vec::new();
+
     for part in chunks(text, 2_000) {
         if part.is_empty() {
             continue;
@@ -534,6 +545,8 @@ async fn send_content(
             json!({"content": part}),
         )
         .await?;
+
+        references.extend(Reply::from_parts(&result["id"], &Value::Null, Some(&part)));
     }
 
     for item in content {
@@ -549,6 +562,12 @@ async fn send_content(
                             json!({"content": part}),
                         )
                         .await?;
+
+                        references.extend(Reply::from_parts(
+                            &result["id"],
+                            &Value::Null,
+                            Some(&part),
+                        ));
                     }
                 }
             }
@@ -578,7 +597,7 @@ async fn send_content(
                 let _ = mime;
             }
 
-            Content::Context { .. } => {}
+            Content::Context { .. } => continue,
 
             Content::ToolCall { .. } => {
                 let text = item.render();
@@ -593,10 +612,18 @@ async fn send_content(
                 .await?;
             }
         }
+
+        if !matches!(item, Content::Text { .. }) {
+            references.extend(Reply::from_parts(&result["id"], &Value::Null, Some(&item.render())));
+        }
     }
 
     if result.is_null() {
         return Err(krabb_core::Error::Denied("send.text or send.content is required.".into()));
+    }
+
+    if result.is_object() {
+        result["references"] = json!(references);
     }
 
     Ok(result)
@@ -969,8 +996,19 @@ async fn message(
 
         let request = if body.is_null() { request } else { request.json(&body) };
 
-        let response = request.send().await.map_err(|_| {
-            krabb_core::Error::Denied("Discord request failed; delivery may be uncertain.".into())
+        let response = request.send().await.map_err(|error| {
+            let sent = !error.is_connect() && method != reqwest::Method::GET;
+
+            match krabb_http::transport(&error, "Discord") {
+                krabb_core::Error::Failed { failure, message }
+                    if failure.kind.retryable() && sent =>
+                {
+                    krabb_core::failure::Failure::new(krabb_core::failure::Kind::Uncertain)
+                        .error(format!("{message} Delivery may be uncertain."))
+                }
+
+                error => error,
+            }
         })?;
 
         let status = response.status();
@@ -979,12 +1017,20 @@ async fn message(
             .headers()
             .get("retry-after")
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<f64>().ok());
+            .and_then(|value| value.parse::<f64>().ok())
+            .or_else(|| {
+                krabb_http::retry_after(response.headers())
+                    .and_then(|seconds| u32::try_from(seconds).ok())
+                    .map(f64::from)
+            });
 
         let response_text = read(response).await?;
 
-        let value: Value = serde_json::from_str(&response_text)
-            .map_err(|_| krabb_core::Error::Denied("Discord response failed.".into()))?;
+        let value: Value = match serde_json::from_str(&response_text) {
+            Ok(value) => value,
+            Err(_) if !status.is_success() => Value::Null,
+            Err(_) => return Err(krabb_core::Error::Denied("Discord response failed.".into())),
+        };
 
         if attempt < 2
             && let Some(delay) = retry_delay(status, &value, retry_after)
@@ -1544,6 +1590,30 @@ fn chunks(text: &str, limit: usize) -> Vec<String> {
     chunks
 }
 
+/// The `message_reference.type` of a forwarded message, which is not a reply.
+const FORWARD: u64 = 1;
+
+/// The message a reply references; one from another conversation keeps only its identity.
+fn reference(value: &Value, channel: &str) -> Option<Reply> {
+    let reference = &value["message_reference"];
+    let referenced = &value["referenced_message"];
+    let local = |item: &Value| item["channel_id"].as_str().is_none_or(|id| id == channel);
+
+    if local(reference) && local(referenced) {
+        Reply::from_parts(
+            &reference["message_id"],
+            &referenced["author"]["id"],
+            referenced["content"].as_str(),
+        )
+    } else {
+        Reply::from_parts(
+            &reference["message_id"],
+            &Value::Null,
+            Some("[Referenced message is outside this conversation.]"),
+        )
+    }
+}
+
 fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
     if value["author"]["bot"].as_bool() == Some(true) {
         return None;
@@ -1551,7 +1621,18 @@ fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
 
     let message_id = value["id"].as_str()?;
     let channel = value["channel_id"].as_str()?;
-    let text = value["content"].as_str().unwrap_or_default();
+    let forwarded = value["message_reference"]["type"].as_u64() == Some(FORWARD);
+
+    let text = value["content"]
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .or_else(|| {
+            forwarded
+                .then(|| value["message_snapshots"][0]["message"]["content"].as_str())
+                .flatten()
+        })
+        .unwrap_or_default();
+
     let mut content = Vec::new();
 
     if !text.is_empty() {
@@ -1600,9 +1681,7 @@ fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
 
     Some(json!({
         "id": message_id,
-        "reply": if value["message_reference"]["channel_id"].as_str().is_none_or(|id| id == channel) && value["referenced_message"]["channel_id"].as_str().is_none_or(|id| id == channel) {
-            Reply::from_parts(&value["message_reference"]["message_id"], &value["referenced_message"]["author"]["id"], value["referenced_message"]["content"].as_str())
-        } else { Reply::from_parts(&value["message_reference"]["message_id"], &Value::Null, Some("[Referenced message is outside this conversation.]")) },
+        "reply": if forwarded { None } else { reference(value, channel) },
         "chat": channel,
         "kind": if value["guild_id"].is_string() { "guild" } else { "private" },
         "private": !value["guild_id"].is_string(),
@@ -1909,6 +1988,11 @@ mod tests {
         ));
 
         assert!(matches!(operation("poll", &json!({})).unwrap(), Some(Operation::Poll(25))));
+
+        assert!(matches!(
+            operation("poll", &json!({"wait_seconds": 1})).unwrap(),
+            Some(Operation::Poll(1))
+        ));
 
         assert!(matches!(
             operation("ack", &json!({"sequence": 7})).unwrap(),

@@ -51,6 +51,11 @@ fn reply_selection_is_saved_in_model_context_and_rejects_other_sessions() {
 
         assert!(user.content[0].render().contains("quoted answer"));
         assert_eq!(user.content[1].render(), "explain");
+
+        let saved: Message =
+            serde_json::from_value(response.result.as_ref().unwrap()["message"].clone()).unwrap();
+
+        assert_eq!(&saved, sessions.sessions["main"].messages.last().unwrap());
     }
 
     let mut foreign = request;
@@ -105,6 +110,13 @@ fn reference_history_survives_restarts_is_bounded_and_respects_routes() {
             Some("[Referenced message unavailable.]")
         );
 
+        let blank = Reply::new("blank".into(), None, Some(" ".into())).unwrap();
+
+        assert_eq!(
+            store.sessions["other"].resolve_reply(blank).text.as_deref(),
+            Some("[Referenced message unavailable.]")
+        );
+
         assert!(store.outbox.is_empty());
 
         for id in 0..140 {
@@ -117,6 +129,22 @@ fn reference_history_survives_restarts_is_bounded_and_respects_routes() {
         }
 
         assert_eq!(store.sessions["main"].references.len(), 128);
+
+        let last = store.sessions["main"].references.last().cloned().unwrap();
+        let directory = path.parent().unwrap().to_path_buf();
+        let backup = directory.with_extension("backup");
+
+        std::fs::rename(&directory, &backup).unwrap();
+        std::fs::write(&directory, "blocked").unwrap();
+
+        assert!(store.remember_reply("main", last).is_ok());
+
+        assert!(
+            store.remember_reply("main", Reply::new("fresh".into(), None, None).unwrap()).is_err()
+        );
+
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::rename(&backup, &directory).unwrap();
 
         assert!(
             store.sessions["main"].references.iter().all(|reply| reply

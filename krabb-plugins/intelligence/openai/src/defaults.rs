@@ -10,6 +10,7 @@ async fn native_search_dispatches_to_responses_for_both_transports() {
 
         let input = ModelRequest {
             generation: Some(krabb_core::context::Generation {
+                limits: None,
                 output: 2048,
                 search: true,
                 summary: false,

@@ -2,12 +2,18 @@ use krabb_core::scope::{Access, Owner, Principal};
 use serde_json::Value;
 
 fn owner(value: &Value) -> Option<Owner> {
-    let channel = value["channel"].as_str()?;
+    let source = match value.get("source").filter(|source| !source.is_null()) {
+        Some(source) => serde_json::from_value::<Principal>(source.clone()).ok()?,
 
-    let source = if channel == "tui" {
-        Principal::Client("tui".into())
-    } else {
-        Principal::try_from(format!("channels.{channel}")).ok()?
+        None => {
+            let channel = value["channel"].as_str()?;
+
+            if krabb_core::client::known(channel) {
+                Principal::Client(channel.into())
+            } else {
+                Principal::try_from(format!("channels.{channel}")).ok()?
+            }
+        }
     };
 
     let conversation = value["session"].as_str()?.to_owned();

@@ -28,7 +28,7 @@ pub fn profile(model: &str, configured: &str) -> krabb_core::Result<Profile> {
     let window = Window { tokens, output: 4096.min(tokens / 2) };
 
     window.input()?;
-    Ok(Profile { window: Some(window), compact: false, search })
+    Ok(Profile { execution: None, window: Some(window), compact: false, search })
 }
 
 fn capacity(model: &str) -> u64 {
