@@ -1,5 +1,17 @@
+pub(crate) mod dialog;
+mod jobs;
+mod journals;
 mod replies;
 mod runs;
+
+pub(crate) use jobs::{
+    CHECKPOINT_LIMIT as JOB_CHECKPOINT_LIMIT, Input, Job, JobStatus, OperationPhase,
+    TokensExhausted,
+};
+
+#[cfg(test)]
+pub(crate) use jobs::Approval;
+
 pub use runs::{Receipt, Run, Target};
 
 use std::{
@@ -17,7 +29,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const LIMIT: usize = 100;
-const SCHEDULE_SESSION_LIMIT: usize = 1_000;
+pub const POISONED: &str = "Session lock is poisoned.";
+const WORK_SESSION_LIMIT: usize = 1_000;
 const SEEN_LIMIT: usize = 10_000;
 const SEEN_KEY_LIMIT: usize = 4 * 1024;
 const BYTE_LIMIT: u64 = 32 * 1024 * 1024;
@@ -77,16 +90,44 @@ fn message_group(messages: &[Message], index: usize) -> (usize, usize) {
     (start, end)
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Conversation,
+    Foreground,
+    Schedule,
+    Job,
+}
+
+impl SessionKind {
+    /// Whether a person is waiting on this conversation, rather than a schedule or task.
+    pub fn interactive(self) -> bool {
+        matches!(self, Self::Conversation | Self::Foreground)
+    }
+}
+
+/// The conversation prefix a task journal reads instead of keeping a copy.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Reference {
+    pub through: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Session {
     pub id: String,
+    #[serde(default)]
+    pub kind: SessionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<krabb_core::scope::Principal>,
     pub model: String,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default, skip_serializing)]
+    scheduled: bool,
     #[serde(default)]
-    pub scheduled: bool,
-    #[serde(default)]
-    pub origin: Option<super::schedules::Origin>,
+    pub origin: Option<super::origin::Origin>,
     #[serde(default)]
     pub workspace: Option<String>,
     #[serde(default)]
@@ -104,6 +145,12 @@ pub struct Session {
     #[serde(default = "direct")]
     pub private: bool,
     pub messages: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<Reference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<dialog::Control>,
     #[serde(default)]
     pub references: Vec<krabb_core::reply::Reply>,
     #[serde(default)]
@@ -136,21 +183,83 @@ pub struct Session {
 }
 
 impl Session {
+    fn new(id: String, model: String, kind: SessionKind, pinned: bool) -> Self {
+        let now = now();
+
+        Self {
+            id,
+            kind,
+            source: None,
+            model,
+            pinned,
+            scheduled: false,
+            origin: None,
+            workspace: None,
+            isolated: None,
+            directory: None,
+            archived: false,
+            channel: None,
+            chat: None,
+            thread: None,
+            private: true,
+            messages: Vec::new(),
+            original: None,
+            reference: None,
+            commands: Vec::new(),
+            references: Vec::new(),
+            compacted_through: None,
+            compacted_context: None,
+            context_usage: None,
+            queued: Vec::new(),
+            queue_roles: BTreeMap::new(),
+            inflight: None,
+            reservation_until: None,
+            reservation_owner: None,
+            reservation_active: false,
+            inflight_roles: Vec::new(),
+            stream_delivery: None,
+            phase: safe(),
+            status: "idle".into(),
+            created: now,
+            updated: now,
+        }
+    }
+
+    pub fn is_work(&self) -> bool {
+        self.kind != SessionKind::Conversation
+    }
+
+    pub fn conversation(&self) -> impl DoubleEndedIterator<Item = &Message> {
+        self.messages.iter()
+    }
+
     pub fn context(&self) -> Vec<Message> {
-        let (Some(context), Some(watermark)) = (&self.compacted_context, &self.compacted_through)
-        else {
-            return self.messages.clone();
+        let messages = if let (Some(context), Some(watermark)) =
+            (&self.compacted_context, &self.compacted_through)
+        {
+            let start = self
+                .messages
+                .iter()
+                .rposition(|message| &message.id == watermark)
+                .map_or(0, |index| index + 1);
+            context.iter().chain(&self.messages[start..]).cloned().collect::<Vec<_>>()
+        } else {
+            self.messages.clone()
         };
 
-        let start = self
-            .messages
-            .iter()
-            .rposition(|message| &message.id == watermark)
-            .map_or(0, |index| index + 1);
+        let mut messages = messages;
 
-        let mut messages = context.clone();
+        if self.is_work()
+            && let Some(original) = &self.original
+            && original.role == Role::User
+            && original.session == self.id
+            && !messages
+                .iter()
+                .any(|message| message.id == original.id && message.role == Role::User)
+        {
+            messages.insert(0, original.clone());
+        }
 
-        messages.extend_from_slice(&self.messages[start..]);
         messages
     }
 }
@@ -196,9 +305,11 @@ pub enum DeliveryStatus {
     Uncertain,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Store {
     pub sessions: BTreeMap<String, Session>,
+    #[serde(default)]
+    pub jobs: BTreeMap<String, Job>,
     #[serde(default)]
     pub runs: BTreeMap<String, Run>,
     #[serde(default)]
@@ -213,18 +324,34 @@ pub struct Store {
     pub offsets: BTreeMap<String, i64>,
     #[serde(default)]
     pub seen: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub(crate) retired: Vec<jobs::retired::Retired>,
     #[serde(skip)]
     path: Option<PathBuf>,
     #[serde(skip)]
     pub(crate) media_root: Option<PathBuf>,
+    #[serde(skip)]
+    swept: std::cell::RefCell<Option<BTreeMap<String, String>>>,
     #[cfg(test)]
     #[serde(skip)]
     pub(super) record_limit: Option<u64>,
 }
 
+const CATALOG_VERSION: u8 = 15;
+pub(crate) const SYSTEM_CONTEXT: &str = "krabb-context-";
+/// The delivery ID suffix of a best-effort progress notice.
+pub(crate) const PROGRESS: &str = "-progress";
+const ACCOUNT_VERSION: u8 = 8;
+const INPUT_VERSION: u8 = 10;
+const RETRY_VERSION: u8 = 11;
+
 #[derive(Debug, Deserialize, Serialize)]
 struct SessionIndex {
     version: u8,
+    #[serde(default)]
+    jobs: BTreeMap<String, Job>,
+    #[serde(default)]
+    journals: BTreeSet<String>,
     #[serde(default)]
     isolated: BTreeMap<String, PathBuf>,
     sessions: BTreeMap<String, String>,
@@ -234,6 +361,8 @@ struct SessionIndex {
     clients: Option<ClientState>,
     #[serde(default)]
     deliveries: Option<DeliveryIndex>,
+    #[serde(default)]
+    retired: Vec<jobs::retired::Retired>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -288,7 +417,9 @@ impl Store {
         let mut store: Self =
             serde_json::from_value(document.clone()).map_err(std::io::Error::other)?;
 
-        let mut changed = migrate_schedule_sessions(&mut store, document.get("sessions"));
+        let mut changed = store.migrate_jobs(None);
+
+        changed |= migrate_schedule_sessions(&mut store, document.get("sessions"));
 
         changed |= migrate_delivery_routes(
             &mut store.outbox,
@@ -312,9 +443,54 @@ impl Store {
     }
 
     fn normalize_restart(&mut self) -> std::io::Result<bool> {
-        let mut changed = false;
+        self.validate_jobs()?;
+
+        let mut changed = self.recover_jobs()?;
+        let mut managed: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+
+        for job in self.jobs.values() {
+            if let Some(request) = &job.request {
+                managed.entry(job.origin.session.clone()).or_default().insert(request.clone());
+            }
+        }
 
         for (id, session) in &mut self.sessions {
+            if let Some(requests) = managed.get(id) {
+                let before = session.queued.len();
+
+                session.queued.retain(|message| !requests.contains(&message.id));
+                session.queue_roles.retain(|request, _| !requests.contains(request));
+                changed |= before != session.queued.len();
+
+                let request = session.inflight.as_ref().or_else(|| {
+                    session.reservation_owner.as_ref()?;
+                    session.conversation().rev().find(|message| message.role == Role::User)
+                });
+
+                if request.is_some_and(|message| requests.contains(&message.id)) {
+                    session.inflight = None;
+                    session.inflight_roles.clear();
+                    session.reservation_active = false;
+                    session.reservation_owner = None;
+                    session.reservation_until = None;
+                    session.status = "idle".into();
+                    session.phase = safe();
+                    changed = true;
+                }
+            }
+
+            if session.kind == SessionKind::Conversation && session.scheduled {
+                session.kind = if self.jobs.contains_key(id) {
+                    SessionKind::Job
+                } else {
+                    SessionKind::Schedule
+                };
+
+                changed = true;
+            }
+
+            session.scheduled = false;
+
             if !valid(id) || session.id != *id {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -371,6 +547,11 @@ impl Store {
             }
         }
 
+        let total = self.outbox.len();
+
+        self.outbox.retain(|delivery| !delivery.id.ends_with(PROGRESS));
+        changed |= self.outbox.len() != total;
+
         for delivery in &mut self.outbox {
             if delivery.updated == 0 {
                 delivery.updated = delivery.created;
@@ -386,18 +567,31 @@ impl Store {
         }
 
         let mut users =
-            self.sessions.values().filter(|session| !session.scheduled).collect::<Vec<_>>();
+            self.sessions.values().filter(|session| !session.is_work()).collect::<Vec<_>>();
 
         let mut schedules =
-            self.sessions.values().filter(|session| session.scheduled).collect::<Vec<_>>();
+            self.sessions.values().filter(|session| session.is_work()).collect::<Vec<_>>();
 
         users.sort_by_key(|session| session.updated);
         schedules.sort_by_key(|session| session.updated);
 
+        let origins = self
+            .jobs
+            .values()
+            .filter(|job| job.protected())
+            .map(|job| job.origin.session.as_str())
+            .collect::<BTreeSet<_>>();
+
         let discarded = users
             .iter()
+            .filter(|session| !origins.contains(session.id.as_str()))
             .take(users.len().saturating_sub(LIMIT))
-            .chain(schedules.iter().take(schedules.len().saturating_sub(SCHEDULE_SESSION_LIMIT)))
+            .chain(
+                schedules
+                    .iter()
+                    .filter(|session| !self.jobs.get(&session.id).is_some_and(Job::protected))
+                    .take(schedules.len().saturating_sub(WORK_SESSION_LIMIT)),
+            )
             .map(|session| session.id.clone())
             .collect::<Vec<_>>();
 
@@ -428,7 +622,32 @@ impl Store {
         Ok(changed)
     }
 
+    /// Upgrades saved tasks from an older catalog `version`; a legacy document has none.
+    fn migrate_jobs(&mut self, version: Option<u8>) -> bool {
+        let older = |target| version.is_none_or(|version| version < target);
+        let mut changed = false;
+
+        if older(ACCOUNT_VERSION) {
+            for job in self.jobs.values_mut().filter(|job| job.budget.is_none()) {
+                job.budget = Some(krabb_core::execution::budget::Budget::legacy());
+                changed = true;
+            }
+        }
+
+        if older(INPUT_VERSION) {
+            changed |= self.migrate_inputs();
+        }
+
+        if older(RETRY_VERSION) {
+            changed |= self.migrate_retries();
+        }
+
+        changed
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
+        self.validate_jobs()?;
+
         let Some(path) = &self.path else {
             return Ok(());
         };
@@ -470,14 +689,14 @@ impl Store {
         id: impl Into<String>,
         model: impl Into<String>,
     ) -> std::io::Result<()> {
-        self.create_session(id.into(), model.into(), false, true)
+        self.create_session(id.into(), model.into(), SessionKind::Conversation, true)
     }
 
     fn create_session(
         &mut self,
         id: String,
         model: String,
-        scheduled: bool,
+        kind: SessionKind,
         pinned: bool,
     ) -> std::io::Result<()> {
         if !valid(&id) {
@@ -487,7 +706,13 @@ impl Store {
             ));
         }
 
-        if is_schedule_session(&id) != scheduled {
+        let reserved = match kind {
+            SessionKind::Conversation => is_schedule_session(&id) || is_job_session(&id),
+            SessionKind::Schedule => !is_schedule_session(&id),
+            SessionKind::Job | SessionKind::Foreground => !is_job_session(&id),
+        };
+
+        if reserved {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Scheduled session IDs are reserved.",
@@ -508,12 +733,8 @@ impl Store {
             ));
         }
 
-        let (count, limit, full_message) = if scheduled {
-            (
-                self.schedule_session_count(),
-                SCHEDULE_SESSION_LIMIT,
-                "Scheduled session capacity is full.",
-            )
+        let (count, limit, full_message) = if kind != SessionKind::Conversation {
+            (self.work_session_count(), WORK_SESSION_LIMIT, "Scheduled session capacity is full.")
         } else {
             (
                 self.user_session_count(),
@@ -526,44 +747,8 @@ impl Store {
             return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, full_message));
         }
 
-        let now = now();
-
         self.change(|store| {
-            store.sessions.insert(
-                id.clone(),
-                Session {
-                    id,
-                    model,
-                    pinned,
-                    scheduled,
-                    origin: None,
-                    workspace: None,
-                    isolated: None,
-                    directory: None,
-                    archived: false,
-                    channel: None,
-                    chat: None,
-                    thread: None,
-                    private: true,
-                    messages: Vec::new(),
-                    references: Vec::new(),
-                    compacted_through: None,
-                    compacted_context: None,
-                    context_usage: None,
-                    queued: Vec::new(),
-                    queue_roles: BTreeMap::new(),
-                    inflight: None,
-                    reservation_until: None,
-                    reservation_owner: None,
-                    reservation_active: false,
-                    inflight_roles: Vec::new(),
-                    stream_delivery: None,
-                    phase: safe(),
-                    status: "idle".into(),
-                    created: now,
-                    updated: now,
-                },
-            );
+            store.sessions.insert(id.clone(), Session::new(id, model, kind, pinned));
         })
     }
 
@@ -583,7 +768,7 @@ impl Store {
 
     pub fn ensure_channel(&mut self, id: &str, model: &str) -> std::io::Result<()> {
         let Some(session) = self.sessions.get(id) else {
-            return self.create_session(id.into(), model.into(), false, false);
+            return self.create_session(id.into(), model.into(), SessionKind::Conversation, false);
         };
 
         if session.pinned || session.model == model || session.status == "working" {
@@ -603,9 +788,19 @@ impl Store {
         id: impl Into<String>,
         model: impl Into<String>,
     ) -> std::io::Result<()> {
-        let id = id.into();
+        self.ensure_work(id.into(), model.into(), SessionKind::Schedule)
+    }
 
-        if !is_schedule_session(&id) {
+    pub fn ensure_job(&mut self, id: &str, model: &str) -> std::io::Result<()> {
+        self.ensure_work(id.into(), model.into(), SessionKind::Job)
+    }
+
+    fn ensure_work(&mut self, id: String, model: String, kind: SessionKind) -> std::io::Result<()> {
+        if !(match kind {
+            SessionKind::Schedule => is_schedule_session(&id),
+            SessionKind::Job | SessionKind::Foreground => is_job_session(&id),
+            SessionKind::Conversation => false,
+        }) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Scheduled session ID is invalid.",
@@ -613,7 +808,7 @@ impl Store {
         }
 
         if let Some(session) = self.sessions.get(&id) {
-            if session.scheduled {
+            if session.kind == kind {
                 return Ok(());
             }
 
@@ -623,12 +818,13 @@ impl Store {
             ));
         }
 
-        if self.schedule_session_count() >= SCHEDULE_SESSION_LIMIT {
+        if self.work_session_count() >= WORK_SESSION_LIMIT {
             let oldest = self
                 .sessions
                 .values()
-                .filter(|session| session.scheduled)
+                .filter(|session| session.is_work())
                 .filter(|session| session.status != "working" && session.inflight.is_none())
+                .filter(|session| !self.jobs.get(&session.id).is_some_and(Job::protected))
                 .min_by_key(|session| session.updated)
                 .map(|session| session.id.clone())
                 .ok_or_else(|| {
@@ -641,19 +837,15 @@ impl Store {
             self.remove_deep(&oldest)?;
         }
 
-        self.create_scheduled(id, model)
+        self.create_session(id, model, kind, true)
     }
 
     fn user_session_count(&self) -> usize {
-        self.sessions.values().filter(|session| !session.scheduled).count()
+        self.sessions.values().filter(|session| !session.is_work()).count()
     }
 
-    fn schedule_session_count(&self) -> usize {
-        self.sessions.values().filter(|session| session.scheduled).count()
-    }
-
-    fn create_scheduled(&mut self, id: String, model: impl Into<String>) -> std::io::Result<()> {
-        self.create_session(id, model.into(), true, true)
+    fn work_session_count(&self) -> usize {
+        self.sessions.values().filter(|session| session.is_work()).count()
     }
 
     pub fn rename_session(&mut self, source: &str, target: &str) -> std::io::Result<()> {
@@ -675,14 +867,14 @@ impl Store {
             std::io::Error::new(std::io::ErrorKind::NotFound, "Session was not found.")
         })?;
 
-        if session.scheduled {
+        if session.is_work() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "A scheduled session cannot be renamed.",
             ));
         }
 
-        if is_schedule_session(target) {
+        if is_schedule_session(target) || is_job_session(target) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Scheduled session IDs are reserved.",
@@ -725,6 +917,26 @@ impl Store {
         self.change(|store| {
             store.sessions.remove(source);
             store.sessions.insert(target.to_owned(), session);
+
+            for job in store.jobs.values_mut().filter(|job| job.origin.session == source) {
+                job.origin.session = target.into();
+
+                if matches!(job.origin.source(), krabb_core::scope::Principal::Client(_)) {
+                    job.origin.chat = target.into();
+                }
+            }
+
+            for session in store.sessions.values_mut() {
+                if let Some(origin) = &mut session.origin
+                    && origin.session == source
+                {
+                    origin.session = target.into();
+
+                    if matches!(origin.source(), krabb_core::scope::Principal::Client(_)) {
+                        origin.chat = target.into();
+                    }
+                }
+            }
         })
     }
 
@@ -750,13 +962,13 @@ impl Store {
     pub fn origin(
         &mut self,
         id: &str,
-        origin: Option<super::schedules::Origin>,
+        origin: Option<super::origin::Origin>,
     ) -> std::io::Result<()> {
         let current = self.sessions.get(id).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "Scheduled session was not found.")
         })?;
 
-        if !current.scheduled {
+        if !current.is_work() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Only schedules have an execution origin.",
@@ -780,16 +992,28 @@ impl Store {
         thread: Option<&str>,
         private: bool,
     ) -> std::io::Result<()> {
-        if !self.sessions.contains_key(id) {
+        let Some(session) = self.sessions.get(id) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Session was not found.",
             ));
+        };
+
+        let source = krabb_core::scope::Principal::Channel(channel.into());
+
+        if session.source.as_ref() == Some(&source)
+            && session.channel.as_deref() == Some(channel)
+            && session.chat.as_deref() == Some(chat)
+            && session.thread.as_deref() == thread
+            && session.private == private
+        {
+            return Ok(());
         }
 
         self.change(|store| {
             if let Some(session) = store.sessions.get_mut(id) {
                 session.channel = Some(channel.into());
+                session.source = Some(source);
                 session.chat = Some(chat.into());
                 session.thread = thread.map(str::to_owned);
                 session.private = private;
@@ -797,12 +1021,45 @@ impl Store {
         })
     }
 
+    pub fn client(&mut self, id: &str, client: &str) -> std::io::Result<()> {
+        if !valid(client) || !self.sessions.contains_key(id) {
+            return Err(std::io::Error::other("A valid client and existing session are required."));
+        }
+
+        if self.sessions[id].is_work() {
+            return Err(std::io::Error::other("Internal work cannot attach a client endpoint."));
+        }
+
+        let source = krabb_core::scope::Principal::Client(client.into());
+
+        let session = &self.sessions[id];
+
+        if session.channel.is_some()
+            || (session.source.as_ref() == Some(&source)
+                && session.chat.is_none()
+                && session.thread.is_none()
+                && !session.private)
+        {
+            return Ok(());
+        }
+
+        self.change(|store| {
+            let session = store.sessions.get_mut(id).unwrap();
+            session.source = Some(source);
+            session.channel = None;
+            session.chat = None;
+            session.thread = None;
+            session.private = false;
+        })
+    }
+
+    #[cfg(test)]
     pub fn push(&mut self, id: &str, message: Message) -> std::io::Result<()> {
-        self.push_with_status(id, message, false, false)
+        self.push_with_status(id, message, false, false, None)
     }
 
     pub fn append(&mut self, id: &str, message: Message) -> std::io::Result<()> {
-        self.push_with_status(id, message, true, false)
+        self.push_with_status(id, message, true, false, None)
     }
 
     pub fn append_notice(&mut self, id: &str, message: Message) -> std::io::Result<()> {
@@ -884,7 +1141,19 @@ impl Store {
             ));
         }
 
-        self.push_with_status(id, message, true, true)
+        if let Some(existing) = session.messages.iter().find(|saved| saved.id == message.id) {
+            return if existing == &message {
+                self.check_input(id, &message)?;
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "This message identity is already saved with different content.",
+                ))
+            };
+        }
+
+        self.push_with_status(id, message, true, true, None)
     }
 
     pub fn set_compacted_context_reserved(
@@ -932,7 +1201,7 @@ impl Store {
             return Ok(false);
         }
 
-        let mut context = session.context();
+        let mut context = self.resolved_context(id)?;
 
         if !record.apply(&mut context).map_err(std::io::Error::other)? {
             return Ok(false);
@@ -954,6 +1223,7 @@ impl Store {
         message: Message,
         resume_cancelled: bool,
         preserve_working: bool,
+        task: Option<&str>,
     ) -> std::io::Result<()> {
         if !self.sessions.contains_key(id) {
             return Err(std::io::Error::new(
@@ -962,7 +1232,20 @@ impl Store {
             ));
         }
 
+        if self.check_input(id, &message)? {
+            return Ok(());
+        }
+
         self.change(|store| {
+            if let Some(task) = task.filter(|task| *task != id)
+                && let Some(journal) = store.sessions.get_mut(task)
+            {
+                let mut entry = message.clone();
+                entry.session = task.into();
+                journal.messages.push(entry);
+                compact_messages(&mut journal.messages);
+            }
+
             let Some(session) = store.sessions.get_mut(id) else {
                 return;
             };
@@ -998,6 +1281,7 @@ impl Store {
         self.change(|store| {
             if let Some(session) = store.sessions.get_mut(id) {
                 session.messages.clear();
+                session.commands.clear();
                 session.references.clear();
                 session.compacted_through = None;
                 session.compacted_context = None;
@@ -1138,7 +1422,7 @@ impl Store {
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Session is already working.",
+                krabb_core::types::SESSION_BUSY,
             ));
         }
 
@@ -1239,6 +1523,21 @@ impl Store {
         thread: Option<String>,
         text: impl Into<String>,
     ) -> std::io::Result<()> {
+        self.reply_task(None, session, message, id, channel, chat, thread, text)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn reply_task(
+        &mut self,
+        task: Option<&str>,
+        session: &str,
+        message: Message,
+        id: impl Into<String>,
+        channel: impl Into<String>,
+        chat: impl Into<String>,
+        thread: Option<String>,
+        text: impl Into<String>,
+    ) -> std::io::Result<()> {
         if !self.sessions.contains_key(session) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -1251,6 +1550,9 @@ impl Store {
         let channel = channel.into();
         let chat = chat.into();
         let text = text.into();
+
+        self.check_foreground_reply(task, session, &text)?;
+
         let private = self.sessions.get(session).is_some_and(|session| session.private);
 
         let uncertain_delivery = self.outbox.iter().any(|delivery| {
@@ -1277,6 +1579,10 @@ impl Store {
         }
 
         self.change(|store| {
+            if let Some(task) = task {
+                store.finish_foreground_reply(task);
+            }
+
             if let Some(session) = store.sessions.get_mut(session) {
                 session.messages.push(message);
 
@@ -1331,113 +1637,6 @@ impl Store {
         })
     }
 
-    #[cfg(test)]
-    pub fn start_stream(
-        &mut self,
-        session: &str,
-        id: impl Into<String>,
-        channel: impl Into<String>,
-        chat: impl Into<String>,
-        thread: Option<String>,
-        text: impl Into<String>,
-    ) -> std::io::Result<()> {
-        let id = id.into();
-
-        let channel = channel.into();
-        let chat = chat.into();
-        let text = text.into();
-
-        let Some(current) = self.sessions.get(session) else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Session was not found.",
-            ));
-        };
-
-        let private = current.private;
-
-        if current.inflight.is_none() || current.stream_delivery.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "Session cannot start a streamed delivery.",
-            ));
-        }
-
-        if self.outbox.iter().any(|delivery| delivery.id == id) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "Streamed delivery already exists.",
-            ));
-        }
-
-        if self.outbox.len() >= LIMIT {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "Delivery outbox is full; no message was discarded.",
-            ));
-        }
-
-        self.change(|store| {
-            if let Some(session) = store.sessions.get_mut(session) {
-                session.phase = "unsafe".into();
-                session.stream_delivery = Some(id.clone());
-                session.updated = now();
-            }
-
-            store.outbox.push(Delivery {
-                id,
-                channel,
-                chat,
-                private,
-                thread,
-                text,
-                attempts: 0,
-                created: now(),
-                status: DeliveryStatus::Sending,
-                last_error: None,
-                message_id: None,
-                updated: now(),
-            });
-        })
-    }
-
-    #[cfg(test)]
-    pub fn stream_sending(&mut self, id: &str, text: impl Into<String>) -> std::io::Result<()> {
-        let text = text.into();
-
-        self.update_delivery(id, |delivery| {
-            delivery.text = text;
-            delivery.status = DeliveryStatus::Sending;
-            delivery.last_error = None;
-            delivery.updated = now();
-        })
-    }
-
-    #[cfg(test)]
-    pub fn stream_started(
-        &mut self,
-        id: &str,
-        message_id: impl Into<String>,
-    ) -> std::io::Result<()> {
-        let message_id = message_id.into();
-
-        self.update_delivery(id, |delivery| {
-            delivery.message_id = Some(message_id);
-            delivery.status = DeliveryStatus::Streaming;
-            delivery.last_error = None;
-            delivery.updated = now();
-        })
-    }
-
-    #[cfg(test)]
-    pub fn stream_updated(&mut self, id: &str) -> std::io::Result<()> {
-        self.update_delivery(id, |delivery| {
-            delivery.status = DeliveryStatus::Streaming;
-            delivery.last_error = None;
-            delivery.updated = now();
-        })
-    }
-
     pub fn set_status(&mut self, id: &str, status: &str) -> std::io::Result<()> {
         if !self.sessions.contains_key(id) {
             return Err(std::io::Error::new(
@@ -1480,10 +1679,16 @@ impl Store {
             ));
         };
 
+        if session.is_work() {
+            return Err(std::io::Error::other(
+                "Internal work sessions cannot reserve interactive turns.",
+            ));
+        }
+
         if session.reservation_active || session.inflight.is_some() || session.status == "working" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Session is already working.",
+                krabb_core::types::SESSION_BUSY,
             ));
         }
 
@@ -1662,6 +1867,7 @@ impl Store {
                 .chain(session.queued.iter_mut())
                 .chain(session.inflight.iter_mut())
                 .chain(session.compacted_context.iter_mut().flatten())
+                .chain(session.original.iter_mut())
             {
                 message.content = super::media::archive(
                     std::mem::take(&mut message.content),
@@ -1685,6 +1891,7 @@ impl Store {
                 .chain(session.queued.iter())
                 .chain(session.inflight.iter())
                 .chain(session.compacted_context.iter().flatten())
+                .chain(session.original.iter())
                 .flat_map(|message| message.content.clone())
                 .collect::<Vec<_>>();
 
@@ -1755,7 +1962,7 @@ impl Store {
             std::io::Error::new(std::io::ErrorKind::NotFound, "Source session was not found.")
         })?;
 
-        if is_schedule_session(target) {
+        if is_schedule_session(target) || is_job_session(target) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Scheduled session IDs are reserved.",
@@ -1797,6 +2004,8 @@ impl Store {
                 target.clone(),
                 Session {
                     id: target,
+                    kind: SessionKind::Conversation,
+                    source: source.source,
                     model: source.model,
                     pinned: source.pinned,
                     scheduled: false,
@@ -1810,6 +2019,9 @@ impl Store {
                     thread: source.thread,
                     private: source.private,
                     messages,
+                    original: None,
+                    reference: None,
+                    commands: source.commands,
                     references: source.references,
                     compacted_through: source.compacted_through,
                     compacted_context,
@@ -1834,10 +2046,27 @@ impl Store {
     pub fn cancel(&mut self, id: &str) -> std::io::Result<()> {
         let active = self.sessions.get(id).is_some_and(|session| session.inflight.is_some());
 
-        if active { self.set_status(id, "cancelled") } else { self.clear(id, "cancelled") }
+        if active {
+            self.set_status(id, "cancelled")?;
+        } else {
+            self.clear(id, "cancelled")?;
+        }
+
+        self.cancel_jobs(id)?;
+        Ok(())
     }
 
+    #[cfg(test)]
     pub fn phase(&mut self, id: &str, phase: &str) -> std::io::Result<()> {
+        self.phase_with_task(id, phase, None)
+    }
+
+    fn phase_with_task(
+        &mut self,
+        id: &str,
+        phase: &str,
+        task: Option<&str>,
+    ) -> std::io::Result<()> {
         if !matches!(phase, "safe" | "unsafe") {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1852,6 +2081,12 @@ impl Store {
             ));
         };
 
+        if phase == "unsafe"
+            && self.jobs.get(task.unwrap_or(id)).is_some_and(|job| job.status != JobStatus::Running)
+        {
+            return Err(std::io::Error::other("The task is stopping or no longer active."));
+        }
+
         if session.inflight.is_none() && !session.has_live_tui_reservation() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1864,10 +2099,27 @@ impl Store {
                 session.phase = phase.into();
                 session.updated = now();
             }
+
+            if phase == "unsafe"
+                && let Some(job) = store.jobs.get_mut(task.unwrap_or(id))
+            {
+                job.unsafe_step = true;
+            }
         })
     }
 
     pub fn remove(&mut self, id: &str) -> std::io::Result<()> {
+        if self
+            .jobs
+            .values()
+            .any(|job| (job.id == id || job.origin.session == id) && job.protected())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "Resolve retained task work or pending results before deleting their conversation.",
+            ));
+        }
+
         if !self.sessions.contains_key(id) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -1950,18 +2202,6 @@ impl Store {
     }
 
     #[cfg(test)]
-    pub fn ack(&mut self, id: &str) -> std::io::Result<()> {
-        if let Some(index) = self.outbox.iter().position(|delivery| delivery.id == id) {
-            self.change(|store| {
-                store.outbox.remove(index);
-                store.receipt(id, Receipt::Delivered);
-            })?;
-        }
-
-        Ok(())
-    }
-
-    #[cfg(test)]
     pub fn retry(&mut self, id: &str) -> std::io::Result<()> {
         if let Some(index) = self.outbox.iter().position(|delivery| delivery.id == id) {
             self.change(|store| {
@@ -1980,6 +2220,14 @@ impl Store {
             delivery.last_error = None;
             delivery.updated = now();
         })
+    }
+
+    pub fn forget_delivery(&mut self, id: &str) -> std::io::Result<()> {
+        if !self.outbox.iter().any(|delivery| delivery.id == id) {
+            return Ok(());
+        }
+
+        self.change(|store| store.outbox.retain(|delivery| delivery.id != id))
     }
 
     pub fn uncertain(&mut self, id: &str, error: impl Into<String>) -> std::io::Result<()> {
@@ -2218,12 +2466,14 @@ impl Store {
         let previous = self.sessions.clone();
 
         let runs = self.runs.clone();
+        let jobs = self.jobs.clone();
         let outbox = self.outbox.clone();
         let dead = self.dead.clone();
         let offsets = self.offsets.clone();
         let seen = self.seen.clone();
         let deferred = self.deferred.clone();
         let deferred_acknowledged = self.deferred_acknowledged.clone();
+        let retired = self.retired.clone();
         let path = self.path.clone();
 
         update(self);
@@ -2231,17 +2481,32 @@ impl Store {
         if let Err(error) = self.save() {
             self.sessions = previous;
             self.runs = runs;
+            self.jobs = jobs;
             self.outbox = outbox;
             self.dead = dead;
             self.offsets = offsets;
             self.seen = seen;
             self.deferred = deferred;
             self.deferred_acknowledged = deferred_acknowledged;
+            self.retired = retired;
             self.path = path;
             return Err(error);
         }
 
         Ok(())
+    }
+
+    pub(crate) fn atomic<T>(
+        &mut self,
+        update: impl FnOnce(&mut Self) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        let mut candidate = self.clone();
+        candidate.path = None;
+        let result = update(&mut candidate)?;
+        candidate.path = self.path.clone();
+        candidate.save()?;
+        *self = candidate;
+        Ok(result)
     }
 
     fn update_delivery(
@@ -2268,6 +2533,11 @@ fn is_schedule_session(id: &str) -> bool {
     id.strip_prefix("schedule-").is_some_and(|task_id| {
         !task_id.is_empty() && task_id.bytes().all(|byte| byte.is_ascii_digit())
     })
+}
+
+fn is_job_session(id: &str) -> bool {
+    id.strip_prefix("job-")
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 pub fn valid(id: &str) -> bool {
@@ -2630,19 +2900,33 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
 
     let index: SessionIndex = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
 
-    if !matches!(index.version, 1..=3) {
+    if !matches!(index.version, 1..=CATALOG_VERSION) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "Unsupported session catalog version.",
         ));
     }
 
+    if index.journals.iter().any(|id| !index.sessions.contains_key(id) || !is_job_session(id)) {
+        return Err(std::io::Error::other("Invalid task journal catalog."));
+    }
+
     let root = path.parent().expect("catalog has parent");
-    let mut store = Store { path: Some(path.to_path_buf()), runs: index.runs, ..Store::default() };
+
+    let mut store = Store {
+        path: Some(path.to_path_buf()),
+        runs: index.runs,
+        jobs: index.jobs,
+        retired: index.retired,
+        ..Store::default()
+    };
 
     store.validate_runs()?;
 
-    let mut changed = false;
+    let mut changed = store.migrate_jobs(Some(index.version));
+
+    store.validate_jobs()?;
+    store.validate_retired()?;
 
     for (id, key) in index.sessions {
         if !valid(&id) || key.len() != 64 || key.bytes().any(|byte| !byte.is_ascii_hexdigit()) {
@@ -2653,7 +2937,8 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
         }
 
         let record_path =
-            record_directory(path, &id, index.isolated.get(&id))?.join(format!("{key}.json"));
+            record_directory(path, &id, index.isolated.get(&id), index.journals.contains(&id))?
+                .join(format!("{key}.json"));
 
         let record = load_file(&record_path, BYTE_LIMIT)?.ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Session record is missing.")
@@ -2668,6 +2953,8 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
         if session.id != id
             || session_record_key(&record) != key
             || session.isolated.as_ref() != index.isolated.get(&id)
+            || index.journals.contains(&id)
+                && !matches!(session.kind, SessionKind::Job | SessionKind::Foreground)
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -2675,7 +2962,10 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
             ));
         }
 
-        if value.get("scheduled").is_none() && is_schedule_session(&id) {
+        if value.get("scheduled").is_none()
+            && value.get("kind").is_none()
+            && is_schedule_session(&id)
+        {
             session.scheduled = true;
             changed = true;
         }
@@ -2739,6 +3029,10 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
         }
     }
 
+    if index.version < 15 {
+        changed |= store.reference_journals();
+    }
+
     if changed {
         save_catalog(path, &store)?;
     }
@@ -2757,8 +3051,9 @@ fn migrate_schedule_sessions(
     let mut changed = false;
 
     for (id, session) in &mut store.sessions {
-        let legacy =
-            persisted_sessions.get(id).is_some_and(|value| value.get("scheduled").is_none());
+        let legacy = persisted_sessions
+            .get(id)
+            .is_some_and(|value| value.get("scheduled").is_none() && value.get("kind").is_none());
 
         if legacy && is_schedule_session(id) {
             session.scheduled = true;
@@ -2781,18 +3076,41 @@ fn save_catalog(path: &Path, store: &Store) -> std::io::Result<()> {
         .sessions
         .iter()
         .map(|(id, key)| {
-            (id.clone(), if index.isolated.contains_key(id) { String::new() } else { key.clone() })
+            (
+                id.clone(),
+                if index.isolated.contains_key(id) || index.journals.contains(id) {
+                    String::new()
+                } else {
+                    key.clone()
+                },
+            )
         })
         .collect();
 
     let _ = cleanup_session_records(&root.join("records"), &shared);
 
     for (id, workspace) in &index.isolated {
-        if let Ok(directory) = record_directory(path, id, Some(workspace)) {
+        if let Ok(directory) = record_directory(path, id, Some(workspace), false) {
             let retained = BTreeMap::from([(id.clone(), index.sessions[id].clone())]);
             let _ = cleanup_session_records(&directory, &retained);
         }
     }
+
+    let journals: BTreeMap<_, _> =
+        index.journals.iter().map(|id| (id.clone(), index.sessions[id].clone())).collect();
+
+    let mut swept = store.swept.borrow_mut();
+
+    let result = match swept.as_ref() {
+        Some(previous) if previous.keys().eq(journals.keys()) => journals
+            .iter()
+            .filter(|(id, key)| previous.get(*id) != Some(*key))
+            .try_for_each(|(id, key)| journals::retain(path, id, key)),
+
+        _ => journals::cleanup(path, &journals),
+    };
+
+    *swept = result.is_ok().then_some(journals);
 
     let _ = cleanup_records(
         &root.join("state").join("deliveries").join("records"),
@@ -2806,7 +3124,12 @@ fn record_directory(
     index: &Path,
     id: &str,
     isolated: Option<&PathBuf>,
+    journal: bool,
 ) -> std::io::Result<PathBuf> {
+    if journal {
+        return journals::directory(index, id);
+    }
+
     let Some(workspace) = isolated else {
         return Ok(index.parent().unwrap().join("records"));
     };
@@ -2875,7 +3198,13 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
         let key = session_record_key(&bytes);
 
         save_record(
-            record_directory(path, id, session.isolated.as_ref())?.join(format!("{key}.json")),
+            record_directory(
+                path,
+                id,
+                session.isolated.as_ref(),
+                matches!(session.kind, SessionKind::Job | SessionKind::Foreground),
+            )?
+            .join(format!("{key}.json")),
             bytes,
         )?;
 
@@ -2914,7 +3243,17 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
     }
 
     Ok(SessionIndex {
-        version: 3,
+        version: CATALOG_VERSION,
+        journals: store
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                matches!(session.kind, SessionKind::Job | SessionKind::Foreground)
+            })
+            .map(|(id, _)| id.clone())
+            .collect(),
+        jobs: store.jobs.clone(),
+        retired: store.retired.clone(),
         runs: store.runs.clone(),
         isolated: store
             .sessions
@@ -3096,12 +3435,20 @@ fn seen_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryStatus, LIMIT, SCHEDULE_SESSION_LIMIT, Session, Store, compact_messages, save_file,
+        DeliveryStatus, LIMIT, Session, Store, WORK_SESSION_LIMIT, compact_messages, save_file,
         valid,
     };
 
     use krabb_core::types::{Content, ContextUsage, Message, Role};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn missing_tasks_and_conversations_report_one_message_each() {
+        let store = Store::default();
+
+        assert_eq!(store.job("job-1").unwrap_err().to_string(), "Task not found.");
+        assert_eq!(store.session("absent").unwrap_err().to_string(), "Conversation not found.");
+    }
 
     fn message(id: usize, session: &str) -> Message {
         Message {
@@ -3146,6 +3493,84 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn a_local_client_keeps_a_channel_conversation_routed_to_its_channel() {
+        let root = crate::tests::test_root("client-channel-routing");
+
+        let mut store = Store::load(root.join("data/sessions/index.json")).unwrap();
+
+        store.create("telegram-7", "model").unwrap();
+        store.route("telegram-7", "telegram", "7", None, true).unwrap();
+        store.client("telegram-7", krabb_core::client::TUI).unwrap();
+
+        let session = &store.sessions["telegram-7"];
+
+        assert_eq!(session.channel.as_deref(), Some("telegram"));
+        assert_eq!(session.chat.as_deref(), Some("7"));
+        assert!(session.private);
+        assert_eq!(session.source, Some(krabb_core::scope::Principal::Channel("telegram".into())));
+    }
+
+    #[test]
+    fn attaching_the_same_client_again_writes_nothing() {
+        let root = crate::tests::test_root("client-attach-unchanged");
+        let path = root.join("data/sessions/index.json");
+        let mut store = Store::load(&path).unwrap();
+
+        store.create("main", "model").unwrap();
+        store.client("main", "desktop").unwrap();
+
+        let directory = path.parent().unwrap().to_path_buf();
+        let backup = directory.with_extension("backup");
+
+        std::fs::rename(&directory, &backup).unwrap();
+        std::fs::write(&directory, "blocked").unwrap();
+
+        let unchanged = store.client("main", "desktop");
+        let changed = store.client("main", "phone");
+
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::rename(&backup, &directory).unwrap();
+
+        assert!(unchanged.is_ok());
+        assert!(changed.is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_failed_save_restores_retired_task_receipts() {
+        let root =
+            std::env::temp_dir().join(format!("krabb-retired-rollback-{}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("data/sessions/index.json");
+        let mut store = Store::load(&path).unwrap();
+
+        store.create("main", "model").unwrap();
+
+        let directory = root.join("data/sessions");
+        let backup = root.join("data/backup");
+
+        std::fs::rename(&directory, &backup).unwrap();
+        std::fs::write(&directory, "not a directory").unwrap();
+
+        let result = store.change(|store| {
+            store.retired.push(super::jobs::retired::Retired {
+                session: "main".into(),
+                source: crate::sharing::Principal::Client("tui".into()),
+                request: "request".into(),
+                task: "task".into(),
+                state: super::JobStatus::Completed,
+            });
+        });
+
+        assert!(result.is_err());
+        assert!(store.retired.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3392,11 +3817,11 @@ mod tests {
             store.create(format!("user-{id}"), "local").unwrap();
         }
 
-        for id in 0..SCHEDULE_SESSION_LIMIT {
+        for id in 0..WORK_SESSION_LIMIT {
             store.ensure_schedule(format!("schedule-{id}"), "local").unwrap();
         }
 
-        assert_eq!(store.sessions.len(), LIMIT + SCHEDULE_SESSION_LIMIT);
+        assert_eq!(store.sessions.len(), LIMIT + WORK_SESSION_LIMIT);
         assert!(store.create("another-user", "local").is_err());
 
         store.ensure_schedule("schedule-1000", "local").unwrap();
@@ -3404,7 +3829,7 @@ mod tests {
         assert!(!store.sessions.contains_key("schedule-0"));
         assert!(store.sessions.contains_key("schedule-1000"));
         assert!(store.sessions.contains_key("user-0"));
-        assert_eq!(store.schedule_session_count(), SCHEDULE_SESSION_LIMIT);
+        assert_eq!(store.work_session_count(), WORK_SESSION_LIMIT);
         assert_eq!(store.user_session_count(), LIMIT);
     }
 
@@ -3430,7 +3855,7 @@ mod tests {
 
         let mut store = Store::load(&path).unwrap();
 
-        assert!(!store.sessions["schedule-42"].scheduled);
+        assert_eq!(store.sessions["schedule-42"].kind, super::SessionKind::Conversation);
         assert!(store.ensure_schedule("schedule-42", "local").is_err());
 
         store.remove("schedule-42").unwrap();
@@ -3438,7 +3863,7 @@ mod tests {
 
         let loaded = Store::load(&path).unwrap();
 
-        assert!(loaded.sessions["schedule-42"].scheduled);
+        assert_eq!(loaded.sessions["schedule-42"].kind, super::SessionKind::Schedule);
         assert!(store.ensure_schedule("schedule-42", "local").is_ok());
 
         let _ = std::fs::remove_dir_all(root);
@@ -3460,12 +3885,17 @@ mod tests {
         let mut flat_document: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&flat_path).unwrap()).unwrap();
 
-        flat_document["sessions"]["schedule-42"].as_object_mut().unwrap().remove("scheduled");
+        let legacy = flat_document["sessions"]["schedule-42"].as_object_mut().unwrap();
+
+        legacy.remove("kind");
+
+        assert!(legacy.get("scheduled").is_none());
+
         save_file(&flat_path, serde_json::to_vec(&flat_document).unwrap()).unwrap();
 
         let mut loaded_flat = Store::load(&flat_path).unwrap();
 
-        assert!(loaded_flat.sessions["schedule-42"].scheduled);
+        assert_eq!(loaded_flat.sessions["schedule-42"].kind, super::SessionKind::Schedule);
         assert!(loaded_flat.ensure_schedule("schedule-42", "local").is_ok());
 
         let catalog_path = root.join("data/sessions/index.json");
@@ -3485,7 +3915,7 @@ mod tests {
         let mut record: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
 
-        record.as_object_mut().unwrap().remove("scheduled");
+        record.as_object_mut().unwrap().remove("kind");
 
         let record = serde_json::to_vec(&record).unwrap();
         let migrated_key = super::session_record_key(&record);
@@ -3501,8 +3931,21 @@ mod tests {
 
         let mut loaded_catalog = Store::load(&catalog_path).unwrap();
 
-        assert!(loaded_catalog.sessions["schedule-43"].scheduled);
+        assert_eq!(loaded_catalog.sessions["schedule-43"].kind, super::SessionKind::Schedule);
         assert!(loaded_catalog.ensure_schedule("schedule-43", "local").is_ok());
+
+        loaded_catalog.create("user-session", "local").unwrap();
+
+        let mut conversation = loaded_catalog.sessions.remove("user-session").unwrap();
+
+        conversation.id = "schedule-44".into();
+        loaded_catalog.sessions.insert(conversation.id.clone(), conversation);
+        loaded_catalog.save().unwrap();
+
+        assert_eq!(
+            Store::load(&catalog_path).unwrap().sessions["schedule-44"].kind,
+            super::SessionKind::Conversation
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3763,7 +4206,9 @@ mod tests {
         failed.sessions.insert(
             "safe".into(),
             Session {
+                kind: super::SessionKind::Conversation,
                 id: "safe".into(),
+                source: None,
                 model: "model".into(),
                 pinned: true,
                 scheduled: false,
@@ -3777,6 +4222,9 @@ mod tests {
                 thread: None,
                 private: true,
                 messages: Vec::new(),
+                original: None,
+                reference: None,
+                commands: Default::default(),
                 references: Vec::new(),
                 compacted_through: None,
                 compacted_context: None,
@@ -3881,8 +4329,8 @@ mod tests {
 
         let mut loaded = loaded;
 
-        loaded.ack("missing").unwrap();
-        loaded.ack("delivery").unwrap();
+        loaded.delivered("missing", &serde_json::Value::Null).unwrap();
+        loaded.delivered("delivery", &serde_json::Value::Null).unwrap();
 
         assert!(loaded.outbox.is_empty());
 
@@ -4018,35 +4466,6 @@ mod tests {
     }
 
     #[test]
-    fn streamed_reply_reuses_the_channel_message() {
-        let root = std::env::temp_dir().join(format!("krabb-state-stream-{}", std::process::id()));
-
-        let mut store = Store::load(root.join("sessions.json")).unwrap();
-
-        store.create("main", "model").unwrap();
-        store.begin("main", message(1, "main")).unwrap();
-        store.start_stream("main", "telegram-1", "telegram", "7", None, "Working…").unwrap();
-        store.stream_started("telegram-1", "9").unwrap();
-        store.stream_sending("telegram-1", "partial").unwrap();
-        store.stream_updated("telegram-1").unwrap();
-        store
-            .reply("main", message(2, "main"), "telegram-1", "telegram", "7", None, "complete")
-            .unwrap();
-
-        assert_eq!(store.outbox[0].message_id.as_deref(), Some("9"));
-        assert_eq!(store.outbox[0].text, "complete");
-        assert_eq!(store.outbox[0].status, DeliveryStatus::Pending);
-        assert!(store.sessions["main"].stream_delivery.is_none());
-
-        let loaded = Store::load(root.join("sessions.json")).unwrap();
-
-        assert_eq!(loaded.outbox[0].message_id.as_deref(), Some("9"));
-        assert_eq!(loaded.outbox[0].status, DeliveryStatus::Pending);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn interrupted_streams_are_uncertain_and_not_replayed() {
         for relative in ["sessions.json", "data/sessions/index.json"] {
             let root = std::env::temp_dir()
@@ -4057,8 +4476,18 @@ mod tests {
 
             store.create("main", "model").unwrap();
             store.begin("main", message(1, "main")).unwrap();
-            store.start_stream("main", "discord-1", "discord", "7", None, "Working…").unwrap();
-            store.stream_started("discord-1", "9").unwrap();
+            store.queue_delivery("discord-1", "discord", "7", true, None, "Working…").unwrap();
+
+            store
+                .change(|store| {
+                    let session = store.sessions.get_mut("main").unwrap();
+
+                    session.phase = "unsafe".into();
+                    session.stream_delivery = Some("discord-1".into());
+                    store.outbox[0].message_id = Some("9".into());
+                    store.outbox[0].status = DeliveryStatus::Streaming;
+                })
+                .unwrap();
 
             let loaded = Store::load(&path).unwrap();
 
@@ -4099,6 +4528,28 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(error.to_string(), "Delivery was not found.");
+    }
+
+    #[test]
+    fn restart_drops_unsent_progress_notices_but_keeps_real_deliveries() {
+        let root = crate::tests::test_root("progress-notices");
+        let path = root.join("data/sessions/index.json");
+        let mut store = Store::load(&path).unwrap();
+
+        store.create("main", "model").unwrap();
+        store.queue_delivery("event-progress", "telegram", "7", true, None, "Working.").unwrap();
+        store.sending("event-progress").unwrap();
+        store.queue_delivery("event", "telegram", "7", true, None, "Answer.").unwrap();
+        store.forget_delivery("missing").unwrap();
+
+        let recovered = Store::load(&path).unwrap();
+
+        assert_eq!(recovered.outbox.len(), 1);
+        assert_eq!(recovered.outbox[0].id, "event");
+
+        store.forget_delivery("event-progress").unwrap();
+
+        assert_eq!(store.outbox.len(), 1);
     }
 
     #[test]
@@ -4654,7 +5105,7 @@ mod tests {
         let catalog: serde_json::Value = serde_json::from_str(&index).unwrap();
         let loaded = Store::load(&path).unwrap();
 
-        assert_eq!(catalog["version"], 3);
+        assert_eq!(catalog["version"], 15);
         assert_eq!(catalog["sessions"], serde_json::json!({}));
         assert_eq!(store.offset("telegram"), 9);
         assert_eq!(loaded.offset("telegram"), 9);

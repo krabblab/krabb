@@ -27,6 +27,10 @@ use crate::{
 };
 
 const FRAME: usize = jsonl::MAX;
+/// Launch retries while a just-written plugin binary is still open for writing elsewhere,
+/// such as in a process forked during the write.
+const BUSY_RETRIES: u32 = 10;
+const BUSY_DELAY: Duration = Duration::from_millis(20);
 const NOTES: usize = 256;
 const OUTPUT: usize = 32;
 const EVENTS: usize = 256;
@@ -328,11 +332,7 @@ where
 
                         Err(error) => {
                             if let Some(id) = id {
-                                write_output(
-                                    &sender,
-                                    Response::fail(id, -32000, error.to_string()),
-                                )
-                                .await?;
+                                write_output(&sender, crate::failure::response(id, error)).await?;
                             }
                         }
                     }
@@ -517,7 +517,7 @@ where
                                         if let Some(id) = id {
                                             write_output(
                                                 &sender,
-                                                Response::fail(id, -32000, error.to_string()),
+                                                crate::failure::response(id, error),
                                             )
                                             .await?;
                                         }
@@ -758,8 +758,7 @@ where
 
                 Err(error) => {
                     if let Some(id) = id {
-                        jsonl::write(&mut output, &Response::fail(id, -32000, error.to_string()))
-                            .await?;
+                        jsonl::write(&mut output, &crate::failure::response(id, error)).await?;
                     }
                 }
             },
@@ -778,7 +777,11 @@ async fn read_frame(input: &mut (impl AsyncBufRead + Unpin), frame: &mut Vec<u8>
     }
 
     if count == 0 || frame.last() != Some(&b'\n') {
-        return Err(Error::Protocol("plugin closed stdout during a frame".into()));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "plugin closed stdout during a frame",
+        )
+        .into());
     }
 
     let value = serde_json::from_slice(frame)?;
@@ -884,12 +887,13 @@ impl Process {
                 .env("KRABB_PLUGIN_GROUP", "1");
         }
 
-        let child = command
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+
+        let child = spawn(&mut command).await?;
 
         #[cfg(unix)]
         let group = child.id().and_then(child_group);
@@ -1058,8 +1062,39 @@ impl Process {
         C: FnMut(Request) -> Cfut,
         Cfut: Future<Output = Result<Response>>,
     {
-        self.call_stream_with_lifetime(request, Some(limit), note, move |request, _| call(request))
-            .await
+        self.call_stream_with_lifetime(
+            request,
+            Some(limit),
+            note,
+            move |request, _| call(request),
+            None,
+        )
+        .await
+    }
+
+    /// Like `call_full_timeout_async`, also forwarding host notes to the plugin mid-call.
+    pub async fn call_full_timeout_inbound_async<F, Fut, C, Cfut>(
+        &mut self,
+        request: Request,
+        limit: Duration,
+        note: F,
+        mut call: C,
+        inbound: mpsc::UnboundedReceiver<Request>,
+    ) -> Result<Response>
+    where
+        F: FnMut(Request) -> Fut,
+        Fut: Future<Output = Result<()>>,
+        C: FnMut(Request) -> Cfut,
+        Cfut: Future<Output = Result<Response>>,
+    {
+        self.call_stream_with_lifetime(
+            request,
+            Some(limit),
+            note,
+            move |request, _| call(request),
+            Some(inbound),
+        )
+        .await
     }
 
     pub async fn call_full_timeout_stream_async<F, Fut, C, Cfut>(
@@ -1075,7 +1110,7 @@ impl Process {
         C: FnMut(Request, mpsc::UnboundedSender<Request>) -> Cfut,
         Cfut: Future<Output = Result<Response>>,
     {
-        self.call_stream_with_lifetime(request, Some(limit), note, call).await
+        self.call_stream_with_lifetime(request, Some(limit), note, call, None).await
     }
 
     pub async fn listen_stream_async<F, Fut, C, Cfut>(
@@ -1090,7 +1125,7 @@ impl Process {
         C: FnMut(Request, mpsc::UnboundedSender<Request>) -> Cfut,
         Cfut: Future<Output = Result<Response>>,
     {
-        self.call_stream_with_lifetime(request, None, note, call).await
+        self.call_stream_with_lifetime(request, None, note, call, None).await
     }
 
     async fn call_stream_with_lifetime<F, Fut, C, Cfut>(
@@ -1099,6 +1134,7 @@ impl Process {
         limit: Option<Duration>,
         mut note: F,
         mut call: C,
+        mut inbound: Option<mpsc::UnboundedReceiver<Request>>,
     ) -> Result<Response>
     where
         F: FnMut(Request) -> Fut,
@@ -1119,14 +1155,45 @@ impl Process {
             let mut calls = 0_usize;
             let mut events_closed = false;
             let mut queued = VecDeque::new();
+            let mut forwarded = 0_usize;
 
             loop {
                 let (value, received) = match queued.pop_front() {
                     Some(value) => value,
-                    None => (
-                        read_frame(&mut self.input, &mut self.frame).await?,
-                        tokio::time::Instant::now(),
-                    ),
+
+                    None => loop {
+                        tokio::select! {
+                            biased;
+
+                            frame = read_frame(&mut self.input, &mut self.frame) => {
+                                break (frame?, tokio::time::Instant::now());
+                            }
+
+                            event = async { inbound.as_mut()?.recv().await },
+                                if inbound.is_some() =>
+                            {
+                                let Some(event) = event else {
+                                    inbound = None;
+                                    continue;
+                                };
+
+                                forwarded += 1;
+
+                                if !matches!(event, Request::Note { .. })
+                                    || !event.valid()
+                                    || forwarded > NOTES
+                                    || serde_json::to_vec(&event)?.len().saturating_add(1) > FRAME
+                                {
+                                    return Err(Error::Protocol(
+                                        "host emitted an invalid or excessive call notification"
+                                            .into(),
+                                    ));
+                                }
+
+                                jsonl::write(&mut self.output, &event).await?;
+                            }
+                        }
+                    },
                 };
 
                 if value.get("method").is_some() {
@@ -1314,9 +1381,12 @@ impl Process {
         };
 
         match limit {
-            Some(limit) => timeout(limit, operation)
-                .await
-                .map_err(|_| Error::Protocol("plugin response timed out".into()))?,
+            Some(limit) => timeout(limit, operation).await.map_err(|_| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "plugin response timed out",
+                ))
+            })?,
             None => operation.await,
         }
     }
@@ -1335,9 +1405,31 @@ impl Process {
         let shutdown = self.call(Request::call(9_999, "shutdown", serde_json::json!({})));
         let _ = timeout(Duration::from_secs(2), shutdown).await;
 
-        let _ = timeout(Duration::from_secs(2), self.tree.child.wait()).await;
-        stop_tree(&mut self.tree.child, self.tree.group).await;
+        // Closing stdin lets a plugin blocked on its input reader exit without the grace wait.
+        let Self { mut tree, output, .. } = self;
+        drop(output);
+
+        let _ = timeout(Duration::from_secs(2), tree.child.wait()).await;
+        stop_tree(&mut tree.child, tree.group).await;
         Ok(())
+    }
+}
+
+async fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let mut attempt = 0;
+
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt < BUSY_RETRIES =>
+            {
+                attempt += 1;
+                tokio::time::sleep(BUSY_DELAY).await;
+            }
+
+            result => return result,
+        }
     }
 }
 
@@ -1468,8 +1560,86 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn a_plugin_still_open_for_writing_starts_once_it_is_closed() {
+        use std::{io::Write, os::unix::fs::PermissionsExt};
+
+        let path = temp_path("busy", "sh");
+        let mut file = std::fs::File::create(&path).unwrap();
+
+        file.write_all(concat!(
+            "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol\":",
+            "{\"major\":0,\"minor\":1},\"id\":\"test\",\"version\":\"0.1.0\",\"capabilities\":[]}}'\n",
+            "while IFS= read -r line; do case \"$line\" in *shutdown*) exit 0 ;; esac; done\n"
+        ).as_bytes())
+        .unwrap();
+        file.flush().unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            drop(file);
+        });
+
+        let process = Process::start(&path).await.unwrap();
+
+        release.await.unwrap();
+        process.stop().await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
     async fn start_test_plugin(_mode: &str, script: &str) -> crate::Result<Process> {
         Process::start_with("sh", ["-c", script]).await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn host_notes_reach_the_plugin_while_its_call_is_still_running() {
+        let script = r#"printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"test","version":"0.1.0","capabilities":[]}}'
+IFS= read -r hello
+while IFS= read -r line; do
+    case "$line" in
+        *'"generation.renew"'*'"total_millis":450'*) printf '%s\n' '{"jsonrpc":"2.0","id":9,"result":{"renewed":true}}' ;;
+        *'"shutdown"'*) exit 0 ;;
+    esac
+done"#;
+
+        for valid in [true, false] {
+            let mut process = Process::start_with("sh", ["-c", script]).await.unwrap();
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+
+            let note = if valid {
+                Request::Note {
+                    jsonrpc: "2.0".into(),
+                    method: crate::execution::RENEW.into(),
+                    params: json!({"id":9,"total_millis":450}),
+                }
+            } else {
+                Request::call(10, crate::execution::RENEW, json!({"id":9,"total_millis":450}))
+            };
+
+            sender.send(note).unwrap();
+
+            let result = process
+                .call_full_timeout_inbound_async(
+                    Request::call(9, "generate", json!({})),
+                    Duration::from_secs(5),
+                    |_| std::future::ready(Ok(())),
+                    |_| std::future::ready(Err(crate::Error::Protocol("unexpected".into()))),
+                    receiver,
+                )
+                .await;
+
+            if valid {
+                assert_eq!(result.unwrap().result.unwrap()["renewed"], true);
+            } else {
+                assert!(result.is_err());
+            }
+
+            drop(sender);
+            process.stop().await.unwrap();
+        }
     }
 
     #[cfg(unix)]
@@ -1478,6 +1648,7 @@ mod tests {
         let script = r#"printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"test","version":"0.1.0","capabilities":[]}}'; printf 'plugin diagnostic\n' >&2; cat >/dev/null"#;
         let mut process = Process::start_with("sh", ["-c", script]).await.unwrap();
         let mut stderr = process.take_stderr().unwrap();
+
         let diagnostic = timeout(Duration::from_secs(1), async {
             let mut diagnostic = Vec::new();
 
@@ -1491,6 +1662,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(diagnostic, b"plugin diagnostic\n");
+
         process.stop().await.unwrap();
     }
 
@@ -1649,6 +1821,101 @@ fn main() {
     }
 }
 "###;
+
+    #[tokio::test]
+    async fn every_server_route_preserves_typed_retry_metadata_on_the_wire() {
+        for route in 0..3 {
+            let (client, server) = duplex(16 * 1024);
+            let (client_read, mut client_write) = split(client);
+            let (server_read, server_write) = split(server);
+
+            let failure = crate::failure::Failure {
+                kind: crate::failure::Kind::Throttled,
+                retry_after_seconds: Some(90),
+            };
+
+            let expected = failure.clone();
+
+            let task = tokio::spawn(async move {
+                let error = move || failure.clone().error("Wait for capacity.");
+
+                match route {
+                    0 => {
+                        serve_io(hello(), BufReader::new(server_read), server_write, move |_| {
+                            let failure = error();
+                            async move { Err(failure) }
+                        })
+                        .await
+                    }
+
+                    1 => {
+                        let mut handle = move |_, _| {
+                            let failure = error();
+                            async move { Err(failure) }
+                        };
+
+                        serve_io_events(
+                            hello(),
+                            BufReader::new(server_read),
+                            server_write,
+                            &mut handle,
+                        )
+                        .await
+                    }
+
+                    _ => {
+                        serve_io_events_concurrent(
+                            hello(),
+                            BufReader::new(server_read),
+                            server_write,
+                            move |_, _| {
+                                let failure = error();
+                                async move { Err(failure) }
+                            },
+                        )
+                        .await
+                    }
+                }
+            });
+
+            let mut input = BufReader::new(client_read);
+
+            jsonl::write(&mut client_write, &Request::call(1, "generate", json!({})))
+                .await
+                .unwrap();
+
+            let mut line = String::new();
+
+            input.read_line(&mut line).await.unwrap();
+
+            let response: Response = serde_json::from_str(&line).unwrap();
+
+            assert_eq!(response.id, 1);
+
+            match crate::failure::decode(response.error.unwrap()) {
+                crate::Error::Failed { message, failure } => {
+                    assert_eq!(message, "Wait for capacity.");
+                    assert_eq!(failure, expected);
+                }
+
+                other => panic!("Lost failure metadata: {other}"),
+            }
+
+            jsonl::write(&mut client_write, &Request::call(2, "shutdown", json!({})))
+                .await
+                .unwrap();
+
+            line.clear();
+            input.read_line(&mut line).await.unwrap();
+
+            let response: Response = serde_json::from_str(&line).unwrap();
+
+            assert_eq!(response.id, 2);
+            assert!(response.error.is_none());
+
+            task.await.unwrap().unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn serves_protocol_and_handler_paths() {
@@ -2499,6 +2766,18 @@ fn main() {
         assert!(process.call(Request::call(2, "ping", json!({}))).await.is_err());
 
         process.stop().await.unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn stop_closes_input_so_a_plugin_waiting_for_it_exits_promptly() {
+        let script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"test","version":"0.1.0","capabilities":[]}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}' ;; esac; done"#;
+        let process = start_test_plugin("stop_input", script).await.unwrap();
+        let started = std::time::Instant::now();
+
+        process.stop().await.unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
     }
 
     #[cfg(any(unix, windows))]

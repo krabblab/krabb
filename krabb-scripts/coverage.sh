@@ -6,6 +6,7 @@ packages=(
     krabb-core
     krabb-openai
     krabb-date
+    krabb-http
     krabb-text
     krabb-file
     krabb-process
@@ -14,6 +15,7 @@ packages=(
     krabb-plugin-anthropic
     krabb-plugin-acp
     krabb-plugin-a2a
+    krabb-plugin-runner
     krabb-plugin-ag-ui
     krabb-plugin-openai
     krabb-plugin-codex

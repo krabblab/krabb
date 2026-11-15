@@ -32,10 +32,26 @@ async fn retries_only_rejected_chunks_and_records_each_sent_message() {
 }
 
 #[tokio::test]
-async fn resolves_thread_parent_and_preserves_missing_reference() {
+async fn a_plain_send_records_its_message_for_later_replies() {
+    let (base, _requests) =
+        krabb_test::http::responses(vec![(200, json!({"ok":true,"ts":"9"}).to_string())]).await;
+
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let result = send_at(&client, "fixture", &json!({"chat":"C1","text":"plain answer"}), &base)
+        .await
+        .unwrap();
+
+    assert_eq!(result["references"], json!([{"id":"9","text":"plain answer"}]));
+}
+
+#[tokio::test]
+async fn references_thread_parents_per_channel_and_preserves_missing_reference() {
     let (base, requests) = krabb_test::http::responses(vec![
         (200, json!({"ok":true,"messages":[{"ts":"1","user":"U1","text":"parent"}]}).to_string()),
         (200, json!({"ok":true,"messages":[]}).to_string()),
+        (200, json!({"ok":true,"messages":[{"ts":"1","user":"U2","text":"late"}]}).to_string()),
+        (200, json!({"ok":true,"messages":[{"ts":"1","user":"U1","text":"edited"}]}).to_string()),
     ])
     .await;
 
@@ -47,26 +63,50 @@ async fn resolves_thread_parent_and_preserves_missing_reference() {
         history: Arc::new(Mutex::new(HistoryPoll::default())),
     };
 
-    let event = json!({"ts":"2","thread_ts":"1"});
-    let reply = thread_reply(&app, "fixture", "C1", &event, &base).await.unwrap();
-
-    assert_eq!(reply.text.as_deref(), Some("parent"));
-
     assert!(
         thread_reply(&app, "fixture", "C1", &json!({"ts":"1","thread_ts":"1"}), &base)
             .await
             .is_none()
     );
 
-    assert!(thread_reply(&app, "fixture", "C1", &event, &base).await.unwrap().text.is_none());
+    for ts in ["2", "3", "4"] {
+        let event = json!({"ts":ts,"thread_ts":"1"});
+        let reply = thread_reply(&app, "fixture", "C1", &event, &base).await.unwrap();
+
+        assert_eq!(reply.text.as_deref(), Some("parent"));
+    }
+
+    for ts in ["5", "6"] {
+        let event = json!({"ts":ts,"thread_ts":"1"});
+        let missing = thread_reply(&app, "fixture", "C2", &event, &base).await.unwrap();
+
+        assert_eq!((missing.id.as_str(), missing.text), ("1", None));
+    }
+
+    for entry in &mut app.inbox.lock().await.threads {
+        entry.3 = std::time::Instant::now() - THREAD_RETRY;
+    }
+
+    let event = json!({"ts":"7","thread_ts":"1"});
+    let retried = thread_reply(&app, "fixture", "C2", &event, &base).await.unwrap();
+
+    assert_eq!(retried.text.as_deref(), Some("late"));
+    assert_eq!(app.inbox.lock().await.threads.len(), 2);
+
+    for entry in &mut app.inbox.lock().await.threads {
+        entry.3 = std::time::Instant::now() - THREAD_REFRESH;
+    }
+
+    let event = json!({"ts":"8","thread_ts":"1"});
+    let refreshed = thread_reply(&app, "fixture", "C1", &event, &base).await.unwrap();
+
+    assert_eq!(refreshed.text.as_deref(), Some("edited"));
 
     let requests = requests.await.unwrap();
+    let channels = requests.iter().map(|request| request.body["channel"].clone());
 
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.body["channel"] == "C1" && request.body["limit"] == 1)
-    );
+    assert_eq!(channels.collect::<Vec<_>>(), vec!["C1", "C2", "C2", "C1"]);
+    assert!(requests.iter().all(|request| request.body["limit"] == 1));
 }
 
 #[tokio::test]

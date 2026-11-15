@@ -121,8 +121,9 @@ visible answer, particularly with thinking models. See
 [Ollama's context guide](https://docs.ollama.com/context-length) to adjust it for
 your available memory. The plugin rejects completed streams containing neither
 visible text nor tool calls, so an empty reply becomes a failed turn rather than
-a blank channel message. Its HTTP timeout is five minutes; daemon turns share a
-five-minute overall budget across model calls and tools, and remain cancellable.
+a blank channel message. Its default HTTP timeout is five minutes; an admitted
+execution allowance overrides it as described in [Execution Timing](#execution-timing).
+Host cancellation fences subsequent actions and cleans up the plugin request.
 
 ### Thinking And Context
 
@@ -191,6 +192,33 @@ Released installations should reinstall the updated released plugin using the
 install command at the top of this page. No Krabb service reinstallation is needed.
 Nonempty environment overrides take precedence over values saved by setup;
 remove those overrides before using setup to control these settings.
+
+## Execution Timing
+
+The plugin advertises optional execution metadata and accepts host-admitted
+first-output, inactivity, and total deadlines. An admitted allowance overrides
+the HTTP client's default five-minute timeout, including for background inference.
+Transport heartbeats cannot keep a stalled request alive, and ongoing token output
+cannot extend the total deadline. Older hosts retain the existing timeout behavior.
+Hosts with adaptive admission can allow healthy local inference beyond the old
+class limits. Legacy hosts retain their existing behavior. The plugin normalizes
+Ollama's final [phase timings](https://docs.ollama.com/api/chat) from nanoseconds to
+milliseconds for the host's bounded timing cache. Missing reports remain unknown;
+cached prefill is excluded from fresh-prompt throughput learning. The host enforces
+its configured hard ceiling; live deadline renewal and cumulative accounting remain
+in progress.
+
+Two optional environment hints describe the deployment without inferring it from
+the URL. `KRABB_OLLAMA_DEPLOYMENT` accepts `unknown` (the default), `local`, or
+`remote`. `KRABB_OLLAMA_REVISION` is an optional configuration tag; change it when
+replacing backend hardware or settings that affect performance. The plugin hashes
+these hints with the endpoint, resolved model, thinking, and context configuration
+into an opaque identity. Credentials are excluded.
+
+HTTP cancellation does not prove that backend computation stopped, so the plugin
+does not advertise confirmed cancellation or reattachment to an interrupted generation.
+Restart the daemon or reload the plugin after changing its environment, using the
+service's environment when running under a service.
 
 ## Existing Service Overrides
 

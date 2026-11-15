@@ -216,14 +216,10 @@ async fn stream_request(
         .json(&request_body(&input, true)?)
         .send()
         .await
-        .map_err(|error| krabb_core::Error::Denied(format!("Anthropic stream failed: {error}.")))?;
+        .map_err(|error| krabb_http::transport(&error, "Anthropic"))?;
 
-    let status = response.status();
-
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Anthropic stream was rejected with {status}."
-        )));
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Anthropic").await);
     }
 
     live_stream(id, response.bytes_stream(), emitter).await
@@ -246,24 +242,23 @@ async fn request(
         .json(&request_body(&input, stream)?)
         .send()
         .await
-        .map_err(|error| {
-            let kind = if stream { "stream" } else { "request" };
+        .map_err(|error| krabb_http::transport(&error, "Anthropic"))?;
 
-            krabb_core::Error::Denied(format!("Anthropic {kind} failed: {error}."))
-        })?;
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Anthropic").await);
+    }
 
-    let status = response.status();
     let body = read(response, "Anthropic").await?;
 
     if stream {
-        return stream_body(id, status, &body);
+        return stream_body(id, &body);
     }
 
     let body: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
         krabb_core::Error::Denied(format!("Anthropic response failed: {error}."))
     })?;
 
-    response_body(id, status, body)
+    response_body(id, body)
 }
 
 async fn read(response: reqwest::Response, provider: &str) -> krabb_core::Result<String> {
@@ -280,7 +275,8 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
-            krabb_core::Error::Denied(format!("{provider} response failed: {error}."))
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
+                .error(format!("{provider} response failed: {error}."))
         })?;
 
         if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes.len()) {
@@ -332,7 +328,8 @@ where
                 let Some(chunk) = chunk else { break };
 
                 let chunk = chunk.map_err(|error| {
-                    krabb_core::Error::Denied(format!("Anthropic stream failed: {error}."))
+                    krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                        .error(format!("Anthropic stream failed: {error}."))
                 })?;
 
                 if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes) {
@@ -403,6 +400,7 @@ where
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop,
             input: None,
@@ -565,17 +563,7 @@ fn tools(input: &ModelRequest) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn stream_body(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: &str,
-) -> krabb_core::Result<Option<Response>> {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Anthropic stream was rejected with {status}."
-        )));
-    }
-
+fn stream_body(id: u64, body: &str) -> krabb_core::Result<Option<Response>> {
     let mut text = String::new();
     let mut stop = "stream".to_string();
 
@@ -598,6 +586,7 @@ fn stream_body(
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop,
             input: None,
@@ -608,18 +597,7 @@ fn stream_body(
     )
 }
 
-fn response_body(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: serde_json::Value,
-) -> krabb_core::Result<Option<Response>> {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Anthropic rejected the request: {}.",
-            body["error"]["message"].as_str().unwrap_or("request failed")
-        )));
-    }
-
+fn response_body(id: u64, body: serde_json::Value) -> krabb_core::Result<Option<Response>> {
     let blocks = body["content"].as_array().ok_or_else(|| {
         krabb_core::Error::Denied("Anthropic response contained no content.".into())
     })?;
@@ -647,6 +625,7 @@ fn response_body(
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: body["stop_reason"].as_str().unwrap_or("stop").into(),
             input: body["usage"]["input_tokens"].as_u64(),
@@ -763,18 +742,13 @@ mod tests {
 
     #[test]
     fn parses_success_and_failure_responses() {
-        let result = response_body(3, reqwest::StatusCode::OK, json!({"content":[{"text":"done"}],"stop_reason":"end","usage":{"input_tokens":2,"output_tokens":4}})).unwrap().unwrap();
+        let result = response_body(3, json!({"content":[{"text":"done"}],"stop_reason":"end","usage":{"input_tokens":2,"output_tokens":4}})).unwrap().unwrap();
 
         assert_eq!(result.result.unwrap()["text"], "done");
-        assert!(
-            response_body(3, reqwest::StatusCode::BAD_REQUEST, json!({"error":{"message":"no"}}))
-                .is_err()
-        );
 
-        assert!(response_body(3, reqwest::StatusCode::OK, json!({})).is_err());
+        assert!(response_body(3, json!({})).is_err());
         let tool = response_body(
             3,
-            reqwest::StatusCode::OK,
             json!({"content":[{"type":"tool_use","name":"read","input":{"path":"note"}}]}),
         )
         .unwrap()
@@ -916,6 +890,34 @@ mod tests {
 
         assert!(result.is_err());
         assert!(response(1, json!({"large": "x".repeat(krabb_core::jsonl::MAX)})).is_err());
+
+        let kind = |result: krabb_core::Result<Option<krabb_core::types::Response>>| match result {
+            Err(krabb_core::Error::Failed { failure, .. }) => failure.kind,
+            other => panic!("Unexpected stream outcome: {other:?}"),
+        };
+
+        let reset = || std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        let (output, _keep) = tokio::sync::mpsc::channel(4);
+        let mut emitter = Emitter::new(output);
+        let chunks = futures_util::stream::iter(vec![Err::<Vec<u8>, _>(reset())]);
+
+        assert_eq!(
+            kind(live_stream(2, chunks, &mut emitter).await),
+            krabb_core::failure::Kind::Transient
+        );
+
+        let shown = format!(
+            "data: {}\n",
+            json!({"type":"content_block_delta","delta":{"text":"x".repeat(128)}})
+        );
+        let (output, _keep) = tokio::sync::mpsc::channel(4);
+        let mut emitter = Emitter::new(output);
+        let chunks = futures_util::stream::iter(vec![Ok(shown.into_bytes()), Err(reset())]);
+
+        assert_eq!(
+            kind(live_stream(3, chunks, &mut emitter).await),
+            krabb_core::failure::Kind::Uncertain
+        );
     }
 
     #[tokio::test]
@@ -931,13 +933,23 @@ mod tests {
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(vec![b'x'; BODY_LIMIT + 1])]);
 
         assert!(collect(chunks, "Anthropic").await.is_err());
+
+        let reset = stream::iter(vec![
+            Ok(b"partial".to_vec()),
+            Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+        ]);
+
+        assert!(matches!(
+            collect(reset, "Anthropic").await,
+            Err(krabb_core::Error::Failed { failure, .. })
+                if failure.kind == krabb_core::failure::Kind::Transient
+        ));
     }
 
     #[test]
     fn parses_stream_events() {
         let result = stream_body(
             4,
-            reqwest::StatusCode::OK,
             "event: content_block_delta\ndata: {\"delta\":{\"text\":\"hel\"}}\n\ndata: {\"delta\":{\"text\":\"lo\",\"stop_reason\":\"end_turn\"}}\n",
         )
         .unwrap()
@@ -947,8 +959,7 @@ mod tests {
 
         assert_eq!(reply["text"], "hello");
         assert_eq!(reply["stop"], "end_turn");
-        assert!(stream_body(4, reqwest::StatusCode::BAD_REQUEST, "").is_err());
-        assert!(stream_body(4, reqwest::StatusCode::OK, "data: invalid\n").is_err());
+        assert!(stream_body(4, "data: invalid\n").is_err());
     }
 
     #[tokio::test]
@@ -990,15 +1001,13 @@ mod tests {
                 .is_err()
         );
 
-        assert!(response_body(3, reqwest::StatusCode::OK, json!({"content":[]})).is_err());
-        assert!(response_body(3, reqwest::StatusCode::BAD_REQUEST, json!({})).is_err());
+        assert!(response_body(3, json!({"content":[]})).is_err());
     }
 
     #[test]
     fn parses_stream_chunks() {
         let result = stream_body(
             1,
-            reqwest::StatusCode::OK,
             "data: {\"delta\":{\"text\":\"hello\"}}\n\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
         )
         .unwrap()

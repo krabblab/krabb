@@ -1,11 +1,11 @@
+mod requests;
+mod tasks;
+
 use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::Ordering},
 };
 
 use krabb_core::{
@@ -30,14 +30,17 @@ use tracing::{debug, warn};
 use super::{Cancellation, Stop, state::Store};
 
 const FRAME: usize = jsonl::MAX;
+const WRITE_LIMIT: Duration = Duration::from_secs(10);
+/// Connections kept beyond the work slots so task controls stay reachable while work is busy.
+const CONTROL_CONNECTIONS: usize = 16;
 const SUMMARY_LIMIT: usize = 1024;
 const DETAIL_LIMIT: usize = 16 * 1024;
 const SHELL_OUTPUT_LIMIT: usize = 16 * 1024;
 const CANCEL_WAIT: Duration = Duration::from_secs(310);
 const AUTO_COMPACT_HISTORY_BYTES: usize = 16 * 1024;
 const COMPACT_RETAIN_TURNS: usize = 2;
-#[cfg(test)]
-const CLIENTS: usize = 64;
+/// Work connections the daemon serves at once; control requests have their own room.
+pub(crate) const CLIENTS: usize = 64;
 
 #[cfg(all(test, unix))]
 #[path = "tests/controls.rs"]
@@ -51,7 +54,7 @@ pub fn token() -> io::Result<String> {
     let mut bytes = [0_u8; 32];
 
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(super::digest::hex(&bytes))
 }
 
 pub struct State {
@@ -66,20 +69,31 @@ pub struct State {
     pub pending: Arc<tokio::sync::Mutex<super::approval::Gate>>,
     pub plugins: super::Plugins,
     pub config: super::Config,
-    pub tui_tools: Arc<AtomicBool>,
-    pub tui_shell: Arc<AtomicBool>,
     pub channel: String,
     pub model: String,
 }
 
+impl State {
+    fn client(&self, id: &str) -> io::Result<super::clients::Policy> {
+        self.plugins.clients.get(id, &self.config)
+    }
+
+    /// Whether `id` names a built-in or configured client.
+    fn known_client(&self, id: &str) -> bool {
+        super::valid(id) && (krabb_core::client::known(id) || self.config.clients.contains_key(id))
+    }
+}
+
 pub async fn serve(listener: TcpListener, state: Arc<State>) -> io::Result<()> {
+    let connections = Arc::new(Semaphore::new(CLIENTS.saturating_add(CONTROL_CONNECTIONS)));
+
     loop {
         tokio::select! {
             _ = state.stop.notified() => return Ok(()),
 
             result = listener.accept() => {
                 let (stream, _) = result?;
-                let Ok(slot) = Arc::clone(&state.slots).try_acquire_owned() else {
+                let Ok(slot) = Arc::clone(&connections).try_acquire_owned() else {
                     warn!("IPC client limit reached; connection rejected.");
                     continue;
                 };
@@ -112,6 +126,23 @@ fn is_client_disconnect(kind: io::ErrorKind) -> bool {
     )
 }
 
+fn control_method(method: &str) -> bool {
+    matches!(
+        method,
+        "task.list"
+            | "task.receipt"
+            | "task.defer"
+            | "task.budget"
+            | "task.control"
+            | "task.message"
+            | "session.enqueue"
+            | "session.cancel"
+            | "approval.resolve"
+            | "approval.list"
+            | "status"
+    )
+}
+
 async fn handle(
     stream: TcpStream,
     state: Arc<State>,
@@ -133,27 +164,41 @@ async fn handle(
 
     if !request.valid() || request.token != state.token {
         warn!(method = %super::diagnostic(&request.method), "Rejected unauthorized IPC request.");
-        jsonl::write(&mut output, &IpcResponse::fail(request.id, 401, "Unauthorized."))
-            .await
-            .map_err(to_io)?;
+        write_frame(&mut output, IpcResponse::fail(request.id, 401, "Unauthorized.")).await?;
 
         return Ok(());
     }
 
+    let _work = if control_method(&request.method) {
+        None
+    } else {
+        let Ok(slot) = Arc::clone(&state.slots).try_acquire_owned() else {
+            return write_frame(
+                &mut output,
+                IpcResponse::fail(
+                    request.id,
+                    -32000,
+                    "All work slots are busy; task controls remain available.",
+                ),
+            )
+            .await;
+        };
+
+        Some(slot)
+    };
+
     // Existing turns must be able to record approval replies while uninstall
     // waits for their lifecycle guards to be released.
-    let _lifecycle = if matches!(
-        request.method.as_str(),
-        "plugin.uninstall"
-            | "plugin.update"
-            | "plugin.unload"
-            | "plugin.detach"
-            | "delivery.drop"
-            | "session.cancel"
-            | "approval.resolve"
-            | "approval.list"
-            | "session.append_reserved"
-    ) {
+    let _lifecycle = if control_method(&request.method)
+        || matches!(
+            request.method.as_str(),
+            "plugin.uninstall"
+                | "plugin.update"
+                | "plugin.unload"
+                | "plugin.detach"
+                | "delivery.drop"
+                | "session.append_reserved"
+        ) {
         None
     } else {
         Some(state.plugins.lifecycle.read().await)
@@ -190,7 +235,7 @@ async fn handle(
             .unwrap_or_else(|error| IpcResponse::fail(request.id, -32000, error.to_string())),
     };
 
-    jsonl::write(&mut output, &response).await.map_err(to_io)
+    write_frame(&mut output, response).await
 }
 
 async fn model_list(request: &IpcRequest, state: &State) -> IpcResponse {
@@ -243,11 +288,14 @@ async fn model_list(request: &IpcRequest, state: &State) -> IpcResponse {
 struct Reservation<'a> {
     sessions: &'a Mutex<Store>,
     id: &'a str,
+    owner: String,
+    wake: &'a tokio::sync::Notify,
+    release: bool,
 }
 
 impl<'a> Reservation<'a> {
-    fn acquire(sessions: &'a Mutex<Store>, id: &'a str, owner: &str) -> io::Result<Self> {
-        let mut store = sessions.lock().map_err(lock)?;
+    fn acquire(state: &'a State, id: &'a str, owner: &str) -> io::Result<Self> {
+        let mut store = state.sessions.lock().map_err(lock)?;
 
         let session =
             store.sessions.get_mut(id).ok_or_else(|| not_found("Session was not found."))?;
@@ -261,7 +309,13 @@ impl<'a> Reservation<'a> {
 
         session.reservation_active = true;
 
-        Ok(Self { sessions, id })
+        Ok(Self {
+            sessions: &state.sessions,
+            id,
+            owner: owner.into(),
+            wake: &state.plugins.jobs.wake,
+            release: false,
+        })
     }
 }
 
@@ -269,10 +323,37 @@ impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         if let Ok(mut sessions) = self.sessions.lock()
             && let Some(session) = sessions.sessions.get_mut(self.id)
+            && session.reservation_owner.as_deref().is_none_or(|owner| owner == self.owner)
         {
             session.reservation_active = false;
+
+            if self.release
+                && session.status == "working"
+                && session.inflight.is_none()
+                && let Err(error) = sessions.set_status(self.id, "idle")
+            {
+                warn!(error=%super::diagnostic(error.to_string()), "Session lease cleanup remains \
+                    pending.");
+            }
         }
+
+        self.wake.notify_one();
     }
+}
+
+/// Reads the configured client a session request acts for; the terminal is the default.
+fn requester<'a>(request: &'a IpcRequest, state: &State, method: &str) -> Result<&'a str, String> {
+    let client = match request.params.get("client") {
+        None => krabb_core::client::TUI,
+        Some(Value::String(id)) => id.as_str(),
+        _ => return Err(format!("{method}.client must be a client identity.")),
+    };
+
+    if client.len() > 128 || !state.known_client(client) {
+        return Err("The client identity is invalid or is not configured.".into());
+    }
+
+    Ok(client)
 }
 
 async fn session_answer(
@@ -288,6 +369,25 @@ async fn session_answer(
         .await;
     };
 
+    let client_id = match requester(request, state, "session.answer") {
+        Ok(client) => client,
+
+        Err(message) => {
+            return write_frame(output, IpcResponse::fail(request.id, -32602, message)).await;
+        }
+    };
+
+    let source = super::sharing::Principal::Client(client_id.into());
+
+    let live = match state.client(client_id) {
+        Ok(live) => live,
+
+        Err(error) => {
+            let message = super::diagnostic(super::sentence(error.to_string()));
+            return write_frame(output, IpcResponse::fail(request.id, -32000, message)).await;
+        }
+    };
+
     let Some(plugin_id) = request.params["plugin"].as_str() else {
         return write_frame(
             output,
@@ -295,6 +395,17 @@ async fn session_answer(
         )
         .await;
     };
+
+    match requests::replay(request, state, id, client_id, plugin_id) {
+        Ok(Some(saved)) => return write_frame(output, IpcResponse::ok(request.id, saved)).await,
+
+        Ok(None) => {}
+
+        Err(error) => {
+            return write_frame(output, IpcResponse::fail(request.id, -32602, error.to_string()))
+                .await;
+        }
+    }
 
     let Some(provider) = state.plugins.get(plugin_id).await else {
         return write_frame(
@@ -327,10 +438,15 @@ async fn session_answer(
             return Err((-32000, "Session is not reserved for a turn.".to_owned()));
         }
 
-        if !session.messages.last().is_some_and(|message| {
-            message.role == Role::User && message.sender.as_deref() == Some("tui")
+        if !session.conversation().next_back().is_some_and(|message| {
+            message.role == Role::User
+                && message.sender.as_deref() == Some(client_id)
+                && request
+                    .params
+                    .get("request")
+                    .is_none_or(|identity| identity.as_str() == Some(message.id.as_str()))
         }) {
-            return Err((-32602, "The TUI turn has no saved user message.".to_owned()));
+            return Err((-32602, "The client turn has no saved user message.".to_owned()));
         }
 
         let owner = session
@@ -343,7 +459,7 @@ async fn session_answer(
         Ok((session.model.clone(), session.workspace.clone(), owner))
     })();
 
-    let (model, workspace, _owner) = match snapshot {
+    let (model, workspace, owner) = match snapshot {
         Ok(snapshot) => snapshot,
 
         Err((code, message)) => {
@@ -351,26 +467,68 @@ async fn session_answer(
         }
     };
 
-    let _reservation = Reservation { sessions: &state.sessions, id };
-    let policy = state.config.clients.get("tui").cloned().unwrap_or_default();
-
-    let workspace = if policy.worktree {
-        Some(super::worktree::conversation(id, &state.home).map_err(io::Error::other)?)
-    } else {
-        workspace
-            .map(PathBuf::from)
-            .or(super::sharing::workspace(&state.root).map_err(io::Error::other)?)
+    let reservation = Reservation {
+        sessions: &state.sessions,
+        id,
+        owner,
+        wake: &state.plugins.jobs.wake,
+        release: true,
     };
 
-    let messages = {
+    let policy = state.config.clients.get(client_id).cloned().unwrap_or_default();
+
+    let prepared = (|| -> io::Result<_> {
+        let workspace = if policy.worktree {
+            Some(super::worktree::conversation(id, &state.home).map_err(io::Error::other)?)
+        } else {
+            workspace
+                .map(PathBuf::from)
+                .or(super::sharing::workspace(&state.root).map_err(io::Error::other)?)
+        };
+
         let mut sessions = state.sessions.lock().map_err(lock)?;
+        sessions.client(id, client_id)?;
         sessions.storage(id, workspace.as_deref(), policy.worktree)?;
-        model_context(&sessions.sessions[id])
+
+        Ok((workspace, model_context(&sessions.sessions[id])))
+    })();
+
+    let (workspace, messages) = match prepared {
+        Ok(prepared) => prepared,
+
+        Err(error) => {
+            let message = super::diagnostic(super::sentence(error.to_string()));
+            return write_frame(output, IpcResponse::fail(request.id, -32000, message)).await;
+        }
     };
 
     let (notices, mut receiver) = tokio::sync::mpsc::channel(32);
 
-    let deadline = tokio::time::Instant::now() + super::TURN_LIMIT;
+    let deadline = tokio::time::Instant::now() + state.config.inference.envelope();
+
+    if request.params[krabb_core::execution::ENVELOPE] == true {
+        let budget = krabb_core::execution::Envelope {
+            total_millis: state.config.inference.envelope().as_millis() as u64,
+        };
+
+        if let Err(error) = budget.validate() {
+            let message = super::diagnostic(super::sentence(error.to_string()));
+
+            return write_frame(output, IpcResponse::fail(request.id, -32000, message)).await;
+        }
+
+        write_frame(
+            output,
+            IpcResponse::ok(
+                request.id,
+                json!({
+                    "event": krabb_core::execution::ENVELOPE,
+                    "budget": budget,
+                }),
+            ),
+        )
+        .await?;
+    }
 
     let mut messages = super::turn_messages(id, &state.home, messages);
 
@@ -379,23 +537,19 @@ async fn session_answer(
             &mut messages,
             &*state.sessions.lock().map_err(lock)?,
             id,
-            &super::sharing::sources(
-                &state.config,
-                &super::sharing::principal("tui"),
-                super::sharing::Data::Context,
-            ),
+            &super::sharing::sources(&state.config, &source, super::sharing::Data::Context),
             &state.config,
         );
     }
 
     let mut call_id = request.id;
-    let memory_scope = super::memory_scope("tui", id);
+    let memory_scope = super::origin::scope(&source, id, id, None);
 
     super::append_conversation_memory(
         &state.plugins,
         &mut messages,
         &memory_scope,
-        "tui",
+        &source,
         if policy.worktree { workspace.as_deref() } else { None },
         &mut call_id,
     )
@@ -403,10 +557,17 @@ async fn session_answer(
 
     let cancel = super::cancellation(&state.cancels, id);
 
-    let media_root = if let Some(workspace) = &workspace {
-        super::worktree::media(workspace, "tui").map_err(io::Error::other)?
-    } else {
-        super::media_root_at(&state.home)
+    let media_root = match &workspace {
+        Some(workspace) => match super::worktree::media(workspace, client_id) {
+            Ok(root) => root,
+
+            Err(error) => {
+                let message = super::diagnostic(super::sentence(error.to_string()));
+                return write_frame(output, IpcResponse::fail(request.id, -32000, message)).await;
+            }
+        },
+
+        None => super::media_root_at(&state.home),
     };
 
     let mut failed_tool = None;
@@ -417,20 +578,16 @@ async fn session_answer(
         &model,
         messages,
         id,
-        "tui",
+        client_id,
         id,
         None,
         &state.sessions,
         workspace.as_deref().or(Some(state.root.as_path())),
         &media_root,
-        state.tui_tools.load(Ordering::Acquire),
+        live.tools.load(Ordering::Acquire),
         !policy.worktree,
-        !policy.worktree && state.tui_shell.load(Ordering::Acquire),
-        super::sharing::approval(
-            &state.config,
-            &super::sharing::Principal::Client("tui".into()),
-            state.config.approval_mode(),
-        ),
+        !policy.worktree && live.shell.load(Ordering::Acquire),
+        super::sharing::approval(&state.config, &source, state.config.approval_mode()),
         Arc::clone(&state.pending),
         &cancel,
         &state.stop,
@@ -441,7 +598,13 @@ async fn session_answer(
         notices,
         None,
         None,
+        None,
     );
+
+    // A stalled client stops receiving frames, since a timed-out write may have left one
+    // partial, but its turn still finishes and saves the answer for receipt recovery; a
+    // disconnected client cancels the turn.
+    let mut stalled = false;
 
     let result = async {
         tokio::pin!(answer);
@@ -452,23 +615,41 @@ async fn session_answer(
                 notice = receiver.recv() => {
                     let Some(notice) = notice else { continue };
 
-                    if let Err(error) = write_stream_notice(output, request.id, notice).await {
-                        receiver.close();
-                        cancel.request();
-                        let _ = answer.await;
+                    if stalled {
+                        continue;
+                    }
 
-                        return Err(error);
+                    match write_stream_notice(output, request.id, notice).await {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::TimedOut => stalled = true,
+
+                        Err(error) => {
+                            receiver.close();
+                            cancel.request();
+                            let _ = answer.await;
+
+                            return Err(error);
+                        }
                     }
                 }
             }
         };
 
         while let Some(notice) = receiver.recv().await {
-            if let Err(error) = write_stream_notice(output, request.id, notice).await {
-                receiver.close();
-                cancel.request();
+            if stalled {
+                continue;
+            }
 
-                return Err(error);
+            match write_stream_notice(output, request.id, notice).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => stalled = true,
+
+                Err(error) => {
+                    receiver.close();
+                    cancel.request();
+
+                    return Err(error);
+                }
             }
         }
 
@@ -477,7 +658,14 @@ async fn session_answer(
     .await;
 
     let persist_result = if let Ok(Ok(reply)) = &result {
-        persist_tui_answer(state, id, request.id, &reply.text)
+        persist_client_answer(
+            state,
+            id,
+            client_id,
+            request.id,
+            &reply.text,
+            reply.foreground.as_ref().map(|foreground| foreground.run.id.as_str()),
+        )
     } else {
         Ok(())
     };
@@ -494,24 +682,59 @@ async fn session_answer(
     let _ = super::acknowledge(&state.cancels, id);
     let result = result?;
 
+    drop(reservation);
+
+    if stalled {
+        if let Err(error) = &persist_result {
+            warn!(session = id, error = %super::diagnostic(super::sentence(error.to_string())),
+                "A stalled client's answer could not be saved.");
+        }
+
+        return Ok(());
+    }
+
     if let Err(error) = persist_result {
+        drop(result);
         return write_frame(output, IpcResponse::fail(request.id, -32000, error.to_string())).await;
     }
 
     if let Err(message) = status_result {
+        drop(result);
         return write_frame(output, IpcResponse::fail(request.id, -32000, message)).await;
     }
 
     let response = match result {
         Ok(reply) => IpcResponse::ok(request.id, json!({"done": true, "text": reply.text})),
-        Err(error) => IpcResponse::fail(
-            request.id,
-            -32000,
-            format!(
-                "I couldn't finish your request: {} Please try again. If it keeps happening, run krabb doctor to check the model connection.",
-                super::sentence(error.to_string())
-            ),
-        ),
+
+        Err(error) if error.is::<super::jobs::Failure>() => {
+            let failure = error.downcast_ref::<super::jobs::Failure>().unwrap();
+            let published = state
+                .sessions
+                .lock()
+                .map_err(lock)
+                .and_then(|mut sessions| sessions.publish_job_notice(&failure.id));
+
+            match published {
+                Ok(()) => IpcResponse::ok(
+                    request.id,
+                    json!({"done":true, "text":"",
+                    "task":{"id":failure.id, "state":failure.state}}),
+                ),
+
+                Err(error) => IpcResponse::fail(
+                    request.id,
+                    -32000,
+                    super::diagnostic(super::sentence(error.to_string())),
+                ),
+            }
+        }
+
+        Err(error) => {
+            warn!(error = %super::diagnostic(super::sentence(error.to_string())),
+                "Model turn failed.");
+
+            IpcResponse::fail(request.id, -32000, super::failure::reply(error.as_ref(), false))
+        }
     };
 
     write_frame(output, response).await
@@ -566,7 +789,7 @@ async fn session_compact(
         .await;
     }
 
-    let _reservation = match Reservation::acquire(&state.sessions, id, owner) {
+    let _reservation = match Reservation::acquire(state, id, owner) {
         Ok(reservation) => reservation,
 
         Err(error) => {
@@ -687,7 +910,15 @@ async fn compact_reserved(
 
         result = tokio::time::timeout_at(
             deadline,
-            compact_summary(provider, id, &model, workspace.as_deref(), older, request_id, &cleanup),
+            compact_summary(
+                provider,
+                &model,
+                workspace.as_deref(),
+                older,
+                request_id,
+                &cleanup,
+                state.config.inference.task_millis(),
+            ),
         ) => result
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Compaction timed out."))
             .and_then(|result| result),
@@ -745,16 +976,21 @@ fn compaction_boundary(messages: &[Message]) -> Option<usize> {
 
 async fn compact_summary(
     provider: &super::Live,
-    _session: &str,
     model: &str,
     workspace: Option<&str>,
     messages: &[Message],
     request_id: u64,
     cleanup: &super::process::Cleanup,
+    ceiling: Option<u64>,
 ) -> io::Result<String> {
+    let limit = ceiling.map_or(super::TURN_LIMIT, |millis| {
+        super::TURN_LIMIT.min(std::time::Duration::from_millis(millis))
+    });
+
     cleanup
         .compact(
             Arc::clone(&provider.process),
+            &provider.turns,
             &ModelRequest {
                 generation: None,
                 model: model.to_owned(),
@@ -764,7 +1000,7 @@ async fn compact_summary(
                 tools: Vec::new(),
             },
             request_id,
-            tokio::time::Instant::now() + super::TURN_LIMIT,
+            tokio::time::Instant::now() + limit,
         )
         .await
         .map_err(io::Error::other)
@@ -791,7 +1027,15 @@ async fn session_command(
         .await;
     };
 
-    let _reservation = match Reservation::acquire(&state.sessions, id, owner) {
+    let client_id = match requester(request, state, "session.command") {
+        Ok(client) => client,
+
+        Err(message) => {
+            return write_frame(output, IpcResponse::fail(request.id, -32602, message)).await;
+        }
+    };
+
+    let _reservation = match Reservation::acquire(state, id, owner) {
         Ok(reservation) => reservation,
 
         Err(error) => {
@@ -808,8 +1052,8 @@ async fn session_command(
             let session =
                 sessions.sessions.get(id).ok_or((-32004, "Session was not found.".to_owned()))?;
 
-            let Some(message) = session.messages.last().filter(|message| {
-                message.role == Role::User && message.sender.as_deref() == Some("tui")
+            let Some(message) = session.conversation().next_back().filter(|message| {
+                message.role == Role::User && message.sender.as_deref() == Some(client_id)
             }) else {
                 return Err((-32602, "The terminal command was not saved.".to_owned()));
             };
@@ -842,7 +1086,7 @@ async fn session_command(
     let cancel = super::cancellation(&state.cancels, id);
 
     let result = async {
-        let text = if state.tui_shell.load(Ordering::Acquire) {
+        let text = if state.client(client_id)?.shell.load(Ordering::Acquire) {
             let (notices, mut receiver) = tokio::sync::mpsc::channel(8);
             let command_task = run_terminal_command(
                 &command,
@@ -882,13 +1126,14 @@ async fn session_command(
             text
         } else {
             format!(
-                "Shell access is disabled in the running daemon. Enable `clients.tui.shell` in {}.",
+                "Shell access is disabled in the running daemon. Enable `clients.{client_id}.shell` \
+                 in {}.",
                 state.home.join("config.toml").display()
             )
         };
 
         let assistant = Message {
-            id: format!("tui-system-command-{}-{}", super::now(), request.id),
+            id: format!("{client_id}-system-command-{}-{}", super::now(), request.id),
             session: id.into(),
             role: Role::Assistant,
             sender: None,
@@ -1176,16 +1421,28 @@ where
     }
 }
 
-fn persist_tui_answer(state: &State, session: &str, request_id: u64, text: &str) -> io::Result<()> {
+fn persist_client_answer(
+    state: &State,
+    session: &str,
+    client: &str,
+    request_id: u64,
+    text: &str,
+    task: Option<&str>,
+) -> io::Result<()> {
     let assistant = Message {
-        id: format!("tui-assistant-{}-{request_id}", super::now()),
+        id: format!("{client}-assistant-{}-{request_id}", super::now()),
         session: session.into(),
         role: Role::Assistant,
         sender: None,
-        content: vec![Content::Text { text: super::clip(text.to_owned(), DETAIL_LIMIT) }],
+        content: vec![Content::Text {
+            text: super::clip(
+                text.to_owned(),
+                if task.is_some() { super::TEXT_LIMIT } else { DETAIL_LIMIT },
+            ),
+        }],
     };
 
-    state.sessions.lock().map_err(lock)?.append(session, assistant)
+    state.sessions.lock().map_err(lock)?.client_foreground_reply(task, assistant)
 }
 
 async fn write_stream_notice<W>(
@@ -1201,6 +1458,10 @@ where
         super::StreamNotice::Tool(name) => json!({"event": "tool", "name": name}),
         super::StreamNotice::System(text) => json!({"event": "system", "text": text}),
 
+        super::StreamNotice::Progress(text) => {
+            json!({"event": "system", "text": text, "progress": true})
+        }
+
         super::StreamNotice::Approval { tool, arguments, command, text, approve, .. } => {
             let id = approve.split('.').next().unwrap_or_default();
             json!({
@@ -1214,14 +1475,17 @@ where
         }
     };
 
-    jsonl::write(output, &IpcResponse::ok(id, event)).await.map_err(to_io)
+    write_frame(output, IpcResponse::ok(id, event)).await
 }
 
-async fn write_frame(
-    output: &mut tokio::net::tcp::OwnedWriteHalf,
+async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
+    output: &mut W,
     response: IpcResponse,
 ) -> io::Result<()> {
-    jsonl::write(output, &response).await.map_err(to_io)
+    timeout(WRITE_LIMIT, jsonl::write(output, &response))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "IPC response write timed out."))?
+        .map_err(to_io)
 }
 
 async fn approval_list(request: &IpcRequest, state: &State) -> IpcResponse {
@@ -1348,6 +1612,15 @@ async fn cancel(request: &IpcRequest, state: &State) -> IpcResponse {
         return IpcResponse::fail(request.id, -32602, "session.cancel.id is required.");
     };
 
+    let current_only = match request.params.get("turn") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+
+        Some(_) => {
+            return IpcResponse::fail(request.id, -32602, "session.cancel.turn must be a boolean.");
+        }
+    };
+
     let token = {
         let mut sessions = match state.sessions.lock() {
             Ok(sessions) => sessions,
@@ -1359,8 +1632,18 @@ async fn cancel(request: &IpcRequest, state: &State) -> IpcResponse {
             .get(id)
             .is_some_and(|session| session.inflight.is_some() || session.status == "working");
 
-        if let Err(error) = sessions.cancel(id) {
+        let result =
+            if current_only { sessions.interrupt_foreground(id) } else { sessions.cancel(id) };
+
+        if let Err(error) = result {
             return IpcResponse::fail(request.id, -32000, error.to_string());
+        }
+
+        for job in sessions.jobs.values().filter(|job| {
+            (job.origin.session == id || job.id == id)
+                && (!current_only || job.status == crate::state::JobStatus::Cancelling)
+        }) {
+            state.plugins.jobs.cancel(&job.id);
         }
 
         if active {
@@ -1592,9 +1875,20 @@ async fn active(request: &IpcRequest, state: &State) -> IpcResponse {
 }
 
 fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
-    state.sessions.lock().map_err(lock)?.recover_reservations()?;
+    if !control_method(&request.method) {
+        state.sessions.lock().map_err(lock)?.recover_reservations()?;
+    }
 
     let result = match request.method.as_str() {
+        "task.list" => tasks::list(state)?,
+        "task.receipt" => requests::receipt(&request.params, state)?,
+        "session.cleanup" => requests::cleanup(&request.params, state)?,
+        "task.budget" => tasks::grant(&request.params, state)?,
+        "task.defer" => tasks::defer(&request.params, state)?,
+        "task.control" => tasks::control(&request.params, state)?,
+        "task.message" => tasks::message(&request.params, state)?,
+        "session.enqueue" => tasks::enqueue(&request.params, state)?,
+
         "status" => {
             json!({
                 "running": true,
@@ -1625,12 +1919,14 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
         }
 
         "config.client.set" => {
-            if request.params["client"] != "tui" {
-                return Ok(IpcResponse::fail(
-                    request.id,
-                    -32602,
-                    "Only the TUI client setting is reloadable.",
-                ));
+            let Some(client_id) = request.params["client"].as_str() else {
+                return Ok(IpcResponse::fail(request.id, -32602, "A client identity is required."));
+            };
+
+            if !krabb_core::client::known(client_id)
+                && !state.config.clients.contains_key(client_id)
+            {
+                return Ok(IpcResponse::fail(request.id, -32602, "The client is not configured."));
             }
 
             let Some(tools) = request.params["tools"].as_bool() else {
@@ -1641,8 +1937,8 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 ));
             };
 
-            state.tui_tools.store(tools, Ordering::Release);
-            json!({"client": "tui", "tools": tools})
+            state.client(client_id)?.tools.store(tools, Ordering::Release);
+            json!({"client": client_id, "tools": tools})
         }
 
         "session.list" => {
@@ -1836,7 +2132,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 sessions.sessions.get(id).ok_or_else(|| not_found("Session was not found."))?;
 
             if session.inflight.is_some() || reserved != (session.status == "working") {
-                return Err(invalid("Session is already working."));
+                return Err(invalid(krabb_core::types::SESSION_BUSY));
             }
 
             if let Some(target) = request.params.get("reply_to").filter(|value| !value.is_null()) {
@@ -1848,8 +2144,10 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                     .ok_or_else(|| {
                         not_found("The referenced message is unavailable in this session.")
                     })?;
-                message.content.insert(0, Content::Text { text: reply.context() });
+                message.content = super::quote(std::mem::take(&mut message.content), &reply);
             }
+
+            let saved = serde_json::to_value(&message)?;
 
             if reserved {
                 let owner = request.params["owner"]
@@ -1860,7 +2158,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 sessions.append(id, message)?;
             }
 
-            json!({"id": id, "saved": true})
+            json!({"id": id, "saved": true, "message": saved})
         }
 
         "session.clear" => {
@@ -2268,7 +2566,7 @@ fn not_found(message: &str) -> io::Error {
 }
 
 fn lock<T>(_: std::sync::PoisonError<T>) -> io::Error {
-    io::Error::other("Session lock is poisoned.")
+    io::Error::other(crate::state::POISONED)
 }
 
 #[cfg(test)]
@@ -2552,7 +2850,12 @@ mod tests {
         let mut state = state_at("terminal-lifecycle");
         std::fs::create_dir_all(&state.home).unwrap();
         state.root = state.home.clone();
-        state.tui_shell.store(true, std::sync::atomic::Ordering::Release);
+        state
+            .client(krabb_core::client::TUI)
+            .unwrap()
+            .shell
+            .store(true, std::sync::atomic::Ordering::Release);
+
         state.sessions.lock().unwrap().create("terminal", "fixture").unwrap();
         let state = Arc::new(state);
 
@@ -2673,7 +2976,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabled_terminal_command_is_saved_as_a_system_reply() {
+    async fn a_clients_disabled_command_is_saved_as_its_system_reply() {
         let mut state = state_at("disabled-terminal-command");
         state.home =
             std::env::temp_dir().join(format!("krabb-ipc-disabled-command-{}", std::process::id()));
@@ -2681,7 +2984,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&state.home);
 
         std::fs::create_dir_all(&state.home).unwrap();
-        state.config.clients.entry("tui".into()).or_default().shell = Some(false);
+        state.config.clients.entry("desktop".into()).or_default().shell = Some(false);
 
         dispatch(
             &IpcRequest::call(
@@ -2709,7 +3012,7 @@ mod tests {
             id: "tui-user-1".into(),
             session: "terminal".into(),
             role: Role::User,
-            sender: Some("tui".into()),
+            sender: Some("desktop".into()),
             content: vec![Content::Text { text: "!pwd".into() }],
         };
 
@@ -2746,7 +3049,7 @@ mod tests {
                 4,
                 "secret",
                 "session.command",
-                json!({"id": "terminal", "owner": owner}),
+                json!({"id": "terminal", "owner": owner, "client": "desktop"}),
             ),
         )
         .await
@@ -2758,19 +3061,133 @@ mod tests {
         let text = response.result.unwrap()["text"].as_str().unwrap().to_owned();
 
         assert!(text.contains("Shell access is disabled in the running daemon."));
-        assert!(text.contains("config.toml"));
+        assert!(text.contains("`clients.desktop.shell`"));
 
         let messages = state.sessions.lock().unwrap().sessions["terminal"].messages.clone();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content[0].render(), "!pwd");
         assert_eq!(messages[1].role, Role::Assistant);
-        assert!(messages[1].id.starts_with("tui-system-command-"));
+        assert!(messages[1].id.starts_with("desktop-system-command-"));
         assert_eq!(messages[1].content[0].render(), text);
 
         state.stop.signal();
         task.await.unwrap().unwrap();
         let _ = std::fs::remove_dir_all(&state.home);
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_cannot_be_prepared_is_answered_with_an_error() {
+        let mut state = state_at("unprepared-answer");
+
+        dispatch(
+            &IpcRequest::call(
+                1,
+                "secret",
+                "session.ensure",
+                json!({"id": "conversation", "model": "test-model"}),
+            ),
+            &state,
+        )
+        .unwrap();
+
+        let owner = dispatch(
+            &IpcRequest::call(2, "secret", "session.reserve", json!({"id": "conversation"})),
+            &state,
+        )
+        .unwrap()
+        .result
+        .unwrap()["owner"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let user = Message {
+            id: "tui-user-1".into(),
+            session: "conversation".into(),
+            role: Role::User,
+            sender: Some("tui".into()),
+            content: vec![Content::Text { text: "Hello.".into() }],
+        };
+
+        dispatch(
+            &IpcRequest::call(
+                3,
+                "secret",
+                "session.append_reserved",
+                json!({"id": "conversation", "owner": owner, "message": user}),
+            ),
+            &state,
+        )
+        .unwrap();
+
+        let provider = krabb_core::plugin::Process::start_with("sh", ["-c", r#"
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\).*/\1/p')
+
+    case "$line" in
+        *'"method":"hello"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocol":{"major":0,"minor":1},"id":"fixture","version":"0.1.0","capabilities":["model"]}}\n' "$id"
+            ;;
+        *'"method":"shutdown"'*) exit 0 ;;
+    esac
+done
+"#])
+        .await
+        .unwrap();
+
+        state.plugins.insert(crate::Live::new(provider)).await;
+
+        let home = state.home.with_extension("blocked");
+
+        std::fs::write(&home, "not a directory").unwrap();
+        state.home.clone_from(&home);
+        state.config.clients.entry("tui".into()).or_default().worktree = true;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let (_, mut output) = socket.into_split();
+
+        let request = IpcRequest::call(
+            4,
+            "secret",
+            "session.answer",
+            json!({"id": "conversation", "plugin": "fixture"}),
+        );
+
+        super::session_answer(&request, &state, &mut output).await.unwrap();
+
+        let response: IpcResponse =
+            jsonl::read(&mut BufReader::new(client), FRAME).await.unwrap().unwrap();
+
+        let error = response.error.unwrap();
+
+        assert_eq!(error.code, -32000, "{}", error.message);
+        assert!(!error.message.is_empty());
+        assert!(!state.sessions.lock().unwrap().sessions["conversation"].reservation_active);
+
+        let _ = std::fs::remove_file(&home);
+    }
+
+    #[test]
+    fn a_busy_session_reports_the_shared_busy_message_to_clients() {
+        let state = state_at("busy-contract");
+
+        let ensure = json!({"id": "conversation", "model": "test-model"});
+        dispatch(&IpcRequest::call(1, "secret", "session.ensure", ensure), &state).unwrap();
+
+        let reserve = json!({"id": "conversation"});
+        dispatch(&IpcRequest::call(2, "secret", "session.reserve", reserve.clone()), &state)
+            .unwrap();
+
+        let busy =
+            match dispatch(&IpcRequest::call(3, "secret", "session.reserve", reserve), &state) {
+                Ok(response) => response.error.unwrap().message,
+                Err(error) => error.to_string(),
+            };
+
+        assert!(busy.contains(krabb_core::types::SESSION_BUSY), "{busy}");
     }
 
     pub(super) fn state_at(label: &str) -> State {
@@ -2784,6 +3201,7 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let temp = std::env::temp_dir();
+        let plugins = crate::Plugins::default();
 
         State {
             token: "secret".into(),
@@ -2795,10 +3213,8 @@ mod tests {
             home: temp.join(format!("krabb-ipc-home-{}-{thread}-{label}", std::process::id())),
             approval_mode: "off".into(),
             pending: Arc::new(tokio::sync::Mutex::new(crate::approval::Gate::new().unwrap())),
-            plugins: crate::Plugins::default(),
+            plugins,
             config: crate::Config::default(),
-            tui_tools: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            tui_shell: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             channel: "telegram".into(),
             model: "codex".into(),
         }
@@ -2848,7 +3264,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn pending_tui_provider(mode: &str) -> Arc<State> {
+    pub(super) async fn pending_tui_provider(mode: &str) -> Arc<State> {
         let state = state_at(mode);
         let _ = std::fs::remove_dir_all(&state.home);
         std::fs::create_dir_all(&state.home).unwrap();
@@ -2915,7 +3331,7 @@ for line in sys.stdin:
     }
 
     #[cfg(unix)]
-    async fn wait_for_tui_request(state: &State, index: usize) {
+    pub(super) async fn wait_for_tui_request(state: &State, index: usize) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while !state.home.join(format!("started-{index}")).exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2981,6 +3397,69 @@ for line in sys.stdin:
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn execution_envelopes_are_sent_only_to_clients_that_request_them() {
+        for negotiate in [false, true] {
+            let state = pending_tui_provider("stream").await;
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            let (_, mut output) = server.into_split();
+            let answering = Arc::clone(&state);
+
+            let task = tokio::spawn(async move {
+                super::session_answer(
+                    &IpcRequest::call(
+                        7,
+                        "secret",
+                        "session.answer",
+                        json!({"id":"turn","plugin":"fixture","execution":negotiate}),
+                    ),
+                    &answering,
+                    &mut output,
+                )
+                .await
+            });
+
+            let mut reader = BufReader::new(client);
+
+            let first: IpcResponse =
+                tokio::time::timeout(Duration::from_secs(5), jsonl::read(&mut reader, FRAME))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+
+            assert_eq!(first.id, 7);
+
+            let event = first.result.unwrap();
+
+            if negotiate {
+                assert_eq!(event["event"], krabb_core::execution::ENVELOPE);
+
+                let budget: krabb_core::execution::Envelope =
+                    serde_json::from_value(event["budget"].clone()).unwrap();
+
+                budget.validate().unwrap();
+
+                assert_eq!(
+                    budget.total_millis,
+                    state.config.inference.envelope().as_millis() as u64
+                );
+            } else {
+                assert_eq!(event["event"], "text");
+                assert_eq!(event["text"], "started");
+            }
+
+            wait_for_tui_request(&state, 0).await;
+            crate::cancellation(&state.cancels, "turn").request();
+            tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+            state.plugins.get("fixture").await.unwrap().stop().await.unwrap();
+            std::fs::remove_dir_all(&state.home).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn automatic_compaction_and_generation_share_the_turn_deadline() {
         let state = pending_tui_provider("budget").await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3018,21 +3497,40 @@ for line in sys.stdin:
         let response = loop {
             let response: IpcResponse = jsonl::read(&mut reader, FRAME).await.unwrap().unwrap();
 
-            if response.error.is_some() {
+            if response.result.as_ref().is_some_and(|result| result["done"] == true) {
                 break response;
             }
 
+            assert!(response.error.is_none());
             assert_eq!(response.result.unwrap()["event"], "system");
         };
 
-        assert!(response.error.unwrap().message.contains("time limit"));
+        assert_eq!(response.result.unwrap()["task"]["state"], "waiting");
 
         {
             let sessions = state.sessions.lock().unwrap();
             let session = &sessions.sessions["turn"];
 
             assert!(session.compacted_context.is_some());
-            assert_eq!(session.messages.len(), 4);
+            assert_eq!(session.messages.len(), 5);
+            assert!(
+                session.messages.last().unwrap().content[0]
+                    .render()
+                    .starts_with("The request failed. Its saved task will retry no earlier than ")
+            );
+
+            assert_eq!(sessions.jobs.len(), 1);
+            assert!(sessions.jobs.values().all(|job| job.result.is_none()));
+            let job = sessions.jobs.values().next().unwrap();
+
+            assert_eq!(job.failures, 1);
+            assert_eq!(
+                job.retry.as_ref().unwrap().failure.kind,
+                krabb_core::failure::Kind::TimedOut
+            );
+
+            assert!(job.retry.as_ref().unwrap().at > super::super::unix_seconds());
+
             assert_eq!(session.status, "idle");
             assert!(!session.reservation_active);
         }
@@ -3418,6 +3916,28 @@ done"##;
     }
 
     #[tokio::test]
+    async fn contextual_progress_remains_compatible_with_system_events() {
+        let (client_input, mut server_output) = duplex(1024);
+
+        write_stream_notice(
+            &mut server_output,
+            7,
+            super::super::StreamNotice::Progress("I'll verify the release notes.".into()),
+        )
+        .await
+        .unwrap();
+
+        let response: IpcResponse =
+            jsonl::read(&mut BufReader::new(client_input), FRAME).await.unwrap().unwrap();
+
+        let result = response.result.unwrap();
+
+        assert_eq!(result["event"], "system");
+        assert_eq!(result["text"], "I'll verify the release notes.");
+        assert_eq!(result["progress"], true);
+    }
+
+    #[tokio::test]
     async fn includes_tool_arguments_in_streamed_approval_events() {
         let (client_input, mut server_output) = duplex(1024);
 
@@ -3477,7 +3997,15 @@ done"##;
                 .unwrap();
         }
 
-        super::persist_tui_answer(&state, "tui-work", 7, "The project files are here.").unwrap();
+        super::persist_client_answer(
+            &state,
+            "tui-work",
+            krabb_core::client::TUI,
+            7,
+            "The project files are here.",
+            None,
+        )
+        .unwrap();
 
         let sessions = crate::state::Store::load(path).unwrap();
         let messages = &sessions.sessions["tui-work"].messages;
@@ -3495,17 +4023,23 @@ done"##;
     #[cfg(unix)]
     #[tokio::test]
     async fn tui_answers_use_configured_workspace_tools() {
-        tui_workspace(false).await;
+        client_workspace(krabb_core::client::TUI, false).await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn tui_worktrees_override_shared_scopes() {
-        tui_workspace(true).await;
+        client_workspace(krabb_core::client::TUI, true).await;
     }
 
     #[cfg(unix)]
-    async fn tui_workspace(isolated: bool) {
+    #[tokio::test]
+    async fn desktop_answers_use_their_own_identity_and_workspace_policy() {
+        client_workspace("desktop", false).await;
+    }
+
+    #[cfg(unix)]
+    async fn client_workspace(client_id: &str, isolated: bool) {
         use krabb_core::plugin::Process;
 
         let mut state = state_at("tui-workspace-tools");
@@ -3521,6 +4055,7 @@ done"##;
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&state.home).unwrap();
         state.root = workspace.clone();
+        state.config.clients.entry(client_id.into()).or_default();
 
         if isolated {
             let repository = krabb_file::directory(
@@ -3531,7 +4066,7 @@ done"##;
 
             crate::worktree::initialize(&repository).unwrap();
 
-            let policy = state.config.clients.entry("tui".into()).or_default();
+            let policy = state.config.clients.entry(client_id.into()).or_default();
 
             policy.worktree = true;
 
@@ -3545,7 +4080,7 @@ done"##;
             }]);
         }
 
-        state.tui_tools.store(true, std::sync::atomic::Ordering::Release);
+        state.client(client_id).unwrap().tools.store(true, std::sync::atomic::Ordering::Release);
 
         let provider_script = r#"
 count=0
@@ -3620,7 +4155,7 @@ done
                         id: "user-1".into(),
                         session: session.into(),
                         role: Role::User,
-                        sender: Some("tui".into()),
+                        sender: Some(client_id.into()),
                         content: vec![Content::Text { text: "Read note.txt.".into() }],
                     },
                 )
@@ -3638,7 +4173,7 @@ done
             7,
             "secret",
             "session.answer",
-            json!({"id": session, "plugin": "fixture"}),
+            json!({"id": session, "plugin": "fixture", "client":client_id}),
         );
 
         super::session_answer(&request, &state, &mut output).await.unwrap();
@@ -3656,6 +4191,11 @@ done
         let response = final_response.expect("TUI turn should return a final response");
 
         assert_eq!(response.result.unwrap()["text"], "The fixture note was read.");
+
+        assert_eq!(
+            state.sessions.lock().unwrap().sessions[session].source,
+            Some(crate::sharing::Principal::Client(client_id.into()))
+        );
 
         let messages = state.sessions.lock().unwrap().sessions[session].messages.clone();
 
@@ -3796,7 +4336,10 @@ for line in sys.stdin:
             .map(|message| message.content[0].render())
             .collect::<Vec<_>>();
 
-        assert_eq!(replies, ["fresh answer"]);
+        assert_eq!(
+            replies,
+            ["Task cancelled. This does not undo effects of earlier actions.", "fresh answer"]
+        );
 
         drop(client);
         state.plugins.get("fixture").await.unwrap().stop().await.unwrap();
@@ -3812,8 +4355,17 @@ for line in sys.stdin:
         std::fs::create_dir_all(&state.home).unwrap();
         state.root = state.home.clone();
         state.config.approval = "prompt".into();
-        state.tui_tools.store(true, std::sync::atomic::Ordering::Release);
-        state.tui_shell.store(true, std::sync::atomic::Ordering::Release);
+        state
+            .client(krabb_core::client::TUI)
+            .unwrap()
+            .tools
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        state
+            .client(krabb_core::client::TUI)
+            .unwrap()
+            .shell
+            .store(true, std::sync::atomic::Ordering::Release);
 
         let script = r#"
 import json, os, subprocess, sys
@@ -4876,12 +5428,11 @@ for line in sys.stdin:
             sessions.reserve("terminal", "owner".into()).unwrap();
         }
 
-        assert!(super::Reservation::acquire(&state.sessions, "terminal", "other").is_err());
+        assert!(super::Reservation::acquire(&state, "terminal", "other").is_err());
 
-        let reservation =
-            super::Reservation::acquire(&state.sessions, "terminal", "owner").unwrap();
+        let reservation = super::Reservation::acquire(&state, "terminal", "owner").unwrap();
 
-        assert!(super::Reservation::acquire(&state.sessions, "terminal", "owner").is_err());
+        assert!(super::Reservation::acquire(&state, "terminal", "owner").is_err());
 
         {
             let mut sessions = state.sessions.lock().unwrap();
@@ -4919,6 +5470,45 @@ for line in sys.stdin:
         sessions.reserve("terminal", "other".into()).unwrap();
 
         let _ = std::fs::remove_file(test_store_path("owned-reservation"));
+    }
+
+    #[test]
+    fn standalone_compaction_keeps_the_client_lease_until_its_explicit_release() {
+        let state = state_at("compaction-client-lease");
+
+        {
+            let mut store = state.sessions.lock().unwrap();
+            store.create("terminal", "fixture").unwrap();
+            store.reserve("terminal", "owner".into()).unwrap();
+        }
+
+        let guard = super::Reservation::acquire(&state, "terminal", "owner").unwrap();
+
+        drop(guard);
+
+        {
+            let store = state.sessions.lock().unwrap();
+
+            assert!(!store.sessions["terminal"].reservation_active);
+            assert_eq!(store.sessions["terminal"].reservation_owner.as_deref(), Some("owner"));
+            assert_eq!(store.sessions["terminal"].status, "working");
+        }
+
+        assert_eq!(
+            dispatch(
+                &IpcRequest::call(
+                    7,
+                    "secret",
+                    "session.release",
+                    json!({"id":"terminal","owner":"owner"})
+                ),
+                &state
+            )
+            .unwrap()
+            .result
+            .unwrap()["released"],
+            true
+        );
     }
 
     #[test]
@@ -5025,7 +5615,13 @@ for line in sys.stdin:
     fn applies_tui_tools_configuration_live() {
         let state = state_at("config-client-set");
 
-        assert!(!state.tui_tools.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            !state
+                .client(krabb_core::client::TUI)
+                .unwrap()
+                .tools
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
 
         let response = dispatch(
             &IpcRequest::call(
@@ -5040,7 +5636,13 @@ for line in sys.stdin:
 
         assert_eq!(response.result.unwrap()["tools"], true);
 
-        assert!(state.tui_tools.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            state
+                .client(krabb_core::client::TUI)
+                .unwrap()
+                .tools
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
     }
 
     #[test]
@@ -5417,6 +6019,7 @@ for line in sys.stdin:
             .lock()
             .await
             .issue(crate::approval::Target {
+                source: krabb_core::scope::Principal::Channel("telegram".into()),
                 channel: "telegram".into(),
                 chat: "7".into(),
                 thread: None,
@@ -5529,8 +6132,6 @@ for line in sys.stdin:
             pending: Arc::new(tokio::sync::Mutex::new(crate::approval::Gate::new().unwrap())),
             plugins: crate::Plugins::default(),
             config: crate::Config::default(),
-            tui_tools: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            tui_shell: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             channel: "telegram".into(),
             model: "codex".into(),
         };
@@ -5575,8 +6176,6 @@ for line in sys.stdin:
             pending: Arc::new(tokio::sync::Mutex::new(crate::approval::Gate::new().unwrap())),
             plugins: crate::Plugins::default(),
             config: crate::Config::default(),
-            tui_tools: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            tui_shell: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             channel: "telegram".into(),
             model: "codex".into(),
         };
@@ -5824,8 +6423,6 @@ for line in sys.stdin:
             pending: Arc::new(tokio::sync::Mutex::new(crate::approval::Gate::new().unwrap())),
             plugins: crate::Plugins::default(),
             config: crate::Config::default(),
-            tui_tools: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            tui_shell: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             channel: "telegram".into(),
             model: "codex".into(),
         });

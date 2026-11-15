@@ -14,6 +14,8 @@ pub enum Error {
     Denied(String),
     #[error("Turn limit reached: {0}")]
     Limit(String),
+    #[error("{message}")]
+    Failed { message: String, failure: crate::failure::Failure },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -632,6 +632,16 @@ where
                         app.push_request_failure(&text);
                     }
 
+                    Some(crate::EngineEvent::InputQueued { input, receipt }) => {
+                        app.queued_input(&input, &receipt, false)
+                    }
+
+                    Some(crate::EngineEvent::InputRejected { input, reason }) => {
+                        app.queued_input(&input, &reason, true)
+                    }
+
+                    Some(crate::EngineEvent::ControlNotice(text)) => app.push_control_notice(&text),
+
                     Some(crate::EngineEvent::SystemNotice(text) | crate::EngineEvent::Progress(text)) => {
                         app.push_system(&text);
                     }
@@ -753,6 +763,16 @@ where
                     app.finish_streamed_interactions();
                 }
 
+                crate::EngineEvent::InputQueued { input, receipt } => {
+                    app.queued_input(&input, &receipt, false)
+                }
+
+                crate::EngineEvent::InputRejected { input, reason } => {
+                    app.queued_input(&input, &reason, true)
+                }
+
+                crate::EngineEvent::ControlNotice(text) => app.push_control_notice(&text),
+
                 crate::EngineEvent::SystemNotice(text) | crate::EngineEvent::Progress(text) => {
                     app.push_system(&text)
                 }
@@ -873,7 +893,7 @@ where
         id: saved.id,
         session: saved.session.clone(),
         role: Role::Assistant,
-        sender: Some("system".into()),
+        sender: Some(krabb_core::types::SYSTEM.into()),
         content: vec![krabb_core::types::Content::Text { text: saved.text }],
     };
 
@@ -986,7 +1006,8 @@ fn message_timestamp(id: &str) -> Option<String> {
         | ["tui", "interaction", "assistant", timestamp, ..] => *timestamp,
         ["tui", "system", "interaction", "assistant", timestamp, ..]
         | ["tui", "system", "notice", timestamp, ..]
-        | ["schedule", "notice", "at", timestamp, ..] => *timestamp,
+        | ["schedule", "notice", "at", timestamp, ..]
+        | ["job", "notice", "at", timestamp, ..] => *timestamp,
         _ => return None,
     };
 
@@ -1113,6 +1134,8 @@ const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/history clear", "Clear saved TUI input history."),
     ("/history help", "Show input history commands."),
     ("/status", "Show whether the background runtime is running."),
+    ("/task", "List saved tasks; optionally pause, resume, cancel, approve, or deny one by ID."),
+    ("/task steer|defer|extend", "Redirect, delay, or extend a task: <id> <value>."),
     ("/plugin", "Browse installed plugins; optionally choose a page."),
     ("/session help", "Show session commands."),
     ("/session list", "List saved sessions; optionally choose a page."),
@@ -1482,14 +1505,23 @@ where
                     let line = app.input.iter().collect::<String>();
 
                     let command = line.trim();
-                    let is_live_control =
-                        matches!(command, "/approvals" | "/approve" | "/deny" | "/quit" | "/exit")
-                            || command.starts_with("/approve ")
-                            || command.starts_with("/deny ")
-                            || command == "/animation"
-                            || command.starts_with("/animation ")
-                            || command == "/statusline"
-                            || command.starts_with("/statusline ");
+                    let busy = app.generation_active
+                        || app.session_working
+                        || !app.pending_interactions.is_empty();
+                    let ordinary = !command.starts_with('/') && !command.starts_with('!');
+                    let is_task_control = krabb_core::task::command(command);
+                    let is_live_control = (ordinary && !app.compaction_active)
+                        || is_task_control
+                        || matches!(
+                            command,
+                            "/approvals" | "/approve" | "/deny" | "/quit" | "/exit"
+                        )
+                        || command.starts_with("/approve ")
+                        || command.starts_with("/deny ")
+                        || command == "/animation"
+                        || command.starts_with("/animation ")
+                        || command == "/statusline"
+                        || command.starts_with("/statusline ");
 
                     if (app.generation_active
                         || app.compaction_active
@@ -1522,7 +1554,10 @@ where
                         return Ok(false);
                     }
 
-                    if !matches!(line.as_str(), "/clear" | "/quit" | "/exit") {
+                    if !is_task_control
+                        && !(busy && ordinary)
+                        && !matches!(line.as_str(), "/clear" | "/quit" | "/exit")
+                    {
                         app.begin_interaction(&line);
                     }
 
@@ -3442,6 +3477,39 @@ impl App {
         }
     }
 
+    fn queued_input(&mut self, input: &str, receipt: &str, rejected: bool) {
+        if !self.generation_active
+            && self
+                .pending_interactions
+                .back()
+                .is_some_and(|interaction| interaction.input == input)
+        {
+            self.pending_interactions.pop_back();
+        }
+
+        if rejected && self.input.is_empty() {
+            self.input = input.chars().collect();
+            self.cursor = self.input.len();
+        } else if rejected {
+            let restored = input.chars().chain(['\n']).collect::<Vec<_>>();
+
+            self.cursor += restored.len();
+            self.input.splice(0..0, restored);
+        }
+
+        self.push_control_notice(receipt);
+    }
+
+    fn push_control_notice(&mut self, value: &str) {
+        self.push_system_label();
+        self.append_visible(&normalize_output(format!("{value}\n")));
+
+        if self.generation_active {
+            self.reply_pending = true;
+            self.reply_system = false;
+        }
+    }
+
     fn push_system_output(&mut self, value: &str) {
         if self.reply_pending {
             self.push_system_label();
@@ -3617,6 +3685,68 @@ mod tests {
         input_cursor_position, interrupt_generation, marquee_statusline, render_statusline,
         save_preferences, wrapped_rows,
     };
+
+    #[test]
+    fn failed_queued_input_is_restored_without_changing_the_active_interaction() {
+        let mut app = App { generation_active: true, ..Default::default() };
+        app.begin_interaction("prepare the report");
+        app.queued_input("another question", "Storage is full.", true);
+
+        assert_eq!(app.input.iter().collect::<String>(), "another question");
+        assert_eq!(app.pending_interactions.len(), 1);
+        assert_eq!(app.pending_interactions[0].input, "prepare the report");
+        assert!(app.pending_interactions[0].output.is_empty());
+        assert!(app.completed_interactions.is_empty());
+
+        app.cursor = 2;
+        app.queued_input("first", "Storage is full.", true);
+
+        assert_eq!(app.input.iter().collect::<String>(), "first\nanother question");
+        assert_eq!(app.cursor, 8);
+    }
+
+    #[tokio::test]
+    async fn enter_accepts_another_question_during_generation_without_starting_a_second_stream() {
+        let (mut commands, mut input) = tokio::io::duplex(1024);
+        let mut app = App {
+            generation_active: true,
+            model_available: true,
+            input: "another question".chars().collect(),
+            ..Default::default()
+        };
+
+        app.begin_interaction("prepare the report");
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut commands,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let mut bytes = [0_u8; 128];
+        let count = tokio::io::AsyncReadExt::read(&mut input, &mut bytes).await.unwrap();
+
+        assert!(String::from_utf8_lossy(&bytes[..count]).contains("another question"));
+        assert!(app.input.is_empty());
+        assert_eq!(app.pending_interactions.len(), 1);
+        assert!(app.generation_active);
+    }
+
+    #[test]
+    fn saved_task_receipts_do_not_duplicate_history_or_enter_the_original_answer() {
+        let mut app = App { generation_active: true, ..App::default() };
+        app.begin_interaction("prepare the report");
+        app.push_user("pause the report");
+        app.push_control_notice("Pause requested.");
+
+        assert!(app.transcript.contains("Pause requested."));
+        assert!(app.completed_system_messages.is_empty());
+        assert_eq!(app.pending_interactions.len(), 1);
+        assert!(app.pending_interactions[0].output.is_empty());
+        assert!(app.reply_pending);
+    }
 
     #[test]
     fn assistant_text_stays_separate_when_generation_finishes_before_pipe_output() {
@@ -4479,6 +4609,11 @@ mod tests {
 
         assert_eq!(nanoseconds, milliseconds);
         assert_eq!(scheduled, milliseconds);
+        assert_eq!(
+            super::message_timestamp("job-notice-at-1700000000000-job-7-event-2"),
+            milliseconds
+        );
+
         assert_eq!(scheduled_turn, milliseconds);
         assert_eq!(system_command, milliseconds);
         assert_eq!(interaction, milliseconds);
@@ -5719,7 +5854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_turn_rejects_chat_and_shows_command_reply_as_system() {
+    async fn active_turn_accepts_chat_and_shows_command_reply_as_system() {
         let (mut command_tx, mut command_rx) = duplex(1024);
         let mut app = App { generation_active: true, ..App::default() };
         app.input = "please wait".chars().collect();
@@ -5734,16 +5869,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(app.input.iter().collect::<String>(), "please wait");
-        assert!(app.transcript.is_empty());
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(1),
-                command_rx.read(&mut [0; 32]),
-            )
-            .await
-            .is_err()
-        );
+        assert!(app.input.is_empty());
+        assert!(app.transcript.contains("please wait"));
+        let mut queued = [0; 64];
+        let count = command_rx.read(&mut queued).await.unwrap();
+
+        assert_eq!(&queued[..count], b"\"please wait\"\n");
+        assert!(app.pending_interactions.is_empty());
 
         app.input.clear();
         app.cursor = 0;
@@ -5781,7 +5913,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_working_session_locks_chat_and_reports_the_state_as_system() {
+    async fn shared_working_session_submits_chat_for_durable_admission() {
         let (mut command_tx, mut command_rx) = duplex(1024);
         let mut app = App { session_working: true, ..App::default() };
         app.input = "hello from the second TUI".chars().collect();
@@ -5796,18 +5928,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(app.input.iter().collect::<String>(), "hello from the second TUI");
-        assert!(app.transcript.contains("System | "));
-        assert!(app.transcript.contains("Krabb is working in this session."));
-        assert!(!app.transcript.contains("You | "));
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(1),
-                command_rx.read(&mut [0; 32]),
-            )
-            .await
-            .is_err()
-        );
+        assert!(app.input.is_empty());
+        assert!(app.transcript.contains("You | "));
+        assert!(app.pending_interactions.is_empty());
+        let mut queued = [0; 128];
+        let count = command_rx.read(&mut queued).await.unwrap();
+
+        assert_eq!(&queued[..count], b"\"hello from the second TUI\"\n");
     }
 
     #[test]

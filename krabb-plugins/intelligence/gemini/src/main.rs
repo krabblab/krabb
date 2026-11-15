@@ -163,22 +163,17 @@ async fn generate_at(
         .json(&request_body(&input)?)
         .send()
         .await
-        .map_err(|error| {
-            krabb_core::Error::Denied(format!("Gemini request failed: {}.", error.without_url()))
-        })?;
+        .map_err(|error| krabb_http::transport(&error, "Gemini"))?;
 
-    let status = response.status();
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Gemini").await);
+    }
+
     let body = collect_response(response).await?;
 
     let value: Value = serde_json::from_slice(&body).map_err(|error| {
         krabb_core::Error::Denied(format!("Gemini response was invalid: {error}."))
     })?;
-
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Gemini request was rejected with {status}."
-        )));
-    }
 
     let mut reply = streaming::Reply::new(&model);
 

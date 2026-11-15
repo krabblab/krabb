@@ -27,3 +27,23 @@ loopback fixtures and never follows redirects.
 Add `--quote "Earlier message"` to a message request to include bounded reference
 context alongside the prompt. The adapter sends ordinary protocol text; it does
 not require the external agent to support a Krabb-specific message type.
+
+The legacy JSON-RPC operation interface exposes `operation.list`,
+`operation.start`, `operation.inspect`, `operation.cancel`, and `operation.result`.
+Starting `delegate` requests an immediate response and returns an opaque handle
+for later inspection. The handle preserves the discovery card, RPC endpoint,
+and remote task ID. Each inspection rechecks endpoint authorization and rejects
+endpoint changes. A cancellation request reports the state returned by the backend.
+
+Pause, wait, idempotent start, and recovery by admission ID are unavailable. Keep a successful start
+receipt and inspect its handle after a disconnect. A lost start receipt requires review before
+another start. The runtime saves admitted handles and monitors them without inference, then resumes
+the original task with the terminal receipt. Backend pause and additional-input submission are
+unavailable; a pause waits for existing remote work to settle and retains its result.
+
+New extended operations use the optional [runner plugin](../runner/README.md), which reuses this
+transport library with its own configuration and secret. The legacy A2A operation interface remains
+available for previously saved handles. The runtime's local process-recovery fixtures exercise
+runner and this backend. Run `cargo test --locked -p krabb-runtime --test operations` to exercise
+host, adapter, and backend restarts, lost start/cancel receipts, and original-conversation
+completion without paid APIs.

@@ -357,6 +357,7 @@ async fn generate_on(
     let response = Response::ok(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: "stop".into(),
             input: None,
@@ -1831,7 +1832,14 @@ done
                 .generate(
                     id,
                     ModelRequest {
-                        generation: (index == models.len() - 1).then_some(krabb_core::context::Generation { output:512, summary:true, search:true }),
+                        generation: (index == models.len() - 1).then_some(
+                            krabb_core::context::Generation {
+                                limits: None,
+                                output: 512,
+                                summary: true,
+                                search: true,
+                            },
+                        ),
                         model: (*model).into(),
                         workspace: Some(root.display().to_string()),
                         messages: vec![Message {

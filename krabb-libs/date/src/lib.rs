@@ -5,6 +5,83 @@ const DAYS_PER_ERA: i64 = 146_097;
 // Days from 0000-03-01 (the civil-date algorithm's epoch) to 1970-01-01.
 const DAYS_BEFORE_UNIX_EPOCH: i64 = 719_468;
 
+/// Resolves a retry delay or HTTP date against an explicit Unix timestamp.
+pub fn retry_after(value: &str, now: u64) -> Result<u64, String> {
+    let value = value.trim();
+    let invalid = || "The retry time is invalid.".to_owned();
+
+    if value.is_empty() || value.len() > 128 {
+        return Err(invalid());
+    }
+
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return value.parse().map_err(|_| invalid());
+    }
+
+    let now = i64::try_from(now).map_err(|_| invalid())?;
+
+    let timestamp = if let Ok(date) = jiff::fmt::rfc2822::parse(value) {
+        date.timestamp()
+    } else {
+        let normalized = match value.split_once(", ") {
+            Some((weekday, rest)) => expand_year(weekday, rest, now).ok_or_else(invalid)?,
+            None => value.into(),
+        };
+
+        let format = if normalized.contains(',') {
+            "%A, %d-%b-%Y %H:%M:%S GMT"
+        } else {
+            "%a %b %e %H:%M:%S %Y"
+        };
+
+        jiff::civil::DateTime::strptime(format, &normalized)
+            .map_err(|_| invalid())?
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .map_err(|_| invalid())?
+            .timestamp()
+    };
+
+    Ok(timestamp.as_second().saturating_sub(now).max(0) as u64)
+}
+
+/// Expands an RFC 850 two-digit year to the century within 50 years of `now`.
+fn expand_year(weekday: &str, rest: &str, now: i64) -> Option<String> {
+    let (date, time) = rest.split_once(' ')?;
+    let parts = date.split('-').collect::<Vec<_>>();
+
+    if parts.len() != 3 || parts[2].len() != 2 {
+        return None;
+    }
+
+    let year: i32 = parts[2].parse().ok()?;
+
+    let current =
+        i32::from(jiff::Timestamp::from_second(now).ok()?.to_zoned(jiff::tz::TimeZone::UTC).year());
+
+    let mut year = current.div_euclid(100) * 100 + year;
+
+    if year > current + 50 {
+        year -= 100;
+    } else if year < current - 50 {
+        year += 100;
+    }
+
+    Some(format!("{weekday}, {}-{}-{year} {time}", parts[0], parts[1]))
+}
+
+/// Reads an optional `Retry-After` header value at the current time.
+///
+/// Returns `None` when absent and `Some(None)` when present but unusable.
+pub fn retry_hint(value: Option<&[u8]>) -> Option<Option<u64>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+
+    value
+        .map(|value| std::str::from_utf8(value).ok().and_then(|value| retry_after(value, now).ok()))
+}
+
 /// Parses an exact schedule time as RFC 3339 or a local date/time in a named
 /// timezone. Local times use the system timezone when no timezone is provided.
 pub fn parse_datetime(value: &str, timezone: Option<&str>) -> Result<u64, String> {
@@ -26,6 +103,32 @@ pub fn parse_datetime(value: &str, timezone: Option<&str>) -> Result<u64, String
     let zoned = datetime
         .to_zoned(timezone)
         .map_err(|error| format!("The local schedule time is invalid: {error}."))?;
+
+    u64::try_from(zoned.timestamp().as_second())
+        .map_err(|_| "The date and time must be after the Unix epoch.".into())
+}
+
+/// Rejects unknown zone names and malformed fixed UTC offsets.
+pub fn validate_timezone(value: &str) -> Result<(), String> {
+    parse_timezone(value).map(|_| ())
+}
+
+/// Resolves an explicit local time only when its named zone has one valid instant.
+pub fn parse_exact_datetime(value: &str, timezone: &str) -> Result<u64, String> {
+    let datetime = value.parse::<jiff::civil::DateTime>().map_err(|_| {
+        "Use a local date/time followed by a named timezone, or a timestamp with a UTC offset."
+            .to_owned()
+    })?;
+
+    let zoned =
+        parse_timezone(timezone)?.to_ambiguous_zoned(datetime).unambiguous().map_err(|_| {
+            "That local time is ambiguous or does not exist; include an explicit UTC offset."
+                .to_owned()
+        })?;
+
+    if zoned.timestamp().subsec_nanosecond() != 0 {
+        return Err("Use a whole-second date and time.".into());
+    }
 
     u64::try_from(zoned.timestamp().as_second())
         .map_err(|_| "The date and time must be after the Unix epoch.".into())
@@ -166,6 +269,14 @@ pub fn format_datetime(timestamp: u64) -> String {
     let second = seconds % 60;
 
     format!("{date} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+/// Formats a timestamp in the host's timezone, naming the zone when the host knows it.
+pub fn format_datetime_local(timestamp: u64) -> String {
+    match jiff::tz::TimeZone::system().iana_name() {
+        Some(timezone) => format_datetime_in_timezone(timestamp, timezone),
+        None => format_datetime(timestamp),
+    }
 }
 
 /// Formats a timestamp in a configured timezone and includes its UTC equivalent.
@@ -348,5 +459,88 @@ mod tests {
 
         assert!(parse_datetime("tomorrow morning", Some("UTC")).is_err());
         assert!(parse_datetime("2030-10-20 09:00", Some("Mars/Olympus")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod exact {
+    use super::*;
+
+    #[test]
+    fn explicit_zones_reject_dst_gaps_folds_missing_zones_and_fractional_truncation() {
+        assert_eq!(
+            parse_exact_datetime("2026-11-12T09:00:00", "Europe/Rome").unwrap(),
+            parse_datetime("2026-11-12T08:00:00Z", None).unwrap()
+        );
+
+        assert_eq!(
+            parse_exact_datetime("2026-11-12 09:00", "+01:00").unwrap(),
+            parse_datetime("2026-11-12T08:00:00Z", None).unwrap()
+        );
+
+        for value in ["2026-03-29T02:30:00", "2026-10-25T02:30:00"] {
+            assert!(parse_exact_datetime(value, "Europe/Rome").is_err());
+        }
+
+        assert!(parse_exact_datetime("2026-11-12T09:00:00.001", "Europe/Rome").is_err());
+        assert!(parse_exact_datetime("2026-11-12T09:00:00Z", "Europe/Rome").is_err());
+        assert!(parse_exact_datetime("2026-11-12T09:00:00", "Nowhere/Else").is_err());
+        assert!(validate_timezone("+25:99").is_err());
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn retry_delays_resolve_numeric_and_all_http_date_forms_without_reinterpreting_the_clock() {
+        assert_eq!(retry_after("120", 784111700).unwrap(), 120);
+        assert_eq!(retry_after("0", 784111700).unwrap(), 0);
+
+        for value in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            assert_eq!(retry_after(value, 784111700).unwrap(), 77, "{value}");
+            assert_eq!(retry_after(value, 784111800).unwrap(), 0, "{value}");
+        }
+
+        for value in [
+            "",
+            "-1",
+            "0.5",
+            "18446744073709551616",
+            "tomorrow",
+            "Sunday, 06-Nov-9994 08:49:37 GMT",
+        ] {
+            assert!(retry_after(value, 784111700).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn two_digit_years_resolve_within_fifty_years_of_the_current_date() {
+        let now = 1_794_528_000;
+
+        assert_eq!(retry_after("Sunday, 06-Nov-94 08:49:37 GMT", now).unwrap(), 0);
+        assert!(retry_after("Wednesday, 06-Nov-30 08:49:37 GMT", now).unwrap() > 0);
+
+        assert!(retry_after("Thursday, 06-Nov-10 08:49:37 GMT", 3_629_145_600).unwrap() > 0);
+    }
+
+    #[test]
+    fn retry_hints_distinguish_absent_and_unusable_guidance() {
+        assert_eq!(retry_hint(None), None);
+
+        assert_eq!(retry_hint(Some(b" 3 ")), Some(Some(3)));
+        assert_eq!(retry_hint(Some(b"Sun, 06 Nov 1994 08:49:37 GMT")), Some(Some(0)));
+        assert_eq!(retry_hint(Some(b"-1")), Some(None));
+        assert_eq!(retry_hint(Some(&[0xff, 0xfe])), Some(None));
+    }
+
+    #[test]
+    fn local_time_always_includes_the_utc_instant() {
+        assert!(format_datetime_local(784111777).contains(&format_datetime(784111777)));
     }
 }

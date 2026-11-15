@@ -147,6 +147,7 @@ pub(super) fn reclaim<'a>(
             .chain(session.queued.iter())
             .chain(session.inflight.iter())
             .chain(session.compacted_context.iter().flatten())
+            .chain(session.original.iter())
         {
             for content in &message.content {
                 if let Content::Image { uri, .. }

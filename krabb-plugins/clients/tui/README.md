@@ -25,8 +25,21 @@ krabb tui --once "prompt"
 ```
 
 `--once` prints one reply without opening the full-screen UI. It uses and
-deletes a temporary session unless you pass `--session <id>`. Interactive
+deletes an idle temporary session unless you pass `--session <id>`. Saved work
+or pending results retain it. Unconfirmed cleanup is reported with a reopen command. Interactive
 sessions resume the last session or start `default`.
+
+Ask the model in any language to pause, resume, cancel, delay, or extend a saved
+task. While inference is busy, use exact commands: `/task` lists tasks, and
+`/task pause|resume|cancel|approve|deny <id>` controls one. Use
+`/task defer <id> 2030-11-12T09:00 Europe/Rome` to save a one-off resume time
+without the scheduler. Use the conversation where the task began. Existing
+visibility can share context without allowing another conversation to control
+that task.
+After a lost daemon response, the TUI looks up the saved request instead of
+generating it again. Reopening a conversation checks up to eight recent TUI user
+messages for the latest accepted request, skipping control-only messages. Other
+retained tasks remain available through `/task`.
 
 Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit. Use
 Up/Down for input history, Page Up/Page Down to scroll, and Shift-drag to

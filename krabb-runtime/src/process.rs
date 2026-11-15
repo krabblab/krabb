@@ -24,30 +24,143 @@ struct Call {
     armed: bool,
 }
 
+pub(crate) struct Admission {
+    process: OwnedMutexGuard<Option<Process>>,
+    pub profile: krabb_core::context::Profile,
+    pub cold: bool,
+}
+
+/// Waits for the provider within the request's queue allowance. A busy provider is a passing
+/// condition, so an expired wait is throttled and retried rather than reported as a limit.
+async fn acquire(
+    process: std::sync::Arc<Mutex<Option<Process>>>,
+    turns: &crate::turns::Turns,
+    class: crate::turns::Class,
+    deadline: tokio::time::Instant,
+) -> Result<OwnedMutexGuard<Option<Process>>> {
+    let expired = || {
+        krabb_core::failure::Failure::new(krabb_core::failure::Kind::Throttled)
+            .error("The provider stayed busy past the request's queue allowance.")
+    };
+
+    let guard = tokio::time::timeout_at(deadline, turns.acquire(class, process))
+        .await
+        .map_err(|_| expired())?;
+
+    if tokio::time::Instant::now() >= deadline {
+        return Err(expired());
+    }
+
+    Ok(guard)
+}
+
+/// A refusal the plugin answered deliberately; the process stays healthy and is not restarted.
+fn answered(error: &krabb_core::Error) -> bool {
+    matches!(
+        error,
+        krabb_core::Error::Limit(_)
+            | krabb_core::Error::Denied(_)
+            | krabb_core::Error::Failed { .. }
+    )
+}
+
 impl Cleanup {
-    pub async fn compact(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admit(
         &self,
         process: std::sync::Arc<Mutex<Option<Process>>>,
-        input: &krabb_core::types::ModelRequest,
+        turns: &crate::turns::Turns,
+        class: crate::turns::Class,
+        model: &str,
         id: u64,
+        queued: tokio::time::Instant,
         deadline: tokio::time::Instant,
-    ) -> Result<String> {
-        let process = process.lock_owned().await;
-        let mut call = Call { process: Some(process), cleanup: self.clone(), armed: true };
+    ) -> Result<Admission> {
+        let guard = acquire(process, turns, class, queued).await?;
+        let mut call = Call { process: Some(guard), cleanup: self.clone(), armed: true };
+
         let process = call
             .process
             .as_mut()
             .unwrap()
             .as_mut()
             .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?;
-        let result = process.context.summarize(&mut process.inner, input, id, deadline).await;
-        call.armed = result.as_ref().is_err_and(|error| {
-            !matches!(error, krabb_core::Error::Limit(_) | krabb_core::Error::Denied(_))
-        });
+
+        let cold = process.context.cached(model).is_none();
+
+        let result = if process.hello.capabilities.contains(&krabb_core::types::Capability::Context)
+        {
+            process.context.profile(&mut process.inner, model, id, deadline).await
+        } else {
+            Ok(krabb_core::context::Profile::default())
+        };
+
+        call.armed = result.as_ref().is_err_and(|error| !answered(error));
+
+        let profile = result?;
+
+        Ok(Admission { process: call.process.take().unwrap(), profile, cold })
+    }
+
+    pub async fn call_admitted<F, Fut, C, Cfut>(
+        &self,
+        admission: Admission,
+        request: krabb_core::types::Request,
+        deadline: tokio::time::Instant,
+        note: F,
+        handler: C,
+        inbound: Option<tokio::sync::mpsc::UnboundedReceiver<krabb_core::types::Request>>,
+    ) -> Result<krabb_core::types::Response>
+    where
+        F: FnMut(krabb_core::types::Request) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+        C: FnMut(krabb_core::types::Request) -> Cfut,
+        Cfut: std::future::Future<Output = Result<krabb_core::types::Response>>,
+    {
+        let mut call =
+            Call { process: Some(admission.process), cleanup: self.clone(), armed: true };
+
+        let process = call
+            .process
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?;
+
+        let limit = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let result = process.call_prepared(request, limit, note, handler, inbound).await;
+
+        call.armed = result.is_err();
 
         result
     }
 
+    pub async fn compact(
+        &self,
+        process: std::sync::Arc<Mutex<Option<Process>>>,
+        turns: &crate::turns::Turns,
+        input: &krabb_core::types::ModelRequest,
+        id: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<String> {
+        let process = acquire(process, turns, crate::turns::Class::Interactive, deadline).await?;
+        let mut call = Call { process: Some(process), cleanup: self.clone(), armed: true };
+
+        let process = call
+            .process
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?;
+
+        let result = process.context.summarize(&mut process.inner, input, id, deadline).await;
+
+        call.armed = result.as_ref().is_err_and(|error| !answered(error));
+
+        result
+    }
+
+    #[cfg(test)]
     pub async fn call_full_timeout_async<F, Fut, C, Cfut>(
         &self,
         process: std::sync::Arc<Mutex<Option<Process>>>,
@@ -62,7 +175,9 @@ impl Cleanup {
         C: FnMut(krabb_core::types::Request) -> Cfut,
         Cfut: std::future::Future<Output = Result<krabb_core::types::Response>>,
     {
-        let process = process.lock_owned().await;
+        let deadline = tokio::time::Instant::now() + limit;
+        let turns = crate::turns::Turns::default();
+        let process = acquire(process, &turns, crate::turns::Class::Interactive, deadline).await?;
         let mut call = Call { process: Some(process), cleanup: self.clone(), armed: true };
         let result = call
             .process
@@ -70,7 +185,12 @@ impl Cleanup {
             .unwrap()
             .as_mut()
             .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?
-            .call_full_timeout_async(request, limit, note, handler)
+            .call_full_timeout_async(
+                request,
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                note,
+                handler,
+            )
             .await;
         call.armed = result.is_err();
         result
@@ -133,6 +253,7 @@ impl Drop for Call {
         let mut process = self.process.take().unwrap();
         let task = tokio::spawn(async move {
             if let Some(process) = process.as_mut() {
+                process.context.invalidate();
                 let result = process.inner.restart().await;
 
                 if let Some(containers) = &process.containers {
@@ -236,10 +357,28 @@ impl Process {
 
     pub async fn call_full_timeout_async<F, Fut, C, Cfut>(
         &mut self,
+        request: krabb_core::types::Request,
+        limit: Duration,
+        note: F,
+        handler: C,
+    ) -> Result<krabb_core::types::Response>
+    where
+        F: FnMut(krabb_core::types::Request) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+        C: FnMut(krabb_core::types::Request) -> Cfut,
+        Cfut: std::future::Future<Output = Result<krabb_core::types::Response>>,
+    {
+        self.call_prepared(request, limit, note, handler, None).await
+    }
+
+    /// Prepares context, forwards optional host notes during the call, and captures the reply.
+    pub async fn call_prepared<F, Fut, C, Cfut>(
+        &mut self,
         mut request: krabb_core::types::Request,
         limit: Duration,
         note: F,
         handler: C,
+        inbound: Option<tokio::sync::mpsc::UnboundedReceiver<krabb_core::types::Request>>,
     ) -> Result<krabb_core::types::Response>
     where
         F: FnMut(krabb_core::types::Request) -> Fut,
@@ -252,25 +391,32 @@ impl Process {
         let id = request.id();
 
         if let Err(error) = self.context.prepare(&mut self.inner, &mut request, deadline).await {
-            if matches!(error, krabb_core::Error::Limit(_) | krabb_core::Error::Denied(_))
-                && let Some(id) = id
+            if matches!(
+                error,
+                krabb_core::Error::Limit(_)
+                    | krabb_core::Error::Denied(_)
+                    | krabb_core::Error::Failed { .. }
+            ) && let Some(id) = id
             {
-                return Ok(krabb_core::types::Response::fail(id, -32000, error.to_string()));
+                return Ok(krabb_core::failure::response(id, error));
             }
 
             return Err(error);
         }
 
         let key = super::compaction::Key::from_request(&request);
-        let response = self
-            .inner
-            .call_full_timeout_async(
-                request,
-                deadline.saturating_duration_since(tokio::time::Instant::now()),
-                note,
-                handler,
-            )
-            .await?;
+        let limit = deadline.saturating_duration_since(tokio::time::Instant::now());
+
+        let response = match inbound {
+            Some(inbound) => {
+                self.inner
+                    .call_full_timeout_inbound_async(request, limit, note, handler, inbound)
+                    .await?
+            }
+
+            None => self.inner.call_full_timeout_async(request, limit, note, handler).await?,
+        };
+
         self.context.capture(key, &response);
         Ok(response)
     }
@@ -354,6 +500,7 @@ impl Process {
     }
 
     pub async fn restart(&mut self) -> Result<()> {
+        self.context.invalidate();
         let result = self.inner.restart().await;
 
         if let Some(containers) = &self.containers {
@@ -449,10 +596,226 @@ mod tests {
     use krabb_core::types::Request;
     use std::{fs, os::unix::fs::PermissionsExt};
 
+    const EXECUTION: &str = r#"
+import json, sys
+calls = []
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request['method']
+    calls.append(request)
+    if method == 'hello':
+        result = {'id':'fixture','version':'0.1.0','protocol':{'major':0,'minor':1},
+                  'capabilities':['model','context']}
+    elif method == 'model.info':
+        result = {'window':{'tokens':4096,'output':512},'execution':{
+            'deployment':'unknown','identity':'fixture-v1','streaming':True,
+            'cancellation':False,'usage':False,'recoverable':False,'deadlines':True}}
+    elif method == 'generate':
+        if request['params']['model'] == 'noted':
+            print(json.dumps({'jsonrpc':'2.0','method':'chunk','params':{'text':'started'}}),flush=True)
+        result = {'text':'finished','stop':'stop'}
+    elif method == 'calls': result = calls
+    elif method == 'shutdown': break
+    else: result = {}
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
+"#;
+
+    #[tokio::test]
+    async fn renewable_calls_receive_the_same_context_preparation_as_plain_calls() {
+        let mut process = Process::start_with("python3", ["-u", "-c", EXECUTION]).await.unwrap();
+        let (_renewals, inbound) = tokio::sync::mpsc::unbounded_channel();
+
+        let response = process
+            .call_prepared(
+                Request::call(
+                    2,
+                    "generate",
+                    serde_json::json!({"model":"fixture", "messages":[], "stream":false}),
+                ),
+                Duration::from_secs(5),
+                |_| async { Ok(()) },
+                |_| async { unreachable!() },
+                Some(inbound),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.error.is_none());
+
+        let calls = process
+            .call(Request::call(3, "calls", serde_json::json!({})))
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+
+        let generated =
+            calls.as_array().unwrap().iter().find(|call| call["method"] == "generate").unwrap();
+
+        assert!(generated["params"]["generation"]["limits"]["total_millis"].as_u64().unwrap() > 0);
+
+        process.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_queue_wait_neither_renews_deadlines_nor_dispatches_expired_requests() {
+        for expired in [false, true] {
+            let process = Process::start_with("python3", ["-u", "-c", EXECUTION]).await.unwrap();
+            let process = std::sync::Arc::new(Mutex::new(Some(process)));
+            let guard = process.lock().await;
+            let cleanup = Cleanup::default();
+
+            tokio::time::pause();
+
+            let request = cleanup.call_full_timeout_async(
+                std::sync::Arc::clone(&process),
+                Request::call(
+                    2,
+                    "generate",
+                    serde_json::json!({
+                        "model":"fixture", "messages":[], "stream":false,
+                    }),
+                ),
+                Duration::from_millis(1_000),
+                |_| async { Ok(()) },
+                |_| async { unreachable!() },
+            );
+
+            tokio::pin!(request);
+
+            tokio::select! {
+                biased;
+                result = &mut request => panic!("Queued request completed early: {result:?}"),
+
+                _ = std::future::ready(()) => {}
+            }
+
+            let elapsed = if expired { 1_001 } else { 200 };
+
+            tokio::time::advance(Duration::from_millis(elapsed)).await;
+
+            if expired {
+                let result =
+                    tokio::time::timeout(Duration::from_secs(2), &mut request).await.unwrap();
+
+                assert!(matches!(result, Err(krabb_core::Error::Failed { failure, .. })
+                    if failure.kind == krabb_core::failure::Kind::Throttled));
+
+                tokio::time::resume();
+                drop(guard);
+            } else {
+                drop(guard);
+                tokio::time::resume();
+
+                assert!(request.await.unwrap().error.is_none());
+            }
+
+            assert!(cleanup.tasks.lock().unwrap().is_empty());
+
+            let mut locked = process.lock().await;
+
+            let response = locked
+                .as_mut()
+                .unwrap()
+                .call(Request::call(3, "calls", serde_json::json!({})))
+                .await
+                .unwrap();
+
+            let calls = response.result.unwrap();
+
+            let generated =
+                calls.as_array().unwrap().iter().find(|call| call["method"] == "generate");
+
+            if expired {
+                assert!(generated.is_none());
+            } else {
+                let total = generated.unwrap()["params"]["generation"]["limits"]["total_millis"]
+                    .as_u64()
+                    .unwrap();
+
+                assert!(total > 0 && total <= 800);
+            }
+
+            assert_eq!(
+                calls.as_array().unwrap().iter().filter(|call| call["method"] == "hello").count(),
+                1
+            );
+
+            locked.take().unwrap().stop().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_call_cleanup_refreshes_execution_metadata_before_reusing_the_provider() {
+        let process = Process::start_with("python3", ["-u", "-c", EXECUTION]).await.unwrap();
+        let process = std::sync::Arc::new(Mutex::new(Some(process)));
+        let cleanup = Cleanup::default();
+        let noted = std::sync::Arc::new(tokio::sync::Notify::new());
+        let input = serde_json::json!({"model":"noted","messages":[],"stream":true});
+
+        {
+            let signal = std::sync::Arc::clone(&noted);
+            let request = cleanup.call_full_timeout_async(
+                std::sync::Arc::clone(&process),
+                Request::call(2, "generate", input.clone()),
+                Duration::from_secs(5),
+                move |_| {
+                    let signal = std::sync::Arc::clone(&signal);
+                    async move {
+                        signal.notify_one();
+                        std::future::pending::<Result<()>>().await
+                    }
+                },
+                |_| async { unreachable!() },
+            );
+            tokio::pin!(request);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    biased;
+                    result = &mut request => panic!("Request did not wait for interruption: \
+                        {result:?}"),
+
+                    _ = noted.notified() => {}
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        cleanup.finish().await.unwrap();
+
+        let mut locked = process.lock().await;
+        let live = locked.as_mut().unwrap();
+        let response = live.call(Request::call(3, "generate", input)).await.unwrap();
+
+        assert!(response.error.is_none());
+
+        let calls = live
+            .call(Request::call(4, "calls", serde_json::json!({})))
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+
+        assert_eq!(
+            calls
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|request| request["method"] == "model.info")
+                .count(),
+            1
+        );
+
+        locked.take().unwrap().stop().await.unwrap();
+    }
+
     #[tokio::test]
     async fn model_calls_can_use_more_than_two_minutes() {
         let root = crate::tests::test_root("model-deadline");
+
         fs::create_dir_all(&root).unwrap();
+
         let script = r#"
 import json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])

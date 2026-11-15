@@ -124,11 +124,15 @@ async fn call_with(
     let result = match operation {
         Operation::Info => send(client, &format!("{base}/getMe"), json!({})).await?,
 
-        Operation::Poll(offset) => {
+        Operation::Poll { offset, wait_seconds } => {
             let updates = send(
                 client,
                 &format!("{base}/getUpdates"),
-                json!({"offset": offset, "timeout": 25, "allowed_updates": ["message", "callback_query"]}),
+                json!({
+                    "offset": offset,
+                    "timeout": wait_seconds,
+                    "allowed_updates": ["message", "callback_query"]
+                }),
             )
             .await?;
             normalize(updates)
@@ -237,7 +241,7 @@ async fn call_with(
 
 enum Operation {
     Info,
-    Poll(i64),
+    Poll { offset: i64, wait_seconds: u64 },
     Typing { chat: i64, thread: Option<i64> },
     Send { chat: i64, text: String, thread: Option<String> },
     Edit { chat: i64, message: i64, text: String, thread: Option<String> },
@@ -353,7 +357,10 @@ fn chunks(text: &str, limit: usize) -> Vec<String> {
 fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Option<Operation>> {
     match method {
         "info" => Ok(Some(Operation::Info)),
-        "poll" => Ok(Some(Operation::Poll(params["offset"].as_i64().unwrap_or(0)))),
+        "poll" => Ok(Some(Operation::Poll {
+            offset: params["offset"].as_i64().unwrap_or(0),
+            wait_seconds: params["wait_seconds"].as_u64().unwrap_or(25).min(25),
+        })),
 
         "typing" => {
             let chat = params["chat"]
@@ -662,6 +669,26 @@ fn normalize(value: serde_json::Value) -> serde_json::Value {
     json!({"events": events})
 }
 
+/// Topic messages implicitly reply to the topic's creation message, which is no reply.
+fn reply(message: &serde_json::Value) -> Option<Reply> {
+    let replied = &message["reply_to_message"];
+
+    let root = message["is_topic_message"] == true
+        && replied["message_id"] == message["message_thread_id"]
+        && message["quote"].is_null();
+
+    if root || !replied["forum_topic_created"].is_null() {
+        return None;
+    }
+
+    let text = message["quote"]["text"]
+        .as_str()
+        .or_else(|| replied["text"].as_str())
+        .or_else(|| replied["caption"].as_str());
+
+    Reply::from_parts(&replied["message_id"], &replied["from"]["id"], text)
+}
+
 fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
     if let Some(callback) = update.get("callback_query") {
         let message = callback.get("message")?;
@@ -726,7 +753,7 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
     Some(json!({
         "id": update["update_id"],
         "message": message["message_id"],
-        "reply": Reply::from_parts(&message["reply_to_message"]["message_id"], &message["reply_to_message"]["from"]["id"], message["quote"]["text"].as_str().or_else(|| message["reply_to_message"]["text"].as_str()).or_else(|| message["reply_to_message"]["caption"].as_str())),
+        "reply": reply(message),
         "chat": chat,
         "kind": kind,
         "private": kind == "private",
@@ -1058,7 +1085,12 @@ mod tests {
 
         assert!(matches!(
             operation("poll", &json!({"offset": 3})).unwrap(),
-            Some(Operation::Poll(3))
+            Some(Operation::Poll { offset: 3, wait_seconds: 25 })
+        ));
+
+        assert!(matches!(
+            operation("poll", &json!({"offset": 3, "wait_seconds": 1})).unwrap(),
+            Some(Operation::Poll { offset: 3, wait_seconds: 1 })
         ));
 
         assert!(matches!(
@@ -1369,7 +1401,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            for _ in 0..6 {
+            for _ in 0..7 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut reader = tokio::io::BufReader::new(&mut stream);
                 let mut header = String::new();
@@ -1402,7 +1434,11 @@ mod tests {
                     assert!(!payload["text"].as_str().unwrap().contains("**"));
                 }
 
-                let (status, body) = if header.contains("editMessageText") {
+                let (status, body) = if header.contains("getUpdates") {
+                    assert_eq!(payload["timeout"], 1);
+                    assert_eq!(payload["offset"], 42);
+                    (200, r#"{"ok":true,"result":[]}"#)
+                } else if header.contains("editMessageText") {
                     (
                         400,
                         r#"{"ok":false,"error_code":400,"description":"Bad Request: message is not modified: specified new message content and reply markup are exactly the same"}"#,
@@ -1486,6 +1522,20 @@ mod tests {
             .unwrap()
             .is_some()
         );
+
+        let response = call_with(
+            &client,
+            6,
+            "poll".into(),
+            json!({"offset": 42, "wait_seconds": 1}),
+            "token",
+            &base,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.result.unwrap()["events"], json!([]));
 
         server.await.unwrap();
     }

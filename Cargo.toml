@@ -2,6 +2,7 @@
 members = [
     "krabb-core",
     "krabb-libs/date",
+    "krabb-libs/http",
     "krabb-libs/text",
     "krabb-libs/logging",
     "krabb-libs/file",
@@ -19,6 +20,7 @@ members = [
     "krabb-plugins/intelligence/openai",
     "krabb-plugins/acp",
     "krabb-plugins/a2a",
+    "krabb-plugins/runner",
     "krabb-plugins/ag-ui",
     "krabb-plugins/mcp",
     "krabb-plugins/memory",
@@ -54,6 +56,7 @@ krabb-text = { path = "krabb-libs/text" }
 krabb-test = { path = "krabb-libs/test" }
 base64 = "0.23"
 krabb-date = { path = "krabb-libs/date" }
+krabb-http = { path = "krabb-libs/http" }
 krabb-log = { path = "krabb-libs/logging" }
 crossterm = "0.29"
 clap = { version = "4", features = ["derive", "env"] }
@@ -77,3 +80,4 @@ toml = "1.1"
 toml_edit = "0.25"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-width = "0.2"

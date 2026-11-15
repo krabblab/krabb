@@ -93,24 +93,23 @@ pub(crate) fn publish(
     };
 
     let origin = &task["context"]["origin"];
-    let origin_session = origin["session"].as_str().and_then(|id| store.sessions.get(id));
-    let origin_destination = if origin["channel"] == "tui" {
-        origin_session.map(|session| AuthorizedDestination {
-            channel: "tui".into(),
-            chat: session.id.clone(),
-            private: false,
-            thread: None,
-        })
-    } else {
-        origin_session.and_then(|session| {
-            Some(AuthorizedDestination {
-                channel: origin["channel"].as_str()?.into(),
-                chat: origin["chat"].as_str()?.into(),
-                private: session.private,
-                thread: origin["thread"].as_str().map(str::to_owned),
-            })
-        })
-    };
+    let origin_destination = super::origin(&task["context"])
+        .ok()
+        .flatten()
+        .filter(|parsed| store.sessions.contains_key(&parsed.session))
+        .and_then(|parsed| match parsed.destination().ok()? {
+            origin::Destination::Session { session, .. } => Some(AuthorizedDestination {
+                channel: krabb_core::client::TUI.into(),
+                chat: session,
+                private: false,
+                thread: None,
+            }),
+
+            origin::Destination::Channel(destination) => Some(AuthorizedDestination {
+                private: store.sessions[&parsed.session].private,
+                ..destination
+            }),
+        });
 
     if let Some(destination) = origin_destination
         && !plan.iter().any(|item| {
@@ -178,7 +177,7 @@ pub(crate) fn publish(
             text.to_owned()
         };
 
-        let receipt = if destination.channel == "tui" {
+        let receipt = if destination.channel == krabb_core::client::TUI {
             store.ensure(
                 &destination.chat,
                 task["context"]["model"].as_str().unwrap_or("default"),
@@ -270,7 +269,7 @@ mod tests {
         assert!(home.join("data/schedules/runs/7/9/result.json").is_file());
         let first = store.outbox[0].id.clone();
         let second = store.outbox[1].id.clone();
-        store.ack(&first).unwrap();
+        store.delivered(&first, &serde_json::Value::Null).unwrap();
         store.uncertain(&second, "ambiguous response").unwrap();
         drop(store);
 
@@ -294,10 +293,42 @@ mod tests {
         assert_eq!(store.runs["7-9"].targets[&first].receipt, state::Receipt::Delivered);
         assert!(!store.runs["7-9"].complete());
         store.retry_delivery(&second).unwrap();
-        store.ack(&second).unwrap();
+        store.delivered(&second, &serde_json::Value::Null).unwrap();
         store.report_run(7, 9).unwrap();
 
         assert!(store.runs["7-9"].complete());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_configured_clients_schedule_reports_to_its_own_session() {
+        let home = crate::tests::test_root("run-client-origin");
+        crate::init_at(&home).unwrap();
+        let mut store = state::Store::load(home.join("data/sessions/index.json")).unwrap();
+        store.ensure("desk", "test").unwrap();
+
+        let task = serde_json::json!({"context":{"model":"test", "origin":{
+            "source":"clients.desktop", "channel":"desktop", "session":"desk"
+        }}});
+
+        publish(&home, &task, 2, Some(1), Some(1_700_000_000), "failed", "Broke.", &mut store)
+            .unwrap();
+
+        assert!(store.outbox.is_empty());
+        assert_eq!(store.sessions["desk"].messages.len(), 1);
+
+        let channel = serde_json::json!({"context":{"model":"test", "origin":{
+            "source":"channels.telegram", "channel":"telegram", "chat":"7", "session":"desk",
+            "thread":"3"
+        }}});
+
+        publish(&home, &channel, 3, Some(1), Some(1_700_000_000), "failed", "Broke.", &mut store)
+            .unwrap();
+
+        assert_eq!(store.outbox.len(), 1);
+        assert_eq!(store.outbox[0].channel, "telegram");
+        assert_eq!(store.outbox[0].thread.as_deref(), Some("3"));
+
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -320,7 +351,7 @@ mod tests {
 
         assert!(home.join("data/schedules/runs/1/1/result.json").exists());
         let first = store.outbox[0].id.clone();
-        store.ack(&first).unwrap();
+        store.delivered(&first, &serde_json::Value::Null).unwrap();
         store.report_run(1, 1).unwrap();
         publish(&home, &task, 1, Some(3), Some(now()), "completed", "third", &mut store).unwrap();
 

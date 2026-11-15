@@ -330,3 +330,50 @@ async fn receipts_only_confirm_finished_acknowledged_or_removed_runs() {
 
     assert_eq!(reply.result.unwrap()["reported"], true);
 }
+
+#[tokio::test]
+async fn client_callers_are_owners_by_their_declared_source() {
+    let tasks = Arc::new(Mutex::new(Tasks::new()));
+
+    call_at(
+        &tasks,
+        Request::call(
+            1,
+            "add",
+            json!({
+                "id":1,"text":"desktop fixture","delay":3600,"activate":true,
+                "context":{"origin":{"source":"clients.desktop","channel":"desktop","chat":"desk",
+                    "session":"desk","thread":null}}
+            }),
+        ),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let list = |caller: serde_json::Value| {
+        Request::call(2, "control", json!({"action":"list","id":1,"page":1,"caller":caller}))
+    };
+
+    let mut caller = json!({
+        "channel":"phone","chat":"phone","session":"phone","thread":null,"source":"clients.phone",
+        "access":{"owner":{"source":"clients.phone","conversation":"phone"},
+            "sources":["clients.desktop"],"excluded":[]}
+    });
+
+    let listed =
+        call_at(&tasks, list(caller.clone()), None).await.unwrap().unwrap().result.unwrap();
+
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+
+    caller["source"] = json!("clients.other");
+
+    assert!(call_at(&tasks, list(caller), None).await.is_err());
+
+    let cli = json!({
+        "channel":"cli","chat":"cli","session":"cli","thread":null,
+        "access":{"owner":{"source":"clients.cli","conversation":"cli"},"sources":[],"excluded":[]}
+    });
+
+    assert!(call_at(&tasks, list(cli), None).await.is_ok());
+}

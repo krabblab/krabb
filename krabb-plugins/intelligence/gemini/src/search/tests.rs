@@ -10,7 +10,7 @@ fn input() -> ModelRequest {
         model: "gemini-3.5-flash-lite".into(),
         workspace: None,
         stream: false,
-        generation: Some(Generation { output: 2048, search: true, summary: false }),
+        generation: Some(Generation { limits: None, output: 2048, search: true, summary: false }),
         tools: vec![ToolSpec {
             name: "read".into(),
             description: None,

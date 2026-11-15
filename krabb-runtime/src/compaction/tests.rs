@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 const FIXTURE: &str = r#"
-import json, sys
+import json, sys, time
 native = sys.argv[1] == 'native'
 mode = sys.argv[2]
 calls = []
@@ -14,8 +14,15 @@ for line in sys.stdin:
     if method == 'hello':
         result = {'id':'fixture','version':'0.1.0','protocol':{'major':0,'minor':1},
                   'capabilities':['model','context']}
+        if mode == 'legacy': result['capabilities'] = ['model']
     elif method == 'model.info':
         result = {'window':{'tokens':4096,'output':2048},'compact':native}
+        if mode.startswith('execution'):
+            result['execution'] = {'deployment':'local','identity':'fixture-v1',
+                'streaming':True,'cancellation':False,'usage':True,
+                'recoverable':False,'deadlines':True}
+        if mode == 'execution-invalid': result['execution']['identity'] = 'https://unsafe'
+        if mode == 'execution-windowless': del result['window']
         if mode == 'wide': result['window'] = {'tokens':1000000,'output':4096}
         if mode == 'unknown': result = {}
     elif method == 'calls':
@@ -24,6 +31,7 @@ for line in sys.stdin:
         if mode == 'fallback' and method == 'model.compact':
             print(json.dumps({'jsonrpc':'2.0','id':req['id'],'error':{'code':-32000,'message':'Native compaction unavailable'}}),flush=True)
             continue
+        if mode == 'execution-slow': time.sleep(0.05)
         if mode == 'empty': value = ''
         elif mode == 'huge': value = 'summary ' * 1000
         else: value = 'User prefers tea. A file was already created. No action should be repeated.'
@@ -586,4 +594,268 @@ async fn empty_or_tool_compaction_replies_are_rejections_without_restarting_the_
 
         process.stop().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn negotiated_deadlines_reach_compaction_and_generation_within_the_host_allowance() {
+    let mut process = provider(false, "execution").await;
+
+    let response = process
+        .call_stream_timeout_async(
+            Request::call(2, "generate", serde_json::to_value(input()).unwrap()),
+            Duration::from_secs(2),
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+
+    assert!(response.error.is_none());
+
+    let requests = calls(&mut process).await;
+
+    let generations =
+        requests.iter().filter(|request| request["method"] == "generate").collect::<Vec<_>>();
+
+    assert!(generations.len() > 1);
+    assert!(generations.iter().any(|request| request["params"]["generation"]["summary"] == true));
+
+    for request in generations {
+        let limits: krabb_core::execution::Limits =
+            serde_json::from_value(request["params"]["generation"]["limits"].clone()).unwrap();
+
+        limits.validate().unwrap();
+
+        assert!(limits.total_millis <= 2_000);
+    }
+
+    let mut input = input();
+
+    input.messages = vec![input.messages.pop().unwrap()];
+
+    input.generation = Some(Generation {
+        output: 512,
+        summary: false,
+        search: false,
+        limits: Some(krabb_core::execution::Limits {
+            first_millis: 3_000,
+            idle_millis: 4_000,
+            total_millis: 10_000,
+            ceiling_millis: None,
+        }),
+    });
+
+    process
+        .call_stream_timeout_async(
+            Request::call(2, "generate", serde_json::to_value(&input).unwrap()),
+            Duration::from_secs(2),
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+
+    let requests = calls(&mut process).await;
+    let last = requests.iter().rfind(|request| request["method"] == "generate").unwrap();
+
+    let restricted: krabb_core::execution::Limits =
+        serde_json::from_value(last["params"]["generation"]["limits"].clone()).unwrap();
+
+    assert!(restricted.total_millis <= 2_000);
+    assert_eq!(restricted.first_millis, restricted.total_millis);
+    assert_eq!(restricted.idle_millis, restricted.total_millis);
+
+    input.generation = Some(Generation {
+        output: 512,
+        summary: false,
+        search: false,
+        limits: Some(krabb_core::execution::Limits {
+            first_millis: 100,
+            idle_millis: 200,
+            total_millis: 1_000,
+            ceiling_millis: None,
+        }),
+    });
+
+    generate(&mut process, &input).await.unwrap();
+
+    let requests = calls(&mut process).await;
+    let last = requests.iter().rfind(|request| request["method"] == "generate").unwrap();
+
+    assert_eq!(
+        last["params"]["generation"]["limits"],
+        json!({
+            "first_millis":100,"idle_millis":200,"total_millis":1_000,
+        })
+    );
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn negotiated_deadlines_reach_a_request_without_a_window_or_generation() {
+    let mut process = provider(false, "execution-windowless").await;
+    let mut input = input();
+
+    input.generation = None;
+
+    generate(&mut process, &input).await.unwrap();
+
+    let requests = calls(&mut process).await;
+    let last = requests.iter().rfind(|request| request["method"] == "generate").unwrap();
+
+    let limits: krabb_core::execution::Limits =
+        serde_json::from_value(last["params"]["generation"]["limits"].clone()).unwrap();
+
+    limits.validate().unwrap();
+
+    assert_eq!(last["params"]["generation"]["output"], crate::inference::WINDOW_OUTPUT);
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_or_invalid_metadata_never_silently_accepts_requested_deadlines() {
+    for mode in ["normal", "legacy", "execution-invalid"] {
+        let mut process = provider(false, mode).await;
+        let mut input = input();
+
+        input.messages = vec![input.messages.pop().unwrap()];
+
+        input.generation = Some(Generation {
+            output: 512,
+            summary: false,
+            search: false,
+            limits: Some(krabb_core::execution::Limits {
+                first_millis: 100,
+                idle_millis: 200,
+                total_millis: 1_000,
+                ceiling_millis: None,
+            }),
+        });
+
+        assert!(generate(&mut process, &input).await.is_err());
+
+        let requests = calls(&mut process).await;
+
+        assert!(!requests.iter().any(|request| request["method"] == "generate"));
+
+        process.stop().await.unwrap();
+    }
+
+    let mut process = provider(false, "normal").await;
+    let mut input = input();
+
+    input.messages = vec![input.messages.pop().unwrap()];
+    generate(&mut process, &input).await.unwrap();
+
+    let requests = calls(&mut process).await;
+    let sent = requests.iter().find(|request| request["method"] == "generate").unwrap();
+
+    assert!(sent["params"]["generation"].get("limits").is_none());
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn restarting_the_provider_refreshes_execution_metadata_before_another_generation() {
+    let mut process = provider(false, "execution").await;
+    let mut input = input();
+
+    input.messages = vec![input.messages.pop().unwrap()];
+    generate(&mut process, &input).await.unwrap();
+    process.restart().await.unwrap();
+    generate(&mut process, &input).await.unwrap();
+
+    let requests = calls(&mut process).await;
+    let metadata = requests.iter().position(|request| request["method"] == "model.info").unwrap();
+    let generation = requests.iter().position(|request| request["method"] == "generate").unwrap();
+
+    assert!(metadata < generation);
+    assert!(requests[generation]["params"]["generation"]["limits"].is_object());
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn time_spent_summarizing_is_not_granted_again_to_later_inference_calls() {
+    let mut process = provider(false, "execution-slow").await;
+
+    let response = process
+        .call_stream_timeout_async(
+            Request::call(2, "generate", serde_json::to_value(input()).unwrap()),
+            Duration::from_secs(2),
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+
+    assert!(response.error.is_none());
+
+    let requests = calls(&mut process).await;
+
+    let generations =
+        requests.iter().filter(|request| request["method"] == "generate").collect::<Vec<_>>();
+
+    assert!(generations.len() > 1);
+
+    let allowances = generations
+        .iter()
+        .map(|request| request["params"]["generation"]["limits"]["total_millis"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+
+    for window in allowances.windows(2) {
+        assert!(window[1].saturating_add(40) <= window[0]);
+    }
+
+    let last = generations.last().unwrap();
+
+    assert_eq!(last["params"]["generation"]["summary"], false);
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn only_the_renewable_answer_carries_a_renewal_ceiling() {
+    let mut process = provider(false, "execution-slow").await;
+    let mut input = input();
+
+    input.generation = Some(Generation {
+        output: 512,
+        summary: false,
+        search: false,
+        limits: Some(krabb_core::execution::Limits {
+            first_millis: 1_500,
+            idle_millis: 1_500,
+            total_millis: 1_500,
+            ceiling_millis: Some(1_800),
+        }),
+    });
+
+    let response = process
+        .call_stream_timeout_async(
+            Request::call(2, "generate", serde_json::to_value(input).unwrap()),
+            Duration::from_secs(2),
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+
+    assert!(response.error.is_none());
+
+    let requests = calls(&mut process).await;
+    let generations = requests.iter().filter(|request| request["method"] == "generate");
+
+    let (summaries, answers): (Vec<_>, Vec<_>) =
+        generations.partition(|request| request["params"]["generation"]["summary"] == true);
+
+    assert!(!summaries.is_empty());
+
+    for summary in summaries {
+        assert!(summary["params"]["generation"]["limits"]["ceiling_millis"].is_null());
+    }
+
+    assert!(answers.iter().all(|answer| {
+        answer["params"]["generation"]["limits"]["ceiling_millis"].as_u64().is_some()
+    }));
+
+    process.stop().await.unwrap();
 }

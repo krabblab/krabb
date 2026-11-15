@@ -119,6 +119,7 @@ impl Reply {
         }
 
         Ok(ModelReply {
+            timing: None,
             text: self.text,
             events: self.events,
             stop: stop.into(),
@@ -157,15 +158,10 @@ pub(super) async fn generate(
         .json(&request_body(input)?)
         .send()
         .await
-        .map_err(|error| {
-            krabb_core::Error::Denied(format!("Gemini stream failed: {}.", error.without_url()))
-        })?;
+        .map_err(|error| krabb_http::transport(&error, "Gemini"))?;
 
     if !response.status().is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "Gemini stream was rejected with {}.",
-            response.status()
-        )));
+        return Err(krabb_http::rejected(response, "Gemini").await);
     }
 
     parse_model(id, response.bytes_stream(), emitter, &model).await
@@ -210,7 +206,10 @@ where
             chunk = stream.next() => {
                 let Some(chunk) = chunk else { break };
 
-                let chunk = chunk.map_err(|_| krabb_core::Error::Denied("Gemini response transport failed.".into()))?;
+                let chunk = chunk.map_err(|_| {
+                    krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                        .error("Gemini response transport failed.")
+                })?;
                 bytes = bytes.saturating_add(chunk.as_ref().len());
 
                 if bytes > BODY_LIMIT {

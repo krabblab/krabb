@@ -19,9 +19,6 @@ for line in sys.stdin:
         result = {'protocol': {'major': 0, 'minor': 1}, 'id': name,
                   'version': '0.1.0', 'capabilities': [capability]}
     elif method == 'poll':
-        if mode == 'blocked':
-            (root / (name + '.polling')).touch()
-            time.sleep(30)
         time.sleep(0.02)
         events = []
         if mode == 'approval' and not initial:
@@ -196,15 +193,16 @@ async fn queued_messages_require_exact_channel_ownership() {
 }
 
 #[tokio::test]
-async fn local_resolution_wakes_a_blocked_approval_poll() {
+async fn local_resolution_wakes_a_pending_approval() {
     let root = test_root("local-approval-wakeup");
 
     fs::create_dir_all(&root).unwrap();
 
-    let channel = Arc::new(Live::new(plugin(&root, "telegram", "channel", "blocked").await));
+    let channel = Arc::new(Live::new(plugin(&root, "telegram", "channel", "plain").await));
     let approvals = Arc::new(AsyncMutex::new(approval::Gate::new().unwrap()));
 
     let target = approval::Target {
+        source: krabb_core::scope::Principal::Channel("telegram".into()),
         channel: "telegram".into(),
         chat: "7".into(),
         thread: None,
@@ -218,7 +216,11 @@ async fn local_resolution_wakes_a_blocked_approval_poll() {
     let unrelated = approvals
         .lock()
         .await
-        .issue(approval::Target { channel: "discord".into(), ..target })
+        .issue(approval::Target {
+            source: krabb_core::scope::Principal::Channel("discord".into()),
+            channel: "discord".into(),
+            ..target
+        })
         .unwrap();
 
     let id = approvals
@@ -238,17 +240,12 @@ async fn local_resolution_wakes_a_blocked_approval_poll() {
         crate::wait_approval(
             &worker_channel,
             "telegram",
-            "default",
             "7",
             None,
             "write a note",
             &challenge.approve,
             &challenge.deny,
-            &ChannelConfig::default(),
-            ApprovalMode::Prompt,
             &gate,
-            &Arc::new(Mutex::new(state::Store::default())),
-            &mut 0,
             &mut 1,
             tokio::time::Instant::now() + Duration::from_secs(10),
             &Cancellation::new(),
@@ -258,7 +255,7 @@ async fn local_resolution_wakes_a_blocked_approval_poll() {
     });
 
     let outcome = tokio::time::timeout(Duration::from_secs(5), async {
-        until(|| root.join("telegram.polling").exists()).await;
+        until(|| root.join("telegram.pending").exists()).await;
 
         assert_eq!(approvals.lock().await.resolve_local(&id, false), Some(false));
 

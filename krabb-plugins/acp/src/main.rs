@@ -133,9 +133,9 @@ impl RunRequest {
         }
 
         if let Some(text) = quote {
-            let reply = krabb_core::reply::Reply::new("quoted".into(), None, Some(text)).unwrap();
+            let reply = krabb_core::reply::Reply::quoted(text).unwrap();
 
-            prompt = format!("{}\n\n{prompt}", reply.context());
+            prompt = reply.before(&prompt);
         }
 
         Ok(Self { prompt, session, workspace })

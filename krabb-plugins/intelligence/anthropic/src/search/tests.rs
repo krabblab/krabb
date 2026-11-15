@@ -10,7 +10,7 @@ fn input() -> ModelRequest {
         model: "claude-fixture".into(),
         workspace: None,
         stream: true,
-        generation: Some(Generation { output: 4096, summary: false, search: true }),
+        generation: Some(Generation { limits: None, output: 4096, summary: false, search: true }),
         tools: vec![],
         messages: vec![Message {
             id: "1".into(),

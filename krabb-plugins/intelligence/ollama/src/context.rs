@@ -44,7 +44,15 @@ pub(super) async fn profile(
     let window = Window { tokens, output: (tokens / 2).min(4096) };
 
     window.input()?;
-    Ok(Profile { window: Some(window), compact: false, search: false })
+    let execution = super::execution::profile(
+        host,
+        model,
+        &std::env::var("KRABB_OLLAMA_DEPLOYMENT").unwrap_or_default(),
+        &std::env::var("KRABB_OLLAMA_REVISION").unwrap_or_default(),
+        &std::env::var("KRABB_OLLAMA_THINK").unwrap_or_default(),
+        configured,
+    )?;
+    Ok(Profile { execution: Some(execution), window: Some(window), compact: false, search: false })
 }
 
 fn running(body: &serde_json::Value, model: &str) -> Option<u64> {

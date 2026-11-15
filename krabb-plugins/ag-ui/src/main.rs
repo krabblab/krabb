@@ -475,23 +475,24 @@ impl RunStream {
             reply.text.clone()
         };
 
-        if !self.text.is_empty() && !final_text.starts_with(&self.text) {
-            if self.message_open {
-                events.push(json!({"type":"TEXT_MESSAGE_END","messageId":self.message_id}));
-                self.message_open = false;
+        let missing = match krabb_core::types::continuation(&self.text, &final_text) {
+            Some(missing) => missing.to_owned(),
+
+            None => {
+                if self.message_open {
+                    events.push(json!({"type":"TEXT_MESSAGE_END","messageId":self.message_id}));
+                    self.message_open = false;
+                }
+
+                self.text.clear();
+                self.index += 1;
+                self.message_id = format!("{}-message-{}", run.run_id, self.index);
+                final_text
             }
+        };
 
-            self.text.clear();
-            self.index += 1;
-            self.message_id = format!("{}-message-{}", run.run_id, self.index);
-        }
-
-        if let Some(missing) = final_text.strip_prefix(&self.text)
-            && !missing.is_empty()
-        {
-            events.extend(
-                self.push(run, serde_json::to_value(Event::Text { text: missing.to_owned() })?)?,
-            );
+        if !missing.is_empty() {
+            events.extend(self.push(run, serde_json::to_value(Event::Text { text: missing })?)?);
         }
 
         Ok(events)
@@ -813,7 +814,9 @@ impl RunInput {
                     reply.text = Some("[Referenced message unavailable.]".into());
                 }
 
-                content.insert(0, Content::Text { text: reply.context() });
+                if !content.is_empty() {
+                    content = reply.quote(content);
+                }
             }
 
             if content.is_empty() {
@@ -1052,6 +1055,7 @@ mod tests {
             let response = exchange(
                 format!("POST / HTTP/1.1\r\n{authorization}Content-Length: 2\r\n\r\n{{}}"),
                 ModelReply {
+                    timing: None,
                     text: String::new(),
                     stop: "end".into(),
                     input: None,
@@ -1086,8 +1090,17 @@ mod tests {
     async fn rejects_unlisted_loopback_origins_with_valid_credentials() {
         let response = exchange(
             "POST / HTTP/1.1\r\nAuthorization: Bearer test-token\r\nOrigin: http://localhost:9999\r\nContent-Length: 2\r\n\r\n{}".into(),
-            ModelReply { text: String::new(), stop: "end".into(), input: None, output: None, context_usage: None, events: Vec::new() },
-        ).await;
+            ModelReply {
+                timing: None,
+                text: String::new(),
+                stop: "end".into(),
+                input: None,
+                output: None,
+                context_usage: None,
+                events: Vec::new(),
+            },
+        )
+        .await;
 
         assert!(response.starts_with("HTTP/1.1 403"));
     }
@@ -1140,6 +1153,7 @@ mod tests {
 
     fn reply(text: &str) -> ModelReply {
         ModelReply {
+            timing: None,
             text: text.into(),
             stop: "stop".into(),
             input: None,

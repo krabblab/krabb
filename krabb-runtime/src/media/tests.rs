@@ -293,6 +293,26 @@ fn retained_media_preserves_deferred_references_and_ignores_unmanaged_files() {
 }
 
 #[test]
+fn original_task_input_keeps_its_media_after_messages_are_trimmed() {
+    let fixture = Fixture::new();
+    let image = pin(vec![fixture.image("image.png", 1)], &fixture.media()).remove(0);
+    let pinned = path(&image);
+    let mut store = Store::default();
+
+    store.ensure("main", "model").unwrap();
+    store.sessions.get_mut("main").unwrap().original = Some(message("original", image));
+
+    reclaim(&fixture.media(), &store, std::iter::empty()).unwrap();
+
+    assert!(pinned.is_file());
+
+    store.sessions.get_mut("main").unwrap().original = None;
+    reclaim(&fixture.media(), &store, std::iter::empty()).unwrap();
+
+    assert!(!pinned.exists());
+}
+
+#[test]
 fn retained_media_counts_legacy_storage_and_preserves_non_image_content() {
     let fixture = Fixture::new();
     let image = fixture.image("image.png", 1);

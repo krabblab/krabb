@@ -3,15 +3,20 @@ use std::fs;
 
 #[tokio::test]
 async fn model_retry_requests_respect_successful_mutations() {
-    scheduled_replies(false).await;
+    scheduled_replies(false, None).await;
 }
 
 #[tokio::test]
 async fn final_response_save_failures_preserve_mutation_markers() {
-    scheduled_replies(true).await;
+    scheduled_replies(true, None).await;
 }
 
-async fn scheduled_replies(full: bool) {
+#[tokio::test]
+async fn scheduled_runs_complete_under_a_configured_task_inference_ceiling() {
+    scheduled_replies(false, Some(60)).await;
+}
+
+async fn scheduled_replies(full: bool, ceiling: Option<u64>) {
     let script = r#"
 import json, pathlib, sys
 role, root, mode, tool, final = sys.argv[1:]
@@ -93,7 +98,11 @@ for line in sys.stdin:
 
             fs::write(root.join("note.txt"), "original").unwrap();
 
-            let plugins = Plugins::default();
+            let mut config = Config::default();
+
+            config.inference.task_seconds = ceiling;
+
+            let plugins = Plugins { config: Arc::new(config), ..Plugins::default() };
 
             for role in ["fixture", "tools", "scheduler"] {
                 let process = Process::start_with(
@@ -149,7 +158,7 @@ for line in sys.stdin:
                     "fixture",
                     "test",
                     Arc::new(AsyncMutex::new(approval::Gate::new().unwrap())),
-                    &ScheduledWorkspaceLocks::default(),
+                    &WorkspaceLocks::default(),
                     1,
                 ),
             )

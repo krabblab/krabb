@@ -80,7 +80,9 @@ The OpenAI API plugin is independent from Codex and uses OpenAI API credentials.
 Codex preserves the Codex app-server integration and optional compatible API
 key route. Model plugins accept normalized messages and return a bounded `ModelReply`.
 They validate provider status codes, response bodies, tool calls, and stream
-events before returning them to the host. The Codex plugin uses an explicit
+events before returning them to the host. A rejected malformed or missing-resource
+request includes the provider's JSON error message, first line only and clipped to
+200 characters; other rejected bodies are not echoed. The Codex plugin uses an explicit
 API key when configured; otherwise it delegates to the installed Codex CLI
 app-server and its ChatGPT sign-in. Personal Codex sign-in requires Codex CLI
 to be installed; other providers and API-key authentication do not require it.

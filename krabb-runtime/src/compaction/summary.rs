@@ -84,22 +84,24 @@ pub(super) async fn summarize(
         let next = if let Some(text) = compacted {
             text
         } else {
-            let request = Request::call(
-                id,
-                "generate",
-                serde_json::to_value(ModelRequest {
-                    generation: Some(Generation {
-                        output: profile.window.unwrap().output,
-                        summary: true,
-                        search: false,
+            let mut generation = ModelRequest {
+                generation: Some(Generation {
+                    limits: input.generation.and_then(|value| value.limits).map(|limits| {
+                        krabb_core::execution::Limits { ceiling_millis: None, ..limits }
                     }),
-                    model: input.model.clone(),
-                    workspace: input.workspace.clone(),
-                    messages,
-                    stream: false,
-                    tools: vec![],
-                })?,
-            );
+                    output: profile.window.unwrap().output,
+                    summary: true,
+                    search: false,
+                }),
+                model: input.model.clone(),
+                workspace: input.workspace.clone(),
+                messages,
+                stream: false,
+                tools: vec![],
+            };
+
+            super::timing::restrict(&mut generation, deadline)?;
+            let request = Request::call(id, "generate", serde_json::to_value(generation)?);
             let response = process
                 .call_stream_timeout_async(
                     request,
@@ -150,7 +152,7 @@ pub(super) fn prefix(messages: &[Message], budget: u64, target: u64) -> usize {
                 part => part.render(),
             };
 
-            sum.saturating_add(context::text_tokens(&text) + 16)
+            sum.saturating_add(context::text_tokens(&text) + context::OVERHEAD)
         });
 
         if end > 0 && used.saturating_add(cost) > capacity {

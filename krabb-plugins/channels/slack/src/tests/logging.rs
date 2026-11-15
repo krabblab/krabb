@@ -75,6 +75,8 @@ async fn socket_logging_is_private() {
 
             assert_eq!(ack["envelope_id"], "fixture-envelope");
 
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
             socket
                 .send(Message::Text(json!({"type": "disconnect"}).to_string().into()))
                 .await
@@ -89,14 +91,31 @@ async fn socket_logging_is_private() {
                 history: Arc::new(Mutex::new(HistoryPoll::default())),
             };
 
-            let events = socket_poll_at(&app, fixture::TOKEN, "D1", &base).await.unwrap().unwrap();
+            let events = socket_poll_at(&app, fixture::TOKEN, "D1", &base, SOCKET_WAIT)
+                .await
+                .unwrap()
+                .unwrap();
 
             assert_eq!(events[0]["text"], fixture::CONTENT);
             assert_eq!(events[0]["private"], true);
             assert_eq!(events[0]["gateway_sequence"], 1);
             app.inbox.lock().await.acknowledge(1).unwrap();
 
-            assert!(socket_poll_at(&app, fixture::TOKEN, "D1", &base).await.unwrap().is_none());
+            let quiet =
+                socket_poll_at(&app, fixture::TOKEN, "D1", &base, Duration::from_millis(50))
+                    .await
+                    .unwrap();
+
+            assert_eq!(quiet, Some(Vec::new()));
+            assert!(app.socket.lock().await.is_some());
+
+            assert!(
+                socket_poll_at(&app, fixture::TOKEN, "D1", &base, SOCKET_WAIT)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+
             assert!(app.socket.lock().await.is_none());
         },
     )

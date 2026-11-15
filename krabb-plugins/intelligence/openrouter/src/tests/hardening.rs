@@ -200,3 +200,28 @@ fn unmatched_tool_results_do_not_leave_native_calls_open() {
     assert_eq!(values.last().unwrap()["role"], "user");
     assert!(values.last().unwrap()["content"].as_str().unwrap().contains("first result"));
 }
+
+#[tokio::test]
+async fn rejected_generation_is_typed_retryable_and_omits_the_upstream_body() {
+    let reply = json!({"error":{"message":"private upstream detail"}}).to_string();
+    let (base, server) = krabb_test::http::responses(vec![(503, reply)]).await;
+    let request = ModelRequest { stream: false, ..history() };
+
+    let error =
+        complete(&reqwest::Client::new(), 1, request, "fixture-key", &base).await.unwrap_err();
+
+    assert_eq!(error.to_string(), "OpenRouter rejected the request with HTTP 503.");
+
+    assert!(matches!(
+        error,
+        krabb_core::Error::Failed {
+            failure: krabb_core::failure::Failure {
+                kind: krabb_core::failure::Kind::Transient,
+                retry_after_seconds: None
+            },
+            ..
+        }
+    ));
+
+    server.await.unwrap();
+}

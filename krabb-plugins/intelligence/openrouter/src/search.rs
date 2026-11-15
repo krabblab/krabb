@@ -25,17 +25,14 @@ pub(super) async fn endpoints(
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map_err(|_| krabb_core::Error::Denied("OpenRouter search discovery failed.".into()))?;
+        .map_err(|error| krabb_http::transport(&error, "OpenRouter"))?;
 
     if matches!(response.status().as_u16(), 403 | 404) {
         return Ok(vec![]);
     }
 
     if !response.status().is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenRouter search discovery was rejected with {}.",
-            response.status()
-        )));
+        return Err(krabb_http::rejected(response, "OpenRouter").await);
     }
 
     let value: Value = serde_json::from_slice(&collect(response.bytes_stream()).await?)?;

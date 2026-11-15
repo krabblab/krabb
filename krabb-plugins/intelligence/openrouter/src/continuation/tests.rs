@@ -6,7 +6,7 @@ fn input() -> ModelRequest {
         model: "google/gemini-3.5-flash".into(),
         workspace: None,
         stream: false,
-        generation: Some(Generation { output: 2048, summary: false, search: false }),
+        generation: Some(Generation { limits: None, output: 2048, summary: false, search: false }),
         tools: vec![ToolSpec {
             name: "read".into(),
             description: None,
@@ -151,6 +151,7 @@ fn reasoning_is_bounded_and_replay_rejects_changed_calls() {
     reasoning.attach(&input().model, &mut events).unwrap();
 
     let mut message = assistant(ModelReply {
+        timing: None,
         text: String::new(),
         events,
         stop: "tool".into(),

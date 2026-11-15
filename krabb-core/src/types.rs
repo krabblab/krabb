@@ -31,6 +31,7 @@ pub enum Capability {
     Client,
     Resource,
     Agent,
+    Runner,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -140,6 +141,8 @@ pub struct ModelRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ModelReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<crate::execution::Timing>,
     pub text: String,
     pub stop: String,
     pub input: Option<u64>,
@@ -210,6 +213,41 @@ pub enum Event {
     Error {
         message: String,
     },
+}
+
+/// Sender of host and client notices, which `/reply last` skips.
+pub const SYSTEM: &str = "system";
+
+/// Most content items one message carries.
+pub const CONTENT_LIMIT: usize = 64;
+
+/// Most text bytes one message carries across its items.
+pub const TEXT_LIMIT: usize = 256 * 1024;
+
+/// Reports that a session already has a turn running; clients match it to queue input.
+pub const SESSION_BUSY: &str = "Session is already working.";
+
+/// Ends a final answer the host clipped at the response limit, after its clip marker.
+pub const CLIP_NOTICE: &str =
+    "\n\nThis answer reached the response limit. Ask me to continue for the rest.";
+
+/// The rest of a final answer after its streamed text, or `None` when the final answer
+/// replaces the stream. A final answer the stream already shows, apart from trailing
+/// whitespace, adds nothing. A host-clipped answer continues with its notice when the text
+/// before its clip marker was streamed.
+pub fn continuation<'a>(streamed: &str, final_text: &'a str) -> Option<&'a str> {
+    if let Some(rest) = final_text.strip_prefix(streamed) {
+        return Some(rest);
+    }
+
+    if !final_text.trim_end().is_empty() && streamed.trim_end() == final_text.trim_end() {
+        return Some("");
+    }
+
+    let head = final_text.strip_suffix(CLIP_NOTICE)?.strip_suffix('…')?;
+
+    (!head.is_empty() && streamed.starts_with(head))
+        .then(|| &final_text[final_text.len() - CLIP_NOTICE.len()..])
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -332,6 +370,29 @@ impl Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_final_answer_continues_its_stream_unless_it_replaces_it() {
+        use super::continuation;
+
+        assert_eq!(continuation("Hello", "Hello world"), Some(" world"));
+        assert_eq!(continuation("", "Hello"), Some("Hello"));
+
+        let clipped = |head: &str| format!("{head}…{CLIP_NOTICE}");
+
+        assert_eq!(continuation("Hello wörld and more", &clipped("Hello wö")), Some(CLIP_NOTICE));
+        assert_eq!(continuation("abc…def", &clipped("abc")), Some(CLIP_NOTICE));
+        assert_eq!(continuation("abc…def", &clipped("abc…d")), Some(CLIP_NOTICE));
+        assert_eq!(continuation("abc", &clipped("abd")), None);
+        assert_eq!(continuation("Wait… ok", "Wait… totally different"), None);
+        assert_eq!(continuation("Hello world", "Hello…\n\nLimit."), None);
+        assert_eq!(continuation("Hello", "A different answer"), None);
+        assert_eq!(continuation("Hello world ", "Hello world"), Some(""));
+        assert_eq!(continuation("Hello world, secret detail", "Hello world"), None);
+        assert_eq!(continuation("Hello", " "), None);
+        assert_eq!(continuation("Hello", &format!("é{}", &CLIP_NOTICE[1..])), None);
+        assert_eq!(continuation("Hello", "…replaced"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -424,7 +485,12 @@ mod tests {
         let reply: ModelReply = serde_json::from_value(value).unwrap();
 
         assert_eq!(reply.context_usage, None);
-        assert!(serde_json::to_value(reply).unwrap().get("context_usage").is_none());
+        assert_eq!(reply.timing, None);
+
+        let wire = serde_json::to_value(reply).unwrap();
+
+        assert!(wire.get("context_usage").is_none());
+        assert!(wire.get("timing").is_none());
     }
 
     #[test]

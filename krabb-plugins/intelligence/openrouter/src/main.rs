@@ -163,14 +163,15 @@ async fn complete(
         .json(&body)
         .send()
         .await
-        .map_err(|error| {
-            krabb_core::Error::Denied(format!("OpenRouter request failed: {error}."))
-        })?;
+        .map_err(|error| krabb_http::transport(&error, "OpenRouter"))?;
 
-    let status = response.status();
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "OpenRouter").await);
+    }
+
     let body = collect(response.bytes_stream()).await?;
 
-    response_model(id, status, serde_json::from_slice(&body)?, &model::resolve(&input.model, None))
+    response_model(id, serde_json::from_slice(&body)?, &model::resolve(&input.model, None))
 }
 
 async fn stream(
@@ -192,15 +193,10 @@ async fn stream(
         .json(&body)
         .send()
         .await
-        .map_err(|error| {
-            krabb_core::Error::Denied(format!("OpenRouter stream failed: {error}."))
-        })?;
+        .map_err(|error| krabb_http::transport(&error, "OpenRouter"))?;
 
     if !response.status().is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenRouter stream was rejected with {}.",
-            response.status()
-        )));
+        return Err(krabb_http::rejected(response, "OpenRouter").await);
     }
 
     stream_model(id, response.bytes_stream(), emitter, &model::resolve(&input.model, None)).await
@@ -250,7 +246,8 @@ where
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
-            krabb_core::Error::Denied(format!("OpenRouter response failed: {error}."))
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
+                .error(format!("OpenRouter response failed: {error}."))
         })?;
 
         if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes.len()) {
@@ -313,7 +310,8 @@ where
 
     'stream: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
-            krabb_core::Error::Denied(format!("OpenRouter stream failed: {error}."))
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                .error(format!("OpenRouter stream failed: {error}."))
         })?;
 
         bytes = bytes.saturating_add(chunk.as_ref().len());
@@ -383,6 +381,7 @@ where
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: "stream".into(),
             input: None,
@@ -480,19 +479,7 @@ async fn emit(
     Ok(())
 }
 
-fn response_model(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: Value,
-    model: &str,
-) -> krabb_core::Result<Option<Response>> {
-    if !status.is_success() {
-        return Err(krabb_core::Error::Denied(format!(
-            "OpenRouter rejected the request: {}.",
-            body["error"]["message"].as_str().unwrap_or("request failed")
-        )));
-    }
-
+fn response_model(id: u64, body: Value, model: &str) -> krabb_core::Result<Option<Response>> {
     let choice = body["choices"].as_array().and_then(|values| values.first()).ok_or_else(|| {
         krabb_core::Error::Denied("OpenRouter response contained no choices.".into())
     })?;
@@ -543,6 +530,7 @@ fn response_model(
     response(
         id,
         serde_json::to_value(ModelReply {
+            timing: None,
             text,
             stop: choice["finish_reason"].as_str().unwrap_or("stop").into(),
             input: body["usage"]["prompt_tokens"].as_u64(),
@@ -578,12 +566,8 @@ fn stream_line(
 }
 
 #[cfg(test)]
-fn response_body(
-    id: u64,
-    status: reqwest::StatusCode,
-    body: Value,
-) -> krabb_core::Result<Option<Response>> {
-    response_model(id, status, body, "fixture")
+fn response_body(id: u64, body: Value) -> krabb_core::Result<Option<Response>> {
+    response_model(id, body, "fixture")
 }
 
 fn response(id: u64, result: Value) -> krabb_core::Result<Option<Response>> {
@@ -842,38 +826,28 @@ mod tests {
         assert_eq!(headers["HTTP-Referer"], "https://example.test");
         assert_eq!(headers["X-Title"], "Krabb");
         assert!(response(1, json!({"ok": true})).unwrap().is_some());
-        assert!(response_body(1, reqwest::StatusCode::OK, json!({"choices": []})).is_err());
+        assert!(response_body(1, json!({"choices": []})).is_err());
     }
 
     #[test]
     fn parses_complete_and_tool_replies() {
         let response = response_body(
             1,
-            reqwest::StatusCode::OK,
             json!({"choices":[{"message":{"content":"done","tool_calls":[{"function":{"name":"read","arguments":"{\"path\":\"note\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}),
         ).unwrap().unwrap();
 
         assert_eq!(response.result.as_ref().unwrap()["text"], "done");
         assert_eq!(response.result.as_ref().unwrap()["events"][0]["name"], "read");
-        assert!(response_body(1, reqwest::StatusCode::UNAUTHORIZED, json!({})).is_err());
-        assert!(response_body(1, reqwest::StatusCode::OK, json!({})).is_err());
+        assert!(response_body(1, json!({})).is_err());
         assert!(response_body(
             1,
-            reqwest::StatusCode::OK,
             json!({"choices":[{"message":{"tool_calls":[{"function":{"name":"read","arguments":"not-json"}}]}}]}),
         ).is_err());
 
-        assert!(
-            response_body(1, reqwest::StatusCode::OK, json!({"choices":[{"message":{}}]})).is_err()
-        );
+        assert!(response_body(1, json!({"choices":[{"message":{}}]})).is_err());
 
-        let default_stop = response_body(
-            2,
-            reqwest::StatusCode::OK,
-            json!({"choices":[{"message":{"content":"ok"}}]}),
-        )
-        .unwrap()
-        .unwrap();
+        let default_stop =
+            response_body(2, json!({"choices":[{"message":{"content":"ok"}}]})).unwrap().unwrap();
 
         assert_eq!(default_stop.result.unwrap()["stop"], "stop");
     }
@@ -1016,6 +990,33 @@ data: [DONE]
         let response = stream_body(3, chunks, &mut emitter).await.unwrap().unwrap();
 
         assert_eq!(response.result.unwrap()["events"][0]["name"], "read");
+
+        let kind = |result: krabb_core::Result<Option<krabb_core::types::Response>>| match result {
+            Err(krabb_core::Error::Failed { failure, .. }) => failure.kind,
+            other => panic!("Unexpected stream outcome: {other:?}"),
+        };
+
+        let reset = || std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        let (output, _keep) = tokio::sync::mpsc::channel(4);
+        let mut emitter = krabb_core::plugin::Emitter::new(output);
+        let chunks = stream::iter(vec![Err::<Vec<u8>, _>(reset())]);
+
+        assert_eq!(
+            kind(stream_body(4, chunks, &mut emitter).await),
+            krabb_core::failure::Kind::Transient
+        );
+
+        let shown =
+            format!("data: {}\n", json!({"choices":[{"delta":{"content":"x".repeat(128)}}]}));
+
+        let (output, _keep) = tokio::sync::mpsc::channel(4);
+        let mut emitter = krabb_core::plugin::Emitter::new(output);
+        let chunks = stream::iter(vec![Ok(shown.into_bytes()), Err(reset())]);
+
+        assert_eq!(
+            kind(stream_body(5, chunks, &mut emitter).await),
+            krabb_core::failure::Kind::Uncertain
+        );
     }
 
     #[tokio::test]

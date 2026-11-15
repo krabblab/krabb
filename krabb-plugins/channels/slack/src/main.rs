@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -60,6 +60,11 @@ const HISTORY_INTERVAL: Duration = Duration::from_secs(60);
 const MEDIA_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const MEDIA_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
 const MEDIA_CACHE_FILES: usize = 256;
+const THREAD_LIMIT: usize = 256;
+const THREAD_WAIT: Duration = Duration::from_secs(1);
+const SOCKET_WAIT: Duration = Duration::from_secs(25);
+const THREAD_RETRY: Duration = Duration::from_secs(60);
+const THREAD_REFRESH: Duration = Duration::from_secs(10 * 60);
 const RATE_LIMIT_MAX: Duration = Duration::from_secs(300);
 const RATE_LIMIT_POLL_SLICE: Duration = Duration::from_secs(30);
 const SOCKET_EVENT_LIMIT: usize = 4_096;
@@ -92,6 +97,8 @@ struct Inbox {
     attachments: BTreeMap<String, Attachment>,
     #[serde(default)]
     pending: Vec<Pending>,
+    #[serde(skip)]
+    threads: VecDeque<(String, String, Reply, Instant)>,
 }
 
 impl Default for Inbox {
@@ -105,6 +112,7 @@ impl Default for Inbox {
             socket: BTreeMap::new(),
             attachments: BTreeMap::new(),
             pending: Vec::new(),
+            threads: VecDeque::new(),
         }
     }
 }
@@ -535,7 +543,11 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
     })?;
 
     let result = match method.as_str() {
-        "poll" => poll(app, &token).await?,
+        "poll" => {
+            let wait = params["wait_seconds"].as_u64().map_or(SOCKET_WAIT, Duration::from_secs);
+
+            poll(app, &token, wait.min(SOCKET_WAIT)).await?
+        }
 
         "ack" => {
             let sequence = params["sequence"]
@@ -597,11 +609,7 @@ async fn api_at(
 
         let status = response.status();
 
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok());
+        let retry_after = krabb_http::retry_after(response.headers());
 
         let response_bytes = collect_api_body(response.bytes_stream()).await?;
 
@@ -730,13 +738,13 @@ async fn history_rate_limited(state: &Arc<Mutex<HistoryPoll>>, error: &krabb_cor
 }
 
 #[cfg(not(test))]
-async fn poll(app: &App, token: &str) -> krabb_core::Result<Value> {
+async fn poll(app: &App, token: &str, wait: Duration) -> krabb_core::Result<Value> {
     let channels = std::env::var("KRABB_SLACK_CHANNELS").unwrap_or_default();
 
     if let Ok(app_token) = std::env::var("KRABB_SLACK_APP_TOKEN")
         && !app_token.trim().is_empty()
     {
-        match socket_poll(app, &app_token, &channels).await {
+        match socket_poll(app, &app_token, &channels, wait).await {
             Ok(Some(events)) => return Ok(json!({"events": events})),
 
             Ok(None) => {}
@@ -992,15 +1000,19 @@ async fn socket_poll(
     app: &App,
     token: &str,
     channels: &str,
+    wait: Duration,
 ) -> krabb_core::Result<Option<Vec<Value>>> {
-    socket_poll_at(app, token, channels, "https://slack.com/api").await
+    socket_poll_at(app, token, channels, "https://slack.com/api", wait).await
 }
 
+/// Reads one Socket Mode envelope. A full wait without traffic means the socket is stale, so it
+/// reconnects; a shorter wait, used while a turn runs, just reports no events.
 async fn socket_poll_at(
     app: &App,
     token: &str,
     channels: &str,
     base: &str,
+    wait: Duration,
 ) -> krabb_core::Result<Option<Vec<Value>>> {
     let mut socket = app.socket.lock().await;
 
@@ -1048,9 +1060,17 @@ async fn socket_poll_at(
 
     let message = {
         let stream = socket.as_mut().expect("socket was initialized");
-        tokio::time::timeout(Duration::from_secs(25), stream.next())
-            .await
-            .map_err(|_| krabb_core::Error::Denied("Slack Socket Mode polling timed out.".into()))?
+
+        match tokio::time::timeout(wait, stream.next()).await {
+            Ok(message) => message,
+            Err(_) if wait < SOCKET_WAIT => return Ok(Some(Vec::new())),
+
+            Err(_) => {
+                return Err(krabb_core::Error::Denied(
+                    "Slack Socket Mode polling timed out.".into(),
+                ));
+            }
+        }
     };
 
     let message = match message {
@@ -1132,7 +1152,6 @@ async fn socket_poll_at(
 
     let text = event["text"].as_str().unwrap_or_default();
     let content = remember_files(event, &app.attachments).await;
-    let reply = thread_reply(app, token, chat, event, base).await;
 
     if text.is_empty() && content.is_empty() {
         if let Some(envelope) = envelope.as_deref() {
@@ -1141,6 +1160,8 @@ async fn socket_poll_at(
 
         return Ok(Some(Vec::new()));
     }
+
+    let reply = thread_reply(app, token, chat, event, base).await;
 
     let event = json!({
         "id": timestamp,
@@ -1404,6 +1425,10 @@ async fn pending_history(app: &App, token: &str, channels: &str, base: &str) -> 
     Some(event)
 }
 
+/// References a thread's parent for every message in that thread; the host quotes it only once
+/// per conversation. Each parent is looked up within a short wait; a found parent is cached for
+/// later messages and polls and refreshed after a while to pick up edits, and a missing one is
+/// retried after a shorter pause.
 async fn thread_reply(
     app: &App,
     token: &str,
@@ -1411,22 +1436,50 @@ async fn thread_reply(
     event: &Value,
     base: &str,
 ) -> Option<Reply> {
-    let parent = event["thread_ts"].as_str().filter(|id| Some(*id) != event["ts"].as_str())?;
-    let mut reply = Reply::new(parent.into(), None, None)?;
+    let timestamp = event["ts"].as_str().unwrap_or_default();
+    let parent = event["thread_ts"].as_str().filter(|id| *id != timestamp)?;
+    let reply = Reply::new(parent.into(), None, None)?;
 
-    if let Ok(result) = api_at(
+    let cached = app.inbox.lock().await.threads.iter().find_map(|(room, thread, reply, time)| {
+        let fresh = if reply.text.is_some() { THREAD_REFRESH } else { THREAD_RETRY };
+
+        (room == chat && thread == parent && time.elapsed() < fresh).then(|| reply.clone())
+    });
+
+    if cached.is_some() {
+        return cached;
+    }
+
+    let lookup = api_at(
         &app.client,
         token,
         "conversations.replies",
         json!({"channel":chat,"ts":parent,"limit":1}),
         base,
-    )
-    .await
-        && let Some(message) = result["messages"].as_array().and_then(|messages| messages.first())
-        && message["ts"] == parent
-    {
-        reply = Reply::from_parts(&message["ts"], &message["user"], message["text"].as_str())?;
+    );
+
+    let reply = match tokio::time::timeout(THREAD_WAIT, lookup).await {
+        Ok(Ok(result)) => result["messages"]
+            .as_array()
+            .and_then(|messages| messages.first())
+            .filter(|message| message["ts"] == parent)
+            .and_then(|message| {
+                Reply::from_parts(&message["ts"], &message["user"], message["text"].as_str())
+            })
+            .unwrap_or(reply),
+
+        _ => reply,
+    };
+
+    let threads = &mut app.inbox.lock().await.threads;
+
+    threads.retain(|(room, thread, ..)| room != chat || thread != parent);
+
+    if threads.len() == THREAD_LIMIT {
+        threads.pop_front();
     }
+
+    threads.push_back((chat.into(), parent.into(), reply.clone(), Instant::now()));
 
     Some(reply)
 }
@@ -1467,14 +1520,21 @@ async fn send_at(
         return Ok(result);
     }
 
-    api_at(
+    let mut result = api_at(
         client,
         token,
         "chat.postMessage",
         json!({"channel": channel, "text": text, "thread_ts": params["thread"]}),
         base,
     )
-    .await
+    .await?;
+
+    if result.is_object() {
+        let sent = Reply::from_parts(&result["ts"], &Value::Null, Some(text));
+        result["references"] = json!(sent.into_iter().collect::<Vec<_>>());
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

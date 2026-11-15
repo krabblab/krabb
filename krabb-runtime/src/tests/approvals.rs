@@ -374,7 +374,8 @@ for line in sys.stdin:
                 "instruction": "", "delay_seconds": 10,
                 "context": {
                     "provider": "fixture", "model": "test", "workspace": root,
-                    "origin": {"channel": channel, "chat": "7", "thread": null,
+                    "origin": {"source": sharing::principal(channel),
+                               "channel": channel, "chat": "7", "thread": null,
                                "session": "session", "private": true, "sender": null, "roles": []},
                     "message_destination": null, "tools": true, "shell": false
                 }
@@ -478,7 +479,12 @@ for line in sys.stdin:
                     mode == ApprovalMode::Off || (mode == ApprovalMode::Prompt && *oversized);
                 let dispatched = root.join("dispatch.json").exists();
 
-                assert_eq!(prompted, mode == ApprovalMode::Prompt && !oversized);
+                assert_eq!(
+                    prompted,
+                    mode == ApprovalMode::Prompt && !oversized,
+                    "{channel}: {name}: {mode:?}: {result:?}"
+                );
+
                 assert_eq!(
                     dispatched,
                     !rejected && (mode == ApprovalMode::Auto || decision),
@@ -505,7 +511,10 @@ for line in sys.stdin:
                     } else if *name == "data" {
                         let mut received = request["params"].clone();
 
-                        assert_eq!(received["scope"], memory_scope(channel, "7"));
+                        assert_eq!(
+                            received["scope"],
+                            origin::scope(&sharing::principal(channel), "session", "7", None)
+                        );
                         received.as_object_mut().unwrap().remove("scope");
                         received.as_object_mut().unwrap().remove("visibility");
                         received.as_object_mut().unwrap().remove("excluded");

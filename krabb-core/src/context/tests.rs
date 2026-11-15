@@ -26,6 +26,7 @@ fn metadata_defaults_and_budgets_are_compatible_and_bounded() {
     }
 
     let profile = Profile {
+        execution: None,
         window: Some(Window { tokens: 4096, output: 2048 }),
         compact: true,
         search: true,

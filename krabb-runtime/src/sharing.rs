@@ -4,7 +4,7 @@ pub use krabb_core::scope::Principal;
 pub use krabb_core::visibility::{Data, Rule};
 
 pub fn principal(channel: &str) -> Principal {
-    if channel == "tui" {
+    if client::known(channel) {
         Principal::Client(channel.into())
     } else {
         Principal::Channel(channel.into())
@@ -12,8 +12,12 @@ pub fn principal(channel: &str) -> Principal {
 }
 
 pub fn session_principal(session: &state::Session) -> Option<Principal> {
-    if session.scheduled {
+    if session.is_work() {
         return None;
+    }
+
+    if let Some(source) = &session.source {
+        return Some(source.clone());
     }
 
     if let Some(channel) = &session.channel {
@@ -23,8 +27,8 @@ pub fn session_principal(session: &state::Session) -> Option<Principal> {
     session
         .messages
         .iter()
-        .any(|message| message.sender.as_deref() == Some("tui"))
-        .then(|| Principal::Client("tui".into()))
+        .any(|message| message.sender.as_deref() == Some(client::TUI))
+        .then(|| Principal::Client(client::TUI.into()))
 }
 
 pub fn isolated(config: &Config, principal: &Principal) -> bool {
@@ -38,7 +42,7 @@ pub fn isolated(config: &Config, principal: &Principal) -> bool {
 pub fn configured(config: &Config, principal: &Principal) -> bool {
     match principal {
         Principal::Channel(id) => config.channels.contains_key(id),
-        Principal::Client(id) => id == "tui" || config.clients.contains_key(id),
+        Principal::Client(id) => client::known(id) || config.clients.contains_key(id),
         Principal::Agent(_) => false,
     }
 }
@@ -70,7 +74,7 @@ pub fn sources(config: &Config, recipient: &Principal, data: Data) -> Vec<Princi
         .cloned()
         .map(Principal::Channel)
         .chain(config.clients.keys().cloned().map(Principal::Client))
-        .chain(std::iter::once(Principal::Client("tui".into())))
+        .chain(std::iter::once(Principal::Client(client::TUI.into())))
         .chain(std::iter::once(recipient.clone()))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -103,29 +107,40 @@ pub fn workspace(root: &Path) -> Result<Option<PathBuf>, PluginError> {
 pub fn patterns(source: &Principal) -> Vec<String> {
     match source {
         Principal::Channel(id) => vec![format!("provider:{id}:*")],
-        Principal::Client(id) if id == "tui" => vec!["tui:*".into(), "provider:tui:*".into()],
+        Principal::Client(id) if id == client::TUI => vec!["tui:*".into(), "provider:tui:*".into()],
+
+        Principal::Client(id) if client::known(id) => {
+            vec![format!("client:{id}:*"), format!("provider:{id}:*")]
+        }
+
         Principal::Client(id) => vec![format!("client:{id}:*")],
         Principal::Agent(id) => vec![format!("agent:{id}:*")],
     }
 }
 
-pub fn params(config: &Config, channel: &str, own: &str, isolated: bool, data: Data) -> Value {
+/// The scope a built-in client's conversation had before clients got their own scopes, when
+/// built-in clients were recorded as channels.
+pub fn legacy(scope: &str) -> Option<String> {
+    if let Some(conversation) = scope.strip_prefix("tui:") {
+        return Some(format!("provider:{}:{conversation}", client::TUI));
+    }
+
+    let (id, conversation) = scope.strip_prefix("client:")?.split_once(':')?;
+
+    (client::known(id) && id != client::TUI).then(|| format!("provider:{id}:{conversation}"))
+}
+
+pub fn params(config: &Config, source: &Principal, own: &str, isolated: bool, data: Data) -> Value {
     let mut visibility = vec![own.to_owned()];
 
-    if let Some(id) = own.strip_prefix("tui:") {
-        visibility.push(format!("provider:tui:{id}"));
-    }
+    visibility.extend(legacy(own));
 
     if !isolated {
         visibility.push("global".into());
-        visibility.extend(sources(config, &principal(channel), data).iter().flat_map(patterns));
+        visibility.extend(sources(config, source, data).iter().flat_map(patterns));
     }
 
     serde_json::json!({"scope":own,"visibility":visibility,"excluded":[]})
-}
-
-pub fn memory_params(config: &Config, channel: &str, own: &str, isolated: bool) -> Value {
-    params(config, channel, own, isolated, Data::Memory)
 }
 
 pub fn visible(params: &Value, scope: &str) -> bool {
@@ -155,12 +170,12 @@ pub fn approval(config: &Config, owner: &Principal, fallback: ApprovalMode) -> A
 
 pub fn access(
     config: &Config,
-    channel: &str,
+    source: &Principal,
     session: &str,
     data: Data,
 ) -> Result<Value, PluginError> {
     use krabb_core::scope::{Access, Owner};
-    let owner = principal(channel);
+    let owner = source.clone();
 
     let access = Access {
         sources: sources(config, &owner, data),
@@ -170,14 +185,6 @@ pub fn access(
 
     access.validate()?;
     Ok(serde_json::to_value(access)?)
-}
-
-pub fn schedule_access(
-    config: &Config,
-    channel: &str,
-    session: &str,
-) -> Result<Value, PluginError> {
-    access(config, channel, session, Data::Schedules)
 }
 
 #[cfg(test)]
@@ -201,13 +208,17 @@ mod tests {
         assert!(approvals(&config, &telegram).is_empty());
         assert_eq!(sources(&config, &discord, Data::Memory), vec![discord.clone()]);
 
-        let access: Access =
-            serde_json::from_value(schedule_access(&config, "discord", "d").unwrap()).unwrap();
+        let access: Access = serde_json::from_value(
+            super::access(&config, &principal("discord"), "d", Data::Schedules).unwrap(),
+        )
+        .unwrap();
 
         assert!(access.allows(&Owner { source: telegram.clone(), conversation: "t".into() }));
 
-        let access: Access =
-            serde_json::from_value(schedule_access(&config, "telegram", "t").unwrap()).unwrap();
+        let access: Access = serde_json::from_value(
+            super::access(&config, &principal("telegram"), "t", Data::Schedules).unwrap(),
+        )
+        .unwrap();
 
         assert!(!access.allows(&Owner { source: discord.clone(), conversation: "d".into() }));
 
@@ -249,6 +260,7 @@ mod tests {
         assert!(!sources(&config, &tui, Data::Files).contains(&telegram));
         assert!(sources(&config, &tui, Data::Context).contains(&discord));
         assert!(!sources(&config, &tui, Data::Context).contains(&telegram));
+        assert!(!sources(&config, &tui, Data::Context).contains(&principal("cli")));
 
         let mut config = config;
 
@@ -260,5 +272,21 @@ mod tests {
         config.clients.entry("tui".into()).or_default().visibility = Some(Vec::new());
 
         assert_eq!(rules(&config, &tui), &[]);
+    }
+
+    #[test]
+    fn built_in_clients_keep_reading_the_scopes_they_had_as_channels() {
+        assert_eq!(legacy("tui:main").as_deref(), Some("provider:tui:main"));
+        assert_eq!(legacy("client:cli:ask-1").as_deref(), Some("provider:cli:ask-1"));
+        assert_eq!(legacy("client:web:one"), None);
+        assert_eq!(legacy("provider:telegram:7"), None);
+        assert!(patterns(&principal("cli")).contains(&"provider:cli:*".into()));
+
+        let config = Config::default();
+        let own = "client:cli:ask-1";
+        let params = params(&config, &principal("cli"), own, true, Data::Memory);
+
+        assert!(visible(&params, "provider:cli:ask-1"));
+        assert!(!visible(&params, "provider:cli:other"));
     }
 }
