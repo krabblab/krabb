@@ -75,7 +75,8 @@ async fn socket_logging_is_private() {
 
             assert_eq!(ack["envelope_id"], "fixture-envelope");
 
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            let (quiet, _) = listener.accept().await.unwrap();
+            drop(quiet);
 
             socket
                 .send(Message::Text(json!({"type": "disconnect"}).to_string().into()))
@@ -108,6 +109,9 @@ async fn socket_logging_is_private() {
 
             assert_eq!(quiet, Some(Vec::new()));
             assert!(app.socket.lock().await.is_some());
+
+            let address = base.strip_prefix("http://").unwrap();
+            drop(tokio::net::TcpStream::connect(address).await.unwrap());
 
             assert!(
                 socket_poll_at(&app, fixture::TOKEN, "D1", &base, SOCKET_WAIT)
