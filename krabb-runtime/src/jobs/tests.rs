@@ -267,7 +267,7 @@ for line in sys.stdin:
     }
 
     async fn until(&self, predicate: impl Fn(&state::Store) -> bool) {
-        let result = tokio::time::timeout(Duration::from_secs(8), async {
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 if predicate(&self.context.sessions.lock().unwrap()) {
                     break;

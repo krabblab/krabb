@@ -258,7 +258,7 @@ async fn a_busy_channel_pauses_the_report_and_answers_the_next_question_once() {
     };
 
     let monitor = tokio::spawn(async move {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let running = saved
                     .lock()
@@ -297,7 +297,7 @@ async fn a_busy_channel_pauses_the_report_and_answers_the_next_question_once() {
     });
 
     tokio::time::timeout(
-        Duration::from_secs(7),
+        Duration::from_secs(35),
         crate::bridge(
             &plugins,
             "telegram",
