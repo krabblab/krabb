@@ -33,7 +33,7 @@ mod tests {
 
         assert!(!error.is_connect(), "{error:?}");
         assert_eq!(kind(error), Kind::Transient);
-        assert_eq!(kind(client.get("http://[invalid").send().await.unwrap_err()), Kind::Invalid);
+        assert_eq!(kind(client.get("https://[invalid").send().await.unwrap_err()), Kind::Invalid);
     }
 
     #[tokio::test]

@@ -267,7 +267,7 @@ mod tests {
         assert!(error.is_decode(), "{error:?}");
         assert_eq!(failure(transport(&error, "Provider")).kind, Kind::Transient);
 
-        let error = client.get("http://[invalid").send().await.unwrap_err();
+        let error = client.get("https://[invalid").send().await.unwrap_err();
 
         assert_eq!(failure(transport(&error, "Provider")).kind, Kind::Invalid);
     }
