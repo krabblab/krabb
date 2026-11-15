@@ -7454,6 +7454,8 @@ fn env_for(
 ) -> Result<Vec<(String, String)>, PluginError> {
     const SAFE: &[&str] = &[
         "PATH",
+        "SystemRoot",
+        "WINDIR",
         "TEMP",
         "TMP",
         "TMPDIR",
@@ -25485,6 +25487,36 @@ done
         }
 
         assert!(!values.iter().any(|(key, _)| { matches!(key.as_str(), "HOME" | "USERPROFILE") }));
+    }
+
+    #[test]
+    fn plugins_keep_the_windows_system_directories_needed_for_networking() {
+        let values = env_for(
+            &Manifest {
+                id: "runner".into(),
+                version: "0.1.0".into(),
+                protocol: Protocol::CURRENT,
+                capabilities: vec!["runner".into()],
+                permissions: vec!["network".into()],
+                variables: Vec::new(),
+                settings: Vec::new(),
+                commands: Vec::new(),
+            },
+            &Config::default(),
+            Path::new("/tmp/krabb-home"),
+        )
+        .unwrap();
+
+        for name in ["SystemRoot", "WINDIR"] {
+            let forwarded =
+                values.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+
+            assert_eq!(forwarded, std::env::var(name).ok(), "{name} was not forwarded.");
+
+            if cfg!(windows) {
+                assert!(forwarded.is_some(), "Windows plugins need {name} to load networking.");
+            }
+        }
     }
 
     #[test]
