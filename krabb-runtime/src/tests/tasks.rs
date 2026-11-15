@@ -106,11 +106,36 @@ async fn thoughtful_messages_are_generated_once_without_tool_permissions() {
 
     assert!(fixture.registry.task.handoff.borrow().is_none());
 
+    let saved = |store: &state::Store| {
+        store.sessions["telegram-7"]
+            .messages
+            .iter()
+            .filter(|message| message.id.starts_with("progress-at-"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    {
+        let store = fixture.sessions.lock().unwrap();
+        let progress = saved(&store);
+
+        assert_eq!(progress.len(), 1);
+        assert_eq!(progress[0].role, Role::Assistant);
+        assert_eq!(progress[0].sender, None);
+        assert_eq!(
+            progress[0].content,
+            [Content::Text { text: "I'll compare the release notes.".into() }]
+        );
+
+        assert_eq!(store.sessions["telegram-7"].messages.last(), Some(&progress[0]));
+    }
+
     let (result, mut notices) = fixture.classify(args, ApprovalMode::Off).await;
 
     result.unwrap();
 
     assert!(notices.recv().await.is_none());
+    assert_eq!(saved(&fixture.sessions.lock().unwrap()).len(), 1);
 
     let (result, _) = fixture.classify(json!({"kind":"fast"}), ApprovalMode::Off).await;
 
