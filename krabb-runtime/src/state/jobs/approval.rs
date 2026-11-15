@@ -112,10 +112,10 @@ impl Store {
     pub fn withdraw_approval(&mut self, run: &Run, call: u64) -> std::io::Result<()> {
         let id = format!("{}-approval-{}-{call}", run.id, run.generation);
 
-        if !self
+        if self
             .jobs
             .get(&run.id)
-            .is_some_and(|job| job.approval.as_ref().is_some_and(|approval| approval.id == id))
+            .is_none_or(|job| job.approval.as_ref().is_none_or(|approval| approval.id != id))
         {
             return Ok(());
         }
@@ -130,8 +130,7 @@ impl Store {
     pub fn escalate_approval(&mut self, run: &Run) -> std::io::Result<()> {
         self.check_job_step(&run.id, run.generation)?;
 
-        if !self.jobs[&run.id].approval.as_ref().is_some_and(|approval| approval.decision.is_none())
-        {
+        if self.jobs[&run.id].approval.as_ref().is_none_or(|approval| approval.decision.is_some()) {
             return Err(std::io::Error::other("The approval is superseded."));
         }
 
@@ -159,7 +158,7 @@ impl Store {
     ) -> std::io::Result<()> {
         self.check_job_step(&run.id, run.generation)?;
 
-        if !self.jobs[&run.id].approval.as_ref().is_some_and(|approval| approval.id == id) {
+        if self.jobs[&run.id].approval.as_ref().is_none_or(|approval| approval.id != id) {
             return Err(std::io::Error::other("The approval is superseded."));
         }
 

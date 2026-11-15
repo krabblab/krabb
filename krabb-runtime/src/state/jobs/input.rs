@@ -77,7 +77,7 @@ impl Store {
             return Err(std::io::Error::other(ControlError::Identity));
         }
 
-        if !job.input.as_ref().is_some_and(|input| input.fingerprint.is_some()) {
+        if job.input.as_ref().is_none_or(|input| input.fingerprint.is_none()) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 "The original request fingerprint is unknown. Recover its saved task by receipt.",
@@ -228,7 +228,7 @@ impl Store {
             job.restart = false;
             let announce = announce
                 && job.last_notice != reason
-                && !job.notice.as_ref().is_some_and(|notice| notice.text == reason);
+                && job.notice.as_ref().is_none_or(|notice| notice.text != reason);
 
             if modified || announce {
                 job.revision = job.revision.saturating_add(1);

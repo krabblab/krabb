@@ -1554,9 +1554,9 @@ where
                         return Ok(false);
                     }
 
-                    if !is_task_control
-                        && !(busy && ordinary)
-                        && !matches!(line.as_str(), "/clear" | "/quit" | "/exit")
+                    if !(is_task_control
+                        || busy && ordinary
+                        || matches!(line.as_str(), "/clear" | "/quit" | "/exit"))
                     {
                         app.begin_interaction(&line);
                     }

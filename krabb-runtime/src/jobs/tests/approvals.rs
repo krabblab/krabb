@@ -794,3 +794,68 @@ async fn a_deferred_resume_keeps_an_undecided_approval_blocked() {
 
     provider.stop().await.unwrap();
 }
+
+#[test]
+fn approval_steps_only_change_the_current_saved_proposal() {
+    let fixture = Fixture::new(Principal::Client("desktop".into()));
+    let mut store = fixture.context.sessions.lock().unwrap();
+
+    store.jobs.get_mut(&fixture.id).unwrap().tools = true;
+
+    let job = store.claim_job(&fixture.id, unix_seconds()).unwrap();
+    let run = krabb_core::task::Run { id: job.id, generation: job.step };
+    let id = format!("{}-approval-{}-1", run.id, run.generation);
+    let args = json!({"path":"note.txt"});
+
+    let result = |text: &str| Message {
+        id: format!("approval-result-{text}"),
+        session: run.id.clone(),
+        role: Role::Tool,
+        sender: Some("write".into()),
+        content: vec![Content::Text { text: text.into() }],
+    };
+
+    store.propose_approval(&run, 1, "write", &args, "Write note.txt").unwrap();
+
+    let revision = store.jobs[&run.id].revision;
+
+    store.withdraw_approval(&run, 2).unwrap();
+
+    assert_eq!(store.jobs[&run.id].approval.as_ref().unwrap().id, id);
+    assert_eq!(store.jobs[&run.id].revision, revision);
+
+    let error = store.settle_approval(&run, "another-approval", result("stale")).unwrap_err();
+
+    assert!(error.to_string().contains("superseded"));
+    assert_eq!(store.jobs[&run.id].approval.as_ref().unwrap().id, id);
+
+    store.jobs.get_mut(&run.id).unwrap().approval.as_mut().unwrap().decision = Some(true);
+
+    let error = store.escalate_approval(&run).unwrap_err();
+
+    assert!(error.to_string().contains("superseded"));
+    assert_eq!(store.jobs[&run.id].status, JobStatus::Running);
+
+    store.settle_approval(&run, &id, result("Written.")).unwrap();
+
+    assert!(store.jobs[&run.id].approval.is_none());
+    assert!(store.jobs[&run.id].revision > revision);
+
+    let revision = store.jobs[&run.id].revision;
+
+    store.withdraw_approval(&run, 1).unwrap();
+
+    assert_eq!(store.jobs[&run.id].revision, revision);
+    assert!(store.escalate_approval(&run).unwrap_err().to_string().contains("superseded"));
+    assert!(store.settle_approval(&run, &id, result("again")).is_err());
+
+    store.propose_approval(&run, 3, "write", &args, "Write note.txt").unwrap();
+    store.escalate_approval(&run).unwrap();
+
+    assert_eq!(store.jobs[&run.id].status, JobStatus::Blocked);
+    assert!(store.jobs[&run.id].notice.is_some());
+
+    store.withdraw_approval(&run, 3).unwrap();
+
+    assert!(store.jobs[&run.id].approval.is_none());
+}

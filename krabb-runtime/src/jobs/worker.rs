@@ -183,10 +183,13 @@ pub(crate) async fn run(context: Context) {
                     .jobs
                     .values()
                     .filter(|job| {
-                        runnable(job)
+                        let idle = runnable(job)
                             && !active.contains(&job.id)
-                            && !attached.contains(&job.id)
-                            && !(full && job.ready_at() <= now)
+                            && !attached.contains(&job.id);
+
+                        let pending = !full || job.ready_at() > now;
+
+                        idle && pending
                             || job.status == JobStatus::Paused
                                 && !job.uncertain
                                 && job.deferred.is_some()

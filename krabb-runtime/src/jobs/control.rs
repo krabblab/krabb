@@ -68,11 +68,8 @@ pub(crate) fn control(
     }
 
     let id = args["id"].as_str().ok_or("A task ID is required.")?;
-    let job = store
-        .jobs
-        .get(id)
-        .filter(|job| owned(job))
-        .ok_or("The task does not belong to this conversation.")?;
+    let job =
+        store.jobs.get(id).filter(owned).ok_or("The task does not belong to this conversation.")?;
 
     if matches!(action, "approve" | "deny")
         && job.status == JobStatus::Paused
