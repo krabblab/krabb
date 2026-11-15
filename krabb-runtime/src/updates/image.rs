@@ -31,6 +31,13 @@ impl Image {
     }
 
     pub fn clean(home: &Path) -> std::io::Result<()> {
+        Self::clean_with(home, |path| std::fs::remove_dir_all(path))
+    }
+
+    pub(super) fn clean_with(
+        home: &Path,
+        remove: impl Fn(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let parent = home.join("run/plugin-images");
 
         if !parent.exists() {
@@ -55,7 +62,13 @@ impl Image {
             match lock_at(&path, ".lease") {
                 Ok(lease) => {
                     drop(lease);
-                    std::fs::remove_dir_all(path)?;
+
+                    if let Err(error) = remove(&path) {
+                        warn!(
+                            error = %diagnostic(error.to_string()),
+                            "A stale plugin image is in use; cleanup will retry at next start."
+                        );
+                    }
                 }
 
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
