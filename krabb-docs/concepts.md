@@ -85,6 +85,7 @@ workspace. A model cannot grant itself approval.
 Fast requests receive a direct answer without a waiting message. For thoughtful
 work such as research, fact checking, calculations, or generation, the model can
 send one short progress message tailored to the request and the user's language.
+The conversation keeps that message from the agent ahead of its final answer.
 Provider latency alone does not trigger a message.
 
 Providers advertising execution deadlines receive an allowance estimated from

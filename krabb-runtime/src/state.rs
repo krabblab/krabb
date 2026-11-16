@@ -23,7 +23,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use krabb_core::types::{ContextUsage, Message, Role};
+use krabb_core::types::{Content, ContextUsage, Message, Role};
 use krabb_file::{load as load_file, private as private_file, save as save_file};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1077,6 +1077,35 @@ impl Store {
                 session.updated = now();
             }
         })
+    }
+
+    /// Saves a turn's progress message in its conversation, ahead of the final reply.
+    pub fn append_progress(&mut self, id: &str, text: &str) -> std::io::Result<()> {
+        let Some(session) = self.sessions.get(id) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Originating session was not found.",
+            ));
+        };
+
+        if session.kind != SessionKind::Conversation
+            || (session.inflight.is_none() && session.status != "working")
+        {
+            return Ok(());
+        }
+
+        let stamp =
+            SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_nanos());
+
+        let message = Message {
+            id: format!("progress-at-{stamp}"),
+            session: id.into(),
+            role: Role::Assistant,
+            sender: None,
+            content: vec![Content::Text { text: text.into() }],
+        };
+
+        self.append_notice(id, message)
     }
 
     pub fn queue_delivery(
@@ -3461,13 +3490,53 @@ mod tests {
     }
 
     #[test]
+    fn progress_is_saved_only_inside_a_conversation_turn() {
+        let mut store = Store::default();
+
+        store.create("main", "model").unwrap();
+        store.ensure_job("job-1", "model").unwrap();
+
+        assert!(store.append_progress("absent", "Checking.").is_err());
+
+        store.append_progress("main", "Checking.").unwrap();
+        store.begin("job-1", message(1, "job-1")).unwrap();
+        store.append_progress("job-1", "Checking.").unwrap();
+
+        assert!(store.sessions["main"].messages.is_empty());
+        assert_eq!(store.sessions["job-1"].messages.len(), 1);
+
+        store.begin("main", message(2, "main")).unwrap();
+        store.append_progress("main", "Checking.").unwrap();
+        store.clear("main", "idle").unwrap();
+        store.reserve("main", "tui".into()).unwrap();
+        store.append_progress("main", "Still checking.").unwrap();
+
+        let texts = store.sessions["main"]
+            .messages
+            .iter()
+            .map(|message| (message.role.clone(), message.content.clone()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            texts,
+            [
+                (Role::User, vec![Content::Text { text: "hello".into() }]),
+                (Role::Assistant, vec![Content::Text { text: "Checking.".into() }]),
+                (Role::Assistant, vec![Content::Text { text: "Still checking.".into() }]),
+            ]
+        );
+    }
+
+    #[test]
     fn catalog_publishes_reply_and_delivery_as_one_snapshot() {
         for committed in [false, true] {
             let root = std::env::temp_dir()
                 .join(format!("krabb-snapshot-{}-{committed}", std::process::id(),));
+
             let _ = std::fs::remove_dir_all(&root);
             let path = root.join("data/sessions/index.json");
             let mut store = Store::load(&path).unwrap();
+
             store.create("main", "model").unwrap();
             store.begin("main", message(1, "main")).unwrap();
             store.path = None;
@@ -3487,10 +3556,12 @@ mod tests {
             assert!(session.inflight.is_none());
             assert_eq!(recovered.outbox.len(), usize::from(committed));
             assert_eq!(session.queued.len(), usize::from(!committed));
+
             assert_eq!(
                 session.messages.iter().filter(|message| message.id == "2").count(),
                 usize::from(committed)
             );
+
             let _ = std::fs::remove_dir_all(root);
         }
     }

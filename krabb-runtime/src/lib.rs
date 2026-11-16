@@ -13985,6 +13985,15 @@ async fn execute_tool_with_registry(
                 registry.task.kind.send_replace(tasks::Kind::Thoughtful);
 
                 if !registry.task.announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let saved = sessions
+                        .lock()
+                        .map_err(|_| state::POISONED)?
+                        .append_progress(session, &task.message);
+
+                    if let Err(error) = saved {
+                        warn!(session, error = %error, "The progress message could not be saved.");
+                    }
+
                     notices
                         .send(StreamNotice::Progress(task.message.clone()))
                         .await

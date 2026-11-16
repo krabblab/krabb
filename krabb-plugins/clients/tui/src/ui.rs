@@ -642,9 +642,9 @@ where
 
                     Some(crate::EngineEvent::ControlNotice(text)) => app.push_control_notice(&text),
 
-                    Some(crate::EngineEvent::SystemNotice(text) | crate::EngineEvent::Progress(text)) => {
-                        app.push_system(&text);
-                    }
+                    Some(crate::EngineEvent::SystemNotice(text)) => app.push_system(&text),
+
+                    Some(crate::EngineEvent::Progress(text)) => app.push_progress(&text),
 
                     Some(crate::EngineEvent::AssistantFinished) => {
                         app.finish_streamed_interactions();
@@ -773,9 +773,9 @@ where
 
                 crate::EngineEvent::ControlNotice(text) => app.push_control_notice(&text),
 
-                crate::EngineEvent::SystemNotice(text) | crate::EngineEvent::Progress(text) => {
-                    app.push_system(&text)
-                }
+                crate::EngineEvent::SystemNotice(text) => app.push_system(&text),
+
+                crate::EngineEvent::Progress(text) => app.push_progress(&text),
 
                 crate::EngineEvent::GenerationStarted => {}
 
@@ -1007,7 +1007,8 @@ fn message_timestamp(id: &str) -> Option<String> {
         ["tui", "system", "interaction", "assistant", timestamp, ..]
         | ["tui", "system", "notice", timestamp, ..]
         | ["schedule", "notice", "at", timestamp, ..]
-        | ["job", "notice", "at", timestamp, ..] => *timestamp,
+        | ["job", "notice", "at", timestamp, ..]
+        | ["progress", "at", timestamp, ..] => *timestamp,
         _ => return None,
     };
 
@@ -3500,6 +3501,16 @@ impl App {
         self.push_control_notice(receipt);
     }
 
+    fn push_progress(&mut self, value: &str) {
+        self.push_assistant_label();
+        self.append_visible(&normalize_output(format!("{value}\n")));
+
+        if self.generation_active {
+            self.reply_pending = true;
+            self.reply_system = false;
+        }
+    }
+
     fn push_control_notice(&mut self, value: &str) {
         self.push_system_label();
         self.append_visible(&normalize_output(format!("{value}\n")));
@@ -3964,6 +3975,55 @@ mod tests {
 
         assert!(app.transcript.contains(error));
         assert!(app.pending_snapshot_messages.is_empty());
+    }
+
+    #[test]
+    fn progress_speaks_as_the_agent_and_is_left_for_the_daemon_to_save() {
+        let mut app = App {
+            name: "Krabb".into(),
+            session: "tui".into(),
+            generation_active: true,
+            ..App::default()
+        };
+
+        app.push_progress("I'll check the report.");
+
+        assert!(app.transcript.starts_with("Krabb | "));
+        assert!(app.transcript.contains("I'll check the report."));
+        assert!(!app.transcript.contains("System"));
+        assert!(app.completed_system_messages.is_empty());
+        assert!(app.reply_pending);
+
+        let messages = [
+            ("tui-user-1763243400000000000-1", krabb_core::types::Role::User, "Tell me more."),
+            (
+                "progress-at-1763243401000000000",
+                krabb_core::types::Role::Assistant,
+                "I'll check the report.",
+            ),
+            (
+                "tui-assistant-1763243460000000000-1",
+                krabb_core::types::Role::Assistant,
+                "Here is the report.",
+            ),
+        ]
+        .map(|(id, role, text)| krabb_core::types::Message {
+            id: id.into(),
+            session: "tui".into(),
+            role,
+            sender: None,
+            content: vec![krabb_core::types::Content::Text { text: text.into() }],
+        });
+
+        let transcript = super::render_messages(&messages, "Krabb");
+        let progress = transcript.find("I'll check the report.").unwrap();
+
+        assert!(!transcript.contains("System"));
+        assert!(progress < transcript.find("Here is the report.").unwrap());
+        assert!(transcript[..progress].ends_with(&format!(
+            "Krabb | {}\n",
+            super::message_timestamp(&messages[1].id).unwrap()
+        )));
     }
 
     #[test]
