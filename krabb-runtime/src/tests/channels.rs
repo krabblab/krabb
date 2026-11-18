@@ -723,9 +723,19 @@ async fn local_context_rejection_sends_once_per_message_without_restarting_or_re
 
 #[tokio::test]
 async fn typing_is_optional_and_bounded() {
-    for (name, handler) in [
-        ("unsupported", "response = {'error': {'code': -32601, 'message': 'Unknown method'}}"),
-        ("stalled", "time.sleep(10); response = {'result': True}"),
+    for (name, handler, expected) in [
+        (
+            "unsupported",
+            "response = {'error': {'code': -32601, 'message': 'Unknown method'}}",
+            crate::Typing::Unsupported,
+        ),
+        ("declined", "response = {'result': False}", crate::Typing::Unsupported),
+        (
+            "rejected",
+            "response = {'error': {'code': -32000, 'message': 'Rate limited'}}",
+            crate::Typing::Failed,
+        ),
+        ("stalled", "time.sleep(10); response = {'result': True}", crate::Typing::Failed),
     ] {
         let script = format!(
             r#"
@@ -746,22 +756,26 @@ for line in sys.stdin:
 
         let channel =
             Live::new(Process::start_with("python3", ["-u", "-c", &script]).await.unwrap());
+
         let mut call = 7;
 
-        assert!(
-            !crate::indicate_typing(&channel, "telegram", "invalid", None, &json!({}), &mut call)
-                .await
+        assert_eq!(
+            crate::indicate_typing(&channel, "telegram", "invalid", None, &json!({}), &mut call)
+                .await,
+            crate::Typing::Unsupported
         );
 
         assert_eq!(call, 7);
+
         let outcome = tokio::time::timeout(
             Duration::from_secs(3),
             crate::indicate_typing(&channel, "telegram", "7", None, &json!({}), &mut call),
         )
         .await;
 
-        assert!(!outcome.unwrap(), "{name}");
+        assert_eq!(outcome.unwrap(), expected, "{name}");
         assert_eq!(call, 8);
+
         channel.stop().await.unwrap();
     }
 }
@@ -1281,7 +1295,7 @@ for line in sys.stdin:
             Process::start_with("python3", ["-u", "-c", script, &expected]).await.unwrap(),
         );
 
-        assert!(
+        assert_eq!(
             crate::indicate_typing(
                 &channel,
                 channel_id,
@@ -1290,7 +1304,8 @@ for line in sys.stdin:
                 &json!({"id":"incoming","private":private}),
                 &mut 7
             )
-            .await
+            .await,
+            crate::Typing::Shown
         );
 
         channel.stop().await.unwrap();

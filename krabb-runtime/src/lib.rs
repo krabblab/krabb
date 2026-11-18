@@ -8924,7 +8924,7 @@ async fn bridge_with_media(
                                 biased;
                                 _ = stop.notified() => typing = false,
                                 _ = turn_cancel.cancelled() => typing = false,
-                                supported = indicate_typing(&channel, channel_id, &chat, thread.as_deref(), &event, &mut stream_call) => typing = supported,
+                                outcome = indicate_typing(&channel, channel_id, &chat, thread.as_deref(), &event, &mut stream_call) => typing = outcome != Typing::Unsupported,
                             }
                         }
                     }
@@ -10241,6 +10241,15 @@ fn send_params(
     Ok(value)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Typing {
+    Shown,
+    Unsupported,
+    Failed,
+}
+
+/// Shows a typing indicator; a failed attempt is retried on the next tick because the channel
+/// can be busy with intake, while an unsupported one stops the indicator for the turn.
 async fn indicate_typing(
     channel: &Live,
     channel_id: &str,
@@ -10248,9 +10257,9 @@ async fn indicate_typing(
     thread: Option<&str>,
     event: &serde_json::Value,
     call: &mut u64,
-) -> bool {
+) -> Typing {
     let Ok(mut params) = send_params(channel_id, "", chat, "", thread) else {
-        return false;
+        return Typing::Unsupported;
     };
 
     if let Some(params) = params.as_object_mut() {
@@ -10269,10 +10278,18 @@ async fn indicate_typing(
 
     *call = call.saturating_add(1);
 
-    matches!(
-        tokio::time::timeout(Duration::from_secs(2), channel.call(request)).await,
-        Ok(Ok(response)) if response.error.is_none() && response.result == Some(serde_json::json!(true))
-    )
+    let Ok(Ok(response)) =
+        tokio::time::timeout(Duration::from_secs(2), channel.call(request)).await
+    else {
+        return Typing::Failed;
+    };
+
+    match (response.error, response.result) {
+        (Some(error), _) if error.code == -32601 => Typing::Unsupported,
+        (Some(_), _) => Typing::Failed,
+        (None, Some(serde_json::Value::Bool(true))) => Typing::Shown,
+        (None, _) => Typing::Unsupported,
+    }
 }
 
 fn send_request(
