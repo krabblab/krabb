@@ -12,7 +12,7 @@ usage() {
         'Scope: uncommitted changes, feature branch, latest commit; --global audits all source.' \
         'Shared settings: KRABB_LOOP_AGENT, MODEL, REASONING, FAST, OUTPUT,' \
         'MAX_CYCLES, CLEAN_PASSES, TIMEOUT, VERIFICATION_TIMEOUT (prefix each with KRABB_LOOP_).' \
-        "Loop overrides: KRABB_${LOOP^^}LOOP_*; defaults: claude," \
+        "Loop overrides: KRABB_${LOOP^^}LOOP_*; defaults: auto (Claude, then Codex)," \
         'unlimited cycles (MAX_CYCLES=0), 3 clean passes,' \
         '60m agent timeout, 30m verification timeout, clean output, fast disabled.' \
         'Codex defaults: gpt-6.2-sol, high reasoning; KRABB_CODEX_HOME is supported.' \
@@ -21,7 +21,7 @@ usage() {
 
 configure() {
     LOOP=${LOOP:-rev}
-    AGENT=$(setting AGENT claude)
+    AGENT=$(setting AGENT auto)
     MAX_CYCLES=$(setting MAX_CYCLES 0)
     CLEAN_PASSES=$(setting CLEAN_PASSES 3)
     AGENT_TIMEOUT=$(setting TIMEOUT 60m)

@@ -9997,7 +9997,10 @@ fn rejects_unsafe_archive_inputs() {
     assert!(archive_url("plugin.tgz"));
     assert!(archive_url("plugin.zip?download=1"));
     assert!(archive(Path::new("plugin.tar.gz")));
+    assert!(archive(Path::new("/releases/PLUGIN.ZIP")));
+    assert!(archive(Path::new(r"\\?\D:\releases\plugin.zip")));
     assert!(!archive(Path::new("plugin.txt")));
+    assert!(!archive(Path::new("plugin.zip?download=1")));
 
     let redacted = redact(b"https://user:secret@example.com/path Authorization: Bearer token");
 

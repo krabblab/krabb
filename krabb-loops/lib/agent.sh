@@ -6,7 +6,7 @@ agent_detect() {
 
     case "$requested" in
         auto)
-            for candidate in codex claude; do
+            for candidate in claude codex; do
                 if command -v "$candidate" >/dev/null 2>&1; then
                     printf '%s\n' "$candidate"
                     return

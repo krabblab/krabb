@@ -151,7 +151,7 @@ class LegacyContract(unittest.TestCase):
 
         self.env.update(PATH=f'{bindir}:{os.environ["PATH"]}', FIXTURE=str(self.fixture),
                         KRABB_CODEX_HOME=str(self.root / 'private home'),
-                        KRABB_LOOP_AGENT='auto',
+                        KRABB_LOOP_AGENT='codex',
                         KRABB_REVLOOP_MAX_CYCLES='4', KRABB_REVLOOP_CLEAN_PASSES='2')
 
     def git(self, *args):
@@ -369,7 +369,7 @@ class LegacyContract(unittest.TestCase):
         self.assertIn('Unsupported agent', result.stderr)
 
     def test_claude_restricted_roles(self):
-        # Claude is the default backend, so no agent setting is needed.
+        # Automatic detection prefers Claude when both backends are installed.
         del self.env['KRABB_LOOP_AGENT']
 
         result = self.run_loop([FINDING, CLEAR])

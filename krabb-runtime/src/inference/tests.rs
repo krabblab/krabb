@@ -461,7 +461,14 @@ async fn legacy_success_history_migrates_and_failed_attempts_survive_reload() {
             if let Ok(bytes) = std::fs::read(&path) {
                 let data: Snapshot = serde_json::from_slice(&bytes).unwrap();
 
-                if data.version == 2
+                let settled = std::fs::read_dir(root.join("data")).is_ok_and(|entries| {
+                    entries.flatten().all(|entry| {
+                        !entry.file_name().to_string_lossy().starts_with(".inference.json.")
+                    })
+                });
+
+                if settled
+                    && data.version == 2
                     && data.entries.values().any(|series| {
                         series.samples().iter().any(|sample| sample.outcome == Outcome::Failed)
                     })

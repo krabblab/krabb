@@ -3,14 +3,14 @@
 use crate::*;
 
 pub(crate) fn archive(path: &Path) -> bool {
-    let value = path.to_string_lossy().to_ascii_lowercase();
-
-    archive_url(&value)
+    path.file_name().is_some_and(|name| archive_name(&name.to_string_lossy().to_ascii_lowercase()))
 }
 
 pub(crate) fn archive_url(value: &str) -> bool {
-    let value = value.split('?').next().unwrap_or(value);
+    archive_name(value.split('?').next().unwrap_or(value))
+}
 
+fn archive_name(value: &str) -> bool {
     value.ends_with(".tar")
         || value.ends_with(".tar.gz")
         || value.ends_with(".tgz")
