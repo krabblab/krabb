@@ -123,8 +123,13 @@ fn copy(source: &Path, destination: &Path) -> Result<(), Error> {
         return Ok(());
     }
 
-    fs::copy(source, destination)?;
-    fs::File::open(destination)?.sync_all()?;
+    let mut input = fs::File::open(source)?;
+    let mut output = create(destination)?;
+
+    io::copy(&mut input, &mut output)?;
+    output.sync_all()?;
+    drop(output);
+    fs::set_permissions(destination, metadata.permissions())?;
 
     if !same(source, destination)? {
         return Err(Error::Invalid(format!(
@@ -134,6 +139,18 @@ fn copy(source: &Path, destination: &Path) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// Opens the copy for writing; Windows can only flush a file through a writable handle.
+fn create(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    options.open(path)
 }
 
 #[cfg(unix)]

@@ -238,6 +238,36 @@ fn symbolic_links_are_restored_as_links() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
+#[test]
+fn read_only_and_executable_files_keep_their_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = home("modes");
+    let store = root.join("store");
+    let mode = |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data/locked.txt"), "locked").unwrap();
+    fs::write(root.join("data/tool"), "tool").unwrap();
+    fs::set_permissions(root.join("data/locked.txt"), fs::Permissions::from_mode(0o400)).unwrap();
+    fs::set_permissions(root.join("data/tool"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let entries = super::recovery::save(&root, &store, &["data".into()]).unwrap();
+
+    assert_eq!(mode(&store.join("data/locked.txt")), 0o400);
+    assert_eq!(mode(&store.join("data/tool")), 0o755);
+
+    fs::remove_dir_all(root.join("data")).unwrap();
+    super::recovery::restore(&root, &store, &entries).unwrap();
+
+    assert_eq!(fs::read_to_string(root.join("data/locked.txt")).unwrap(), "locked");
+    assert_eq!(mode(&root.join("data/locked.txt")), 0o400);
+    assert_eq!(mode(&root.join("data/tool")), 0o755);
+
+    let _ = fs::remove_dir_all(root);
+}
+
 /// Prepares `name` at schema `origin` from an unversioned home with the original content.
 fn origin_home(name: &str, origin: usize) -> PathBuf {
     let root = home(name);

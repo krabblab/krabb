@@ -14,8 +14,11 @@ fn sha(path: &Path) -> String {
     crate::digest::sha256(fs::read(path).unwrap())
 }
 
-fn tarball(release: &Path, package: &str, files: &[(&str, &str)]) -> String {
-    let work = release.join(".work").join(package);
+/// Packs `files` into the release archive `name`, in the format this host's releases use.
+fn package(release: &Path, name: &str, files: &[(&str, &str)]) -> String {
+    let zip = name.ends_with(".zip");
+    let directory = name.trim_end_matches(".tar.gz").trim_end_matches(".zip");
+    let work = release.join(".work").join(directory);
 
     for (path, content) in files {
         let file = work.join(path);
@@ -24,20 +27,21 @@ fn tarball(release: &Path, package: &str, files: &[(&str, &str)]) -> String {
         fs::write(&file, content).unwrap();
     }
 
-    let archive = release.join(format!("{package}.tar.gz"));
+    let archive = release.join(name);
+    let format: &[&str] = if zip { &["--format=zip", "-cf"] } else { &["-czf"] };
 
     let status = std::process::Command::new("tar")
-        .arg("-czf")
+        .args(format)
         .arg(&archive)
         .arg("-C")
         .arg(release.join(".work"))
-        .arg(package)
+        .arg(directory)
         .status()
         .unwrap();
 
     assert!(status.success());
 
-    format!("{}  {}\n", sha(&archive), archive.file_name().unwrap().to_string_lossy())
+    format!("{}  {name}\n", sha(&archive))
 }
 
 fn release(root: &Path, version: &str) -> PathBuf {
@@ -45,23 +49,21 @@ fn release(root: &Path, version: &str) -> PathBuf {
     let exe = std::env::consts::EXE_SUFFIX;
     let core = releases::archive("core", version).unwrap();
     let echo = releases::archive("echo", version).unwrap();
-    let core = core.trim_end_matches(".tar.gz").trim_end_matches(".zip");
-    let echo = echo.trim_end_matches(".tar.gz").trim_end_matches(".zip");
 
     fs::create_dir_all(&release).unwrap();
 
-    let mut sums = tarball(
+    let mut sums = package(
         &release,
-        core,
+        &core,
         &[
             (&format!("bin/krabb{exe}"), "new krabb"),
             (&format!("bin/krabb-daemon{exe}"), "new daemon"),
         ],
     );
 
-    sums.push_str(&tarball(
+    sums.push_str(&package(
         &release,
-        echo,
+        &echo,
         &[
             (
                 "krabb-plugin.toml",
@@ -348,21 +350,18 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
     assert!(error.to_string().contains("failed verification"), "{error}");
     assert!(!home.join("updates/v0.2.0").exists());
 
-    let archive = releases::archive("echo", "0.2.0").unwrap();
-    let package = archive.trim_end_matches(".tar.gz").trim_end_matches(".zip");
+    let name = releases::archive("echo", "0.2.0").unwrap();
 
     let manifest = "id = 'echo'\nversion = '0.2.0'\ncapabilities = ['tool']\n\n\
                     [protocol]\nmajor = 9\nminor = 0\n";
 
     let exe = std::env::consts::EXE_SUFFIX;
 
-    let line = tarball(
+    let line = package(
         &release,
-        package,
+        &name,
         &[("krabb-plugin.toml", manifest), (&format!("bin/krabb-plugin-echo{exe}"), "echo")],
     );
-
-    let name = echo.file_name().unwrap().to_string_lossy().into_owned();
 
     let mut sums = fs::read_to_string(release.join("SHA256SUMS"))
         .unwrap()
