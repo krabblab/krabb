@@ -45,6 +45,12 @@ krabb plugin install slack --link --yes
 Existing installations must refresh the installed manifest with the command
 above before setup can offer the new conversation-list prompt.
 
+The manifest also adds the `/krabb` command, which needs the `commands` scope:
+`/krabb status`, `/krabb session new`, and so on. Slack reserves short names such as
+`/status`, so other Krabb commands are reached through `/krabb`. Existing apps must
+reinstall the updated manifest to approve the scope. See
+[Conversation Commands](../../../krabb-docs/commands.md#conversation-commands).
+
 ### Find The Conversation ID
 
 The plugin requires a conversation list for **Socket Mode events as well as

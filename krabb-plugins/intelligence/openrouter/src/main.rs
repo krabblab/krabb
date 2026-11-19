@@ -66,6 +66,14 @@ async fn generate(
         Request::Note { .. } => return Ok(None),
     };
 
+    if method == "check" {
+        let request = client.get(format!("{}/key", base_url()?)).bearer_auth(credential()?);
+
+        krabb_http::accepted(request, "OpenRouter").await?;
+
+        return Ok(Some(Response::ok(id, json!({}))));
+    }
+
     if method == "model.info" {
         let model = model::resolve(
             params["model"].as_str().unwrap_or("default"),

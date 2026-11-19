@@ -15,6 +15,7 @@ pub mod reply;
 pub mod schedule;
 pub mod scope;
 pub mod session;
+pub mod slash;
 pub mod task;
 pub mod types;
 

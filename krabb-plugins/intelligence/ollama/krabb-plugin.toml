@@ -21,3 +21,25 @@ default = "auto"
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_OLLAMA_API_KEY]
+label = "API key"
+help = "Needed for Ollama Cloud. Skip it for a local Ollama server."
+url = "https://ollama.com/settings/keys"
+
+[setup.KRABB_OLLAMA_HOST]
+label = "Host"
+help = "Use http://127.0.0.1:11434 for a local server."
+kind = "url"
+
+[setup.KRABB_OLLAMA_THINK]
+label = "Thinking"
+help = "Whether models think before answering: auto, true, false, low, medium, or high."
+kind = "boolean"
+accept = ["auto", "low", "medium", "high"]
+
+[setup.KRABB_OLLAMA_CONTEXT_LENGTH]
+label = "Context length"
+help = "Tokens of context to request, or auto to use the model's catalog value."
+kind = "integer"
+accept = ["auto"]

@@ -12,3 +12,8 @@ interactive = false
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_AG_UI_TOKEN]
+label = "Client token"
+help = "A random secret of at least 32 characters that local AG-UI clients must send."
+required = true

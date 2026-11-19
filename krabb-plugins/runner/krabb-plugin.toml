@@ -7,3 +7,7 @@ secrets = ["KRABB_RUNNER_TOKEN"]
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_RUNNER_TOKEN]
+label = "Bearer token"
+help = "Only if the runner requires one; discovery never receives it."

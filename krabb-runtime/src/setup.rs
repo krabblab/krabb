@@ -9,8 +9,15 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+mod check;
+mod prompt;
+
+pub(super) use prompt::{Prompt, validate as validate_prompts};
+
 type Error = Box<dyn std::error::Error + Send + Sync>;
 const LIMIT: usize = 16 * 1024;
+const ATTEMPTS: usize = 3;
+const CLEAR: &str = "-";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -25,18 +32,44 @@ struct Field {
     name: String,
     default: Option<String>,
     secret: bool,
+    prompt: Prompt,
+    saved: bool,
 }
 
 impl Field {
     fn secret(name: String) -> Self {
-        Self { name, default: None, secret: true }
+        Self { name, default: None, secret: true, prompt: Prompt::default(), saved: false }
+    }
+
+    fn label(&self) -> &str {
+        self.prompt.label.as_deref().unwrap_or(&self.name)
     }
 }
 
 impl From<Setting> for Field {
     fn from(setting: Setting) -> Self {
-        Self { name: setting.name, default: setting.default, secret: false }
+        Self {
+            name: setting.name,
+            default: setting.default,
+            secret: false,
+            prompt: Prompt::default(),
+            saved: false,
+        }
     }
+}
+
+#[derive(Debug, PartialEq)]
+enum Answer {
+    Set(String),
+    Keep,
+    Clear,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct Answers {
+    values: BTreeMap<String, String>,
+    cleared: Vec<String>,
+    kept: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -130,23 +163,44 @@ fn fields(root: &Path, id: &str) -> Result<Vec<Field>, Error> {
         .cloned()
         .map(Field::secret)
         .chain(entry.settings.iter().cloned().map(Field::from))
+        .map(|mut field| {
+            field.prompt = manifest.setup.get(&field.name).cloned().unwrap_or_default();
+            field
+        })
         .collect())
 }
 
 pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(), Error> {
-    let fields = fields(root, &options.id)?;
+    let mut fields = fields(root, &options.id)?;
     let destination = path(root);
     let key = super::credentials::key_path(root);
     let preference = super::credentials::preference()?;
 
     // Validate the destination before asking for sensitive input; re-read it under the save lock.
-    super::credentials::read(&destination, &key)?;
+    let saved = super::credentials::read(&destination, &key)?;
 
-    let values = collect(&fields, prompt)?;
-    let backend = super::credentials::save(&destination, &key, values, preference)?;
+    for field in &mut fields {
+        field.saved = saved.get(&field.name).is_some_and(|value| !value.is_empty());
+    }
+
+    let answers = collect(&fields, prompt)?;
+    let changes = summary(&fields, &answers);
+
+    let backend = super::credentials::update(
+        &destination,
+        &key,
+        answers.values,
+        &answers.cleared,
+        preference,
+    )?;
+
     let destination = destination.canonicalize()?;
+    let test = check::run(root, &options.id).await;
     let mut result = finish(root, &options.id, &destination, options.no_activate).await;
+    result["check"] = test;
     result["storage"] = backend.into();
+    result["changes"] =
+        changes.iter().map(|(name, _, change)| json!({"name": name, "change": change})).collect();
 
     if backend == "file" {
         result["key_path"] = key.canonicalize()?.display().to_string().into();
@@ -160,6 +214,19 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
             options.id,
             destination.display()
         );
+        let rows = changes
+            .iter()
+            .map(|(_, label, change)| format!("{label}: {change}"))
+            .collect::<Vec<_>>();
+
+        if !rows.is_empty() {
+            println!("{}", super::format_tree_list(&rows));
+        }
+
+        if let Some(line) = check::line(&result["check"]) {
+            println!("{line}");
+        }
+
         println!("{}", result["message"].as_str().unwrap_or_default());
 
         if let Some(path) = result["key_path"].as_str() {
@@ -198,34 +265,102 @@ async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Val
     json!({"id": id, "saved": true, "active": active, "path": destination, "message": message})
 }
 
+/// Prompts each field, asking again after invalid input so earlier answers are kept.
 fn collect(
     fields: &[Field],
-    mut prompt: impl FnMut(&Field) -> Result<String, Error>,
-) -> Result<BTreeMap<String, String>, Error> {
-    let mut values = BTreeMap::new();
+    mut prompt: impl FnMut(&Field, Option<&str>) -> Result<String, Error>,
+) -> Result<Answers, Error> {
+    let mut answers = Answers::default();
 
     for field in fields {
-        let mut value = prompt(field)?;
+        let mut error: Option<String> = None;
+        let mut attempt = 1;
 
-        if value.is_empty()
-            && let Some(default) = &field.default
-        {
-            value = default.clone();
+        let answer = loop {
+            let input = prompt(field, error.as_deref())?;
+
+            match resolve(field, input) {
+                Ok(answer) => break answer,
+                Err(reason) if attempt >= ATTEMPTS => return Err(reason.into()),
+
+                Err(reason) => {
+                    error = Some(reason);
+                    attempt += 1;
+                }
+            }
+        };
+
+        match answer {
+            Answer::Set(value) => {
+                answers.values.insert(field.name.clone(), value);
+            }
+
+            Answer::Keep => answers.kept.push(field.name.clone()),
+            Answer::Clear => answers.cleared.push(field.name.clone()),
         }
-
-        if !field.secret || !value.is_empty() {
-            validate(&value)?;
-        }
-
-        values.insert(field.name.clone(), value);
     }
 
-    Ok(values)
+    Ok(answers)
 }
 
-pub(super) fn validate(value: &str) -> Result<(), &'static str> {
+fn resolve(field: &Field, input: String) -> Result<Answer, String> {
+    let required = field.prompt.required;
+
+    if input == CLEAR {
+        if required {
+            return Err(format!("{} is required and cannot be cleared.", field.label()));
+        }
+
+        return Ok(Answer::Clear);
+    }
+
+    if input.is_empty() {
+        if field.saved {
+            return Ok(Answer::Keep);
+        }
+
+        if let Some(default) = &field.default {
+            return Ok(Answer::Set(default.clone()));
+        }
+
+        if required {
+            return Err(format!("{} is required.", field.label()));
+        }
+
+        if field.secret {
+            return Ok(Answer::Clear);
+        }
+    }
+
+    validate(&input)?;
+    field.prompt.check(&input)?;
+
+    Ok(Answer::Set(input))
+}
+
+/// Names, labels, and what setup did to each field; never values.
+fn summary(fields: &[Field], answers: &Answers) -> Vec<(String, String, &'static str)> {
+    fields
+        .iter()
+        .map(|field| {
+            let change = if answers.kept.contains(&field.name) {
+                "kept"
+            } else if answers.cleared.contains(&field.name) {
+                if field.saved { "cleared" } else { "not set" }
+            } else if field.saved {
+                "changed"
+            } else {
+                "set"
+            };
+
+            (field.name.clone(), field.label().to_owned(), change)
+        })
+        .collect()
+}
+
+pub(super) fn validate(value: &str) -> Result<(), String> {
     if value.trim().is_empty() || value.len() > LIMIT || value.chars().any(char::is_control) {
-        return Err("Setup value must be nonempty, single-line, and at most 16 KiB.");
+        return Err("Setup value must be nonempty, single-line, and at most 16 KiB.".into());
     }
 
     Ok(())
@@ -242,9 +377,15 @@ impl Drop for Terminal {
     }
 }
 
-fn prompt(field: &Field) -> Result<String, Error> {
+fn prompt(field: &Field, error: Option<&str>) -> Result<String, Error> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err("Setup requires an interactive terminal; secret input cannot be piped.".into());
+    }
+
+    if let Some(error) = error {
+        eprintln!("{error} Try again, or press Esc to cancel.");
+    } else {
+        eprint!("{}", heading(field));
     }
 
     crossterm::terminal::enable_raw_mode()?;
@@ -252,22 +393,53 @@ fn prompt(field: &Field) -> Result<String, Error> {
     let _terminal = Terminal;
 
     crossterm::execute!(io::stderr(), crossterm::event::EnableBracketedPaste)?;
-
-    if field.secret {
-        eprint!("{} [Enter to clear]: ", field.name);
-    } else if let Some(default) = &field.default {
-        eprint!("{} [{default}]: ", field.name);
-    } else {
-        eprint!("{}: ", field.name);
-    }
-
+    eprint!("{}: ", hint(field));
     io::stderr().flush()?;
 
-    input(crossterm::event::read)
+    input(!field.secret, crossterm::event::read)
 }
 
-fn input(mut next: impl FnMut() -> io::Result<Event>) -> Result<String, Error> {
+/// Explanation shown once per field; it names the variable but never a saved value.
+fn heading(field: &Field) -> String {
+    let prompt = &field.prompt;
+    let need = if prompt.required { "required" } else { "optional" };
+
+    let mut heading = format!("\n{} ({need}, {})\n", field.label(), field.name);
+
+    for (label, value) in
+        [("", &prompt.help), ("Get it: ", &prompt.url), ("Example: ", &prompt.example)]
+    {
+        if let Some(value) = value {
+            heading.push_str(&format!("  {label}{value}\n"));
+        }
+    }
+
+    heading
+}
+
+fn hint(field: &Field) -> String {
+    let clear = if field.prompt.required { "" } else { ", - clears" };
+
+    if field.saved {
+        format!("{} [saved; Enter keeps{clear}]", field.label())
+    } else if let Some(default) = &field.default {
+        format!("{} [Enter uses {default}]", field.label())
+    } else if field.secret && !field.prompt.required {
+        format!("{} [Enter skips]", field.label())
+    } else {
+        field.label().to_owned()
+    }
+}
+
+fn input(echo: bool, mut next: impl FnMut() -> io::Result<Event>) -> Result<String, Error> {
     let mut value = String::new();
+
+    let show = |text: &str| {
+        if echo {
+            eprint!("{text}");
+            let _ = io::stderr().flush();
+        }
+    };
 
     loop {
         let event = next()?;
@@ -278,6 +450,7 @@ fn input(mut next: impl FnMut() -> io::Result<Event>) -> Result<String, Error> {
             }
 
             value.push_str(&text);
+            show(&text);
         } else if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Release {
                 continue;
@@ -292,11 +465,14 @@ fn input(mut next: impl FnMut() -> io::Result<Event>) -> Result<String, Error> {
                 }
 
                 KeyCode::Backspace => {
-                    value.pop();
+                    if value.pop().is_some() {
+                        show("\u{8} \u{8}");
+                    }
                 }
 
                 KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     value.push(character);
+                    show(character.encode_utf8(&mut [0; 4]));
 
                     if value.len() > LIMIT {
                         return Err("Secret exceeds the 16 KiB limit.".into());

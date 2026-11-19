@@ -1,0 +1,233 @@
+//! The retained recovery point: previous binaries plus home configuration and state.
+//!
+//! Credentials are never copied, so restoring cannot reactivate removed secrets.
+
+use serde::{Deserialize, Serialize};
+
+use krabb_migrations::recovery::{self, Entry};
+
+use super::*;
+
+const DIRECTORY: &str = "updates/recovery";
+const POINT: &str = "point.json";
+const POINT_LIMIT: u64 = 1024 * 1024;
+const EXCLUDED: &[&str] = &["media", "workspaces"];
+
+/// Recovery point record; a binary restored from it must be able to read it.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct Point {
+    pub from: String,
+    pub to: String,
+    pub created: u64,
+    pub accepted: bool,
+    pub service: bool,
+    pub binaries: Vec<Binary>,
+    pub home: Vec<Entry>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct Binary {
+    pub path: PathBuf,
+    pub entries: Vec<Entry>,
+}
+
+pub(super) fn store(root: &Path) -> PathBuf {
+    root.join(DIRECTORY)
+}
+
+pub(super) fn load(root: &Path) -> Result<Option<Point>, PluginError> {
+    let Some(bytes) = krabb_file::load(store(root).join(POINT), POINT_LIMIT)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(serde_json::from_slice(&bytes).map_err(|_| "The update recovery point is invalid.")?))
+}
+
+/// Copies binaries and home state, verifies them, and commits the record last.
+pub(super) fn create(
+    root: &Path,
+    from: &str,
+    to: &str,
+    binaries: &[PathBuf],
+    service: bool,
+) -> Result<Point, PluginError> {
+    let directory = store(root);
+    let result = (|| -> Result<Point, PluginError> {
+        recovery::remove(&directory)?;
+
+        let home = recovery::save(root, &directory.join("home"), &paths(root)?)?;
+        let mut saved = Vec::with_capacity(binaries.len());
+
+        for (index, path) in binaries.iter().enumerate() {
+            let (parent, name) = split(path)?;
+            let entries =
+                recovery::save(parent, &directory.join("bin").join(index.to_string()), &[name])?;
+
+            saved.push(Binary { path: path.clone(), entries });
+        }
+
+        let point = Point {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            created: unix_seconds(),
+            accepted: false,
+            service,
+            binaries: saved,
+            home,
+        };
+
+        write(root, &point)?;
+
+        Ok(point)
+    })();
+
+    if result.is_err() {
+        let _ = recovery::remove(&directory);
+    }
+
+    result
+}
+
+pub(super) fn accept(root: &Path, point: &mut Point) -> Result<(), PluginError> {
+    point.accepted = true;
+
+    write(root, point)
+}
+
+/// Puts the previous binaries and home state back, then the service as it was.
+pub(super) async fn restore(
+    root: &Path,
+    point: &Point,
+    service: &Path,
+    json: bool,
+) -> Result<(), PluginError> {
+    let directory = store(root);
+
+    if service.is_file() && running()? {
+        service_action_with(service, ServiceAction::Stop, json)?;
+    }
+
+    released(root).await?;
+
+    for (index, binary) in point.binaries.iter().enumerate() {
+        let (_, name) = split(&binary.path)?;
+        let saved = directory.join("bin").join(index.to_string()).join(&name);
+
+        if binary.entries.iter().any(|entry| entry.present) {
+            stage::swap(&binary.path, &saved)?;
+        }
+    }
+
+    recovery::restore(root, &directory.join("home"), &point.home)?;
+    recovery::remove(&root.join(krabb_migrations::JOURNAL))?;
+    recovery::remove(&root.join(krabb_migrations::BACKUP))?;
+
+    if point.service && service.is_file() {
+        service_action_with(service, ServiceAction::Start, json)?;
+    }
+
+    let _ = recovery::remove(&directory);
+
+    Ok(())
+}
+
+/// Explicit recovery; it needs neither the new daemon nor network access.
+pub(super) async fn rollback(
+    root: &Path,
+    service: &Path,
+    yes: bool,
+    json: bool,
+) -> Result<(), PluginError> {
+    let Some(point) = load(root)? else {
+        return Err(
+            "No update recovery point is retained, so there is nothing to roll back.".into()
+        );
+    };
+
+    let question = if point.accepted {
+        format!(
+            "Restore Krabb {} from the recovery point taken before updating to {}? \
+             Conversations, tasks, settings, and plugins changed since then will be replaced; \
+             saved credentials are kept.",
+            point.from, point.to
+        )
+    } else {
+        format!("Restore Krabb {} after the unfinished update to {}?", point.from, point.to)
+    };
+
+    if !confirm_action(yes, json, &question)? {
+        print_cancelled("Rollback", json);
+        return Ok(());
+    }
+
+    let spinner = terminal::progress(format!("Restoring Krabb {}...", point.from), json);
+
+    restore(root, &point, service, json).await?;
+    drop(spinner);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "action": "rollback",
+                "status": "restored",
+                "version": point.from,
+            }))?
+        );
+    } else {
+        println!("Restored Krabb {}.", point.from);
+    }
+
+    Ok(())
+}
+
+/// Status summary of the retained recovery point, if any.
+pub(super) fn summary(root: &Path) -> Option<serde_json::Value> {
+    let point = load(root).ok().flatten()?;
+
+    Some(serde_json::json!({
+        "from": point.from,
+        "to": point.to,
+        "created": point.created,
+        "accepted": point.accepted,
+        "path": store(root),
+    }))
+}
+
+fn write(root: &Path, point: &Point) -> Result<(), PluginError> {
+    krabb_file::save(store(root).join(POINT), serde_json::to_vec_pretty(point)?)?;
+
+    Ok(())
+}
+
+fn paths(root: &Path) -> Result<Vec<String>, PluginError> {
+    let mut paths = ["config.toml", "plugins.lock", krabb_migrations::MARKER, "plugins"]
+        .map(str::to_owned)
+        .to_vec();
+
+    match std::fs::read_dir(root.join("data")) {
+        Ok(entries) => {
+            for entry in entries {
+                let name = entry?.file_name().to_string_lossy().into_owned();
+
+                if !EXCLUDED.contains(&name.as_str()) {
+                    paths.push(format!("data/{name}"));
+                }
+            }
+        }
+
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    paths.sort();
+
+    Ok(paths)
+}
+
+fn split(path: &Path) -> Result<(&Path, String), PluginError> {
+    let parent = path.parent().ok_or("Binary has no parent directory.")?;
+    let name = path.file_name().ok_or("Binary has no file name.")?;
+
+    Ok((parent, name.to_string_lossy().into_owned()))
+}

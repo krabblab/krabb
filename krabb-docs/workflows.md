@@ -10,23 +10,37 @@ Use these workflows to set up, operate, and update a Krabb installation.
 - [Optional Worktrees](#optional-worktrees)
 - [Session Operations](#session-operations)
 - [Updates](#updates)
+- [Backup And Restore](#backup-and-restore)
+- [Uninstall](#uninstall)
 
 ## First Run
 
-Install the core and at least one intelligence and channel plugin using the
-platform instructions in the [README](../README.md). Configure their required
-credentials from [Providers](providers.md), then run:
+Install the CLI and daemon with the command in the [README](../README.md#get-started).
+The installer verifies the release checksum and places `krabb` and `krabb-daemon` in
+`~/.local/bin`, or `%LOCALAPPDATA%\Krabb\bin` on Windows. Set `KRABB_VERSION` to pin a
+release and `KRABB_PREFIX` to choose another location.
 
 ```sh
 krabb init
-krabb plugin list
-krabb doctor
+krabb plugin install <intelligence> <channel>
+krabb plugin setup <id>
 krabb status
 krabb-daemon
 ```
 
-Configure one model and one channel before enabling tools. Keep the daemon in
-the foreground until polling, replies, and acknowledgements work as expected.
+`krabb plugin install` downloads official plugins from the same release and
+verifies them. `krabb plugin setup` explains each field and checks values before
+saving them. Choose a hosted provider such as `openai`, `anthropic`, `gemini`, or
+`openrouter` for remote inference, or `ollama` for a local model; local inference
+needs its own memory and CPU, described in [Resources](resources.md). See
+[Providers](providers.md) for credentials and default models.
+
+`krabb status` lists each plugin as `needs setup`, `configured`, `failed to start`,
+or `ready`, with the command to run next. Keep the daemon in the foreground until
+replies and acknowledgements work, then move it to the
+[background service](#background-service). Configuration, conversations,
+credentials, and plugins live in `KRABB_HOME`; [Storage](storage.md) lists every
+location.
 
 ## Local Development
 
@@ -50,6 +64,11 @@ make fmt
 `make spacing` separates control flow, multiline statements, and setup/assertion phases
 in Rust and Python; it also checks JavaScript block spacing. It preserves embedded strings
 and fixtures and is idempotent. Keep the inserted blank lines when editing.
+
+Make targets, Git hooks, and engineering loops build with two parallel jobs to bound
+memory; raise it on larger machines with `make verify JOBS=4` or `CARGO_BUILD_JOBS`.
+Dev builds keep only line tables for debugging, which keeps backtrace file and line
+numbers while cutting link memory and test binary size.
 
 `make coverage` tests the runner, then measures each package with fresh workspace
 coverage data. Dependency builds remain cached; cleanup, test, and threshold failures
@@ -134,7 +153,41 @@ and delete only idle sessions after reviewing their worktree state.
 
 ## Updates
 
+Run `krabb update` to move the CLI, daemon, official plugins, and service to the
+latest release together; `krabb update --rollback` returns to the retained
+recovery point. See [Updates](commands.md#updates) for the preview, recovery
+point, and limits.
+
 Use `update = "check"` to observe source changes, `"prompt"` to require an
 explicit update command, or `"auto"` for staged startup updates. Keep explicit
 Git revisions pinned in production and review permission changes before
 accepting an update.
+
+To upgrade without `krabb update`, stop the service, rerun the installer with
+`KRABB_VERSION` set to the release, update plugins with `krabb plugin update -y`, and
+start the service. The new host migrates the home on first start and restores it if
+a migration fails. This path keeps no recovery point, so back up first.
+
+## Backup And Restore
+
+Stop the service with `krabb service stop`, then copy the whole `KRABB_HOME`
+directory. It holds configuration, conversations, tasks, memories, plugins, and
+credentials; treat the copy as secret. Secrets saved in the OS keyring with
+`KRABB_KEYRING=1` are not in the directory; run `krabb plugin setup` again after
+restoring on another machine.
+
+To restore, stop the service, replace `KRABB_HOME` with the copy, and run
+`krabb doctor` and `krabb status` before starting the service again. A copy from an
+older release is migrated on first start; a copy from a newer release is refused
+without changes.
+
+## Uninstall
+
+```sh
+krabb service uninstall -y
+krabb plugin uninstall <id>... -y
+```
+
+Uninstalling a plugin removes its saved secrets and sharing grants. Then delete the
+`krabb` and `krabb-daemon` binaries from the install location. Delete `KRABB_HOME`
+only if you no longer need its conversations and settings.

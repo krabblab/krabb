@@ -599,6 +599,7 @@ async fn update_command_uses_authenticated_handover_and_reviews_new_declarations
             id: "memory".into(),
             source: Some(source.display().to_string()),
             revision: None,
+            version: None,
             yes: true,
         },
         false,

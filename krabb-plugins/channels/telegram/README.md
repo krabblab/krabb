@@ -30,6 +30,12 @@ storage, daemon activation, environment overrides, and service configuration;
 see [channel policy](../../../krabb-docs/configuration.md#channel-policy) for group access.
 The legacy `telegram` keyring entry remains supported with `KRABB_KEYRING=1`.
 
+## Commands
+
+On its first poll the plugin registers Krabb's shared commands with Telegram's
+command menu. In groups, `/status@your_bot` reaches only the bot it names. See
+[Conversation Commands](../../../krabb-docs/commands.md#conversation-commands).
+
 ## Messages And Media
 
 The plugin normalizes private and group messages, topics, text, photos,

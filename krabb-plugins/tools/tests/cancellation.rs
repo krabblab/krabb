@@ -95,6 +95,10 @@ async fn restart_stops(root: &std::path::Path, request: Request) -> Process {
         environment.insert("SystemRoot".into(), system_root);
     }
 
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        environment.insert("LLVM_PROFILE_FILE".into(), profile);
+    }
+
     environment.insert("KRABB_ROOT".into(), root.as_os_str().to_owned());
     environment.insert("XDG_CONFIG_HOME".into(), root.as_os_str().to_owned());
     environment.insert("GIT_CONFIG_GLOBAL".into(), root.join("absent-config").into_os_string());
@@ -168,6 +172,10 @@ async fn output_limit_cleanup_preserves_protocol_framing() {
 
     if let Some(system_root) = std::env::var_os("SystemRoot") {
         environment.insert("SystemRoot".into(), system_root);
+    }
+
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        environment.insert("LLVM_PROFILE_FILE".into(), profile);
     }
 
     environment.insert("KRABB_ROOT".into(), root.clone().into_os_string());

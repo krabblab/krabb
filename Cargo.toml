@@ -6,6 +6,7 @@ members = [
     "krabb-libs/text",
     "krabb-libs/logging",
     "krabb-libs/file",
+    "krabb-libs/migrations",
     "krabb-libs/process",
     "krabb-libs/test",
     "krabb-libs/openai",
@@ -49,6 +50,12 @@ repository = "https://github.com/krabblab/krabb"
 homepage = "https://github.com/krabblab/krabb"
 readme = "README.md"
 publish = false
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [workspace.dependencies]
 krabb-openai = { path = "krabb-libs/openai" }

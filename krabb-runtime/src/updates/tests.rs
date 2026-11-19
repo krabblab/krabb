@@ -25,6 +25,7 @@ impl Fixture {
                 id: "memory".into(),
                 source: Some(fixture.source.display().to_string()),
                 revision: None,
+                version: None,
                 yes: true,
             },
             false,

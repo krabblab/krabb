@@ -1,5 +1,5 @@
 CARGO ?= cargo
-JOBS ?= 4
+JOBS ?= 2
 COVERAGE_PROFILE ?= full
 comma := ,
 .DEFAULT_GOAL := all
@@ -56,7 +56,7 @@ test:
 
 coverage:
 	python3 -B -m unittest discover -s krabb-scripts/tests -p '*.py' -v
-	bash krabb-scripts/coverage.sh "$(COVERAGE_PROFILE)"
+	CARGO_BUILD_JOBS=$(JOBS) bash krabb-scripts/coverage.sh "$(COVERAGE_PROFILE)"
 
 build:
 	CARGO_BUILD_JOBS=$(JOBS) $(CARGO) build --workspace --locked

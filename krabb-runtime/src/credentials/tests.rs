@@ -34,6 +34,14 @@ impl Keyring for Keys {
         self.values.borrow_mut().insert(id.into(), key.into());
         Ok(())
     }
+
+    fn delete(&self, name: &str) -> Result<bool, Error> {
+        if self.fail_write.get() {
+            return Err("fixture delete failed".into());
+        }
+
+        Ok(self.values.borrow_mut().remove(name).is_some())
+    }
 }
 
 fn values() -> Secrets {
@@ -381,6 +389,8 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
             permissions: vec![],
             variables: vec![name.into()],
             settings: Vec::new(),
+            setup: BTreeMap::new(),
+            check: false,
             commands: vec![],
         };
 
@@ -405,6 +415,8 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
         permissions: vec![],
         variables: vec!["KRABB_SETUP_TEST".into()],
         settings: Vec::new(),
+        setup: BTreeMap::new(),
+        check: false,
         commands: vec![],
     };
 
@@ -480,4 +492,37 @@ fn openai_readiness_accepts_its_legacy_keyring_without_accessing_native_storage(
         assert_eq!(name, "openai");
         true
     }));
+}
+
+#[test]
+fn forgetting_removes_only_named_values_and_keeps_the_backend() {
+    let root = crate::tests::test_root("forget");
+    let path = root.join("credentials.json");
+    let key = root.join("credentials.key");
+    let keys = Keys::default();
+
+    let mut saved = values();
+
+    saved.insert("KRABB_OTHER".into(), "keep".into());
+    save_with(&path, &key, saved, Some(true), &keys).unwrap();
+
+    let removed =
+        forget_with(&path, &key, &["KRABB_SETUP_TEST".into(), "KRABB_GONE".into()], &keys).unwrap();
+
+    assert_eq!(removed, ["KRABB_SETUP_TEST"]);
+
+    let (left, previous) = read_with(&path, &key, &keys).unwrap();
+
+    assert_eq!(left, BTreeMap::from([("KRABB_OTHER".into(), "keep".into())]));
+    assert_eq!(previous.unwrap().0.backend, Backend::Keyring);
+    assert!(forget_with(&path, &key, &["KRABB_SETUP_TEST".into()], &keys).unwrap().is_empty());
+    assert!(forget_with(&root.join("none.json"), &key, &["X".into()], &keys).unwrap().is_empty());
+
+    keys.values.borrow_mut().insert("telegram".into(), b"token".to_vec());
+
+    assert!(keys.delete("telegram").unwrap());
+    assert!(!keys.delete("telegram").unwrap());
+    assert!(!super::forget_entry("telegram").unwrap());
+
+    let _ = std::fs::remove_dir_all(root);
 }

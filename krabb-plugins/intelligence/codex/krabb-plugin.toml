@@ -16,3 +16,15 @@ interactive = false
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_CODEX_KEY]
+label = "API key"
+help = "An OpenAI API key. Skip it to sign in with `krabb codex login` instead."
+url = "https://platform.openai.com/api-keys"
+example = "sk-..."
+
+[setup.KRABB_CODEX_CONTEXT_LENGTH]
+label = "Context length"
+help = "Tokens of context for your deployment, or auto to use the model catalog."
+kind = "integer"
+accept = ["auto"]

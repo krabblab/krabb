@@ -13,11 +13,13 @@ krabb worktree setup <channel-or-client> [--client] [-y|--yes] [--force] [--json
 krabb worktree disable <channel-or-client> [--client] [--force] [--json]
 krabb status [--json]
 krabb version [--json]
+krabb update [<version>] [-y|--yes] [--json]
+krabb update --rollback [-y|--yes] [--json]
 krabb completion <bash|fish|powershell|zsh>
 krabb plugin list [<page>] [--json]
 krabb plugin setup <id> [--no-activate] [--json]
 krabb <id> setup [--no-activate] [--json]
-krabb plugin install <id>... [--source <path-or-url>] [--revision <rev>] [--link] [-y|--yes] [--json]
+krabb plugin install <id>[@<version>]... [--source <path-or-url>] [--revision <rev>] [--link] [-y|--yes] [--json]
 krabb plugin update [-y|--yes] [--json]
 krabb plugin uninstall <id>... [-y|--yes] [--force] [--json]
 krabb plugin detach <id> [--json]
@@ -51,6 +53,8 @@ krabb <plugin-command> [arguments...]
 - [Confirmation And File Operations](#confirmation-and-file-operations)
 - [Status And Health](#status-and-health)
 - [Terminal User Interface](#terminal-user-interface)
+- [Conversation Commands](#conversation-commands)
+- [Updates](#updates)
 - [Plugin Management](#plugin-management)
 - [Worktrees](#worktrees)
 - [Memory](#memory)
@@ -108,6 +112,8 @@ first. See the [Ollama guide](../krabb-plugins/intelligence/ollama/README.md).
 Command discovery waits up to five seconds for concurrent metadata access. If the
 metadata remains locked or cannot be read, the command exits with an error;
 it does not report success without executing the requested plugin command.
+An unknown command exits with an error that points to `krabb --help`, which also lists
+commands added by installed plugins.
 
 For the boundary between the core library, runtime, and plugins, see
 [Product Architecture](product.md#architecture-and-interfaces).
@@ -184,8 +190,18 @@ health requires at least one ready channel; an explicit `KRABB_CHANNEL` requires
 that channel. Health also checks configuration, the selected intelligence plugin,
 and command conflicts. Failed checks appear in `health_details`.
 
+Each installed plugin is listed with its state and the command that moves it forward:
+
+| State | Meaning | Next action |
+| --- | --- | --- |
+| `needs setup` | Required secrets or settings are missing. | `krabb plugin setup <id>` |
+| `configured` | Setup is complete; the daemon is stopped. | `krabb service start`, or `krabb service install` |
+| `failed to start` | The daemon is running but did not load the plugin. | Check the application log, then `krabb service restart` |
+| `ready` | The daemon loaded the plugin. Clients are ready once set up. | None |
+
 Use `--json` for automation. Capability objects are named `intelligence` and
-`channels`, each with a `status` and `plugins` array. The former `messaging` key
+`channels`, each with a `status` and `plugins` array. `plugin_states` lists each
+plugin's `id`, `state`, and `next` command, which is `null` when ready. The former `messaging` key
 has been renamed to `channels`; update scripts that read it.
 
 ## Terminal User Interface
@@ -231,20 +247,94 @@ and Windows. Other platforms reject typed shell commands because descendant cont
 is unavailable for this execution path. Esc waits for process cleanup before completing
 cancellation, and the next command receives a fresh cancellation token.
 
+## Conversation Commands
+
+The same commands work in every channel and client, with or without a command menu.
+Type them as messages, pick them from Telegram's or Discord's command menu, or use
+`/krabb <command>` in Slack, which reserves short names such as `/status`. Signal and
+WhatsApp have no menu; typed commands work the same way.
+
+| Command | Effect |
+| --- | --- |
+| `/help [command]` | List the commands available here, or explain one. |
+| `/status` | Show this conversation's model and activity. |
+| `/model [list \| <model>]` | Show, list, or switch this conversation's model. |
+| `/session [new \| cancel \| clear]` | Start fresh, stop the current reply, or delete history. |
+| `/task ...` | List or control background tasks. |
+| `/workspace` | Show whether this conversation has its own workspace. |
+| `/approvals` | List actions waiting for approval here. |
+| `/memory <query>` | Search memories available here. |
+| `/data [<database>]` | List saved databases, or one database's tables. |
+| `/plugin` | List the active plugins. |
+| `/schedule` | List scheduled work (local clients only). |
+
+Krabb answers these itself, without an intelligence turn, so they also work while a
+reply is running or the provider is unavailable. Each acts only on the sender's own
+conversation, and channel users never gain local operator authority: `/memory` and
+`/data` need the conversation's tool access, and `/schedule` is limited to local
+clients. `/model <model>` affects only this conversation. `/session new` archives the
+earlier messages. `/session clear` deletes history only after the same sender repeats
+it with the four-digit code it returns, within two minutes.
+
+You can also ask in your own words and any language, such as "start a new
+conversation" or "which model are you using?". The model then uses the same commands
+through a host tool. It cannot cancel its own reply, confirm `/session clear`, or
+approve or deny a task's saved action; it relays the exact command to send instead. A new conversation it starts begins after
+its current reply.
+
+Text that only looks like a command, such as `/usr/bin/env`, stays an ordinary
+message. In Telegram groups, `/status@your_bot` is answered only by the bot it names.
+Native commands and bot-addressed commands count as a mention for `channels.<id>.mention`.
+
+## Updates
+
+```sh
+krabb update [<version>] [-y|--yes]
+krabb update --rollback [-y|--yes]
+```
+
+`krabb update` moves the CLI, daemon, and official plugins to one release, the
+latest stable one unless a version is given. It downloads and verifies every
+archive and runs the new host once before changing anything. A truncated or
+mismatched download, or an official plugin whose protocol the new host does not
+support, stops the update with the installation unchanged. It then previews
+versions, plugin permission, capability, and secret changes, home migrations,
+and the service interruption. Linked or custom-source plugins stay as they are
+and must be compatible with the new host. With `--json`, the command prints
+that preview and applies it only with `--yes`.
+
+After approval, Krabb stops a running service and saves a recovery point with
+the previous binaries, configuration, plugins, and state under
+`updates/recovery`. Saved credentials, `data/media`, and `data/workspaces` are
+not copied. The new host installs the staged plugins, migrates the home, and
+restarts a previously running service, which must answer within 60 seconds. A
+stopped service stays stopped. Any failure restores the recovery point and the
+service state.
+
+`krabb status` shows a retained recovery point. `krabb update --rollback`
+restores it without the network or the new daemon; if the new `krabb` cannot
+run, start `updates/recovery/bin/0/krabb update --rollback` from the Krabb home
+instead. After an accepted update, rollback replaces conversations, tasks,
+settings, and plugins changed since then and asks first; credentials are kept.
+Downgrades to other versions are not supported. A daemon running outside the
+service must be stopped before an update.
+
 ## Plugin Management
 
 ```sh
 krabb plugin list [page]
-krabb plugin install <id>... [--source <path-or-url>] [--revision <rev>] [--link]
+krabb plugin install <id>[@<version>]... [--source <path-or-url>] [--revision <rev>] [--link]
 krabb plugin update
 krabb plugin uninstall <id>...
 krabb plugin detach <id>
 krabb plugin attach <id>
 ```
 
-Install accepts official IDs or one explicit source. Sources may be local
-paths, Git revisions, or HTTPS archives with a `#sha256=` digest. `--link` is
-for local development builds. Installation validates each manifest and stages
+Install accepts official IDs or one explicit source. Official IDs download the
+release archive for this host's version and target from any directory, verified
+against the release `SHA256SUMS`; `<id>@<version>` pins another release.
+Sources may be local paths, Git revisions, or HTTPS archives with a `#sha256=`
+digest. `--link` is for local development builds. Installation validates each manifest and stages
 files before activation; a running daemon loads new plugins over local IPC.
 Interactive install, uninstall, update, and import operations show an in-place spinner.
 Progress stays on one terminal line, with long messages clipped to fit its width.
@@ -273,6 +363,13 @@ delivery state; `--force` with confirmation performs that purge. See
 Uninstall waits for active work, including an in-flight channel poll, to settle.
 Idle channel retry backoff does not keep uninstall waiting across repeated restart
 failures. The spinner remains visible while a single plugin or a batch is removed.
+
+Uninstall also revokes what the plugin was given: it deletes the saved secrets
+and settings that no other installed plugin declares, and removes sharing grants
+to or from the plugin in `config.toml`. A local `visibility` list emptied this way
+stays `[]`, so it never starts inheriting top-level grants. If revocation fails,
+the plugin stays installed and the error lists what was already removed; rerun
+the uninstall to finish.
 
 Use `plugin install` (alias `add`) to install and activate a plugin, and
 `plugin uninstall` (alias `remove`) to remove it. Installing does not require a

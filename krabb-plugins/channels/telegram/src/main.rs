@@ -13,6 +13,8 @@ use futures_util::{Stream, StreamExt};
 use serde_json::json;
 use std::{path::PathBuf, time::Duration};
 
+/// Pause before registering the command menu again after a failure.
+const MENU_RETRY: Duration = Duration::from_secs(300);
 const BODY_LIMIT: usize = krabb_core::jsonl::MAX / 2;
 const ID_LIMIT: usize = 256;
 const TEXT_LIMIT: usize = 256 * 1024;
@@ -59,9 +61,10 @@ async fn call(client: &reqwest::Client, request: Request) -> krabb_core::Result<
     };
 
     let token = credential()?;
+    let base = format!("https://api.telegram.org/bot{token}");
+    let username = if method == "poll" { prepare(client, &base).await } else { None };
 
-    call_with(client, id, method, params, &token, &format!("https://api.telegram.org/bot{token}"))
-        .await
+    call_as(client, id, method, params, &token, &base, username.as_deref()).await
 }
 
 fn credential() -> krabb_core::Result<String> {
@@ -109,13 +112,26 @@ fn keyring(name: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+#[cfg(test)]
 async fn call_with(
+    client: &reqwest::Client,
+    id: u64,
+    method: String,
+    params: serde_json::Value,
+    token: &str,
+    base: &str,
+) -> krabb_core::Result<Option<Response>> {
+    call_as(client, id, method, params, token, base, None).await
+}
+
+async fn call_as(
     client: &reqwest::Client,
     id: u64,
     method: String,
     params: serde_json::Value,
     _token: &str,
     base: &str,
+    username: Option<&str>,
 ) -> krabb_core::Result<Option<Response>> {
     let Some(operation) = operation(&method, &params)? else {
         return Ok(None);
@@ -123,6 +139,15 @@ async fn call_with(
 
     let result = match operation {
         Operation::Info => send(client, &format!("{base}/getMe"), json!({})).await?,
+
+        Operation::Check => {
+            let me = send(client, &format!("{base}/getMe"), json!({})).await?;
+
+            match me["username"].as_str() {
+                Some(username) => json!({"account": format!("@{username}")}),
+                None => json!({}),
+            }
+        }
 
         Operation::Poll { offset, wait_seconds } => {
             let updates = send(
@@ -135,7 +160,7 @@ async fn call_with(
                 }),
             )
             .await?;
-            normalize(updates)
+            normalize_for(updates, username)
         }
 
         Operation::Typing { chat, thread } => {
@@ -241,6 +266,7 @@ async fn call_with(
 
 enum Operation {
     Info,
+    Check,
     Poll { offset: i64, wait_seconds: u64 },
     Typing { chat: i64, thread: Option<i64> },
     Send { chat: i64, text: String, thread: Option<String> },
@@ -357,6 +383,7 @@ fn chunks(text: &str, limit: usize) -> Vec<String> {
 fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Option<Operation>> {
     match method {
         "info" => Ok(Some(Operation::Info)),
+        "check" => Ok(Some(Operation::Check)),
         "poll" => Ok(Some(Operation::Poll {
             offset: params["offset"].as_i64().unwrap_or(0),
             wait_seconds: params["wait_seconds"].as_u64().unwrap_or(25).min(25),
@@ -662,9 +689,98 @@ fn response_body(
         .ok_or_else(|| krabb_core::Error::Denied("Telegram response contained no result.".into()))
 }
 
+/// Registers the shared command menu once and learns the bot's username for addressing.
+///
+/// Failures are logged and retried after a pause; text commands work without the menu.
+async fn prepare(client: &reqwest::Client, base: &str) -> Option<String> {
+    static USERNAME: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+
+    static RETRY: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+    if USERNAME.get().is_none()
+        && RETRY
+            .lock()
+            .ok()
+            .and_then(|retry| *retry)
+            .is_some_and(|at| at > std::time::Instant::now())
+    {
+        return None;
+    }
+
+    USERNAME
+        .get_or_try_init(|| async {
+            send(client, &format!("{base}/setMyCommands"), menu()).await?;
+
+            let me = send(client, &format!("{base}/getMe"), json!({})).await?;
+
+            me["username"].as_str().map(str::to_owned).ok_or_else(|| {
+                krabb_core::Error::Denied("Telegram did not report the bot username.".into())
+            })
+        })
+        .await
+        .inspect_err(|error| {
+            eprintln!("Telegram command menu is not registered yet: {error}");
+
+            if let Ok(mut retry) = RETRY.lock() {
+                *retry = Some(std::time::Instant::now() + MENU_RETRY);
+            }
+        })
+        .ok()
+        .cloned()
+}
+
+fn menu() -> serde_json::Value {
+    let commands = krabb_core::slash::SPECS
+        .iter()
+        .filter(|spec| spec.channel())
+        .map(|spec| json!({"command": spec.name, "description": spec.summary}))
+        .collect::<Vec<_>>();
+
+    json!({"commands": commands})
+}
+
+/// Removes this bot's `@username` from a leading command so the host recognizes it.
+///
+/// Commands addressed to another bot keep their suffix and are not treated as commands.
+fn address(text: &str, username: Option<&str>) -> String {
+    let Some(username) = username else {
+        return text.to_owned();
+    };
+
+    let trimmed = text.trim_start();
+    let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let (token, rest) = trimmed.split_at(end);
+
+    match token.strip_prefix('/').and_then(|token| token.split_once('@')) {
+        Some((name, bot)) if bot.eq_ignore_ascii_case(username) => format!("/{name}{rest}"),
+        _ => text.to_owned(),
+    }
+}
+
+#[cfg(test)]
 fn normalize(value: serde_json::Value) -> serde_json::Value {
-    let events =
-        value.as_array().into_iter().flatten().filter_map(normalize_update).collect::<Vec<_>>();
+    normalize_for(value, None)
+}
+
+fn normalize_for(value: serde_json::Value, username: Option<&str>) -> serde_json::Value {
+    let events = value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(normalize_update)
+        .map(|mut event| {
+            if let Some(text) = event["text"].as_str() {
+                let addressed = address(text, username);
+
+                if addressed != text {
+                    event["addressed"] = true.into();
+                    event["text"] = addressed.into();
+                }
+            }
+
+            event
+        })
+        .collect::<Vec<_>>();
 
     json!({"events": events})
 }
@@ -771,6 +887,39 @@ mod tests {
     mod replies;
 
     use krabb_test::logging;
+
+    #[test]
+    fn commands_addressed_to_this_bot_lose_only_its_username() {
+        let bot = Some("krabb_bot");
+
+        assert_eq!(super::address("/status@krabb_bot", bot), "/status");
+        assert_eq!(super::address("/model@Krabb_Bot list", bot), "/model list");
+        assert_eq!(super::address("/status@other_bot", bot), "/status@other_bot");
+        assert_eq!(super::address("hello @krabb_bot", bot), "hello @krabb_bot");
+        assert_eq!(super::address("/status@krabb_bot", None), "/status@krabb_bot");
+
+        let events = super::normalize_for(
+            serde_json::json!([{"update_id": 1, "message": {"chat": {"id": 8},
+                "text": "/help@krabb_bot model"}}]),
+            bot,
+        );
+
+        assert_eq!(events["events"][0]["text"], "/help model");
+
+        let menu = super::menu();
+        let commands = menu["commands"].as_array().unwrap();
+
+        assert_eq!(
+            commands.len(),
+            krabb_core::slash::SPECS.iter().filter(|spec| spec.channel()).count()
+        );
+
+        assert!(commands.iter().all(|command| command["command"] != "schedule"));
+
+        assert!(
+            commands.iter().all(|command| command["description"].as_str().unwrap().len() <= 256)
+        );
+    }
 
     #[test]
     fn media_cache_reserves_bytes_and_files_preserving_pinned_images() {
@@ -1605,34 +1754,26 @@ fn limits_rate_retries_and_rejects_malformed_success() {
 
 #[cfg(test)]
 #[tokio::test]
-async fn retries_only_an_explicit_rate_rejection() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback required");
-    let base = format!("http://{}", listener.local_addr().unwrap());
-
-    let server = tokio::spawn(async move {
-        for (status, body) in [
-            (429, r#"{"ok":false,"error_code":429,"parameters":{"retry_after":0}}"#),
-            (200, r#"{"ok":true,"result":{"message_id":7}}"#),
-        ] {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut input = [0; 4096];
-            let n = socket.read(&mut input).await.unwrap();
-
-            assert!(String::from_utf8_lossy(&input[..n]).contains("POST /sendMessage"));
-            socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-        }
-    });
+async fn check_names_the_bot_behind_the_saved_token() {
+    let (base, requests) = krabb_test::http::responses(vec![
+        (200, r#"{"ok":true,"result":{"id":1,"username":"krabb_bot"}}"#.into()),
+        (401, r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#.into()),
+    ])
+    .await;
 
     let client =
         reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
 
-    let result =
-        send(&client, &format!("{base}/sendMessage"), json!({"chat_id": 1, "text": "fixture"}))
-            .await
-            .unwrap();
+    let passed =
+        call_with(&client, 2, "check".into(), json!({}), "token", &base).await.unwrap().unwrap();
 
-    assert_eq!(result["message_id"], 7);
+    assert_eq!(passed.result.unwrap(), json!({"account": "@krabb_bot"}));
 
-    server.await.unwrap();
+    let failed = call_with(&client, 3, "check".into(), json!({}), "token", &base).await;
+
+    assert!(failed.unwrap_err().to_string().contains("code 401"));
+
+    for request in requests.await.unwrap() {
+        assert!(request.headers.starts_with("POST /getMe"));
+    }
 }

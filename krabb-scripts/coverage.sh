@@ -9,6 +9,7 @@ packages=(
     krabb-http
     krabb-text
     krabb-file
+    krabb-migrations
     krabb-process
     krabb-runtime
     krabb-daemon

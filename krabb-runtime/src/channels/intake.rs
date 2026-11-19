@@ -21,6 +21,9 @@ pub(crate) struct Context {
     pub shutdown: Arc<Stop>,
     pub offset: i64,
     pub call: u64,
+    pub plugins: Plugins,
+    pub cancels: Arc<Mutex<BTreeMap<String, Arc<Cancellation>>>>,
+    pub provider: String,
 }
 
 pub(crate) struct Intake {
@@ -201,8 +204,21 @@ async fn receive(context: &mut Context, events: Vec<Value>) -> Result<(), Plugin
                 !blocked,
             )
             .await?;
-        } else if !blocked
-            && !queue_during_turn(
+        } else if !blocked {
+            // Commands get their own request ID past the intake range's next call.
+            let call = context.call.saturating_add(channels::INTAKE_CALLS / 2);
+
+            let host = slash::Host {
+                plugins: &context.plugins,
+                sessions: &context.sessions,
+                cancels: &context.cancels,
+                approvals: &context.approvals,
+                provider: &context.provider,
+                model: &context.model,
+                call,
+            };
+
+            blocked = !queue_during_turn(
                 &context.channel,
                 &context.id,
                 &context.model,
@@ -212,10 +228,9 @@ async fn receive(context: &mut Context, events: Vec<Value>) -> Result<(), Plugin
                 &mut context.offset,
                 &mut context.call,
                 Some(&context.signals),
+                Some((&host, context.mode)),
             )
-            .await?
-        {
-            blocked = true;
+            .await?;
         }
     }
 
@@ -385,6 +400,9 @@ done
             shutdown: Arc::new(Stop::new()),
             offset: 0,
             call: 1,
+            plugins: Plugins::default(),
+            cancels: Arc::default(),
+            provider: "test".into(),
         };
 
         let events = vec![
@@ -444,6 +462,9 @@ done
             shutdown: Arc::new(Stop::new()),
             offset: 0,
             call: 1,
+            plugins: Plugins::default(),
+            cancels: Arc::default(),
+            provider: "test".into(),
         });
 
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -503,6 +524,9 @@ done
             shutdown: Arc::new(Stop::new()),
             offset: 0,
             call: 1,
+            plugins: Plugins::default(),
+            cancels: Arc::default(),
+            provider: "test".into(),
         });
 
         tokio::time::timeout(Duration::from_secs(5), async {

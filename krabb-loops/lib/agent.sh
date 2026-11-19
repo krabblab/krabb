@@ -6,7 +6,7 @@ agent_detect() {
 
     case "$requested" in
         auto)
-            for candidate in codex claude; do
+            for candidate in claude codex; do
                 if command -v "$candidate" >/dev/null 2>&1; then
                     printf '%s\n' "$candidate"
                     return
@@ -44,7 +44,7 @@ agent_validate() {
     local required=()
 
     if [[ "$AGENT" == codex ]]; then
-        MODEL=${MODEL:-gpt-6-astra}
+        MODEL=${MODEL:-gpt-6.2-sol}
         REASONING=${REASONING:-high}
         if [[ -z "${KRABB_CODEX_HOME:-}" && -z "${HOME:-}" ]]; then
             print_error 'Set HOME or KRABB_CODEX_HOME for Codex authentication.'
@@ -52,7 +52,8 @@ agent_validate() {
         fi
         KRABB_CODEX_HOME=${KRABB_CODEX_HOME:-$HOME/.codex}
     elif [[ "$AGENT" == claude ]]; then
-        MODEL=${MODEL:-claude-fable-5-1}
+        MODEL=${MODEL:-claude-opus-5-5}
+        REASONING=${REASONING:-high}
     fi
 
     if [[ "$FAST_MODE" == true ]] && ! agent_supports fast; then
@@ -63,8 +64,11 @@ agent_validate() {
     case "$AGENT" in
         codex)
             case "$REASONING" in
-                low|medium|high|xhigh) ;;
-                *) print_error 'Codex reasoning must be low, medium, high, or xhigh.'; return 2 ;;
+                low|medium|high|xhigh|max) ;;
+                *)
+                    print_error 'Codex reasoning must be low, medium, high, xhigh, or max.'
+                    return 2
+                    ;;
             esac
             help=$(python3 "$LOOP_DIR/lib/process.py" 15s codex exec --help 2>&1) || {
                 print_error 'Codex help probe failed or timed out.'

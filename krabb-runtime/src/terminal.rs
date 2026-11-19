@@ -35,7 +35,7 @@ fn draw(writer: &mut dyn Write, frame: &str, message: &str, columns: u16) {
     let _ = writer.flush();
 }
 
-fn columns() -> u16 {
+pub(crate) fn columns() -> u16 {
     crossterm::terminal::size().map(|(columns, _)| columns).unwrap_or(80)
 }
 

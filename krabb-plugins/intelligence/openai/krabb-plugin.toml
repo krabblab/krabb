@@ -3,6 +3,7 @@ version = "0.1.0"
 capabilities = ["model", "vision", "context"]
 permissions = ["network"]
 secrets = ["KRABB_OPENAI_KEY"]
+check = true
 
 [[settings]]
 name = "KRABB_OPENAI_CONTEXT_LENGTH"
@@ -11,3 +12,15 @@ default = "auto"
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_OPENAI_KEY]
+label = "API key"
+url = "https://platform.openai.com/api-keys"
+example = "sk-..."
+required = true
+
+[setup.KRABB_OPENAI_CONTEXT_LENGTH]
+label = "Context length"
+help = "Tokens of context for your deployment, or auto to use the model catalog."
+kind = "integer"
+accept = ["auto"]

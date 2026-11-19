@@ -143,6 +143,6 @@ else
     fi
     [ -n "$krabb" ] && [ -x "$krabb" ] || \
         die 'Install the Krabb core before installing an official plugin.'
-    "$krabb" plugin install "$plugin" "$base/$archive_name#sha256=$expected" --yes
+    "$krabb" plugin install "$plugin" --source "$base/$archive_name#sha256=$expected" --yes
     info "Installed plugin $plugin."
 fi

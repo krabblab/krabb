@@ -61,9 +61,9 @@ place plugin executables in `bin/` beside their manifest.
 For simple tokens and API keys, list their environment-variable names in the
 manifest's `secrets` array. Krabb supplies `krabb plugin setup <id>` and
 then passes only its declared stored values into its environment. Every declared
-secret is prompted for, including optional ones. Enter leaves a secret empty and
-clears its saved value. Empty secrets are omitted from the plugin environment;
-the plugin remains responsible for requiring credentials when needed.
+secret is prompted for, including optional ones. Cleared and skipped secrets are
+omitted from the plugin environment; the plugin remains responsible for requiring
+credentials when needed.
 
 Declare additional setup fields with `[[settings]]` entries:
 
@@ -80,11 +80,50 @@ Each setting names a `KRABB_` environment variable. Names must be unique across
 secrets and settings. An optional `default` must be nonempty, single-line, and
 at most 16 KiB. Only public defaults belong in manifests; never put credentials
 there. Setup prompts for secrets first, then settings in declaration order;
-input remains hidden, and Enter accepts a displayed setting default. All values
+secret input stays hidden and setting input is shown. All values
 are saved together in the encrypted credential store. The host resolves each
 field from a nonempty environment override, saved value, then manifest default.
 It passes the result to the plugin on launch and reload, so services do not need
 extra environment entries. Plugin-specific validation remains in the plugin.
+
+Describe each secret or setting with an optional `[setup.NAME]` table, so setup
+explains what to enter instead of showing only the variable name:
+
+```toml
+[setup.KRABB_EXAMPLE_TOKEN]
+label = "Bot token"
+help = "Create a bot in the example dashboard and copy its token."
+url = "https://example.com/bots"
+example = "123456:ABC..."
+required = true
+
+[setup.KRABB_EXAMPLE_LISTEN]
+label = "Webhook listener"
+kind = "address"
+```
+
+| Key | Meaning |
+| --- | --- |
+| `label` | Short name shown in the prompt and summary, at most 64 characters. |
+| `help` | One-line explanation, at most 320 characters. |
+| `url` | HTTPS page where the user gets the value. |
+| `example` | A public, made-up sample value; never a real credential. |
+| `required` | Refuses empty and cleared answers; defaults to `false`. |
+| `kind` | `text` (default), `integer`, `boolean`, `url`, or `address` (`host:port`). |
+| `accept` | Literal values accepted in addition to `kind`, such as `["auto"]`. |
+
+Every key names a declared secret or setting, and a setting default must match its
+kind. Older hosts ignore the table, and manifests without it keep the previous
+prompts. Metadata is read from the installed manifest; it is not recorded in the
+plugin lock.
+
+Set `check = true` at the top level of the manifest when the plugin answers `check`.
+After setup saves, the host starts the plugin with the saved values and sends `check`
+with empty params. Use a read-only request, such as asking the provider who the
+credential belongs to. Return `{ "account": "..." }` to name the bot or account, or
+`{}`, and a short JSON-RPC error when the credential is rejected. Error text is
+redacted and clipped before setup shows it. Setup reports the result but never fails
+because of it, and skips plugins without the flag or that answer method-not-found.
 
 Manifest and lock records without `settings` keep their existing behavior.
 Settings and defaults are recorded in the plugin lock. Update previews show before/after
@@ -436,12 +475,19 @@ the existing plugins as protocol references.
 
 ## Install And Update Lifecycle
 
-When `plugin install` is given one or more IDs without `--source`, Krabb looks
-for each plugin in the local `krabb-plugins/<id>` directory or in a category
-directory such as `krabb-plugins/<id>`. Run the command from the
-repository root; each plugin must already be built in the workspace's
-`target/debug` directory. Otherwise, pass an explicit local path or Git URL with
-`--source` (explicit sources apply to one plugin ID per command).
+When `plugin install` is given one or more IDs without `--source`, Krabb
+downloads each official release archive matching the host version and target,
+verifies it against the release `SHA256SUMS`, and records the archive URL,
+digest, and version in `plugins.lock`. Use `<id>@<version>` to pin a release;
+`KRABB_RELEASE_BASE` overrides the release location with an `https://` or
+`file://` directory. Krabb never compiles a plugin when no release artifact
+exists for the target; pass an explicit local path or Git URL with `--source`
+instead (explicit sources apply to one plugin ID per command).
+
+With `--link` and no `--source`, Krabb looks for each plugin in the local
+`krabb-plugins/<id>` directory or in a category directory such as
+`krabb-plugins/channels/<id>`. Run the command from the repository root; each
+plugin must already be built in the workspace's `target/debug` directory.
 
 By default, `krabb plugin install` copies the verified executable into the
 Krabb home so it is independent of its source. Add `--link` to use the local

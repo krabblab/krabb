@@ -3,7 +3,13 @@ version = "0.1.0"
 capabilities = ["model", "vision", "context"]
 permissions = ["network"]
 secrets = ["KRABB_GEMINI_KEY"]
+check = true
 
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_GEMINI_KEY]
+label = "API key"
+url = "https://aistudio.google.com/app/apikey"
+required = true

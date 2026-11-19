@@ -60,7 +60,7 @@ async fn generate(
         Request::Note { .. } => return Ok(None),
     };
 
-    if !matches!(method.as_str(), "generate" | "model.info" | "model.compact") {
+    if !matches!(method.as_str(), "generate" | "model.info" | "model.compact" | "check") {
         return Ok(None);
     }
 
@@ -77,11 +77,12 @@ async fn generate(
     let base = std::env::var("KRABB_ANTHROPIC_BASE_URL")
         .unwrap_or_else(|_| "https://api.anthropic.com".into());
 
-    if method == "model.info" {
+    if matches!(method.as_str(), "model.info" | "check") {
         let model = model::resolve(params["model"].as_str().unwrap_or("default"));
         let profile = context::profile(client, &model, &key, &base).await?;
+        let result = if method == "check" { json!({}) } else { serde_json::to_value(profile)? };
 
-        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+        return Ok(Some(Response::ok(id, result)));
     }
 
     if method == "model.compact" {

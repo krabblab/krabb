@@ -50,6 +50,28 @@ class Spacing(unittest.TestCase):
         self.assertEqual(ENGINE.format_python(formatted), formatted)
         self.assertEqual(ast.dump(ast.parse(source)), ast.dump(ast.parse(formatted)))
 
+    def test_python_deletion_is_an_action_before_setup(self):
+        source = '''def check(env):
+    # Use the default backend.
+    del env['AGENT']
+    result = run(env)
+    assert result.ok
+'''
+
+        expected = '''def check(env):
+    # Use the default backend.
+    del env['AGENT']
+
+    result = run(env)
+
+    assert result.ok
+'''
+
+        formatted = ENGINE.format_python(source)
+
+        self.assertEqual(formatted, expected)
+        self.assertEqual(ENGINE.format_python(formatted), formatted)
+
     def test_python_decorators_comments_and_fixtures(self):
         source = '''import unittest
 class Example(unittest.TestCase):

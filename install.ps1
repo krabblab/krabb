@@ -121,7 +121,7 @@ try {
         if (-not (Test-Path -LiteralPath $krabb -PathType Leaf)) {
             Stop-Install "Install the Krabb core before installing an official plugin."
         }
-        & $krabb plugin install $plugin "$archiveUri#sha256=$expected" --yes
+        & $krabb plugin install $plugin --source "$archiveUri#sha256=$expected" --yes
         if ($LASTEXITCODE -ne 0) { Stop-Install "The Krabb plugin installation failed." }
         Write-Install "Installed plugin $plugin."
     }

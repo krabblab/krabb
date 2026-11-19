@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}
+
 verification_failure_kind() {
     local log_file=$1 status=$2
     local network='network is unreachable|failed to download|could not resolve host'
@@ -194,7 +196,6 @@ run_final_verification() {
         print_info 'Running all-target workspace check (4/10)...'
         run_verification_command \
             'All-target workspace check' \
-            env CARGO_BUILD_JOBS=4 \
             cargo check \
             --workspace \
             --all-targets \
@@ -203,7 +204,6 @@ run_final_verification() {
         print_info 'Running MSRV workspace check (5/10)...'
         run_verification_command \
             'MSRV workspace check' \
-            env CARGO_BUILD_JOBS=4 \
             cargo +1.89 check \
             --workspace \
             --all-targets \

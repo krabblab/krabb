@@ -4437,6 +4437,26 @@ mod tests {
     }
 
     #[test]
+    fn draws_without_panicking_on_tiny_terminals() {
+        for (width, height) in [(1, 1), (2, 2), (10, 3), (20, 5), (40, 8)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut app = App {
+                transcript: "You | ".to_owned() + &"wide 漢字 text ".repeat(40),
+                input: "/".chars().chain("long input ".repeat(30).chars()).collect(),
+                cursor: 1,
+                command_options: super::TUI_COMMANDS.to_vec(),
+                status: "Working".into(),
+                ..App::default()
+            };
+
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            app.cursor = app.input.len();
+            app.command_options.clear();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        }
+    }
+
+    #[test]
     fn draws_full_width_command_and_approval_pickers_above_the_prompt() {
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         let mut app = App {

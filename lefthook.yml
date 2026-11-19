@@ -10,7 +10,7 @@ pre-commit:
       run: bash krabb-scripts/spacing.sh --check
 
     check:
-      run: CARGO_BUILD_JOBS=4 cargo check --workspace --locked
+      run: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} cargo check --workspace --locked
 
     test:
-      run: CARGO_BUILD_JOBS=4 cargo test --workspace --locked --lib --bins
+      run: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2} cargo test --workspace --locked --lib --bins
