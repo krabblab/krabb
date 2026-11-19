@@ -25,24 +25,35 @@ ACP, agent collaboration uses A2A, and user interfaces connect through AG-UI.
 
 ## Get Started
 
-Install the CLI, daemon, and the plugins you plan to use. The
-[first-run guide](krabb-docs/workflows.md) covers installation, provider setup,
-and starting the daemon.
+Install the CLI and daemon on Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
+```
+
+Then create the home, add one intelligence provider and one channel, and check them:
 
 ```sh
 krabb init
-krabb plugin list
-krabb doctor
+krabb plugin install openai telegram
+krabb plugin setup openai
+krabb plugin setup telegram
 krabb status
-krabb-daemon
+krabb service install
+krabb service start
 ```
 
-Configure at least one intelligence provider before starting the daemon.
-To receive chat messages, follow a
-[channel setup guide](krabb-docs/providers.md#platform-setup).
-The daemon stays in the foreground until you stop it with
-Ctrl-C; use the [service guide](krabb-docs/workflows.md#background-service) to
-run it in the background.
+`krabb status` lists each plugin's state and the next command to run. Use
+`ollama` instead of a hosted provider for local inference. The
+[first-run guide](krabb-docs/workflows.md#first-run) covers provider choice, data
+locations, backups, upgrades, and uninstalling; the
+[channel setup guides](krabb-docs/providers.md#channels) cover each platform.
 
 ## Capabilities
 

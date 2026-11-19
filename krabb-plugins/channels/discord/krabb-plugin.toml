@@ -3,7 +3,14 @@ version = "0.1.0"
 capabilities = ["channel"]
 permissions = ["network"]
 secrets = ["KRABB_DISCORD_TOKEN"]
+check = true
 
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_DISCORD_TOKEN]
+label = "Bot token"
+help = "In the Developer Portal, open your application's Bot page and reset or copy the token."
+url = "https://discord.com/developers/applications"
+required = true

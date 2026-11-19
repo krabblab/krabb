@@ -1,4 +1,6 @@
+pub(crate) mod command;
 mod destinations;
+pub(crate) mod execution;
 mod runs;
 pub(super) use destinations::{destination, parse, schema, update};
 pub(super) use runs::{destinations, publish};

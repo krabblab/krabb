@@ -99,6 +99,17 @@ pub fn transport(error: &reqwest::Error, provider: &str) -> krabb_core::Error {
     krabb_core::failure::transport(cause, provider)
 }
 
+/// Sends a read-only request and succeeds when the provider accepts its credential.
+pub async fn accepted(request: reqwest::RequestBuilder, provider: &str) -> krabb_core::Result<()> {
+    let response = request.send().await.map_err(|error| transport(&error, provider))?;
+
+    if !response.status().is_success() {
+        return Err(rejected(response, provider).await);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +167,23 @@ mod tests {
         });
 
         address
+    }
+
+    #[tokio::test]
+    async fn accepted_succeeds_only_for_an_accepted_credential() {
+        let client = reqwest::Client::new();
+        let allowed = serve("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await;
+
+        accepted(client.get(&allowed), "Provider").await.unwrap();
+
+        let denied = serve("HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\n\r\n{}").await;
+        let error = accepted(client.get(&denied), "Provider").await.unwrap_err();
+
+        assert_eq!(failure(error).kind, Kind::Denied);
+
+        let error = accepted(client.get("http://127.0.0.1:1"), "Provider").await.unwrap_err();
+
+        assert!(error.to_string().contains("Provider"), "{error}");
     }
 
     #[tokio::test]

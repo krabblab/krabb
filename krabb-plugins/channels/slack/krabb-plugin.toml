@@ -3,6 +3,7 @@ version = "0.1.0"
 capabilities = ["channel"]
 permissions = ["network", "filesystem"]
 secrets = ["KRABB_SLACK_BOT_TOKEN", "KRABB_SLACK_APP_TOKEN"]
+check = true
 
 [[settings]]
 name = "KRABB_SLACK_CHANNELS"
@@ -10,3 +11,23 @@ name = "KRABB_SLACK_CHANNELS"
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_SLACK_BOT_TOKEN]
+label = "Bot token"
+help = "The xoxb- token under OAuth & Permissions after installing the app."
+url = "https://api.slack.com/apps"
+example = "xoxb-..."
+required = true
+
+[setup.KRABB_SLACK_APP_TOKEN]
+label = "App token"
+help = "An app-level token with connections:write, under Basic Information."
+url = "https://api.slack.com/apps"
+example = "xapp-..."
+required = true
+
+[setup.KRABB_SLACK_CHANNELS]
+label = "Conversations"
+help = "One conversation ID, or a comma-separated list, including DMs."
+example = "D0123456789,C9876543210"
+required = true

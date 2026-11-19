@@ -6,9 +6,13 @@ use super::{ConfigCommand, ConfigSet, PluginError};
 
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
-    /// Check the workspace, initialize Git after confirmation, and enable isolation.
+    #[command(
+        about = "Check the workspace, initialize Git after confirmation, and enable isolation."
+    )]
     Setup(Options),
-    /// Use the shared workspace for a channel without deleting existing worktrees.
+    #[command(
+        about = "Use the shared workspace for a channel without deleting existing worktrees."
+    )]
     Disable(Channel),
 }
 

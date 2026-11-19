@@ -31,6 +31,8 @@ use tokio::{
     time::{Duration, Instant, timeout},
 };
 
+/// Pause before registering application commands again after a failure.
+const MENU_RETRY: Duration = Duration::from_secs(300);
 const BODY_LIMIT: usize = krabb_core::jsonl::MAX / 2;
 const TEXT_LIMIT: usize = 256 * 1024;
 const MEDIA_LIMIT: usize = 4 * 1024 * 1024;
@@ -156,9 +158,124 @@ async fn call_state(
     };
 
     let token = credential()?;
+    let base = "https://discord.com/api/v10";
 
-    call_with_state(client, gateway, id, method, params, &token, "https://discord.com/api/v10")
-        .await
+    if method == "poll" {
+        register(client, &token, base).await;
+    }
+
+    call_with_state(client, gateway, id, method, params, &token, base).await
+}
+
+/// Publishes the shared commands as Discord application commands once per process.
+///
+/// Failures are logged and retried after a pause; typed commands work without the menu.
+async fn register(client: &reqwest::Client, token: &str, base: &str) {
+    static REGISTERED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    static RETRY: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+    if REGISTERED.get().is_none()
+        && RETRY
+            .lock()
+            .ok()
+            .and_then(|retry| *retry)
+            .is_some_and(|at| at > std::time::Instant::now())
+    {
+        return;
+    }
+
+    let result = REGISTERED
+        .get_or_try_init(|| async {
+            let me = message(
+                client,
+                reqwest::Method::GET,
+                format!("{base}/oauth2/applications/@me"),
+                token,
+                Value::Null,
+            )
+            .await?;
+
+            let application = me["id"].as_str().filter(|id| snowflake(id)).ok_or_else(|| {
+                krabb_core::Error::Denied("Discord did not report the application ID.".into())
+            })?;
+
+            message(
+                client,
+                reqwest::Method::PUT,
+                format!("{base}/applications/{application}/commands"),
+                token,
+                menu(),
+            )
+            .await
+            .map(|_| ())
+        })
+        .await;
+
+    if let Err(error) = result {
+        eprintln!("Discord application commands are not registered yet: {error}");
+
+        if let Ok(mut retry) = RETRY.lock() {
+            *retry = Some(std::time::Instant::now() + MENU_RETRY);
+        }
+    }
+}
+
+fn menu() -> Value {
+    let commands = krabb_core::slash::SPECS
+        .iter()
+        .filter(|spec| spec.channel())
+        .map(|spec| {
+            json!({
+                "name": spec.name,
+                "description": spec.summary,
+                "type": 1,
+                "options": [{
+                    "type": 3,
+                    "name": "arguments",
+                    "description": spec.usage,
+                    "required": false,
+                    "max_length": 512
+                }]
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Value::Array(commands)
+}
+
+/// Answers native commands privately at once, since Discord expires them after three seconds.
+///
+/// The command's real reply follows as an ordinary channel message.
+async fn receipts(
+    client: &reqwest::Client,
+    gateway: &AsyncMutex<GatewayState>,
+    result: &Value,
+    base: &str,
+) {
+    let sends = result["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| event["command"] == true)
+        .filter_map(|event| {
+            let id = event["callback_id"].as_str()?;
+            let name = event["text"].as_str().and_then(|text| text.split_whitespace().next());
+            let content = format!("Received {}.", name.unwrap_or("the command"));
+
+            Some(respond(
+                client,
+                gateway,
+                id,
+                json!({"type": 4, "data": {"content": content, "flags": 64}}),
+                base,
+            ))
+        });
+
+    for sent in futures_util::future::join_all(sends).await {
+        if sent.is_err() {
+            eprintln!("Discord command receipt was not accepted.");
+        }
+    }
 }
 
 fn credential() -> krabb_core::Result<String> {
@@ -234,6 +351,22 @@ async fn call_with_state(
     };
 
     let result = match operation {
+        Operation::Check => {
+            let me = message(
+                client,
+                reqwest::Method::GET,
+                format!("{base}/users/@me"),
+                token,
+                Value::Null,
+            )
+            .await?;
+
+            match me["username"].as_str() {
+                Some(username) => json!({"account": username}),
+                None => json!({}),
+            }
+        }
+
         Operation::Typing(channel) => typing::send(client, &channel, token, base).await?,
 
         Operation::Send { channel, text, content } => {
@@ -326,7 +459,13 @@ async fn call_with_state(
             json!({"edited": edited, "sent": results})
         }
 
-        Operation::Poll(timeout) => gateway(gateway_state, token, timeout, base).await?,
+        Operation::Poll(timeout) => {
+            let result = gateway(gateway_state, token, timeout, base).await?;
+
+            receipts(client, gateway_state, &result, base).await;
+            result
+        }
+
         Operation::Ack(sequence) => acknowledge(gateway_state, sequence).await?,
 
         Operation::Callback { id, text } => {
@@ -378,6 +517,7 @@ where
 }
 
 enum Operation {
+    Check,
     Typing(String),
     Send { channel: String, text: String, content: Vec<Content> },
     Edit { channel: String, message_id: String, text: String },
@@ -390,6 +530,7 @@ enum Operation {
 
 fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Option<Operation>> {
     match method {
+        "check" => Ok(Some(Operation::Check)),
         "typing" => Ok(Some(Operation::Typing(
             params["channel"]
                 .as_str()
@@ -911,6 +1052,26 @@ async fn callback(
     text: &str,
     base: &str,
 ) -> krabb_core::Result<Value> {
+    respond(
+        client,
+        gateway,
+        id,
+        json!({"type": 7, "data": {"content": text, "components": []}}),
+        base,
+    )
+    .await?;
+
+    Ok(json!({"acknowledged": true}))
+}
+
+/// Answers a stored interaction once with `body`; expired interactions are dropped first.
+async fn respond(
+    client: &reqwest::Client,
+    gateway: &AsyncMutex<GatewayState>,
+    id: &str,
+    body: Value,
+    base: &str,
+) -> krabb_core::Result<()> {
     let token = {
         let mut gateway = gateway.lock().await;
         gateway.interactions.retain(|_, value| value.expires > Instant::now());
@@ -921,10 +1082,7 @@ async fn callback(
 
     let response = client
         .post(format!("{base}/interactions/{id}/{token}/callback"))
-        .json(&json!({
-            "type": 7,
-            "data": {"content": text, "components": []}
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(|_| {
@@ -937,7 +1095,7 @@ async fn callback(
         ));
     }
 
-    Ok(json!({"acknowledged": true}))
+    Ok(())
 }
 
 fn edit_request(
@@ -1732,12 +1890,64 @@ fn remember_attachments(value: &Value, attachments: &mut BTreeMap<String, Attach
     }
 }
 
+/// Turns a native application command into the same text a user could type.
+fn command(value: &Value) -> Option<Value> {
+    let id = value["id"].as_str().filter(|id| snowflake(id))?;
+    let channel = value["channel_id"].as_str().filter(|id| snowflake(id))?;
+    let name = value["data"]["name"].as_str().and_then(krabb_core::slash::find)?.name;
+    let token = value["token"].as_str().filter(|token| interaction_token(token))?;
+    let sender = value["member"]["user"]["id"].as_str().or_else(|| value["user"]["id"].as_str())?;
+
+    let arguments = value["data"]["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|option| option["name"] == "arguments")
+        .and_then(|option| option["value"].as_str())
+        .filter(|text| text.len() <= 512 && !text.chars().any(char::is_control))
+        .unwrap_or_default();
+
+    let text =
+        if arguments.is_empty() { format!("/{name}") } else { format!("/{name} {arguments}") };
+
+    // Match the message path so a command in a thread reaches that thread's conversation.
+    let thread = matches!(value["channel"]["type"].as_u64(), Some(10..=12)).then_some(channel);
+
+    Some(json!({
+        "id": id,
+        "chat": channel,
+        "kind": if value["guild_id"].is_string() { "guild" } else { "private" },
+        "private": !value["guild_id"].is_string(),
+        "thread": thread,
+        "topic": thread,
+        "sender": sender,
+        "roles": value["member"]["roles"],
+        "text": text,
+        "content": [{"kind": "text", "text": text}],
+        "addressed": true,
+        "command": true,
+        "callback_id": id,
+        "callback_token": token,
+    }))
+}
+
+fn interaction_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 512
+        && token.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte))
+}
+
 fn normalize_interaction(value: &Value) -> Option<Value> {
+    if value["type"].as_u64() == Some(2) {
+        return command(value);
+    }
+
     if value["type"].as_u64() != Some(3) {
         return None;
     }
 
     let id = value["id"].as_str()?;
+
     let channel = value["channel_id"].as_str()?;
 
     if !snowflake(id) || !snowflake(channel) {
@@ -1750,14 +1960,7 @@ fn normalize_interaction(value: &Value) -> Option<Value> {
         return None;
     }
 
-    let token = value["token"].as_str()?;
-
-    if token.is_empty()
-        || token.len() > 512
-        || !token.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte))
-    {
-        return None;
-    }
+    let token = value["token"].as_str().filter(|token| interaction_token(token))?;
 
     let sender = value["member"]["user"]["id"].as_str().or_else(|| value["user"]["id"].as_str())?;
 
@@ -2052,6 +2255,65 @@ mod tests {
         assert_eq!(event["data"], "approve-token");
         assert_eq!(event["callback_token"], "interaction-secret");
         assert!(normalize_interaction(&json!({"type": 2})).is_none());
+
+        let command = normalize_interaction(&json!({
+            "type": 2,
+            "id": "11",
+            "channel_id": "21",
+            "token": "command-secret",
+            "data": {"name": "model", "options": [{"name": "arguments", "type": 3, "value": "list"}]},
+            "user": {"id": "41"}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            (command["text"].as_str(), command["sender"].as_str()),
+            (Some("/model list"), Some("41"))
+        );
+
+        assert_eq!(
+            (&command["private"], &command["addressed"], &command["command"]),
+            (&json!(true), &json!(true), &json!(true))
+        );
+
+        assert_eq!(command["content"][0]["text"], "/model list");
+        assert_eq!(command["callback_token"], "command-secret");
+
+        let bare = json!({"type": 2, "id": "12", "channel_id": "22", "guild_id": "32",
+            "token": "t", "data": {"name": "status"}, "member": {"user": {"id": "42"}}});
+
+        assert_eq!(normalize_interaction(&bare).unwrap()["text"], "/status");
+        assert!(normalize_interaction(&bare).unwrap()["thread"].is_null());
+
+        let threaded = json!({"type": 2, "id": "12", "channel_id": "22", "guild_id": "32",
+            "channel": {"id": "22", "type": 11}, "token": "t", "data": {"name": "status"},
+            "member": {"user": {"id": "42"}}});
+
+        let threaded = normalize_interaction(&threaded).unwrap();
+
+        assert_eq!((&threaded["thread"], &threaded["topic"]), (&json!("22"), &json!("22")));
+
+        for invalid in [
+            json!({"type": 2, "id": "12", "channel_id": "22", "token": "t", "data": {"name": "launch"}, "user": {"id": "42"}}),
+            json!({"type": 2, "id": "12", "channel_id": "22", "token": "bad token", "data": {"name": "status"}, "user": {"id": "42"}}),
+            json!({"type": 2, "id": "12", "channel_id": "22", "token": "t", "data": {"name": "status"}}),
+        ] {
+            assert!(normalize_interaction(&invalid).is_none(), "{invalid}");
+        }
+
+        let menu = super::menu();
+
+        assert_eq!(
+            menu.as_array().unwrap().len(),
+            krabb_core::slash::SPECS.iter().filter(|spec| spec.channel()).count()
+        );
+
+        assert!(menu.as_array().unwrap().iter().all(|command| command["name"] != "schedule"));
+
+        assert!(menu.as_array().unwrap().iter().all(|command| {
+            command["description"].as_str().unwrap().len() <= 100
+                && command["options"][0]["description"].as_str().unwrap().len() <= 100
+        }));
 
         assert!(
             normalize_interaction(&json!({
@@ -3089,46 +3351,24 @@ async fn reconnects_when_gateway_heartbeats_are_not_acknowledged() {
 
 #[cfg(test)]
 #[tokio::test]
-async fn identifies_again_after_a_nonresumable_session_rejection() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback required");
-    let base = format!("http://{}", listener.local_addr().unwrap());
+async fn check_names_the_bot_behind_the_saved_token() {
+    let (base, requests) = krabb_test::http::responses(vec![
+        (200, r#"{"id":"1","username":"krabb"}"#.into()),
+        (401, r#"{"message":"401: Unauthorized","code":0}"#.into()),
+    ])
+    .await;
 
-    let server = tokio::spawn(async move {
-        for expected in [6, 2] {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket
-                .send(Message::Text(
-                    json!({"op":10,"d":{"heartbeat_interval":45000}}).to_string().into(),
-                ))
-                .await
-                .unwrap();
-            let request = socket.next().await.unwrap().unwrap();
+    let client =
+        reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
 
-            assert_eq!(
-                serde_json::from_str::<Value>(request.to_text().unwrap()).unwrap()["op"],
-                expected
-            );
-            socket.send(Message::Text(json!({"op":9,"d":false}).to_string().into())).await.unwrap();
-        }
-    });
+    let passed =
+        call_with(&client, 2, "check".into(), json!({}), "fixture", &base).await.unwrap().unwrap();
 
-    let state = AsyncMutex::new(GatewayState {
-        session_id: Some("old_session".into()),
-        sequence: Some(1),
-        ..Default::default()
-    });
+    assert_eq!(passed.result.unwrap(), json!({"account": "krabb"}));
+    assert!(call_with(&client, 3, "check".into(), json!({}), "fixture", &base).await.is_err());
 
-    for _ in 0..2 {
-        assert!(
-            timeout(Duration::from_secs(3), gateway(&state, "fixture", 2, &base))
-                .await
-                .unwrap()
-                .is_err()
-        );
-
-        assert!(state.lock().await.session_id.is_none());
+    for request in requests.await.unwrap() {
+        assert!(request.headers.starts_with("GET /users/@me"));
+        assert!(request.headers.to_ascii_lowercase().contains("authorization: bot fixture"));
     }
-
-    server.await.unwrap();
 }

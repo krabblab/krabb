@@ -101,7 +101,8 @@ The contribution loop requires the same Linux process supervision and authentica
 Codex or Claude backend as the review loops, plus authenticated `gh` and push access
 to the GitHub `origin`. Agents reuse the existing restricted runner; only the host
 runs verification and Git/GitHub mutations. Configure the backend with
-`KRABB_CONTRIBLOOP_AGENT=codex` or `claude` and the shared `KRABB_LOOP_*` model settings.
+`KRABB_CONTRIBLOOP_AGENT=codex` or `claude` (default) and the shared `KRABB_LOOP_*` model
+settings.
 Agent timeout defaults to 60 minutes and each local verification has 30 minutes.
 `--max-repairs N` optionally limits recovery cycles across all phases (zero means unlimited);
 `--ci-timeout SECONDS` limits each CI wait (default 3600). Pending CI is checked immediately,
@@ -117,7 +118,9 @@ rejects a concurrent contribution loop.
 
 Use Linux or compatible WSL with `/proc`, Bash 4+, Python 3, Git, GNU coreutils, Cargo,
 Make, and an authenticated backend. Only Codex and Claude Code are supported;
-`auto` selects Codex first, then Claude. Incompatible CLIs fail explicitly.
+Every loop uses Claude unless `KRABB_LOOP_AGENT`, a loop-specific override, or
+`--agent` chooses `codex` or `auto` (Codex first, then Claude). Incompatible CLIs fail
+explicitly.
 
 - **Codex:** fresh ephemeral sessions with native read-only/workspace-write containment.
   A local sandbox preflight checks repository reads. MCP servers, hooks, apps, plugins,
@@ -134,13 +137,13 @@ use your configured provider; automated product tests must not call paid provide
 ## Configuration
 
 CLI flags override environment settings. Otherwise, `KRABB_REVLOOP_*`, `KRABB_SECLOOP_*`,
-or `KRABB_TESTLOOP_*` overrides `KRABB_LOOP_*`, then defaults apply.
+`KRABB_TESTLOOP_*`, or `KRABB_CONTRIBLOOP_*` overrides `KRABB_LOOP_*`, then defaults apply.
 
 | Suffix | Default |
 | --- | --- |
-| `AGENT` | `auto` |
-| `MODEL` | Codex: `gpt-6-astra`; Claude: `claude-fable-5-1` |
-| `REASONING` | Codex: `high`; Claude: backend default |
+| `AGENT` | `claude` |
+| `MODEL` | Claude: `claude-opus-5-5`; Codex: `gpt-6.2-sol` |
+| `REASONING` | `high`; `low`, `medium`, `xhigh`, and `max` are accepted |
 | `MAX_CYCLES` | `0` (unlimited); positive values set an explicit budget |
 | `CLEAN_PASSES` | `3` |
 | `OUTPUT` | `clean`; `verbose` prints transcripts |

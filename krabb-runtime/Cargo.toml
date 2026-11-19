@@ -18,6 +18,7 @@ krabb-log.workspace = true
 krabb-core = { path = "../krabb-core" }
 krabb-date.workspace = true
 krabb-file = { path = "../krabb-libs/file" }
+krabb-migrations = { path = "../krabb-libs/migrations" }
 getrandom.workspace = true
 jiff.workspace = true
 keyring.workspace = true

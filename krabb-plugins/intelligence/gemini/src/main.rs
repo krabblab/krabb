@@ -64,11 +64,11 @@ async fn generate(
         Request::Note { .. } => return Ok(None),
     };
 
-    if !matches!(method.as_str(), "generate" | "model.info") {
+    if !matches!(method.as_str(), "generate" | "model.info" | "check") {
         return Ok(None);
     }
 
-    let input: ModelRequest = if method == "model.info" {
+    let input: ModelRequest = if method != "generate" {
         ModelRequest {
             generation: None,
             model: params["model"].as_str().unwrap_or("default").into(),
@@ -93,10 +93,11 @@ async fn generate(
 
     let base = validate_base(&base)?;
 
-    if method == "model.info" {
+    if method != "generate" {
         let profile = context::profile(client, &input, &key, &base).await?;
+        let result = if method == "check" { json!({}) } else { serde_json::to_value(profile)? };
 
-        return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
+        return Ok(Some(Response::ok(id, result)));
     }
 
     if input.stream {

@@ -92,6 +92,9 @@ jobs:
           - name: File
             package: krabb-file
 
+          - name: Migrations
+            package: krabb-migrations
+
           - name: Runtime
             package: krabb-runtime
 

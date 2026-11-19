@@ -1226,7 +1226,8 @@ async fn workspace_failure_worker() {
 
     assert!(
         crate::queue_during_turn(
-            &channel, "telegram", "unset", &event, &policy, &sessions, &mut 0, &mut 100, None
+            &channel, "telegram", "unset", &event, &policy, &sessions, &mut 0, &mut 100, None,
+            None,
         )
         .await
         .unwrap()

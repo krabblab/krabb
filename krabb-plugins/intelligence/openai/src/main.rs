@@ -75,6 +75,14 @@ async fn generate(
         return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
     }
 
+    if method == "check" {
+        let request = client.get(format!("{}/models", base_url()?)).bearer_auth(credential()?);
+
+        krabb_http::accepted(request, "OpenAI").await?;
+
+        return Ok(Some(Response::ok(id, json!({}))));
+    }
+
     if method != "generate" {
         return Ok(None);
     }

@@ -17,3 +17,39 @@ default = "127.0.0.1:8787"
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_WHATSAPP_TOKEN]
+label = "Access token"
+help = "The access token for your Meta app. Temporary test tokens expire."
+url = "https://developers.facebook.com/apps"
+required = true
+
+[setup.KRABB_WHATSAPP_APP_SECRET]
+label = "App secret"
+help = "Your Meta app secret, under App settings > Basic."
+url = "https://developers.facebook.com/apps"
+required = true
+
+[setup.KRABB_WHATSAPP_VERIFY]
+label = "Webhook verify token"
+help = "A string you choose; enter the same value in Meta's webhook settings."
+required = true
+
+[setup.KRABB_WHATSAPP_PHONE]
+label = "Phone number ID"
+help = "The Phone Number ID from WhatsApp API Setup, not the phone number or WABA ID."
+example = "123456789012345"
+required = true
+kind = "integer"
+
+[setup.KRABB_WHATSAPP_GRAPH_URL]
+label = "Graph API URL"
+help = "The versioned base URL from Meta's request example."
+example = "https://graph.facebook.com/v23.0"
+required = true
+kind = "url"
+
+[setup.KRABB_WHATSAPP_LISTEN]
+label = "Webhook listener"
+help = "Local address for the webhook listener behind your HTTPS tunnel or proxy."
+kind = "address"

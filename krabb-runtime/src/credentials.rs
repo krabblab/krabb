@@ -38,6 +38,8 @@ trait Keyring {
     fn available(&self) -> bool;
     fn get(&self, id: &str) -> Result<Vec<u8>, Error>;
     fn set(&self, id: &str, key: &[u8]) -> Result<(), Error>;
+    /// Deletes a plugin's own keyring entry; returns whether one existed.
+    fn delete(&self, name: &str) -> Result<bool, Error>;
 }
 
 struct Native;
@@ -61,6 +63,23 @@ impl Keyring for Native {
                 "Could not save the credential key in the keyring; unlock it and retry.".into()
             })
     }
+
+    fn delete(&self, name: &str) -> Result<bool, Error> {
+        if !self.available() {
+            return Ok(false);
+        }
+
+        match keyring::Entry::new("it.airscript.krabb", name)
+            .and_then(|entry| entry.delete_credential())
+        {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+
+            Err(_) => {
+                Err("Could not delete the keyring entry; unlock the keyring and retry.".into())
+            }
+        }
+    }
 }
 
 // Unit tests never access a developer's OS keyring. Backend behavior uses injected fixtures.
@@ -76,6 +95,10 @@ impl Keyring for Native {
 
     fn set(&self, _: &str, _: &[u8]) -> Result<(), Error> {
         Err("Test keyring unavailable.".into())
+    }
+
+    fn delete(&self, _: &str) -> Result<bool, Error> {
+        Ok(false)
     }
 }
 
@@ -281,6 +304,41 @@ fn parent(path: &Path) -> &Path {
     path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
+/// Removes saved values by name; returns the names that were present.
+pub(super) fn forget(path: &Path, key_path: &Path, names: &[String]) -> Result<Vec<String>, Error> {
+    forget_with(path, key_path, names, &Native)
+}
+
+/// Deletes the plugin's own legacy keyring entry; returns whether one existed.
+pub(super) fn forget_entry(name: &str) -> Result<bool, Error> {
+    if std::env::var("KRABB_KEYRING").ok().as_deref() != Some("1") {
+        return Ok(false);
+    }
+
+    Native.delete(name)
+}
+
+fn forget_with(
+    path: &Path,
+    key_path: &Path,
+    names: &[String],
+    keyring: &impl Keyring,
+) -> Result<Vec<String>, Error> {
+    let mut removed = Vec::new();
+
+    if names.is_empty() {
+        return Ok(removed);
+    }
+
+    change_with(path, key_path, None, keyring, |existing| {
+        removed = names.iter().filter(|name| existing.remove(*name).is_some()).cloned().collect();
+
+        !removed.is_empty()
+    })?;
+
+    Ok(removed)
+}
+
 fn save_with(
     path: &Path,
     key_path: &Path,
@@ -288,11 +346,53 @@ fn save_with(
     preference: Option<bool>,
     keyring: &impl Keyring,
 ) -> Result<&'static str, Error> {
+    update_with(path, key_path, values, &[], preference, keyring)
+}
+
+/// Saves `values` and removes `cleared` in one locked write.
+pub(super) fn update(
+    path: &Path,
+    key_path: &Path,
+    values: Secrets,
+    cleared: &[String],
+    preference: Option<bool>,
+) -> Result<&'static str, Error> {
+    update_with(path, key_path, values, cleared, preference, &Native)
+}
+
+fn update_with(
+    path: &Path,
+    key_path: &Path,
+    values: Secrets,
+    cleared: &[String],
+    preference: Option<bool>,
+    keyring: &impl Keyring,
+) -> Result<&'static str, Error> {
+    change_with(path, key_path, preference, keyring, |existing| {
+        existing.retain(|name, _| !cleared.contains(name));
+        existing.extend(values);
+
+        true
+    })
+    .map(|backend| backend.unwrap_or("file"))
+}
+
+/// Applies `change` under the store lock and writes only when it reports a change.
+fn change_with(
+    path: &Path,
+    key_path: &Path,
+    preference: Option<bool>,
+    keyring: &impl Keyring,
+    change: impl FnOnce(&mut Secrets) -> bool,
+) -> Result<Option<&'static str>, Error> {
     let name = path.file_name().ok_or("A credential filename is required.")?.to_string_lossy();
     let _lock =
         super::lock_at_timeout(parent(path), &format!(".{name}.lock"), Duration::from_secs(5))?;
     let (mut existing, previous) = read_with(path, key_path, keyring)?;
-    existing.extend(values);
+
+    if !change(&mut existing) {
+        return Ok(None);
+    }
 
     let backend = match (preference, &previous) {
         (Some(true), _) => Backend::Keyring,
@@ -323,7 +423,7 @@ fn save_with(
 
     let envelope = encrypt(&existing, &key, backend)?;
     super::save_file(path, serde_json::to_vec_pretty(&envelope)?)?;
-    Ok(if backend == Backend::Keyring { "keyring" } else { "file" })
+    Ok(Some(if backend == Backend::Keyring { "keyring" } else { "file" }))
 }
 
 pub(super) fn resolve(names: &[String], root: &Path) -> Result<Secrets, Error> {

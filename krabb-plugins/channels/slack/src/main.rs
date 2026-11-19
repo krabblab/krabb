@@ -565,10 +565,22 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
         "typing" => typing::send(&app.client, &token, &params, "https://slack.com/api/").await?,
         "media" => media(app, &token, &params).await?,
         "info" => json!({"mode": "web_api", "socket_mode": true}),
+        "check" => check(&app.client, &token, "https://slack.com/api/").await?,
         _ => return Ok(None),
     };
 
     Ok(Some(Response::ok(id, result)))
+}
+
+/// Confirms the bot token with `auth.test` and names the bot and workspace it belongs to.
+async fn check(client: &reqwest::Client, token: &str, base: &str) -> krabb_core::Result<Value> {
+    let identity = api_at(client, token, "auth.test", json!({}), base).await?;
+
+    Ok(match (identity["user"].as_str(), identity["team"].as_str()) {
+        (Some(user), Some(team)) => json!({"account": format!("{user} in {team}")}),
+        (Some(user), None) => json!({"account": user}),
+        _ => json!({}),
+    })
 }
 
 async fn api_at(
@@ -984,6 +996,51 @@ async fn acknowledge_envelope(stream: &mut Socket, envelope: &str) -> krabb_core
     )
 }
 
+/// Answers a `/krabb` command privately at once; its reply follows as a normal message.
+async fn acknowledge_command(
+    stream: &mut Socket,
+    envelope: &str,
+    text: &str,
+) -> krabb_core::Result<()> {
+    let frame =
+        json!({"envelope_id": envelope, "payload": {"response_type": "ephemeral", "text": text}});
+
+    stream.send(Message::Text(frame.to_string().into())).await.map_err(|error| {
+        krabb_core::Error::Denied(format!("Slack Socket Mode acknowledgement failed: {error}."))
+    })
+}
+
+/// Turns Slack's `/krabb <command>` into the same text the host recognizes everywhere.
+///
+/// Slack reserves short names such as `/status`, so Krabb uses one root command.
+fn command(payload: &Value, channels: &str) -> Option<Value> {
+    if payload["command"] != format!("/{}", krabb_core::slash::ROOT) {
+        return None;
+    }
+
+    let chat = payload["channel_id"].as_str().filter(|chat| channel_allowed(channels, chat))?;
+    let sender = payload["user_id"].as_str().filter(|user| !user.is_empty())?;
+    let trigger = payload["trigger_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128)?;
+    let arguments = payload["text"].as_str().unwrap_or_default().trim();
+
+    if arguments.len() > 512 || arguments.chars().any(char::is_control) {
+        return None;
+    }
+
+    let text = format!("/{} {arguments}", krabb_core::slash::ROOT).trim_end().to_owned();
+
+    Some(json!({
+        "id": format!("command-{trigger}"),
+        "chat": chat,
+        "sender": sender,
+        "private": chat.starts_with('D'),
+        "text": text,
+        "thread": null,
+        "addressed": true,
+        "content": [{"kind": "text", "text": text}],
+    }))
+}
+
 fn channel_allowed(channels: &str, channel: &str) -> bool {
     channels.split(',').map(str::trim).any(|value| value == channel)
 }
@@ -1112,6 +1169,27 @@ async fn socket_poll_at(
 
     let stream = socket.as_mut().expect("socket was initialized");
     let envelope = value["envelope_id"].as_str().map(str::to_owned);
+
+    if value["type"] == "slash_commands" {
+        let Some(envelope) = envelope else {
+            return Ok(Some(Vec::new()));
+        };
+
+        let Some(event) = command(&value["payload"], channels) else {
+            acknowledge_command(stream, &envelope, "Krabb is not enabled in this conversation.")
+                .await?;
+
+            return Ok(Some(Vec::new()));
+        };
+
+        let chat = event["chat"].as_str().map(str::to_owned);
+        let attachments = app.attachments.lock().await.clone();
+
+        app.inbox.lock().await.stage_socket([(event, chat, None, None)], &attachments, "")?;
+        acknowledge_command(stream, &envelope, "Received.").await?;
+
+        return Ok(app.inbox.lock().await.pending_event().map(|event| vec![event]));
+    }
 
     if let Some(envelope) = envelope.as_deref()
         && (value["payload"]["event"]["type"] != "message"
@@ -1549,6 +1627,40 @@ mod tests {
 
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn root_commands_become_shared_command_text_in_enabled_conversations() {
+        let payload = json!({"command": "/krabb", "text": " model list ", "channel_id": "D1",
+            "user_id": "U1", "trigger_id": "1.2.abc"});
+
+        let event = command(&payload, "D1,C2").unwrap();
+
+        assert_eq!(event["text"], "/krabb model list");
+        assert_eq!(event["id"], "command-1.2.abc");
+        assert_eq!((&event["private"], &event["addressed"]), (&json!(true), &json!(true)));
+        assert_eq!(
+            command(
+                &json!({"command": "/krabb", "channel_id": "C2", "user_id": "U1",
+            "trigger_id": "t"}),
+                "D1,C2"
+            )
+            .unwrap()["text"],
+            "/krabb"
+        );
+
+        for invalid in [
+            json!({"command": "/status", "channel_id": "D1", "user_id": "U1", "trigger_id": "t"}),
+            json!({"command": "/krabb", "channel_id": "C9", "user_id": "U1", "trigger_id": "t"}),
+            json!({"command": "/krabb", "channel_id": "D1", "trigger_id": "t"}),
+            json!({"command": "/krabb", "channel_id": "D1", "user_id": "U1", "trigger_id": "t", "text": "a\nb"}),
+        ] {
+            assert!(command(&invalid, "D1,C2").is_none(), "{invalid}");
+        }
+
+        let manifest = include_str!("../app.yaml");
+
+        assert!(manifest.contains("command: /krabb") && manifest.contains("- commands"));
+    }
 
     fn test_client() -> reqwest::Client {
         reqwest::Client::builder().no_proxy().build().unwrap()
@@ -2154,6 +2266,20 @@ mod tests {
         );
 
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_names_the_bot_and_workspace() {
+        let (base, requests) = krabb_test::http::responses(vec![(
+            200,
+            r#"{"ok":true,"user":"krabb","team":"Lab"}"#.into(),
+        )])
+        .await;
+
+        let result = super::check(&test_client(), "token", &base).await;
+
+        assert_eq!(result.unwrap(), json!({"account": "krabb in Lab"}));
+        assert!(requests.await.unwrap()[0].headers.starts_with("POST /auth.test"));
     }
 
     #[tokio::test]

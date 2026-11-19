@@ -12,10 +12,17 @@ features:
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
 
+  slash_commands:
+    - command: /krabb
+      description: Run a Krabb command, such as status or session new.
+      usage_hint: "help | status | model list | session new"
+      should_escape: false
+
 oauth_config:
   scopes:
     bot:
       - chat:write
+      - commands
       - im:history
 
 settings:

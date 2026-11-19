@@ -1770,6 +1770,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "krabb-migrations"
+version = "0.1.0"
+dependencies = [
+ "krabb-file",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "krabb-openai"
 version = "0.1.0"
 dependencies = [
@@ -2165,6 +2174,7 @@ dependencies = [
  "krabb-date",
  "krabb-file",
  "krabb-log",
+ "krabb-migrations",
  "krabb-plugin-runner",
  "krabb-process",
  "krabb-text",

@@ -1,4 +1,5 @@
 //! Prepare replacements while installed processes serve, then commit at a turn boundary.
+pub(crate) mod command;
 mod image;
 mod review;
 pub(super) use image::Image;

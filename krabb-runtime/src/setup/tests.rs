@@ -1,3 +1,4 @@
+use super::prompt::Kind;
 use super::*;
 use crossterm::event::{KeyEvent, KeyEventState};
 use std::fs;
@@ -17,6 +18,8 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         permissions: vec![],
         variables: variables.iter().map(|name| (*name).into()).collect(),
         settings: Vec::new(),
+        setup: BTreeMap::new(),
+        check: false,
         commands: commands.clone(),
     };
 
@@ -68,10 +71,10 @@ fn secret_input_edits_cancels_and_bounds_without_echo() {
     ]
     .into_iter();
 
-    assert_eq!(input(|| Ok(events.next().unwrap())).unwrap(), "abcd");
+    assert_eq!(input(false, || Ok(events.next().unwrap())).unwrap(), "abcd");
 
     for text in ["a\nb".into(), "x".repeat(LIMIT + 1)] {
-        assert!(input(|| Ok(Event::Paste(text.clone()))).is_err());
+        assert!(input(false, || Ok(Event::Paste(text.clone()))).is_err());
     }
 
     for event in [
@@ -79,12 +82,14 @@ fn secret_input_edits_cancels_and_bounds_without_echo() {
         Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
     ] {
-        assert!(input(|| Ok(event.clone())).unwrap_err().to_string().contains("cancelled"));
+        assert!(input(false, || Ok(event.clone())).unwrap_err().to_string().contains("cancelled"));
     }
 
-    assert!(input(|| Ok(key(KeyCode::Char('a')))).unwrap_err().to_string().contains("limit"));
+    assert!(
+        input(false, || Ok(key(KeyCode::Char('a')))).unwrap_err().to_string().contains("limit")
+    );
 
-    assert!(input(|| Err(io::Error::other("closed"))).is_err());
+    assert!(input(false, || Err(io::Error::other("closed"))).is_err());
 }
 
 #[test]
@@ -92,12 +97,12 @@ fn validates_all_values_before_saving_and_never_quotes_invalid_values() {
     let names = ["KRABB_SETUP_A", "KRABB_SETUP_B"]
         .map(|name| Field::from(Setting { name: name.into(), default: None }));
 
-    let values = collect(&names, |_| Ok("synthetic".into())).unwrap();
+    let values = collect(&names, |_, _| Ok("synthetic".into())).unwrap().values;
 
     assert_eq!(values.len(), 2);
 
     for invalid in ["".into(), " ".into(), "synthetic\nvalue".into(), "x".repeat(LIMIT + 1)] {
-        let error = collect(&names, |_| Ok(invalid.clone())).unwrap_err().to_string();
+        let error = collect(&names, |_, _| Ok(invalid.clone())).unwrap_err().to_string();
 
         assert!(error.starts_with("Setup value must be"));
         assert!(!error.contains("synthetic"));
@@ -106,7 +111,7 @@ fn validates_all_values_before_saving_and_never_quotes_invalid_values() {
     let mut prompts = 0;
 
     assert!(
-        collect(&names, |_| {
+        collect(&names, |_, _| {
             prompts += 1;
 
             if prompts == 2 { Err("cancelled".into()) } else { Ok("synthetic".into()) }
@@ -116,35 +121,49 @@ fn validates_all_values_before_saving_and_never_quotes_invalid_values() {
 }
 
 #[test]
-fn empty_secrets_clear_saved_keys_without_leaking_to_plugins() {
+fn enter_keeps_saved_secrets_and_dash_clears_them_without_leaking_to_plugins() {
     let root = fixture("custom", &["KRABB_SETUP_A", "KRABB_SETUP_B"], vec![]);
-    let fields = fields(&root, "custom").unwrap();
+    let mut fields = fields(&root, "custom").unwrap();
     let destination = path(&root);
+    let key = crate::credentials::key_path(&root);
     let manifest = crate::read_manifest_checked(&root.join("plugins/custom")).unwrap();
 
-    for secret in ["", "synthetic", ""] {
-        let values = collect(&fields, |_| Ok(secret.into())).unwrap();
+    for (input, stored) in
+        [("", None), ("synthetic", Some("synthetic")), ("", Some("synthetic")), ("-", None)]
+    {
+        let saved = crate::credentials::read(&destination, &key).unwrap();
 
-        assert_eq!(values.len(), 2);
+        for field in &mut fields {
+            field.saved = saved.contains_key(&field.name);
+        }
 
-        save(&destination, values).unwrap();
+        let answers = collect(&fields, |_, _| Ok(input.into())).unwrap();
+
+        crate::credentials::update(
+            &destination,
+            &key,
+            answers.values,
+            &answers.cleared,
+            Some(false),
+        )
+        .unwrap();
 
         assert!(activation(&root, "custom", &destination.canonicalize().unwrap()).is_ok());
 
         let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
 
         for name in ["KRABB_SETUP_A", "KRABB_SETUP_B"] {
-            assert_eq!(read(&destination).unwrap()[name], secret);
+            assert_eq!(read(&destination).unwrap().get(name).map(String::as_str), stored);
 
             assert_eq!(
                 environment.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str()),
-                (!secret.is_empty()).then_some(secret)
+                stored
             );
         }
     }
 
     for invalid in [" ".into(), "synthetic\nvalue".into(), "x".repeat(LIMIT + 1)] {
-        let error = collect(&fields, |_| Ok(invalid.clone())).unwrap_err().to_string();
+        let error = collect(&fields, |_, _| Ok(invalid.clone())).unwrap_err().to_string();
 
         assert!(error.starts_with("Setup value must be"));
         assert!(!error.contains("synthetic"));
@@ -560,7 +579,7 @@ fn ollama_setup_switches_hosts_without_changing_the_service() {
     ] {
         let mut prompted = Vec::new();
 
-        let values = collect(&fields, |field| {
+        let answers = collect(&fields, |field, _| {
             prompted.push(field.name.clone());
 
             Ok(match field.name.as_str() {
@@ -582,9 +601,18 @@ fn ollama_setup_switches_hosts_without_changing_the_service() {
             ]
         );
 
-        assert_eq!(values["KRABB_OLLAMA_HOST"], expected);
+        assert_eq!(answers.values["KRABB_OLLAMA_HOST"], expected);
 
-        save(&destination, values).unwrap();
+        let key = crate::credentials::key_path(&root);
+
+        crate::credentials::update(
+            &destination,
+            &key,
+            answers.values,
+            &answers.cleared,
+            Some(false),
+        )
+        .unwrap();
 
         assert!(activation(&root, "ollama", &destination.canonicalize().unwrap()).is_ok());
         assert!(!fs::read_to_string(&destination).unwrap().contains("synthetic-ollama-secret"));
@@ -645,7 +673,7 @@ fn whatsapp_setup_persists_all_fields_for_activation_and_restart() {
     let fields = fields(&root, "whatsapp").unwrap();
     let mut prompted = Vec::new();
 
-    let values = collect(&fields, |field| {
+    let values = collect(&fields, |field, _| {
         prompted.push(field.name.clone());
 
         Ok(match field.name.as_str() {
@@ -655,7 +683,8 @@ fn whatsapp_setup_persists_all_fields_for_activation_and_restart() {
             _ => "synthetic-secret".into(),
         })
     })
-    .unwrap();
+    .unwrap()
+    .values;
 
     assert_eq!(
         prompted,
@@ -743,7 +772,7 @@ fn slack_setup_persists_conversations_for_activation_and_restart() {
     let fields = fields(&root, "slack").unwrap();
     let mut prompted = Vec::new();
 
-    let values = collect(&fields, |field| {
+    let values = collect(&fields, |field, _| {
         prompted.push(field.name.clone());
 
         Ok(match field.name.as_str() {
@@ -751,7 +780,8 @@ fn slack_setup_persists_conversations_for_activation_and_restart() {
             _ => "synthetic-slack-secret".into(),
         })
     })
-    .unwrap();
+    .unwrap()
+    .values;
 
     assert_eq!(
         prompted,
@@ -834,7 +864,7 @@ async fn settings_only_plugins_offer_setup_and_reject_unreviewed_defaults() {
     assert!(environment.contains(&("KRABB_SETUP_ADDRESS".into(), "127.0.0.1:8787".into())));
     assert!(!path(&root).exists());
 
-    let values = collect(&fields, |_| Ok("127.0.0.1:9898".into())).unwrap();
+    let values = collect(&fields, |_, _| Ok("127.0.0.1:9898".into())).unwrap().values;
 
     save(&path(&root), values).unwrap();
 
@@ -987,4 +1017,357 @@ fn environment_overrides_saved_settings_and_blocks_misleading_activation() {
     assert_eq!(read(&path(&root)).unwrap()[NAME], "127.0.0.1:8989");
 
     fs::remove_dir_all(root).unwrap();
+}
+
+fn described(name: &str, prompt: Prompt, saved: bool, default: Option<&str>) -> Field {
+    let mut field = Field::from(Setting { name: name.into(), default: default.map(Into::into) });
+
+    field.prompt = prompt;
+    field.saved = saved;
+
+    field
+}
+
+#[test]
+fn typed_fields_ask_again_after_invalid_input_and_keep_earlier_answers() {
+    let token = Prompt { label: Some("Bot token".into()), required: true, ..Prompt::default() };
+    let length = Prompt { kind: Kind::Integer, accept: vec!["auto".into()], ..Prompt::default() };
+    let host = Prompt { kind: Kind::Url, ..Prompt::default() };
+
+    let mut fields = vec![
+        Field::secret("KRABB_SETUP_TOKEN".into()),
+        described("KRABB_SETUP_LENGTH", length, false, Some("auto")),
+        described("KRABB_SETUP_HOST", host, true, None),
+    ];
+
+    fields[0].prompt = token;
+
+    let mut inputs = ["", "-", "synthetic", "lots", "4096", ""].into_iter();
+    let mut errors = Vec::new();
+
+    let answers = collect(&fields, |_, error| {
+        errors.extend(error.map(str::to_owned));
+
+        Ok(inputs.next().unwrap().into())
+    })
+    .unwrap();
+
+    assert_eq!(
+        errors,
+        [
+            "Bot token is required.",
+            "Bot token is required and cannot be cleared.",
+            "Enter a whole number or auto."
+        ]
+    );
+
+    assert_eq!(answers.values.len(), 2);
+    assert_eq!(answers.values["KRABB_SETUP_LENGTH"], "4096");
+    assert_eq!(answers.kept, ["KRABB_SETUP_HOST"]);
+
+    let rows = summary(&fields, &answers);
+
+    assert_eq!(
+        rows.iter().map(|(_, label, change)| format!("{label}: {change}")).collect::<Vec<_>>(),
+        ["Bot token: set", "KRABB_SETUP_LENGTH: set", "KRABB_SETUP_HOST: kept"]
+    );
+
+    let error = collect(&fields[1..2], |_, _| Ok("lots".into())).unwrap_err().to_string();
+
+    assert_eq!(error, "Enter a whole number or auto.");
+
+    let cleared = collect(&fields[2..], |_, _| Ok("-".into())).unwrap();
+
+    assert_eq!(cleared.cleared, ["KRABB_SETUP_HOST"]);
+    assert_eq!(summary(&fields[2..], &cleared)[0].2, "cleared");
+}
+
+#[test]
+fn kinds_accept_only_matching_values_and_never_quote_input() {
+    let check = |kind, value| Prompt { kind, ..Prompt::default() }.check(value).is_ok();
+
+    assert!(check(Kind::Text, "anything"));
+    assert!(check(Kind::Integer, "42") && !check(Kind::Integer, "-1"));
+    assert!(check(Kind::Boolean, "false") && !check(Kind::Boolean, "yes"));
+    assert!(check(Kind::Url, "https://ollama.com") && check(Kind::Url, "http://127.0.0.1:11434"));
+
+    assert!(
+        !check(Kind::Url, "ftp://x")
+            && !check(Kind::Url, "https://")
+            && !check(Kind::Url, "https:///x")
+    );
+
+    assert!(check(Kind::Address, "127.0.0.1:8787") && check(Kind::Address, "[::1]:80"));
+
+    assert!(
+        !check(Kind::Address, "localhost")
+            && !check(Kind::Address, ":80")
+            && !check(Kind::Address, "h:0")
+    );
+
+    let error =
+        Prompt { kind: Kind::Boolean, ..Prompt::default() }.check("secret-value").unwrap_err();
+
+    assert!(!error.contains("secret-value"));
+}
+
+#[test]
+fn manifest_setup_metadata_must_name_declared_fields_and_stay_public() {
+    let names = vec!["KRABB_SETUP_A".to_owned(), "KRABB_SETUP_B".to_owned()];
+    let defaults = vec![("KRABB_SETUP_B".to_owned(), Some("auto".to_owned()))];
+
+    let valid = |prompts: &[(&str, Prompt)]| {
+        let prompts =
+            prompts.iter().map(|(name, prompt)| ((*name).into(), prompt.clone())).collect();
+
+        validate_prompts(&prompts, &names, &defaults)
+    };
+
+    let described = Prompt {
+        label: Some("Token".into()),
+        help: Some("Create one in the dashboard.".into()),
+        example: Some("tok_123".into()),
+        url: Some("https://example.com/tokens".into()),
+        required: true,
+        ..Prompt::default()
+    };
+
+    assert!(valid(&[("KRABB_SETUP_A", described.clone())]).is_ok());
+    assert!(valid(&[("KRABB_SETUP_C", described.clone())]).unwrap_err().contains("undeclared"));
+
+    let insecure = Prompt { url: Some("http://example.com".into()), ..described.clone() };
+    let multiline = Prompt { help: Some("a\nb".into()), ..described.clone() };
+    let long = Prompt { label: Some("x".repeat(65)), ..described.clone() };
+    let dash = Prompt { accept: vec!["-".into()], ..Prompt::default() };
+    let default = Prompt { kind: Kind::Integer, ..Prompt::default() };
+    let accepted = Prompt { kind: Kind::Integer, accept: vec!["auto".into()], ..Prompt::default() };
+
+    for prompt in [insecure, multiline, long, dash] {
+        assert!(valid(&[("KRABB_SETUP_A", prompt)]).is_err());
+    }
+
+    assert!(valid(&[("KRABB_SETUP_B", default)]).unwrap_err().contains("default"));
+    assert!(valid(&[("KRABB_SETUP_B", accepted)]).is_ok());
+
+    let manifest: crate::Manifest = toml::from_str(concat!(
+        "id = 'custom'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\n",
+        "capabilities = ['channel']\nsecrets = ['KRABB_SETUP_A']\n",
+        "[setup.KRABB_SETUP_A]\nlabel = 'Token'\nrequired = true\n",
+    ))
+    .unwrap();
+
+    assert!(manifest.validate().is_ok());
+    assert_eq!(manifest.setup["KRABB_SETUP_A"].label.as_deref(), Some("Token"));
+
+    let unknown = toml::from_str::<crate::Manifest>(concat!(
+        "id = 'custom'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\n",
+        "capabilities = ['channel']\n[setup.KRABB_SETUP_A]\nlabels = 'Token'\n",
+    ));
+
+    assert!(unknown.is_err());
+}
+
+#[test]
+fn prompts_explain_fields_and_show_how_enter_behaves() {
+    let token = Prompt {
+        label: Some("Bot token".into()),
+        help: Some("Ask @BotFather.".into()),
+        url: Some("https://t.me/BotFather".into()),
+        example: Some("123:abc".into()),
+        required: true,
+        ..Prompt::default()
+    };
+
+    let mut field = described("KRABB_SETUP_TOKEN", token, false, None);
+
+    field.secret = true;
+
+    assert_eq!(
+        heading(&field),
+        concat!(
+            "\nBot token (required, KRABB_SETUP_TOKEN)\n",
+            "  Ask @BotFather.\n",
+            "  Get it: https://t.me/BotFather\n",
+            "  Example: 123:abc\n"
+        )
+    );
+
+    assert_eq!(hint(&field), "Bot token");
+
+    field.saved = true;
+
+    assert_eq!(hint(&field), "Bot token [saved; Enter keeps]");
+
+    field.prompt.required = false;
+
+    assert_eq!(hint(&field), "Bot token [saved; Enter keeps, - clears]");
+
+    field.saved = false;
+
+    assert_eq!(hint(&field), "Bot token [Enter skips]");
+
+    let host = described("KRABB_SETUP_HOST", Prompt::default(), false, Some("https://ollama.com"));
+
+    assert_eq!(hint(&host), "KRABB_SETUP_HOST [Enter uses https://ollama.com]");
+    assert_eq!(heading(&host), "\nKRABB_SETUP_HOST (optional, KRABB_SETUP_HOST)\n");
+
+    let mut events = [
+        key(KeyCode::Char('a')),
+        key(KeyCode::Backspace),
+        key(KeyCode::Backspace),
+        Event::Paste("bc".into()),
+        key(KeyCode::Enter),
+    ]
+    .into_iter();
+
+    assert_eq!(input(true, || Ok(events.next().unwrap())).unwrap(), "bc");
+}
+
+#[test]
+fn official_manifests_describe_every_setup_field() {
+    let plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krabb-plugins");
+    let mut pending = vec![plugins];
+    let mut described = 0;
+
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+
+            if path.is_dir() && path.file_name().is_some_and(|name| name != "target") {
+                pending.push(path);
+                continue;
+            }
+
+            if path.file_name().is_none_or(|name| name != "krabb-plugin.toml") {
+                continue;
+            }
+
+            let manifest: crate::Manifest = toml::from_str(&fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+
+            manifest.validate().unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+
+            for name in manifest.variables.iter().chain(manifest.settings.iter().map(|s| &s.name)) {
+                let prompt = manifest.setup.get(name);
+
+                assert!(
+                    prompt.is_some_and(|prompt| prompt.label.is_some()),
+                    "{} lacks a setup label for {name}",
+                    path.display()
+                );
+
+                described += 1;
+            }
+        }
+    }
+
+    assert!(described >= 20, "{described}");
+}
+
+#[cfg(unix)]
+fn checked(name: &str, check: bool, reply: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = crate::tests::test_root(name);
+    let source = root.join("source");
+    let binary = source.join("bin").join(crate::plugin_name("probe"));
+
+    crate::init_at(&root).unwrap();
+    fs::create_dir_all(source.join("bin")).unwrap();
+
+    fs::write(
+        source.join("krabb-plugin.toml"),
+        format!(
+            "id='probe'\nversion='0.1.0'\ncheck={check}\nsecrets=['KRABB_PROBE_TOKEN']\n\
+             protocol={{major=0,minor=1}}\ncapabilities=['channel']\n"
+        ),
+    )
+    .unwrap();
+
+    let hello = r#"{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"probe","version":"0.1.0","capabilities":["channel"]}}"#;
+
+    fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\n[ -n \"$KRABB_PROBE_TOKEN\" ] || exit 3\nwhile IFS= read -r line; do\n\
+             case \"$line\" in\n*hello*) printf '%s\\n' '{hello}' ;;\n\
+             *'\"check\"'*) printf '%s\\n' '{reply}' ;;\n\
+             *shutdown*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{{\"ok\":true}}}}'; exit 0 ;;\n\
+             esac\ndone\n"
+        ),
+    )
+    .unwrap();
+
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+    crate::credentials::update(
+        &path(&root),
+        &crate::credentials::key_path(&root),
+        BTreeMap::from([("KRABB_PROBE_TOKEN".into(), "saved-token".into())]),
+        &[],
+        Some(false),
+    )
+    .unwrap();
+
+    crate::link_at(
+        crate::Source {
+            id: "probe".into(),
+            source: Some(source.display().to_string()),
+            revision: None,
+            version: None,
+            yes: true,
+        },
+        false,
+        &root,
+    )
+    .unwrap();
+
+    root
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn connection_tests_report_the_account_and_never_fail_setup() {
+    let passed = checked(
+        "check-passed",
+        true,
+        r#"{"jsonrpc":"2.0","id":2,"result":{"account":"@krabb_bot"}}"#,
+    );
+
+    let result = check::run(&passed, "probe").await;
+
+    assert_eq!(result, json!({"status": "passed", "account": "@krabb_bot"}));
+    assert_eq!(check::line(&result).unwrap(), "Connection test passed as @krabb_bot.");
+
+    let failed = checked(
+        "check-failed",
+        true,
+        r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Rejected at https://user:secret@example.com"}}"#,
+    );
+
+    let result = check::run(&failed, "probe").await;
+    let line = check::line(&result).unwrap();
+
+    assert_eq!(result["status"], "failed");
+    assert!(line.starts_with("Connection test failed: Rejected at"));
+    assert!(!line.contains("secret"));
+
+    let older = checked(
+        "check-older",
+        true,
+        r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"method not found"}}"#,
+    );
+
+    let result = check::run(&older, "probe").await;
+
+    assert_eq!(result, json!({"status": "skipped"}));
+    assert_eq!(check::line(&result), None);
+
+    let undeclared = checked("check-undeclared", false, "never sent");
+
+    assert_eq!(check::run(&undeclared, "probe").await, json!({"status": "skipped"}));
+
+    for root in [passed, failed, older, undeclared] {
+        let _ = fs::remove_dir_all(root);
+    }
 }

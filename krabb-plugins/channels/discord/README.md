@@ -24,6 +24,14 @@ See [shared setup](../../../krabb-docs/authentication.md#plugin-setup) for encry
 storage, daemon activation, environment overrides, and service configuration.
 The legacy `discord` keyring entry remains supported with `KRABB_KEYRING=1`.
 
+## Commands
+
+On its first poll the plugin registers Krabb's shared commands as Discord application
+commands; Discord can take a while to show new commands in clients. Each command
+takes optional `arguments`, answers privately with a short receipt, and replies in the
+conversation. Typed commands such as `/status` also work. See
+[Conversation Commands](../../../krabb-docs/commands.md#conversation-commands).
+
 ## Messages And Media
 
 While a reply is being prepared, the plugin uses Discord's native typing

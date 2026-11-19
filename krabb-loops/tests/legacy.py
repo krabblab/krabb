@@ -151,6 +151,7 @@ class LegacyContract(unittest.TestCase):
 
         self.env.update(PATH=f'{bindir}:{os.environ["PATH"]}', FIXTURE=str(self.fixture),
                         KRABB_CODEX_HOME=str(self.root / 'private home'),
+                        KRABB_LOOP_AGENT='auto',
                         KRABB_REVLOOP_MAX_CYCLES='4', KRABB_REVLOOP_CLEAN_PASSES='2')
 
     def git(self, *args):
@@ -183,7 +184,7 @@ class LegacyContract(unittest.TestCase):
 
         for args in calls:
             self.assertIn('--ephemeral', args)
-            self.assertEqual(args[args.index('--model') + 1], 'gpt-6-astra')
+            self.assertEqual(args[args.index('--model') + 1], 'gpt-6.2-sol')
             self.assertEqual(args[args.index('--sandbox') + 1], 'read-only')
             self.assertNotIn('resume', args)
 
@@ -368,7 +369,9 @@ class LegacyContract(unittest.TestCase):
         self.assertIn('Unsupported agent', result.stderr)
 
     def test_claude_restricted_roles(self):
-        self.env['KRABB_LOOP_AGENT'] = 'claude'
+        # Claude is the default backend, so no agent setting is needed.
+        del self.env['KRABB_LOOP_AGENT']
+
         result = self.run_loop([FINDING, CLEAR])
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -382,7 +385,8 @@ class LegacyContract(unittest.TestCase):
             self.assertIn('--safe-mode', args)
             self.assertIn('--no-session-persistence', args)
             self.assertIn('--strict-mcp-config', args)
-            self.assertEqual(args[args.index('--model') + 1], 'claude-fable-5-1')
+            self.assertEqual(args[args.index('--model') + 1], 'claude-opus-5-5')
+            self.assertEqual(args[args.index('--effort') + 1], 'high')
 
             tools = args[args.index('--tools') + 1]
 

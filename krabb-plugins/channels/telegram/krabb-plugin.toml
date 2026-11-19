@@ -3,7 +3,15 @@ version = "0.1.0"
 capabilities = ["channel"]
 permissions = ["network", "filesystem"]
 secrets = ["KRABB_TELEGRAM_TOKEN"]
+check = true
 
 [protocol]
 major = 0
 minor = 1
+
+[setup.KRABB_TELEGRAM_TOKEN]
+label = "Bot token"
+help = "Create a bot with @BotFather and paste the token it sends you."
+url = "https://core.telegram.org/bots/tutorial"
+example = "123456789:AAE..."
+required = true

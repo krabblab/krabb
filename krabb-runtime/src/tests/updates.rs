@@ -130,6 +130,7 @@ fn lock_commit_failure_restores_installed_plugin_before_recovery() {
             id: "memory".into(),
             source: Some(source.display().to_string()),
             revision: None,
+            version: None,
             yes: true,
         },
         false,

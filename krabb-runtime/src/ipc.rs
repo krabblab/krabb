@@ -227,6 +227,7 @@ async fn handle(
         "delivery.drop" => drop_deliveries(&request, &state).await,
         "capability.call" => capability_call(&request, &state).await,
         "model.list" => model_list(&request, &state).await,
+        "command.run" => command(&request, &state).await,
         "approval.list" => approval_list(&request, &state).await,
         "approval.resolve" => approval_resolve(&request, &state).await,
 
@@ -236,6 +237,76 @@ async fn handle(
     };
 
     write_frame(&mut output, response).await
+}
+
+/// Runs a shared slash command typed in a client conversation; other text is left unhandled.
+async fn command(request: &IpcRequest, state: &State) -> IpcResponse {
+    let (Some(client), Some(session), Some(text)) = (
+        request.params["client"].as_str(),
+        request.params["session"].as_str(),
+        request.params["text"].as_str(),
+    ) else {
+        return IpcResponse::fail(
+            request.id,
+            -32602,
+            "command.run needs client, session, and text.",
+        );
+    };
+
+    if !state.known_client(client) || text.len() > krabb_core::task::INSTRUCTION_LIMIT {
+        return IpcResponse::fail(request.id, -32602, "Invalid client command.");
+    }
+
+    let owned = match state.sessions.lock() {
+        Ok(store) => store.sessions.get(session).is_none_or(|value| {
+            requests::owned(value, &super::sharing::Principal::Client(client.into()))
+        }),
+
+        Err(_) => false,
+    };
+
+    if !owned {
+        return IpcResponse::fail(
+            request.id,
+            -32602,
+            "This is not a conversation for that client.",
+        );
+    }
+
+    let Some(invocation) = krabb_core::slash::parse(text) else {
+        return IpcResponse::ok(request.id, json!({"handled": false}));
+    };
+
+    let (provider, model) = super::selection::current(&state.config, (None, None), (None, None));
+
+    let host = super::slash::Host {
+        plugins: &state.plugins,
+        sessions: &state.sessions,
+        cancels: &state.cancels,
+        approvals: &state.pending,
+        provider: &provider,
+        model: &model,
+        call: request.id,
+    };
+
+    let tools = state
+        .client(client)
+        .is_ok_and(|policy| policy.tools.load(std::sync::atomic::Ordering::Relaxed));
+
+    let caller = super::slash::Caller {
+        integration: client,
+        chat: session,
+        thread: None,
+        session,
+        sender: Some(client),
+        tools,
+        origin: super::slash::Origin::Text,
+    };
+
+    match super::slash::run(&host, &caller, invocation).await {
+        Ok(text) => IpcResponse::ok(request.id, json!({"handled": true, "text": text})),
+        Err(error) => IpcResponse::fail(request.id, -32000, error.to_string()),
+    }
 }
 
 async fn model_list(request: &IpcRequest, state: &State) -> IpcResponse {
@@ -1847,18 +1918,22 @@ async fn uninstall(request: &IpcRequest, state: &State) -> IpcResponse {
             |lock| super::check_plugin_state(lock, id, &state.home, &guard),
         );
 
-        if let Err(error) = removal {
-            if unloaded {
-                super::load_plugin(&state.home, id, None, false, &state.config, &state.plugins)
-                    .await?;
-            }
+        let revoked = match removal {
+            Ok(revoked) => revoked,
 
-            return Err(error);
-        }
+            Err(error) => {
+                if unloaded {
+                    super::load_plugin(&state.home, id, None, false, &state.config, &state.plugins)
+                        .await?;
+                }
+
+                return Err(error);
+            }
+        };
 
         Ok::<_, super::PluginError>(json!({
             "id": id, "version": version, "status": "uninstalled",
-            "unloaded": unloaded, "purged": purged,
+            "unloaded": unloaded, "purged": purged, "revoked": revoked,
         }))
     }
     .await;
