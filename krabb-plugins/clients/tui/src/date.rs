@@ -1,7 +1,7 @@
 pub(super) fn format_datetime(timestamp: u64) -> Option<String> {
     let timestamp = i64::try_from(timestamp).ok()?;
     let timestamp = jiff::Timestamp::from_second(timestamp).ok()?;
-    let zoned = timestamp.to_zoned(jiff::tz::TimeZone::system());
+    let zoned = timestamp.to_zoned_datetime(jiff::tz::TimeZone::system());
 
     Some(zoned.strftime("%Y-%m-%d at %H:%M").to_string())
 }

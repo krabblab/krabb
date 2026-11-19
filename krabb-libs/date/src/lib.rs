@@ -36,7 +36,7 @@ pub fn retry_after(value: &str, now: u64) -> Result<u64, String> {
 
         jiff::civil::DateTime::strptime(format, &normalized)
             .map_err(|_| invalid())?
-            .to_zoned(jiff::tz::TimeZone::UTC)
+            .to_zoned_datetime(jiff::tz::TimeZone::UTC)
             .map_err(|_| invalid())?
             .timestamp()
     };
@@ -55,8 +55,9 @@ fn expand_year(weekday: &str, rest: &str, now: i64) -> Option<String> {
 
     let year: i32 = parts[2].parse().ok()?;
 
-    let current =
-        i32::from(jiff::Timestamp::from_second(now).ok()?.to_zoned(jiff::tz::TimeZone::UTC).year());
+    let current = i32::from(
+        jiff::Timestamp::from_second(now).ok()?.to_zoned_datetime(jiff::tz::TimeZone::UTC).year(),
+    );
 
     let mut year = current.div_euclid(100) * 100 + year;
 
@@ -101,7 +102,7 @@ pub fn parse_datetime(value: &str, timezone: Option<&str>) -> Result<u64, String
     };
 
     let zoned = datetime
-        .to_zoned(timezone)
+        .to_zoned_datetime(timezone)
         .map_err(|error| format!("The local schedule time is invalid: {error}."))?;
 
     u64::try_from(zoned.timestamp().as_second())
@@ -120,8 +121,10 @@ pub fn parse_exact_datetime(value: &str, timezone: &str) -> Result<u64, String> 
             .to_owned()
     })?;
 
-    let zoned =
-        parse_timezone(timezone)?.to_ambiguous_zoned(datetime).unambiguous().map_err(|_| {
+    let zoned = parse_timezone(timezone)?
+        .to_ambiguous_zoned_datetime(datetime)
+        .unambiguous()
+        .map_err(|_| {
             "That local time is ambiguous or does not exist; include an explicit UTC offset."
                 .to_owned()
         })?;
@@ -297,7 +300,7 @@ pub fn format_datetime_in_timezone(timestamp: u64, timezone: &str) -> String {
         return format_datetime(timestamp);
     };
 
-    let local = timestamp_value.to_zoned(zone);
+    let local = timestamp_value.to_zoned_datetime(zone);
     let local_time = local.strftime("%Y-%m-%d %H:%M:%S %:z");
 
     format!("{local_time} ({timezone}; {})", format_datetime(timestamp))
