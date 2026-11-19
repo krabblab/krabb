@@ -38,7 +38,7 @@ pub fn update(args: &[String]) -> Result<Vec<Destination>, PluginError> {
 
     let mut destinations = Vec::new();
 
-    for pair in args.chunks_exact(2) {
+    for pair in args.as_chunks::<2>().0 {
         if pair[0] != "--to" {
             return Err("Use --to <destination> (repeatable), or --clear.".into());
         }

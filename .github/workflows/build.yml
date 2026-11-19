@@ -73,7 +73,7 @@ jobs:
 
       - name: Install Rust Toolchain
         if: inputs.local != 'true'
-        uses: dtolnay/rust-toolchain@1.99
+        uses: dtolnay/rust-toolchain@1.100
 
         with:
           targets: ${{ matrix.target }}
