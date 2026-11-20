@@ -62,6 +62,7 @@ mod external;
 mod failure;
 mod home;
 mod inbound;
+mod index;
 mod inference;
 pub(crate) mod ipc;
 mod jobs;

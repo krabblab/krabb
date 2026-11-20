@@ -402,12 +402,44 @@ pub(crate) fn download(
     url: &str,
     destination: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    download_with(url, destination, None, ARCHIVE_LIMIT)
+}
+
+/// Downloads a small document such as an index or checksum list, refusing one over `limit`.
+pub(crate) fn download_bounded(
+    url: &str,
+    limit: u64,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let temp = temp("krabb-download")?;
+    let path = temp.join("document");
+
+    let result =
+        download_with(url, &path, None, limit).and_then(|()| Ok(read_bounded(&path, limit)?));
+
+    let _ = std::fs::remove_dir_all(&temp);
+
+    result
+}
+
+/// Downloads at most `limit` bytes from `url`, sending the request headers stored in
+/// `headers` to its origin only.
+pub(crate) fn download_with(
+    url: &str,
+    destination: &Path,
+    headers: Option<&Path>,
+    limit: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connect = DOWNLOAD_CONNECT.to_string();
     let time = DOWNLOAD_TIME.to_string();
     let root = destination.parent().ok_or("Archive destination has no staging directory.")?;
+    let mut command = std::process::Command::new("curl");
+
+    if let Some(headers) = headers {
+        command.arg("--header").arg(format!("@{}", headers.display()));
+    }
 
     let output = match command_output_limited(
-        std::process::Command::new("curl")
+        command
             .args([
                 "--fail",
                 "--silent",
@@ -421,13 +453,13 @@ pub(crate) fn download(
                 "--max-time",
                 &time,
                 "--max-filesize",
-                &ARCHIVE_LIMIT.to_string(),
+                &limit.to_string(),
                 "--output",
             ])
             .arg(destination)
             .arg(url),
         Some(root),
-        ARCHIVE_LIMIT,
+        limit,
     ) {
         Ok(output) => output,
 
@@ -438,13 +470,13 @@ pub(crate) fn download(
     };
 
     if !output.status.success() {
-        return Err(format!("Archive download failed: {}", sentence(redact(&output.stderr))).into());
+        return Err(format!("Download failed: {}", sentence(redact(&output.stderr))).into());
     }
 
-    if std::fs::metadata(destination)?.len() > ARCHIVE_LIMIT {
+    if std::fs::metadata(destination)?.len() > limit {
         let _ = std::fs::remove_file(destination);
 
-        return Err("Archive download exceeded the size limit.".into());
+        return Err("Download exceeded the size limit.".into());
     }
 
     Ok(())

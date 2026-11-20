@@ -1,4 +1,4 @@
-"""Local release artifacts must pass integrity checks before activation or delegation."""
+"""Host release archives must pass integrity checks; plugins are delegated to the index."""
 
 import hashlib
 import io
@@ -90,7 +90,7 @@ class Installers(unittest.TestCase):
         (self.release / 'SHA256SUMS').write_text(f'{expected}  {name}\n')
         return archive, digest, payload
 
-    def run_installer(self, plugin):
+    def run_installer(self, plugin, **env):
         executable = shutil.which('pwsh' if WINDOWS else 'sh')
 
         if not executable:
@@ -98,28 +98,27 @@ class Installers(unittest.TestCase):
 
         args = [executable, '-NoProfile', '-File'] if WINDOWS else [executable]
 
-        return subprocess.run([*args, str(INSTALLER), plugin], env=self.env,
+        return subprocess.run([*args, str(INSTALLER), plugin], env={**self.env, **env},
                               capture_output=True, text=True, timeout=20)
 
-    def test_rejects_downloads_before_replacement_or_plugin_delegation(self):
-        for plugin in ['core', 'tools']:
-            for checksum in ['mismatch', 'missing']:
-                with self.subTest(plugin=plugin, checksum=checksum):
-                    self.artifact(plugin, checksum)
+    def test_rejects_downloads_before_replacement(self):
+        for checksum in ['mismatch', 'missing']:
+            with self.subTest(checksum=checksum):
+                self.artifact('core', checksum)
 
-                    result = self.run_installer(plugin)
+                result = self.run_installer('core')
 
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
-                    message = ('Checksum is missing' if checksum == 'missing' else
-                               'Checksum verification failed')
+                message = ('Checksum is missing' if checksum == 'missing' else
+                           'Checksum verification failed')
 
-                    self.assertIn(message, result.stderr)
+                self.assertIn(message, result.stderr)
 
-                    for name, content in self.installed.items():
-                        self.assertEqual((self.bin / name).read_bytes(), content)
+                for name, content in self.installed.items():
+                    self.assertEqual((self.bin / name).read_bytes(), content)
 
-                    self.assertFalse(self.calls.exists(), 'rejected download was delegated')
+                self.assertFalse(self.calls.exists(), 'rejected download was delegated')
 
     def test_valid_checksum_replaces_both_binaries(self):
         _, _, payload = self.artifact('core', 'valid')
@@ -132,20 +131,51 @@ class Installers(unittest.TestCase):
 
         self.assertFalse(self.calls.exists())
 
-    def test_valid_checksum_delegates_verified_plugin(self):
-        archive, digest, _ = self.artifact('tools', 'valid')
-        result = self.run_installer('tools')
+    def test_plugins_are_delegated_to_the_plugin_index(self):
+        result = self.run_installer('tools', KRABB_VERSION='', KRABB_RELEASE_BASE='')
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-        call = self.calls.read_text()
+        call = self.calls.read_text().split()
 
-        for argument in ['plugin', 'install', 'tools',
-                         archive.as_uri() + '#sha256=' + digest, '--yes']:
-            self.assertIn(argument, call)
+        self.assertEqual(call, ['plugin', 'install', 'tools', '--yes'])
 
         for name, content in self.installed.items():
             self.assertEqual((self.bin / name).read_bytes(), content)
+
+    def test_plugin_versions_are_passed_to_the_plugin_index(self):
+        result = self.run_installer('tools@0.1.0', KRABB_VERSION='', KRABB_RELEASE_BASE='')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        self.assertEqual(self.calls.read_text().split(),
+                         ['plugin', 'install', 'tools@0.1.0', '--yes'])
+
+    def test_core_versions_point_to_the_version_variable(self):
+        result = self.run_installer('core@1.2.3')
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Set KRABB_VERSION', result.stderr)
+        self.assertFalse(self.calls.exists())
+
+    def test_invalid_plugin_ids_are_rejected(self):
+        for plugin in ['../tools', 'tools@', 'tools@1@2', 'Tools', 'tools\nok']:
+            with self.subTest(plugin=plugin):
+                result = self.run_installer(plugin, KRABB_VERSION='')
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('is not valid', result.stderr)
+                self.assertFalse(self.calls.exists())
+
+    def test_plugin_installs_refuse_core_variables(self):
+        for env, message in [({}, 'install a plugin version with tools@VERSION'),
+                             ({'KRABB_VERSION': ''}, 'plugins come from the plugin index')]:
+            with self.subTest(message=message):
+                result = self.run_installer('tools', **env)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.calls.exists())
 
 
 if __name__ == '__main__':

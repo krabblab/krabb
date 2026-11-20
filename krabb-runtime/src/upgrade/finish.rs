@@ -44,30 +44,21 @@ pub(super) async fn run(
 }
 
 fn install(root: &Path, dir: &Path, artifact: &stage::Artifact) -> Result<(), PluginError> {
-    let (_, digest) =
-        releases::parts(&artifact.source).ok_or("A staged plugin source has no checksum.")?;
-
     let archive = dir.join(&artifact.file);
 
-    link_at(
+    link_recorded(
         Source {
             id: artifact.id.clone(),
-            source: Some(format!("{}#sha256={digest}", archive.display())),
+            source: Some(format!("{}#sha256={}", archive.display(), artifact.sha256)),
             revision: None,
             version: None,
             yes: true,
         },
         false,
         root,
+        Some(&index::source(&artifact.id, None)),
     )
     .map_err(|error| format!("Plugin {} failed: {}", artifact.id, sentence(error.to_string())))?;
-
-    let _plugins = lock_at(root, ".plugins.lock")?;
-    let mut lock = load_lock_at(root)?;
-    let entry = lock.plugins.get_mut(&artifact.id).ok_or("A staged plugin was not recorded.")?;
-
-    entry.source = artifact.source.clone();
-    save_lock_at(root, &lock)?;
 
     Ok(())
 }

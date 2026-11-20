@@ -2,11 +2,10 @@
 set -eu
 
 usage() {
-    printf '%s\n' 'Usage: install.sh [PLUGIN]'
-    printf '%s\n' 'Install Krabb core or one official plugin from a release.'
+    printf '%s\n' 'Usage: install.sh [PLUGIN[@VERSION]]'
+    printf '%s\n' 'Install Krabb core from a release, or one official plugin from the plugin index.'
     printf '%s\n' \
-        'Environment: KRABB_VERSION, KRABB_RELEASE_BASE,' \
-        '             KRABB_PREFIX, KRABB_HOME, KRABB_BIN.'
+        'Environment: KRABB_VERSION and KRABB_RELEASE_BASE (core), KRABB_PREFIX, KRABB_BIN.'
 }
 
 die() {
@@ -28,10 +27,46 @@ fi
 }
 
 plugin=${1:-core}
-case "$plugin" in
-    core|acp|a2a|runner|ag-ui|codex|anthropic|openai|gemini|ollama|openrouter|telegram|discord|whatsapp|signal|slack|sqlite|memory|scheduler|tools|mcp|whisper|tui|browser|computer) ;;
-    *) die "Unknown plugin '$plugin'." ;;
+id=${plugin%%@*}
+pin=${plugin#"$id"}
+
+invalid="Plugin ID '$plugin' is not valid."
+
+case "$id" in
+    '' | [![:lower:][:digit:]]* | *[![:lower:][:digit:]-]*) die "$invalid" ;;
 esac
+
+case "$pin" in
+    '') ;;
+    @ | @*[![:alnum:].-]*) die "$invalid" ;;
+esac
+
+if [ -n "${KRABB_PREFIX:-}" ]; then
+    prefix=$KRABB_PREFIX
+else
+    [ -n "${HOME:-}" ] || die 'HOME is not set; configure KRABB_PREFIX.'
+    prefix="$HOME/.local"
+fi
+
+case "$plugin" in
+    core@*) die 'Set KRABB_VERSION to choose a Krabb version.' ;;
+esac
+
+if [ "$plugin" != core ]; then
+    [ -z "${KRABB_VERSION:-}" ] || \
+        die "KRABB_VERSION applies to Krabb itself; install a plugin version with $id@VERSION."
+    [ -z "${KRABB_RELEASE_BASE:-}" ] || \
+        die 'KRABB_RELEASE_BASE applies to Krabb itself; plugins come from the plugin index.'
+    krabb=${KRABB_BIN:-"$prefix/bin/krabb"}
+    if [ ! -x "$krabb" ]; then
+        krabb=$(command -v krabb || true)
+    fi
+    [ -n "$krabb" ] && [ -x "$krabb" ] || \
+        die 'Install the Krabb core before installing an official plugin.'
+    "$krabb" plugin install "$plugin" --yes
+    info "Installed plugin $plugin."
+    exit 0
+fi
 
 for command in awk curl find install mkdir mktemp mv tar tr; do
     command -v "$command" >/dev/null 2>&1 || die "The $command command is required."
@@ -75,17 +110,9 @@ then
     die "Version '$version' is not valid."
 fi
 
-if [ -n "${KRABB_PREFIX:-}" ]; then
-    prefix=$KRABB_PREFIX
-else
-    [ -n "${HOME:-}" ] || die 'HOME is not set; configure KRABB_PREFIX.'
-    prefix="$HOME/.local"
-fi
-
 target="$target_arch-$target_os"
 name=krabb
-[ "$plugin" = core ] || name="krabb-plugin-$plugin"
-archive_name="krabb-$plugin-v$version-$target.$archive_format"
+archive_name="krabb-core-v$version-$target.$archive_format"
 base=${KRABB_RELEASE_BASE:-"https://github.com/krabblab/krabb/releases/download/v$version"}
 base=${base%/}
 case "$base" in
@@ -115,34 +142,14 @@ else
 fi
 [ "$actual" = "$expected" ] || die "Checksum verification failed for '$archive_name'."
 
-if [ "$plugin" = core ]; then
-    tar -xzf "$tmp/$archive_name" -C "$tmp"
-    binary=$(find "$tmp" -type f -name "$name" -print -quit)
-    [ -n "$binary" ] || die "Archive does not contain '$name'."
-    daemon=$(find "$tmp" -type f -name "krabb-daemon" -print -quit)
-    [ -n "$daemon" ] || die "Archive does not contain 'krabb-daemon'."
-    mkdir -p "$prefix/bin"
-    install -m 0755 "$binary" "$prefix/bin/.$name.tmp.$$"
-    mv -f "$prefix/bin/.$name.tmp.$$" "$prefix/bin/$name"
-    install -m 0755 "$daemon" "$prefix/bin/.krabb-daemon.tmp.$$"
-    mv -f "$prefix/bin/.krabb-daemon.tmp.$$" "$prefix/bin/krabb-daemon"
-    info "Installed $name and krabb-daemon in $prefix/bin."
-else
-    if [ -n "${KRABB_HOME:-}" ]; then
-        config=$KRABB_HOME
-    elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
-        config="$XDG_CONFIG_HOME/krabb"
-    else
-        [ -n "${HOME:-}" ] || die 'HOME is not set; configure KRABB_HOME.'
-        config="$HOME/.config/krabb"
-    fi
-    mkdir -p "$config/plugins"
-    krabb=${KRABB_BIN:-"$prefix/bin/krabb"}
-    if [ ! -x "$krabb" ]; then
-        krabb=$(command -v krabb || true)
-    fi
-    [ -n "$krabb" ] && [ -x "$krabb" ] || \
-        die 'Install the Krabb core before installing an official plugin.'
-    "$krabb" plugin install "$plugin" --source "$base/$archive_name#sha256=$expected" --yes
-    info "Installed plugin $plugin."
-fi
+tar -xzf "$tmp/$archive_name" -C "$tmp"
+binary=$(find "$tmp" -type f -name "$name" -print -quit)
+[ -n "$binary" ] || die "Archive does not contain '$name'."
+daemon=$(find "$tmp" -type f -name "krabb-daemon" -print -quit)
+[ -n "$daemon" ] || die "Archive does not contain 'krabb-daemon'."
+mkdir -p "$prefix/bin"
+install -m 0755 "$binary" "$prefix/bin/.$name.tmp.$$"
+mv -f "$prefix/bin/.$name.tmp.$$" "$prefix/bin/$name"
+install -m 0755 "$daemon" "$prefix/bin/.krabb-daemon.tmp.$$"
+mv -f "$prefix/bin/.krabb-daemon.tmp.$$" "$prefix/bin/krabb-daemon"
+info "Installed $name and krabb-daemon in $prefix/bin."

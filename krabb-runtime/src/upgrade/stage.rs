@@ -1,4 +1,5 @@
-//! Download, verify, and unpack a release set before the installation changes.
+//! Download, verify, and unpack a host release and the plugins it needs before the
+//! installation changes.
 
 use std::collections::BTreeMap;
 
@@ -10,7 +11,7 @@ pub(super) const PLAN: &str = "plan.json";
 
 const PLAN_LIMIT: u64 = 1024 * 1024;
 
-/// Staged release set handed to the new binary; later releases must keep reading it.
+/// Staged update handed to the new binary; later releases must keep reading it.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct Plan {
     pub version: String,
@@ -20,10 +21,9 @@ pub(super) struct Plan {
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct Artifact {
     pub id: String,
-    /// Release archive URL with its `#sha256=` digest, recorded in the plugin lock.
-    pub source: String,
     /// Verified archive file name inside the staging directory.
     pub file: String,
+    pub sha256: String,
 }
 
 /// What the downloaded host reports about itself and this home.
@@ -43,7 +43,7 @@ pub(super) struct Schema {
     pub steps: Vec<String>,
 }
 
-/// A prepared release set; its directory is removed unless it is kept.
+/// A prepared update; its directory is removed unless it is kept.
 pub(super) struct Staged {
     pub dir: PathBuf,
     pub krabb: PathBuf,
@@ -74,7 +74,6 @@ impl Drop for Staged {
 pub(super) fn prepare(
     root: &Path,
     version: &str,
-    ids: &[String],
     base: Option<&str>,
 ) -> Result<Staged, PluginError> {
     let dir = root.join("updates").join(format!("v{version}"));
@@ -91,7 +90,7 @@ pub(super) fn prepare(
         keep: false,
     };
 
-    let core = fetch(&dir, &releases::source_at("core", version, base)?)?;
+    let core = fetch(&dir, &releases::source_at(version, base)?)?;
     let unpacked = dir.join("core");
 
     std::fs::create_dir(&unpacked)?;
@@ -100,23 +99,65 @@ pub(super) fn prepare(
     staged.krabb = binary(&unpacked, "krabb")?;
     staged.daemon = binary(&unpacked, "krabb-daemon")?;
 
-    for id in ids {
-        let source = releases::source_at(id, version, base)?;
-        let archive = fetch(&dir, &source)?;
-        let manifest = inspect_plugin(id, &archive, &source)?;
+    Ok(staged)
+}
+
+/// Stages the newest version of each official plugin the downloaded host cannot load, and
+/// rejects other plugins it cannot load, then saves the plan for the new host.
+pub(super) fn plugins(
+    staged: &mut Staged,
+    lock: &Lock,
+    inspection: &Inspection,
+    load: &dyn Fn() -> Result<std::sync::Arc<index::Index>, PluginError>,
+) -> Result<(), PluginError> {
+    let protocol = inspection.protocol.unwrap_or(Protocol::CURRENT);
+    let mut published = None;
+
+    for (id, entry) in &lock.plugins {
+        if protocol.compatible(entry.protocol) {
+            continue;
+        }
+
+        if index::official(entry).is_none() {
+            return Err(format!(
+                "Plugin {id} uses protocol {}.{}, which Krabb {} does not support. Uninstall it, \
+                 update, then install a build for the new protocol. The installation was not \
+                 changed.",
+                entry.protocol.major, entry.protocol.minor, inspection.version
+            )
+            .into());
+        }
+
+        let published = match &published {
+            Some(published) => published,
+            None => published.insert(load()?),
+        };
+
+        let choice = index::select(published, id, None, protocol).map_err(|error| {
+            format!(
+                "Krabb {} cannot load the installed {id} plugin: {} The installation was not \
+                 changed.",
+                inspection.version,
+                sentence(error.to_string())
+            )
+        })?;
+
+        let archive = index::pull(published, id, &choice, &staged.dir)?;
+        let digest = choice.artifact.sha256.clone();
+        let manifest = inspect_plugin(id, &archive, &digest)?;
         let file = archive.file_name().map(|name| name.to_string_lossy().into_owned());
 
         staged.manifests.insert(id.clone(), manifest);
         staged.plan.plugins.push(Artifact {
             id: id.clone(),
-            source,
             file: file.unwrap_or_default(),
+            sha256: digest,
         });
     }
 
-    krabb_file::save(dir.join(PLAN), serde_json::to_vec_pretty(&staged.plan)?)?;
+    krabb_file::save(staged.dir.join(PLAN), serde_json::to_vec_pretty(&staged.plan)?)?;
 
-    Ok(staged)
+    Ok(())
 }
 
 pub(super) fn plan(dir: &Path) -> Result<Plan, PluginError> {
@@ -135,9 +176,12 @@ pub(super) fn compatible(staged: &Staged, inspection: &Inspection) -> Result<(),
     for (id, manifest) in &staged.manifests {
         if !protocol.compatible(manifest.protocol) {
             return Err(format!(
-                "The {id} plugin in Krabb {} uses protocol {}.{}, which that release does not \
-                 support. The installation was not changed.",
-                inspection.version, manifest.protocol.major, manifest.protocol.minor
+                "Plugin {id} {} uses protocol {}.{}, which Krabb {} does not support. The \
+                 installation was not changed.",
+                manifest.version,
+                manifest.protocol.major,
+                manifest.protocol.minor,
+                inspection.version
             )
             .into());
         }
@@ -259,16 +303,15 @@ fn fetch(dir: &Path, source: &str) -> Result<PathBuf, PluginError> {
     Ok(destination)
 }
 
-fn inspect_plugin(id: &str, archive: &Path, source: &str) -> Result<Manifest, PluginError> {
-    let digest = releases::parts(source).map(|(_, digest)| digest).unwrap_or_default();
+fn inspect_plugin(id: &str, archive: &Path, digest: &str) -> Result<Manifest, PluginError> {
     let root = resolve(&format!("{}#sha256={digest}", archive.display()), None)?;
     let bytes = read_bounded(&root.path.join("krabb-plugin.toml"), MANIFEST_LIMIT)?;
 
     let manifest: Manifest = toml::from_slice(&bytes)
-        .map_err(|error| format!("The {id} release manifest is invalid: {error}"))?;
+        .map_err(|error| format!("The {id} plugin manifest is invalid: {error}"))?;
 
     if manifest.id != id {
-        return Err(format!("The {id} release archive contains plugin {}.", manifest.id).into());
+        return Err(format!("The {id} plugin archive contains plugin {}.", manifest.id).into());
     }
 
     Ok(manifest)

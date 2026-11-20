@@ -787,6 +787,23 @@ pub(crate) fn changed(
     id: &str,
     entry: &Entry,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some((official, version)) = index::official(entry) {
+        let index = index::load(root)?;
+
+        let choice = match index::select(&index, official, version, Protocol::CURRENT) {
+            Ok(choice) => choice,
+
+            Err(error) => {
+                debug!(plugin = %id, error = %error, "No plugin version is selectable.");
+                return Ok(false);
+            }
+        };
+
+        return Ok(
+            index::newer(&choice.release.version, entry) && root.join("plugins").join(id).is_dir()
+        );
+    }
+
     let pin = entry.pinned.then_some(entry.revision.as_str());
     let source = resolve(&entry.source, pin)?;
     let Some(binary) = plugin_binary(&source.path, id, entry.default) else {

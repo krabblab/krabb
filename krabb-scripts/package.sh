@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-plugins=(core acp a2a runner ag-ui codex anthropic openai gemini ollama openrouter telegram discord whatsapp signal slack sqlite memory scheduler tools mcp whisper tui browser computer)
-
 usage() {
-    printf '%s\n' 'Usage: krabb-scripts/package.sh VERSION TARGET'
-    printf '%s\n' 'Build and archive every Krabb binary for a target triple.'
+    printf '%s\n' 'Usage: krabb-scripts/package.sh TARGET [NAME...]'
+    printf '%s\n' 'Build and archive core or plugins for a target triple; NAME defaults to core.'
+    printf '%s\n' 'Core uses VERSION; each plugin uses the version in its manifest.'
 }
 
 die() {
@@ -22,15 +21,15 @@ if (($# == 1)) && [[ "$1" == '--help' || "$1" == '-h' ]]; then
     exit 0
 fi
 
-if (($# != 2)); then
+if (($# < 1)); then
     usage >&2
     exit 2
 fi
 
-version=$1
-target=$2
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || \
-    die "Version '$version' is not a valid release version."
+target=$1
+shift
+names=("$@")
+((${#names[@]})) || names=(core)
 [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || \
     die "Target '$target' is not a valid target triple."
 
@@ -49,51 +48,76 @@ if [[ "$target" == *-pc-windows-* ]]; then
     command -v zip >/dev/null 2>&1 || die 'The zip command is required for Windows archives.'
 fi
 
+valid_version() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+}
+
+manifest_for() {
+    local candidate
+
+    while IFS= read -r -d '' candidate; do
+        if grep -Eq "^id = \"$1\"$" "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done < <(find "$repo_root/krabb-plugins" -name krabb-plugin.toml -not -path '*/target/*' -print0)
+
+    return 1
+}
+
+version_for() {
+    if [[ "$1" == core ]]; then
+        tr -d '[:space:]' < "$repo_root/VERSION"
+    else
+        sed -n 's/^version = "\(.*\)"$/\1/p' "$(manifest_for "$1")" | head -n 1
+    fi
+}
+
 release="$repo_root/target/$target/release"
 stage=$(mktemp -d "$repo_root/.package.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
+packages=()
 
-info "Building workspace for $target."
-(cd "$repo_root" && cargo build --workspace --release --locked --target "$target")
+for name in "${names[@]}"; do
+    [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "Name '$name' is not a valid package name."
 
-for plugin in "${plugins[@]}"; do
-    case "$plugin" in
-        core)
-            artifact=krabb
-            name=krabb
-            ;;
-        *)
-            artifact="krabb-plugin-$plugin"
-            name="krabb-plugin-$plugin"
-            ;;
-    esac
+    if [[ "$name" == core ]]; then
+        packages+=(-p krabb -p krabb-daemon)
+    else
+        manifest_for "$name" >/dev/null || die "Plugin manifest is missing: $name."
+        packages+=(-p "krabb-plugin-$name")
+    fi
 
-    package_name="krabb-$plugin-v$version-$target"
+    version=$(version_for "$name")
+    valid_version "$version" || die "Version '$version' of '$name' is not a valid release version."
+done
+
+info "Building ${names[*]} for $target."
+(cd "$repo_root" && cargo build --release --locked --target "$target" "${packages[@]}")
+
+for name in "${names[@]}"; do
+    artifact=krabb
+    [[ "$name" == core ]] || artifact="krabb-plugin-$name"
+
+    package_name="krabb-$name-v$(version_for "$name")-$target"
     package_dir="$stage/$package_name"
     binary="$release/$artifact"
     [[ -f "$binary" ]] || binary="$release/$artifact.exe"
     [[ -f "$binary" ]] || die "Built binary '$artifact' was not found for '$target'."
 
     mkdir -p "$package_dir/bin"
-    destination="$package_dir/bin/$name"
+    destination="$package_dir/bin/$artifact"
     [[ "$binary" == *.exe ]] && destination+='.exe'
     cp "$binary" "$destination"
-    if [[ "$plugin" == core ]]; then
+    if [[ "$name" == core ]]; then
         daemon="$release/krabb-daemon"
         [[ -f "$daemon" ]] || daemon="$release/krabb-daemon.exe"
         [[ -f "$daemon" ]] || die "Built binary 'krabb-daemon' was not found for '$target'."
         cp "$daemon" "$package_dir/bin/"
+    else
+        cp "$(manifest_for "$name")" "$package_dir/"
     fi
     cp "$repo_root/LICENSE" "$repo_root/NOTICE" "$package_dir/"
-    if [[ "$plugin" != core ]]; then
-        manifest="$repo_root/krabb-plugins/$plugin/krabb-plugin.toml"
-        [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/intelligence/$plugin/krabb-plugin.toml"
-        [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/channels/$plugin/krabb-plugin.toml"
-        [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/clients/$plugin/krabb-plugin.toml"
-        [[ -f "$manifest" ]] || manifest="$repo_root/krabb-plugins/messaging/$plugin/krabb-plugin.toml"
-        [[ -f "$manifest" ]] || die "Plugin manifest is missing: $manifest."
-        cp "$manifest" "$package_dir/"
-    fi
 
     if [[ "$target" == *-pc-windows-* ]]; then
         archive="$repo_root/$package_name.zip"

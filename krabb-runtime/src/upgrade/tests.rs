@@ -2,6 +2,13 @@ use std::fs;
 
 use super::*;
 
+fn host_archive(version: &str) -> String {
+    let (target, extension) =
+        releases::target(std::env::consts::OS, std::env::consts::ARCH).unwrap();
+
+    releases::archive("core", version, target, extension)
+}
+
 fn temp_root(name: &str) -> PathBuf {
     let root = crate::tests::test_root(&format!("upgrade-{name}"));
 
@@ -44,15 +51,21 @@ fn package(release: &Path, name: &str, files: &[(&str, &str)]) -> String {
     format!("{}  {name}\n", sha(&archive))
 }
 
+const NEXT: Protocol = Protocol { major: 1, minor: 0 };
+
+const ECHO: &str = "id = 'echo'\nversion = '0.2.0'\ncapabilities = ['tool']\n\
+                    permissions = ['network']\nsecrets = ['KRABB_ECHO_KEY']\n\n\
+                    [protocol]\nmajor = 1\nminor = 0\n";
+
+/// A host release directory with its core archive and checksum list.
 fn release(root: &Path, version: &str) -> PathBuf {
     let release = root.join("release");
     let exe = std::env::consts::EXE_SUFFIX;
-    let core = releases::archive("core", version).unwrap();
-    let echo = releases::archive("echo", version).unwrap();
+    let core = host_archive(version);
 
     fs::create_dir_all(&release).unwrap();
 
-    let mut sums = package(
+    let sums = package(
         &release,
         &core,
         &[
@@ -61,23 +74,70 @@ fn release(root: &Path, version: &str) -> PathBuf {
         ],
     );
 
-    sums.push_str(&package(
-        &release,
-        &echo,
-        &[
-            (
-                "krabb-plugin.toml",
-                "id = 'echo'\nversion = '0.2.0'\ncapabilities = ['tool']\n\
-             permissions = ['network']\nsecrets = ['KRABB_ECHO_KEY']\n\n\
-             [protocol]\nmajor = 0\nminor = 1\n",
-            ),
-            (&format!("bin/krabb-plugin-echo{exe}"), "echo"),
-        ],
-    ));
-
     fs::write(release.join("SHA256SUMS"), sums).unwrap();
 
     release
+}
+
+/// Publishes echo 0.1.0 (protocol 0.1) and 0.2.0 (`manifest`) to a local index and registry,
+/// returning the index location.
+fn publish(root: &Path, manifest: &str) -> String {
+    let registry = root.join("registry");
+    let work = root.join("plugins");
+
+    let (target, extension) =
+        releases::target(std::env::consts::OS, std::env::consts::ARCH).unwrap();
+
+    let name = format!("krabb-echo-v0.2.0-{target}.{extension}");
+    let exe = std::env::consts::EXE_SUFFIX;
+
+    fs::create_dir_all(&work).unwrap();
+
+    package(
+        &work,
+        &name,
+        &[("krabb-plugin.toml", manifest), (&format!("bin/krabb-plugin-echo{exe}"), "echo")],
+    );
+
+    let archive = work.join(&name);
+    let digest = sha(&archive);
+    let size = fs::metadata(&archive).unwrap().len();
+    let blobs = registry.join("blobs/sha256");
+
+    fs::create_dir_all(&blobs).unwrap();
+    fs::copy(&archive, blobs.join(&digest)).unwrap();
+
+    let index = serde_json::json!({
+        "schema": 1,
+        "registry": format!("file://{}", registry.display()),
+        "plugins": {"echo": [
+            {
+                "version": "0.1.0",
+                "protocol": {"major": 0, "minor": 1},
+                "released": "2026-11-01",
+                "artifacts": {},
+            },
+            {
+                "version": "0.2.0",
+                "protocol": NEXT,
+                "released": "2026-11-20",
+                "permissions": ["network"],
+                "artifacts": {target: {"sha256": digest, "size": size}},
+            },
+        ]},
+    });
+
+    fs::write(root.join("index.json"), index.to_string()).unwrap();
+
+    format!("file://{}", root.join("index.json").display())
+}
+
+fn inspection(protocol: Option<Protocol>) -> stage::Inspection {
+    stage::Inspection {
+        version: "0.2.0".into(),
+        schema: stage::Schema { from: 1, to: 1, steps: Vec::new() },
+        protocol,
+    }
 }
 
 fn entry(version: &str, source: &str, linked: bool) -> Entry {
@@ -143,45 +203,53 @@ fn swaps_replace_binaries_and_sweeps_remove_leftovers() {
 }
 
 #[test]
-fn staging_verifies_and_reads_the_release_set() {
+fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
     let root = temp_root("stage");
     let home = root.join("home");
     let release = release(&root, "0.2.0");
     let base = format!("file://{}", release.display());
+    let location = publish(&root, ECHO);
+    let load = || index::load_from(&home, &location);
 
     fs::create_dir_all(&home).unwrap();
 
-    let staged = stage::prepare(&home, "0.2.0", &["echo".into()], Some(&base)).unwrap();
-
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
     let dir = staged.dir.clone();
 
     assert_eq!(fs::read_to_string(&staged.krabb).unwrap(), "new krabb");
     assert_eq!(fs::read_to_string(&staged.daemon).unwrap(), "new daemon");
+
+    let mut lock = Lock::default();
+    let mut tui = entry("0.1.0", "/src/tui", true);
+
+    tui.protocol = NEXT;
+    lock.plugins.insert("echo".into(), entry("0.1.0", "index:echo@0.1.0", false));
+    lock.plugins.insert("tui".into(), tui);
+    lock.plugins.insert("codex".into(), entry("0.1.0", "index:codex", false));
+    lock.plugins.get_mut("codex").unwrap().protocol = NEXT;
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+    stage::compatible(&staged, &inspection(Some(NEXT))).unwrap();
+
     assert_eq!(staged.manifests["echo"].permissions, ["network"]);
 
     let plan = stage::plan(&dir).unwrap();
 
     assert_eq!(plan.version, "0.2.0");
     assert_eq!(plan.plugins[0].id, "echo");
-    assert!(releases::official_at("echo", &plan.plugins[0].source, Some(&base)));
+    assert_eq!(plan.plugins[0].sha256, sha(&dir.join(&plan.plugins[0].file)));
 
-    let mut lock = Lock::default();
-
-    lock.plugins.insert("echo".into(), entry("0.1.0", &plan.plugins[0].source, false));
-    lock.plugins.insert("tui".into(), entry("0.1.0", "/src/tui", true));
-
-    let kept = lock.plugins.iter().filter(|(id, _)| *id == "tui").collect::<Vec<_>>();
     let schema = stage::Schema { from: 1, to: 2, steps: vec!["move".into()] };
 
-    let preview =
-        preview("0.2.0", &lock, &kept, &staged, &schema, &root.join("none.service"), false);
+    let preview = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
 
     for row in [
         "Update Krabb 0.1.0 to 0.2.0",
-        "echo: 0.1.0 → 0.2.0",
+        "echo: 0.1.0 → 0.2.0 (pin to 0.1.0 removed; it cannot run on 0.2.0)",
         "echo permissions: adds network; removes filesystem",
         "echo secrets: adds KRABB_ECHO_KEY",
         "tui: stays at 0.1.0 (linked development build)",
+        "codex: stays at 0.1.0 (supported)",
         "home schema: 1 → 2 (1 migration)",
         "service: not installed",
         "`krabb update --rollback` restores 0.1.0",
@@ -191,24 +259,36 @@ fn staging_verifies_and_reads_the_release_set() {
 
     assert_eq!(preview.value["kept"], serde_json::json!(["tui"]));
 
+    assert_eq!(preview.value["supported"], serde_json::json!(["codex"]));
+
     drop(staged);
 
     assert!(!dir.exists());
 
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    lock.plugins.remove("tui");
+    lock.plugins.remove("codex");
+    stage::plugins(&mut staged, &lock, &inspection(Some(Protocol::CURRENT)), &load).unwrap();
+
+    assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
+
+    drop(staged);
+
     fs::write(
         release.join("SHA256SUMS"),
         fs::read_to_string(release.join("SHA256SUMS")).unwrap().replacen(
-            &sha(&release.join(releases::archive("core", "0.2.0").unwrap())),
+            &sha(&release.join(host_archive("0.2.0"))),
             &"0".repeat(64),
             1,
         ),
     )
     .unwrap();
 
-    let error = stage::prepare(&home, "0.2.0", &[], Some(&base)).err().unwrap();
+    let error = stage::prepare(&home, "0.2.0", Some(&base)).err().unwrap();
 
     assert!(error.to_string().contains("failed verification"), "{error}");
-    assert!(stage::prepare(&home, "0.3.0", &[], Some(&base)).is_err());
+    assert!(stage::prepare(&home, "0.3.0", Some(&base)).is_err());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -339,52 +419,67 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
     let home = root.join("home");
     let release = release(&root, "0.2.0");
     let base = format!("file://{}", release.display());
-    let echo = release.join(releases::archive("echo", "0.2.0").unwrap());
-    let complete = fs::read(&echo).unwrap();
 
     fs::create_dir_all(&home).unwrap();
-    fs::write(&echo, &complete[..complete.len() / 2]).unwrap();
 
-    let error = stage::prepare(&home, "0.2.0", &["echo".into()], Some(&base)).err().unwrap();
+    let mut lock = Lock::default();
+
+    lock.plugins.insert("echo".into(), entry("0.1.0", "index:echo", false));
+
+    let location = publish(&root, ECHO);
+    let load = || index::load_from(&home, &location);
+    let blobs = root.join("registry/blobs/sha256");
+    let blob = fs::read_dir(&blobs).unwrap().next().unwrap().unwrap().path();
+    let complete = fs::read(&blob).unwrap();
+
+    fs::write(&blob, &complete[..complete.len() / 2]).unwrap();
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+    let error = stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap_err();
 
     assert!(error.to_string().contains("failed verification"), "{error}");
+
+    drop(staged);
+
     assert!(!home.join("updates/v0.2.0").exists());
 
-    let name = releases::archive("echo", "0.2.0").unwrap();
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
 
-    let manifest = "id = 'echo'\nversion = '0.2.0'\ncapabilities = ['tool']\n\n\
-                    [protocol]\nmajor = 9\nminor = 0\n";
+    let error = stage::plugins(
+        &mut staged,
+        &lock,
+        &inspection(Some(Protocol { major: 2, minor: 0 })),
+        &load,
+    )
+    .unwrap_err();
 
-    let exe = std::env::consts::EXE_SUFFIX;
+    assert!(error.to_string().contains("cannot load the installed echo plugin"), "{error}");
+    assert!(error.to_string().ends_with("The installation was not changed."));
 
-    let line = package(
-        &release,
-        &name,
-        &[("krabb-plugin.toml", manifest), (&format!("bin/krabb-plugin-echo{exe}"), "echo")],
+    let mut linked = Lock::default();
+
+    linked.plugins.insert("tui".into(), entry("0.1.0", "/src/tui", true));
+
+    let error = stage::plugins(&mut staged, &linked, &inspection(Some(NEXT)), &load).unwrap_err();
+
+    assert!(error.to_string().contains("Plugin tui uses protocol 0.1, which Krabb 0.2.0"));
+
+    drop(staged);
+    fs::remove_dir_all(root.join("registry")).unwrap();
+
+    let location = publish(&root, &ECHO.replace("major = 1", "major = 9"));
+    let load = || index::load_from(&home, &location);
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+    let error = stage::compatible(&staged, &inspection(Some(NEXT))).unwrap_err();
+
+    assert!(
+        error.to_string().contains("Plugin echo 0.2.0 uses protocol 9.0, which Krabb 0.2.0"),
+        "{error}"
     );
 
-    let mut sums = fs::read_to_string(release.join("SHA256SUMS"))
-        .unwrap()
-        .lines()
-        .filter(|row| !row.ends_with(&name))
-        .map(|row| format!("{row}\n"))
-        .collect::<String>();
-
-    sums.push_str(&line);
-    fs::write(release.join("SHA256SUMS"), sums).unwrap();
-
-    let staged = stage::prepare(&home, "0.2.0", &["echo".into()], Some(&base)).unwrap();
-
-    let inspection = |protocol| stage::Inspection {
-        version: "0.2.0".into(),
-        schema: stage::Schema { from: 1, to: 1, steps: Vec::new() },
-        protocol,
-    };
-
-    let error = stage::compatible(&staged, &inspection(Some(Protocol::CURRENT))).unwrap_err();
-
-    assert!(error.to_string().contains("echo plugin in Krabb 0.2.0 uses protocol 9.0"), "{error}");
-    assert!(error.to_string().ends_with("The installation was not changed."));
     assert!(stage::compatible(&staged, &inspection(None)).is_ok());
 
     let _ = fs::remove_dir_all(root);

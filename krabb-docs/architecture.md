@@ -453,8 +453,8 @@ IPC, and update orchestration in `krabb-runtime`. Put network clients, credentia
 filesystem capabilities, and vendor-specific payloads in a plugin. Normalize
 wire data at the plugin boundary and keep credentials out of normalized events.
 
-Every new capability needs a manifest, a deterministic protocol test, a README
-installation line, and an entry in the release matrix. Plugins must tolerate
+Every new capability needs a manifest, a deterministic protocol test, and a README
+installation line; publication discovers the manifest itself. Plugins must tolerate
 unknown requests with a JSON-RPC error, bound every response, and shut down
 their child processes when the host cancels or restarts them. On Unix, the host
 starts each plugin in a private process session and signals its remaining session

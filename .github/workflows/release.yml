@@ -24,7 +24,8 @@ jobs:
     uses: ./.github/workflows/package.yml
 
     with:
-      version: ${{ needs.prepare.outputs.version }}
+      names: core
+      artifact: krabb-v${{ needs.prepare.outputs.version }}
 
   checksum:
     name: Checksum

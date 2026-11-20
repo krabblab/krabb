@@ -1,4 +1,4 @@
-"""Plugin source grouping must not change release archive names or contents."""
+"""Packaging archives the named core or plugins, each at its own version."""
 
 import os
 from pathlib import Path
@@ -28,12 +28,12 @@ class Packaging(unittest.TestCase):
 
             shutil.copyfile(ROOT / 'krabb-scripts/package.sh', scripts / 'package.sh')
 
-            for name in ['Cargo.toml', 'LICENSE', 'NOTICE']:
+            for name in ['Cargo.toml', 'LICENSE', 'NOTICE', 'VERSION']:
                 shutil.copyfile(ROOT / name, root / name)
 
             cargo = commands / 'cargo'
 
-            cargo.write_text('#!/bin/sh\nexit 0\n')
+            cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$KRABB_FIXTURE_CARGO"\n')
             cargo.chmod(0o755)
 
             manifests = {}
@@ -50,7 +50,10 @@ class Packaging(unittest.TestCase):
             for name in ['krabb', 'krabb-daemon', *['krabb-plugin-' + p for p in manifests]]:
                 (release / name).write_text(name)
 
-            env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ['PATH'])
+            calls = root / 'cargo-calls'
+
+            env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ['PATH'],
+                       KRABB_FIXTURE_CARGO=str(calls))
 
             for layout in ['current', 'legacy']:
                 with self.subTest(layout=layout):
@@ -59,7 +62,7 @@ class Packaging(unittest.TestCase):
                         (root / 'krabb-plugins/clients/tui').rename(root / 'krabb-plugins/tui')
 
                     result = subprocess.run(
-                        ['bash', str(scripts / 'package.sh'), '1.2.3', target],
+                        ['bash', str(scripts / 'package.sh'), target, 'core', *manifests],
                         cwd=root, env=env, text=True, capture_output=True, check=False,
                     )
 
@@ -67,7 +70,8 @@ class Packaging(unittest.TestCase):
                     self.assertEqual(len(list(root.glob('*.tar.gz'))), len(manifests) + 1)
 
                     for plugin, manifest in manifests.items():
-                        name = f'krabb-{plugin}-v1.2.3-{target}'
+                        version = tomllib.loads(manifest.decode())['version']
+                        name = f'krabb-{plugin}-v{version}-{target}'
 
                         with tarfile.open(root / (name + '.tar.gz')) as archive:
                             self.assertEqual(
@@ -80,3 +84,31 @@ class Packaging(unittest.TestCase):
                                 archive.extractfile(name + '/bin/' + binary).read(),
                                 binary.encode(),
                             )
+
+            for archive in root.glob('*.tar.gz'):
+                archive.unlink()
+
+            tools = next((root / 'krabb-plugins').rglob('tools/krabb-plugin.toml'))
+
+            tools.write_text(tools.read_text().replace('version = "0.1.0"', 'version = "0.2.0"'))
+
+            result = subprocess.run(
+                ['bash', str(scripts / 'package.sh'), target, 'tools'],
+                cwd=root, env=env, text=True, capture_output=True, check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            self.assertEqual([path.name for path in root.glob('*.tar.gz')],
+                             [f'krabb-tools-v0.2.0-{target}.tar.gz'])
+
+            self.assertIn('-p\nkrabb-plugin-tools\n', calls.read_text())
+            self.assertNotIn('krabb-daemon', calls.read_text())
+
+            for invalid in [['core', '../x'], ['missing']]:
+                result = subprocess.run(
+                    ['bash', str(scripts / 'package.sh'), target, *invalid],
+                    cwd=root, env=env, text=True, capture_output=True, check=False,
+                )
+
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)

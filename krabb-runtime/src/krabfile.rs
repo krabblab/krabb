@@ -206,18 +206,28 @@ pub(crate) fn import_krabfile_at_mode(
 
     let result = (|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for plugin in &file.plugins {
-            let revision = (!plugin.revision.is_empty() && plugin.revision != "local")
-                .then(|| plugin.revision.clone());
-            link_at(
+            let official = index::parse(&plugin.source);
+
+            let revision =
+                (!plugin.revision.is_empty() && plugin.revision != "local" && official.is_none())
+                    .then(|| plugin.revision.clone());
+
+            let fetched = match official {
+                Some((id, None)) => index::source(id, Some(&plugin.version)),
+                _ => plugin.source.clone(),
+            };
+
+            link_recorded(
                 Source {
                     id: plugin.id.clone(),
-                    source: Some(plugin.source.clone()),
+                    source: Some(fetched),
                     revision,
                     version: None,
                     yes: args.force,
                 },
                 false,
                 root,
+                official.map(|_| plugin.source.as_str()),
             )?;
 
             let lock = load_lock_at(root)?;
