@@ -188,7 +188,7 @@ pub(super) fn next(cron: &str, zone: &str, after: u64) -> krabb_core::Result<u64
             krabb_core::Error::Denied(format!("Scheduler timestamp is invalid: {error}."))
         })?;
 
-        let local = timestamp.to_zoned(zone.clone());
+        let local = timestamp.to_zoned_datetime(zone.clone());
         let weekday = local.weekday().to_sunday_zero_offset();
         let values = [
             u32::try_from(local.minute()).unwrap_or_default(),

@@ -307,10 +307,18 @@ impl Fixture {
     }
 
     pub async fn finish(mut self) {
-        let _ = self.rpc("shutdown", json!({})).await;
+        let shutdown = self.rpc("shutdown", json!({})).await;
 
         if let Some(mut host) = self.host.take() {
-            tokio::time::timeout(Duration::from_secs(15), host.wait()).await.unwrap().unwrap();
+            let Ok(status) = tokio::time::timeout(Duration::from_secs(15), host.wait()).await
+            else {
+                panic!(
+                    "Host did not stop after shutdown {shutdown:?}: {}",
+                    fs::read_to_string(self.root.join("host.stderr")).unwrap_or_default()
+                );
+            };
+
+            status.unwrap();
         }
 
         Self::kill(&mut self.backend).await;
