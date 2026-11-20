@@ -3081,7 +3081,7 @@ fn schedule_destinations(
 
     let mut destinations = Vec::new();
 
-    for pair in tokens.chunks_exact(2) {
+    for pair in tokens.as_chunks::<2>().0 {
         if pair[0] != "--to" {
             return Err("Use --to <destination> (repeatable), or --clear.".into());
         }
