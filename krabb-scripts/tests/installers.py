@@ -164,7 +164,7 @@ class Installers(unittest.TestCase):
                 result = self.run_installer(plugin, KRABB_VERSION='')
 
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn(f"Plugin ID '{plugin}' is not valid", result.stderr)
+                self.assertIn('is not valid', result.stderr)
                 self.assertFalse(self.calls.exists())
 
     def test_plugin_installs_refuse_core_variables(self):

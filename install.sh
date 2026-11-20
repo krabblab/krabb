@@ -30,13 +30,15 @@ plugin=${1:-core}
 id=${plugin%%@*}
 pin=${plugin#"$id"}
 
+invalid="Plugin ID '$plugin' is not valid."
+
 case "$id" in
-    '' | [!a-z0-9]* | *[!a-z0-9-]*) die "Plugin ID '$plugin' is not valid." ;;
+    '' | [![:lower:][:digit:]]* | *[![:lower:][:digit:]-]*) die "$invalid" ;;
 esac
 
 case "$pin" in
     '') ;;
-    @ | @*[!0-9A-Za-z.-]*) die "Plugin ID '$plugin' is not valid." ;;
+    @ | @*[![:alnum:].-]*) die "$invalid" ;;
 esac
 
 if [ -n "${KRABB_PREFIX:-}" ]; then
