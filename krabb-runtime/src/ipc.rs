@@ -284,9 +284,11 @@ async fn command(request: &IpcRequest, state: &State) -> IpcResponse {
         sessions: &state.sessions,
         cancels: &state.cancels,
         approvals: &state.pending,
+        stop: &state.stop,
         provider: &provider,
         model: &model,
         call: request.id,
+        answering: false,
     };
 
     let tools = state
@@ -999,24 +1001,34 @@ async fn compact_reserved(
 
     let summary = summary?;
 
-    let summary_message = Message {
-        id: format!("tui-compact-{request_id}"),
-        session: id.to_owned(),
-        role: Role::Assistant,
-        sender: Some("compaction".into()),
-        content: vec![Content::Text { text: format!("Earlier conversation summary:\n{summary}") }],
-    };
-
-    let mut compacted = Vec::with_capacity(recent.len() + 1);
-
-    compacted.push(summary_message);
-    compacted.extend_from_slice(recent);
+    let compacted = summarized(format!("tui-compact-{request_id}"), id, &summary, recent);
 
     let mut sessions = state.sessions.lock().map_err(lock)?;
 
     sessions.set_compacted_context_reserved(id, owner, compacted.clone())?;
 
     Ok(CompactOutcome::Compacted(CompactResult { messages: compacted, removed: older.len() }))
+}
+
+/// The model context after compaction: one summary message followed by the recent turns.
+pub(crate) fn summarized(
+    message: String,
+    session: &str,
+    summary: &str,
+    recent: &[Message],
+) -> Vec<Message> {
+    let mut compacted = Vec::with_capacity(recent.len() + 1);
+
+    compacted.push(Message {
+        id: message,
+        session: session.to_owned(),
+        role: Role::Assistant,
+        sender: Some(super::compaction::SUMMARY.into()),
+        content: vec![Content::Text { text: format!("Earlier conversation summary:\n{summary}") }],
+    });
+
+    compacted.extend_from_slice(recent);
+    compacted
 }
 
 fn model_context(session: &crate::state::Session) -> Vec<Message> {
@@ -1034,7 +1046,7 @@ fn last_interaction_was_compaction(messages: &[Message]) -> bool {
         })
 }
 
-fn compaction_boundary(messages: &[Message]) -> Option<usize> {
+pub(crate) fn compaction_boundary(messages: &[Message]) -> Option<usize> {
     let users = messages
         .iter()
         .enumerate()
@@ -1045,7 +1057,7 @@ fn compaction_boundary(messages: &[Message]) -> Option<usize> {
     (users.len() > COMPACT_RETAIN_TURNS).then(|| users[users.len() - COMPACT_RETAIN_TURNS])
 }
 
-async fn compact_summary(
+pub(crate) async fn compact_summary(
     provider: &super::Live,
     model: &str,
     workspace: Option<&str>,
@@ -3406,14 +3418,21 @@ for line in sys.stdin:
     }
 
     #[cfg(unix)]
+    const TUI_REQUEST_WAIT: Duration = Duration::from_secs(15);
+
+    #[cfg(unix)]
     pub(super) async fn wait_for_tui_request(state: &State, index: usize) {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !state.home.join(format!("started-{index}")).exists() {
+        let started = state.home.join(format!("started-{index}"));
+
+        tokio::time::timeout(TUI_REQUEST_WAIT, async {
+            while !started.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| {
+            panic!("the fixture provider did not receive generate request {index} in time")
+        });
     }
 
     #[cfg(unix)]

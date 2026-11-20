@@ -98,8 +98,9 @@ pub(crate) fn update_with_commit(
             continue;
         }
 
-        let inspection = if let Some(candidate) = &preview_candidate {
-            validate_update_candidate(home_root, &id, &previous, candidate)
+        // Previews are hashed when saved or loaded, and staging hashes their copy again.
+        let inspection = if let Some(candidate) = preview_candidate {
+            check_update_candidate(home_root, &id, &previous, candidate).map(|()| candidate.clone())
         } else {
             let entry = lock.plugins.get(&id).ok_or("Plugin lock entry disappeared.")?;
             inspect_update(home_root, &id, entry)
@@ -133,16 +134,7 @@ pub(crate) fn update_with_commit(
                     let entry =
                         lock.plugins.get_mut(&id).ok_or("Plugin lock entry disappeared.")?;
 
-                    entry.version = manifest.version.clone();
-                    entry.revision = source_revision;
-                    entry.hash = hash;
-                    entry.linked = update.linked;
-                    entry.protocol = manifest.protocol;
-                    entry.capabilities = manifest.capabilities.clone();
-                    entry.permissions = manifest.permissions.clone();
-                    entry.variables = manifest.variables.clone();
-                    entry.settings = manifest.settings.clone();
-                    entry.commands = manifest.commands.clone();
+                    super::record(entry, &manifest, source_revision, hash, update.linked);
                 }
 
                 if let Err(error) = commit(home_root, &lock) {
@@ -179,11 +171,7 @@ pub(crate) fn update_with_commit(
                 } else {
                     finish_update(&update);
                     info!(plugin = %id, version = %manifest.version, "Plugin updated.");
-                    rows.push(serde_json::json!({
-                        "id": id,
-                        "version": manifest.version,
-                        "status": "updated"
-                    }));
+                    rows.push(super::updated(&id, &manifest.version));
                 }
             }
 
@@ -460,7 +448,8 @@ pub(crate) fn load_update_preview_snapshot_at(
             continue;
         };
 
-        let candidate = validate_update_candidate(home_root, id, entry, &candidate)?;
+        check_update_candidate(home_root, id, entry, &candidate)?;
+
         let destination = snapshot.root.join(id);
 
         std::fs::create_dir_all(destination.join("bin"))?;
@@ -503,6 +492,7 @@ pub(crate) fn load_update_preview_snapshot_at(
     Ok(snapshot)
 }
 
+#[derive(Clone)]
 pub(crate) struct UpdateCandidate {
     pub(crate) manifest: Manifest,
     pub(crate) hash: String,
@@ -664,12 +654,31 @@ pub(crate) fn load_update_candidate_at(
     }))
 }
 
+/// Checks a saved candidate's contents against its confirmed hash, then its declarations.
 pub(crate) fn validate_update_candidate(
     home_root: &Path,
     id: &str,
     entry: &Entry,
     candidate: &UpdateCandidate,
 ) -> Result<UpdateCandidate, Box<dyn std::error::Error + Send + Sync>> {
+    check_update_candidate(home_root, id, entry, candidate)?;
+
+    if digest(&candidate.source_path.join("krabb-plugin.toml"), &candidate.binary)?
+        != candidate.hash
+    {
+        return Err(format!("Saved update preview for {id} changed; preview updates again.").into());
+    }
+
+    Ok(candidate.clone())
+}
+
+/// Checks a saved candidate's declarations; its copy is hashed against the confirmed hash.
+pub(crate) fn check_update_candidate(
+    home_root: &Path,
+    id: &str,
+    entry: &Entry,
+    candidate: &UpdateCandidate,
+) -> Result<(), PluginError> {
     let manifest = &candidate.manifest;
 
     manifest.validate().map_err(|error| format!("Invalid plugin manifest: {error}"))?;
@@ -689,23 +698,11 @@ pub(crate) fn validate_update_candidate(
 
     validate_commands(home_root, id, &manifest.commands)?;
 
-    if !candidate.binary.is_file()
-        || digest(&candidate.source_path.join("krabb-plugin.toml"), &candidate.binary)?
-            != candidate.hash
-    {
+    if !candidate.binary.is_file() {
         return Err(format!("Saved update preview for {id} changed; preview updates again.").into());
     }
 
-    Ok(UpdateCandidate {
-        manifest: manifest.clone(),
-        hash: candidate.hash.clone(),
-        source_revision: candidate.source_revision.clone(),
-        base_hash: candidate.base_hash.clone(),
-        base_revision: candidate.base_revision.clone(),
-        base_version: candidate.base_version.clone(),
-        source_path: candidate.source_path.clone(),
-        binary: candidate.binary.clone(),
-    })
+    Ok(())
 }
 
 pub(crate) fn update_one(

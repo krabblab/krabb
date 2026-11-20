@@ -213,9 +213,11 @@ async fn receive(context: &mut Context, events: Vec<Value>) -> Result<(), Plugin
                 sessions: &context.sessions,
                 cancels: &context.cancels,
                 approvals: &context.approvals,
+                stop: &context.shutdown,
                 provider: &context.provider,
                 model: &context.model,
                 call,
+                answering: true,
             };
 
             blocked = !queue_during_turn(

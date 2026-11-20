@@ -302,7 +302,7 @@ pub(crate) async fn bridge_with_media(
         let events = value["events"].as_array().cloned().unwrap_or_default();
         let channel_policy = channels.get(channel_id).cloned().unwrap_or_default();
 
-        for event in events {
+        for mut event in events {
             let Some(event_key) = event_id(&event["id"]) else {
                 continue;
             };
@@ -502,13 +502,75 @@ pub(crate) async fn bridge_with_media(
                 sessions: &sessions,
                 cancels: &cancels,
                 approvals: &approvals,
+                stop: &stop,
                 provider: &selected_provider,
                 model: &selected_model,
                 call,
+                answering: false,
             };
 
-            let commanded =
-                slash::channel(&host, channel_id, &event, &channel_policy, approval_mode).await?;
+            // Summarizing can take a while, so other chats keep being received meanwhile.
+            let summarizing = event["text"]
+                .as_str()
+                .and_then(krabb_core::slash::parse)
+                .is_some_and(|invocation| invocation.spec.lengthy());
+
+            // Committed first so the intake does not receive it again;
+            // a lost summary changes nothing.
+            if summarizing {
+                commit_event(
+                    &channel,
+                    &sessions,
+                    channel_id,
+                    &event_key,
+                    next_offset,
+                    &mut offset,
+                    gateway_sequence,
+                    &mut call,
+                )
+                .await?;
+            }
+
+            let intake = summarizing.then(|| {
+                channels::intake::Intake::start(channels::intake::Context {
+                    channel: Arc::clone(&channel),
+                    id: channel_id.into(),
+                    model: selected_model.clone(),
+                    policy: channel_policy.clone(),
+                    mode: approval_mode,
+                    sessions: Arc::clone(&sessions),
+                    approvals: Arc::clone(&approvals),
+                    signals: Arc::clone(&plugins.jobs),
+                    shutdown: Arc::clone(&stop),
+                    offset,
+                    call: call.saturating_add(channels::INTAKE_CALLS),
+                    plugins: plugins.clone(),
+                    cancels: Arc::clone(&cancels),
+                    provider: selected_provider.clone(),
+                })
+            });
+
+            let command =
+                slash::channel(&host, channel_id, &event, &channel_policy, approval_mode).await;
+
+            // Lengthy commands always answer, and their event is already committed; the intake
+            // finishes before any error propagates so it never outlives this loop.
+            if let Some(intake) = intake {
+                offset = channels::intake::finish(intake, &sessions, channel_id).await?;
+                command?;
+                call = call.saturating_add(1);
+                continue;
+            }
+
+            let commanded = match command? {
+                slash::Command::Pass => false,
+                slash::Command::Handled => true,
+
+                slash::Command::Ask(question) => {
+                    slash::reask(&mut event, question);
+                    false
+                }
+            };
 
             if commanded {
                 call = call.saturating_add(1);

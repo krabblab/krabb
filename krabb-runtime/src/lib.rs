@@ -309,11 +309,12 @@ impl Plugins {
     }
 }
 
+/// A plugin's advertised identity over a process slot that survives restarts and updates.
 pub(crate) struct Live {
     hello: Hello,
     process: Arc<AsyncMutex<Option<Process>>>,
-    turns: turns::Turns,
-    restart_generation: std::sync::atomic::AtomicU64,
+    turns: Arc<turns::Turns>,
+    restart_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 struct CancelPluginCall {
@@ -364,8 +365,18 @@ impl Live {
         Self {
             hello: process.hello.clone(),
             process: Arc::new(AsyncMutex::new(Some(process))),
-            turns: turns::Turns::default(),
-            restart_generation: std::sync::atomic::AtomicU64::new(0),
+            turns: Arc::default(),
+            restart_generation: Arc::default(),
+        }
+    }
+
+    /// The same slot under a new version, so callers holding this one reach the new process.
+    fn successor(&self, hello: Hello) -> Self {
+        Self {
+            hello,
+            process: Arc::clone(&self.process),
+            turns: Arc::clone(&self.turns),
+            restart_generation: Arc::clone(&self.restart_generation),
         }
     }
 
@@ -378,15 +389,18 @@ impl Live {
     }
 
     async fn call(&self, request: Request) -> krabb_core::Result<Response> {
-        let request = messaging::prepare(request, &self.hello.formats);
         let cancel = request.id().map(|id| CancelPluginCall::new(Arc::clone(&self.process), id));
+
         let result = {
-            let mut process = self.process.lock().await;
-            process
+            let mut slot = self.process.lock().await;
+            let process = slot
                 .as_mut()
-                .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?
-                .call(request)
-                .await
+                .ok_or_else(|| krabb_core::Error::Protocol("Plugin is stopped.".into()))?;
+
+            // The running version's formats apply, since an update may have replaced it.
+            let request = messaging::prepare(request, &process.hello.formats);
+
+            process.call(request).await
         };
 
         if let Some(mut cancel) = cancel {
@@ -2398,10 +2412,48 @@ fn purge_offline_state(
 }
 
 fn turn_messages(session: &str, home_root: &Path, history: Vec<Message>) -> Vec<Message> {
-    let mut messages = context_at(session, &home_root.join("data/system"));
+    let mut messages = vec![runtime_context(session)];
 
+    messages.extend(context_at(session, &home_root.join("data/system")));
     messages.extend(history);
     messages
+}
+
+/// Describes the running host from its own constants, so the model can explain Krabb accurately.
+fn runtime_context(session: &str) -> Message {
+    let commands = krabb_core::slash::SPECS
+        .iter()
+        .map(|spec| format!("/{}", spec.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let text = format!(
+        "How Krabb works, for answering questions about yourself. Krabb {VERSION} is a \
+         self-hosted agent: a host process connects chat channels and clients to model and tool \
+         plugins.\n\
+         - Each conversation stores up to {} messages. Tool calls and results count as messages, \
+         and the oldest are dropped beyond that.\n\
+         - When the model's context fills up, older turns are replaced by a summary in what you \
+         see, while the stored history stays intact. Users can also send /compact. Models with \
+         no known context window see a /compact summary or the opening request, plus the \
+         latest {} messages.\n\
+         - Users steer conversations with slash commands: {commands}. /help lists the ones \
+         available in the current chat.\n\
+         When this is not enough and you have a web tool, read Krabb's documentation and \
+         source at {} (user guides are in krabb-docs/). They describe the latest release, \
+         which may be newer than {VERSION}. Otherwise say you are unsure instead of guessing.",
+        krabb_core::session::MESSAGE_HISTORY_LIMIT,
+        compaction::UNBUDGETED,
+        env!("CARGO_PKG_REPOSITORY"),
+    );
+
+    Message {
+        id: format!("{}runtime", state::SYSTEM_CONTEXT),
+        session: session.into(),
+        role: Role::System,
+        sender: None,
+        content: vec![Content::Text { text }],
+    }
 }
 
 fn context_at(session: &str, root: &Path) -> Vec<Message> {

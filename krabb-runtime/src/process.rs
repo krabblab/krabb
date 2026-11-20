@@ -510,15 +510,26 @@ impl Process {
         result
     }
 
-    pub async fn stop(self) -> Result<()> {
-        let result = self.inner.stop().await;
+    /// Stops the process but keeps its image, so a failed replacement can restart it.
+    pub async fn halt(&mut self) -> Result<()> {
+        self.context.invalidate();
+        self.inner.halt().await;
+
+        if let Some(containers) = &self.containers {
+            containers.clear().await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn stop(mut self) -> Result<()> {
+        self.halt().await?;
 
         if let Some(containers) = self.containers {
-            containers.clear().await?;
             std::fs::remove_dir(containers.directory)?;
         }
 
-        result
+        Ok(())
     }
 }
 

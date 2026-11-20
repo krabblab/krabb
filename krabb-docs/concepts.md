@@ -67,9 +67,15 @@ identity and communication style; `KLAW.md` defines behavioral guidance and
 workflows. The runtime reads both as system context for every user turn,
 including resumed sessions and internal tool-loop requests. It does not copy
 their contents into the saved transcript, so edits apply on the next turn.
-Conversation history remains available as a bounded transcript and may be
-compacted when limits require it. Krabb does not load `AGENTS.md` for itself;
-coding agents it delegates to may use workspace `AGENTS.md` instructions.
+The runtime also adds a short description of itself, built from its version, history
+limit, and commands, so the model can explain how Krabb works. When that is not enough
+and the model has a web tool, it points the model to the Krabb repository's
+documentation. Conversation history is a bounded transcript of up to 1,000 messages,
+counting tool calls and results. When the model's context fills up, older turns are
+summarized in what the model sees while the stored history stays intact; models with no
+known context window see a `/compact` summary or the opening request, plus the latest
+100 messages. Krabb does not load `AGENTS.md`
+for itself; coding agents it delegates to may use workspace `AGENTS.md` instructions.
 
 These Markdown files guide the model but do not grant capabilities. The host
 continues to enforce workspace confinement, channel tool settings, approvals,

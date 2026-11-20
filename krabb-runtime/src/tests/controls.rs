@@ -354,8 +354,9 @@ for line in sys.stdin:
         .await
         .unwrap();
 
+        // One restart attempt may hold the lifecycle lock for up to its 4s shutdown bound.
         let removed = timeout(
-            Duration::from_secs(2),
+            Duration::from_secs(8),
             call(&state.home, "plugin.uninstall", json!({"id": "telegram"})),
         )
         .await;

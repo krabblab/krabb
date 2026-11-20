@@ -103,6 +103,52 @@ pub(crate) async fn launch(
     force: bool,
     config: &Config,
 ) -> Result<Process, Box<dyn std::error::Error + Send + Sync>> {
+    start(root, path, expected, capability, force, config, None).await
+}
+
+/// Prepares an unlocked replacement whose running image must match an already confirmed hash.
+pub(crate) fn verify_checked(
+    root: &Path,
+    path: PathBuf,
+    expected: &str,
+    config: &Config,
+    hash: &str,
+) -> Result<Verified, PluginError> {
+    verify(root, path, expected, None, true, config, Some(hash))
+}
+
+async fn start(
+    root: &Path,
+    path: PathBuf,
+    expected: &str,
+    capability: Option<Capability>,
+    force: bool,
+    config: &Config,
+    hash: Option<&str>,
+) -> Result<Process, PluginError> {
+    verify(root, path, expected, capability, force, config, hash)?.start().await
+}
+
+/// A plugin's private image, verified against its manifest and hash and ready to start.
+pub(crate) struct Verified {
+    expected: String,
+    capability: Option<Capability>,
+    manifest: Manifest,
+    capabilities: Vec<String>,
+    commands: Vec<krabb_core::types::CommandSpec>,
+    image: updates::Image,
+    env: Vec<(String, String)>,
+}
+
+fn verify(
+    root: &Path,
+    path: PathBuf,
+    expected: &str,
+    capability: Option<Capability>,
+    force: bool,
+    config: &Config,
+    hash: Option<&str>,
+) -> Result<Verified, PluginError> {
     let manifest_path = path
         .parent()
         .and_then(Path::parent)
@@ -150,52 +196,73 @@ pub(crate) async fn launch(
         }
     }
 
-    let expected_hash = digest(&manifest_path, &path)?;
+    let expected_hash = match hash {
+        Some(hash) => hash.to_owned(),
+        None => digest(&manifest_path, &path)?,
+    };
+
     let image = updates::Image::new(root, &path)?;
 
     if digest(&manifest_path, &image.binary)? != expected_hash {
         return Err("Plugin executable changed while preparing its running image.".into());
     }
 
-    let mut process = Process::start_with_env(
-        &image.binary,
-        std::iter::empty::<&std::ffi::OsStr>(),
-        env_for(&manifest, config, root)?,
-    )
-    .await?;
+    let env = env_for(&manifest, config, root)?;
 
-    process.image = Some(image);
+    Ok(Verified {
+        expected: expected.to_owned(),
+        capability,
+        manifest,
+        capabilities: expected_capabilities,
+        commands: expected_commands,
+        image,
+        env,
+    })
+}
 
-    if let Some(stderr) = process.take_stderr() {
-        capture_plugin_stderr(expected.to_owned(), stderr);
+impl Verified {
+    /// Starts the verified image and checks that it advertises what its manifest declares.
+    pub(crate) async fn start(self) -> Result<Process, PluginError> {
+        let Self { expected, capability, manifest, capabilities, commands, image, env } = self;
+
+        let mut process =
+            Process::start_with_env(&image.binary, std::iter::empty::<&std::ffi::OsStr>(), env)
+                .await?;
+
+        process.image = Some(image);
+
+        if let Some(stderr) = process.take_stderr() {
+            capture_plugin_stderr(expected.clone(), stderr);
+        }
+
+        let mut actual_capabilities = process
+            .hello
+            .capabilities
+            .iter()
+            .map(capability_name)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        actual_capabilities.sort();
+
+        let mut actual_commands = process.hello.commands.clone();
+
+        actual_commands.sort_by(|left, right| left.name.cmp(&right.name));
+
+        if process.hello.id != expected
+            || process.hello.version != manifest.version
+            || capability
+                .is_some_and(|capability| !process.hello.capabilities.contains(&capability))
+            || capabilities != actual_capabilities
+            || commands != actual_commands
+        {
+            let actual = process.hello.id.clone();
+            let _ = process.stop().await;
+            return Err(format!("Plugin {actual} did not advertise {expected} correctly.").into());
+        }
+
+        Ok(process)
     }
-
-    let mut actual_capabilities = process
-        .hello
-        .capabilities
-        .iter()
-        .map(capability_name)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-
-    actual_capabilities.sort();
-
-    let mut actual_commands = process.hello.commands.clone();
-
-    actual_commands.sort_by(|left, right| left.name.cmp(&right.name));
-
-    if process.hello.id != expected
-        || process.hello.version != manifest.version
-        || capability.is_some_and(|capability| !process.hello.capabilities.contains(&capability))
-        || expected_capabilities != actual_capabilities
-        || expected_commands != actual_commands
-    {
-        let actual = process.hello.id.clone();
-        let _ = process.stop().await;
-        return Err(format!("Plugin {actual} did not advertise {expected} correctly.").into());
-    }
-
-    Ok(process)
 }
 
 pub(crate) fn capture_plugin_stderr(

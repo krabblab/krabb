@@ -26,6 +26,8 @@ pub enum Access {
     Anyone,
     /// Only local clients, never channel users.
     Local,
+    /// Only chat channels, whose next message can carry a re-asked question.
+    Channel,
     /// Only callers whose conversation allows tools.
     Tools,
 }
@@ -43,6 +45,11 @@ impl Spec {
     /// Whether channel menus may offer this command.
     pub fn channel(&self) -> bool {
         self.access != Access::Local
+    }
+
+    /// Whether the command waits on the model, so it must not hold up a reply being delivered.
+    pub fn lengthy(&self) -> bool {
+        self.name == "compact"
     }
 }
 
@@ -73,6 +80,20 @@ pub const SPECS: &[Spec] = &[
         summary: "Start a new conversation, cancel a reply, or clear history",
         usage: "/session [new | cancel | clear]",
         need: Need::Nothing,
+        access: Access::Anyone,
+    },
+    Spec {
+        name: "again",
+        summary: "Answer the latest question again when its reply used no tools",
+        usage: "/again",
+        need: Need::Capability(Capability::Model),
+        access: Access::Channel,
+    },
+    Spec {
+        name: "compact",
+        summary: "Summarize older messages to free the model's context",
+        usage: "/compact",
+        need: Need::Capability(Capability::Model),
         access: Access::Anyone,
     },
     Spec {

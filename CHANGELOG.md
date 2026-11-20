@@ -10,9 +10,12 @@ Semantic Versioning.
 - Install official plugins from published releases without a source checkout.
 - Recover interrupted home upgrades automatically.
 - Update Krabb and its official plugins with `krabb update`.
+- Update busy plugins live without pausing other channels or conversations.
 - Revoke a plugin's secrets and grants on uninstall.
 - Guide setup prompts and test the connection after saving.
 - Use shared slash commands in every channel and client.
+- Compact a conversation with `/compact` and answer again in chat channels with `/again`.
+- Show context use in `/status` and let Krabb explain how it works.
 - Show each plugin's state and next step in `krabb status`.
 - Approve or deny a saved task's pending action after restarts.
 - Retry throttled or unavailable intelligence providers automatically.

@@ -10,6 +10,8 @@ use std::{
 };
 
 const STORE_LIMIT: u64 = 8 * 1024 * 1024;
+// Offline sessions share one small file and have no compaction, so they keep a short history.
+const HISTORY_LIMIT: usize = 100;
 const RESERVATION_TTL: u64 = krabb_core::session::RESERVATION_TTL_SECONDS;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -185,8 +187,8 @@ pub async fn control(home: &str, method: &str, params: Value) -> Result<Value> {
 
             session.messages.push(message);
 
-            if session.messages.len() > krabb_core::session::MESSAGE_HISTORY_LIMIT {
-                let excess = session.messages.len() - krabb_core::session::MESSAGE_HISTORY_LIMIT;
+            if session.messages.len() > HISTORY_LIMIT {
+                let excess = session.messages.len() - HISTORY_LIMIT;
 
                 session.messages.drain(..excess);
             }

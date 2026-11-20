@@ -43,21 +43,60 @@ impl Store {
         input: &str,
         reply: &str,
     ) -> std::io::Result<()> {
+        let control = Control {
+            id: id.into(),
+            sender: sender.into(),
+            input: input.into(),
+            reply: reply.into(),
+        };
+
+        self.commit_control(session, control, |_| {})
+    }
+
+    /// Drops history from message `from` and records the command in one save, so a replayed
+    /// command finds its receipt instead of rewinding another exchange.
+    pub fn rewind(&mut self, session: &str, from: usize, control: Control) -> std::io::Result<()> {
+        self.commit_control(session, control, |current| {
+            let removed = current.messages.split_off(from.min(current.messages.len()));
+            let compacted = current.compacted_through.as_ref();
+
+            // The summary still covers what remains, so only the removed exchange leaves it.
+            if removed.iter().any(|message| Some(&message.id) == compacted) {
+                let last = current.messages.last().map(|message| message.id.clone());
+                let context = current.compacted_context.take().unwrap_or_default();
+
+                current.compacted_context = last.as_ref().map(|_| {
+                    context
+                        .into_iter()
+                        .filter(|kept| removed.iter().all(|message| message.id != kept.id))
+                        .collect()
+                });
+
+                current.compacted_through = last;
+            }
+
+            current.context_usage = None;
+        })
+    }
+
+    /// Applies `edit` and records `control` in one save, restoring the session if it fails.
+    fn commit_control(
+        &mut self,
+        session: &str,
+        control: Control,
+        edit: impl FnOnce(&mut Session),
+    ) -> std::io::Result<()> {
         let previous = self.session(session)?.clone();
 
         let current = self.sessions.get_mut(session).unwrap();
+
+        edit(current);
 
         if current.commands.len() >= CONTROL_LIMIT {
             current.commands.remove(0);
         }
 
-        current.commands.push(Control {
-            id: id.into(),
-            sender: sender.into(),
-            input: input.into(),
-            reply: reply.into(),
-        });
-
+        current.commands.push(control);
         current.updated = now();
 
         if let Err(error) = self.save_session_only(session) {
