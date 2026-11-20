@@ -28,10 +28,6 @@ jobs:
     name: Security
     uses: ./.github/workflows/security.yml
 
-    permissions:
-      contents: read
-      checks: write
-
   build:
     name: Build
     needs: test

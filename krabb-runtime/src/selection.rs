@@ -91,7 +91,7 @@ pub(super) fn tui(config: &Config, args: &[String]) -> (String, String) {
     let mut provider = None;
     let mut model = None;
 
-    for pair in args.chunks_exact(2) {
+    for pair in args.as_chunks::<2>().0 {
         match pair[0].as_str() {
             "--plugin" => provider = Some(pair[1].as_str()),
             "--model" => model = Some(pair[1].as_str()),
