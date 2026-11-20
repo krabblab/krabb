@@ -1327,7 +1327,7 @@ fn checked(name: &str, check: bool, reply: &str) -> PathBuf {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn connection_tests_report_the_account_and_never_fail_setup() {
+async fn connection_tests_never_show_the_account_or_fail_setup() {
     let passed = checked(
         "check-passed",
         true,
@@ -1336,8 +1336,8 @@ async fn connection_tests_report_the_account_and_never_fail_setup() {
 
     let result = check::run(&passed, "probe").await;
 
-    assert_eq!(result, json!({"status": "passed", "account": "@krabb_bot"}));
-    assert_eq!(check::line(&result).unwrap(), "Connection test passed as @krabb_bot.");
+    assert_eq!(result, json!({"status": "passed"}));
+    assert_eq!(check::line(&result).unwrap(), "Connection test passed.");
 
     let failed = checked(
         "check-failed",

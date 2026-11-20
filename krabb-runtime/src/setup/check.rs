@@ -37,12 +37,7 @@ async fn attempt(root: &Path, id: &str) -> Value {
         };
     }
 
-    let account = response.result.as_ref().and_then(|result| result["account"].as_str());
-
-    match account.filter(|account| !account.trim().is_empty()) {
-        Some(account) => json!({"status": "passed", "account": detail(account)}),
-        None => json!({"status": "passed"}),
-    }
+    json!({"status": "passed"})
 }
 
 /// Starts the installed plugin with its saved values and sends one `check` request.
@@ -64,10 +59,7 @@ fn detail(text: &str) -> String {
 /// Renders the result as one line for terminal output.
 pub(super) fn line(result: &Value) -> Option<String> {
     match result["status"].as_str()? {
-        "passed" => Some(match result["account"].as_str() {
-            Some(account) => format!("Connection test passed as {account}."),
-            None => "Connection test passed.".into(),
-        }),
+        "passed" => Some("Connection test passed.".into()),
 
         "failed" => Some(format!(
             "Connection test failed: {}",

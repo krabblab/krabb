@@ -120,8 +120,8 @@ plugin lock.
 Set `check = true` at the top level of the manifest when the plugin answers `check`.
 After setup saves, the host starts the plugin with the saved values and sends `check`
 with empty params. Use a read-only request, such as asking the provider who the
-credential belongs to. Return `{ "account": "..." }` to name the bot or account, or
-`{}`, and a short JSON-RPC error when the credential is rejected. Error text is
+credential belongs to. Return `{}` when the credential works, and a short JSON-RPC
+error when it is rejected. Setup does not show other result fields. Error text is
 redacted and clipped before setup shows it. Setup reports the result but never fails
 because of it, and skips plugins without the flag or that answer method-not-found.
 

@@ -86,7 +86,7 @@ still need valid credentials to operate. Environment overrides continue to take
 precedence and must be removed separately.
 
 Telegram, Discord, Slack, OpenAI, Anthropic, Gemini, and OpenRouter then run a
-connection test with the saved values, such as `Connection test passed as @my_bot.`
+connection test with the saved values and report `Connection test passed.`
 A failed test explains what was rejected, but the values stay saved so you can rerun
 setup. The test is read-only, runs at most 20 seconds, and is skipped for plugins
 that do not offer one.
