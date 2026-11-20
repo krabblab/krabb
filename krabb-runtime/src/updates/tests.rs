@@ -272,7 +272,10 @@ async fn a_version_that_cannot_be_restored_is_unloaded_with_a_next_step() {
         slot.as_ref().unwrap().image.as_ref().unwrap().binary.clone()
     };
 
-    fs::remove_file(&image).unwrap();
+    // Windows refuses to delete a running executable but lets it be renamed.
+    let moved = image.with_extension("moved");
+
+    fs::rename(&image, &moved).unwrap();
     fixture.version("0.2.0", "");
 
     crate::tests::write_test_plugin(
@@ -297,6 +300,7 @@ async fn a_version_that_cannot_be_restored_is_unloaded_with_a_next_step() {
 
     assert!(error.contains("krabb service restart"), "{error}");
     assert!(plugins.get("memory").await.is_none(), "a dead plugin is never left registered");
+    assert!(!moved.exists(), "the unloaded version's image is discarded");
     assert_eq!(load_lock_at(&fixture.root).unwrap().plugins["memory"].version, "0.1.0");
 }
 
