@@ -1,0 +1,128 @@
+name: Plugins
+
+# Publishes every plugin version that is in a manifest on main but not yet in the plugin
+# index. Archives go to one public OCI repository; the index is appended on the `plugins`
+# branch, which Krabb reads. Bump `version` in a krabb-plugin.toml to publish a release.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "krabb-plugins/**/krabb-plugin.toml"
+      - ".github/workflows/plugins.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugins
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+
+    outputs:
+      names: ${{ steps.plan.outputs.names }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          persist-credentials: false
+
+      - id: plan
+        name: Find Unpublished Versions
+
+        run: |
+          set -euo pipefail
+          index="$RUNNER_TEMP/index.json"
+
+          if git ls-remote --exit-code --heads origin plugins >/dev/null; then
+            git fetch --depth 1 origin plugins
+            git show FETCH_HEAD:index.json > "$index" 2>/dev/null || rm -f "$index"
+          fi
+
+          names=$(python3 krabb-scripts/plugins.py plan "$index")
+          echo "names=$names" >> "$GITHUB_OUTPUT"
+          echo "Unpublished plugins: ${names:-none}."
+
+  package:
+    name: Package
+    needs: plan
+    if: needs.plan.outputs.names != ''
+    uses: ./.github/workflows/package.yml
+
+    with:
+      names: ${{ needs.plan.outputs.names }}
+      artifact: krabb-plugins-${{ github.run_id }}
+
+  publish:
+    name: Publish
+    needs: [plan, package]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download Archives
+        uses: actions/download-artifact@v8
+
+        with:
+          pattern: krabb-plugins-${{ github.run_id }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Sign In To The Registry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+        run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - id: index
+        name: Check Out The Index
+
+        run: |
+          set -euo pipefail
+
+          if git ls-remote --exit-code --heads origin plugins >/dev/null; then
+            git fetch --depth 1 origin plugins
+            git worktree add --detach index FETCH_HEAD
+          else
+            git worktree add --detach index
+            git -C index checkout --orphan plugins
+            git -C index rm -rfq .
+          fi
+
+      - name: Publish Plugins
+        run: |
+          set -euo pipefail
+          python3 krabb-scripts/plugins.py publish index/index.json dist \
+            "ghcr.io/${GITHUB_REPOSITORY,,}/plugins" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+
+      - name: Record The Index
+        if: always() && steps.index.outcome == 'success'
+
+        run: |
+          set -euo pipefail
+          cd index
+
+          if [[ -f index.json && -n "$(git status --porcelain -- index.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add index.json
+            git commit -qm "chore: publish plugin versions"
+            git push origin HEAD:plugins
+          fi

@@ -3,7 +3,13 @@ name: Package
 on:
   workflow_call:
     inputs:
-      version:
+      names:
+        description: "Space-separated core or plugin IDs; each archive uses its own version."
+        required: true
+        type: string
+
+      artifact:
+        description: "Upload name prefix; the target triple is appended."
         required: true
         type: string
 
@@ -11,8 +17,8 @@ permissions:
   contents: read
 
 jobs:
-  agent:
-    name: Agent (${{ matrix.name }})
+  archive:
+    name: Archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
 
@@ -68,7 +74,6 @@ jobs:
         uses: actions/checkout@v7
 
         with:
-          ref: ${{ github.ref }}
           persist-credentials: false
 
       - name: Install Rust Toolchain
@@ -81,47 +86,67 @@ jobs:
         name: Build Unix Archives
 
         env:
-          KRABB_VERSION: ${{ inputs.version }}
+          KRABB_NAMES: ${{ inputs.names }}
           KRABB_TARGET: ${{ matrix.target }}
 
-        run: bash krabb-scripts/package.sh "$KRABB_VERSION" "$KRABB_TARGET"
+        # Word splitting turns the validated name list into arguments.
+        run: bash krabb-scripts/package.sh "$KRABB_TARGET" $KRABB_NAMES
 
       - if: matrix.archive == 'zip'
         name: Build Windows Archives
         shell: pwsh
 
         env:
-          KRABB_VERSION: ${{ inputs.version }}
+          KRABB_NAMES: ${{ inputs.names }}
           KRABB_TARGET: ${{ matrix.target }}
 
         run: |
           $ErrorActionPreference = "Stop"
-          cargo build --workspace --release --locked --target "$env:KRABB_TARGET"
-          $version = $env:KRABB_VERSION
           $target = $env:KRABB_TARGET
-          $plugins = @("core", "acp", "a2a", "runner", "ag-ui", "codex", "anthropic", "openai", "gemini", "ollama", "openrouter", "telegram", "discord", "whatsapp", "signal", "slack", "sqlite", "memory", "scheduler", "tools", "mcp", "whisper", "tui", "browser", "computer")
+          $names = @($env:KRABB_NAMES -split '\s+' | Where-Object { $_ })
+          $manifests = @{}
+          $packages = @()
 
-          foreach ($plugin in $plugins) {
-            $name = if ($plugin -eq "core") { "krabb" } else { "krabb-plugin-$plugin" }
+          foreach ($name in $names) {
+            if ($name -notmatch '^[a-z0-9][a-z0-9-]*$') { throw "Name '$name' is not valid." }
 
-            $package = "krabb-$plugin-v$version-$target"
-            New-Item -ItemType Directory -Force -Path $package | Out-Null
+            if ($name -eq "core") {
+              $packages += @("-p", "krabb", "-p", "krabb-daemon")
+            } else {
+              $manifest = Get-ChildItem "krabb-plugins" -Recurse -Filter "krabb-plugin.toml" |
+                Where-Object { (Get-Content $_.FullName) -contains "id = `"$name`"" } |
+                Select-Object -First 1
+
+              if (-not $manifest) { throw "Plugin manifest is missing: $name." }
+              $manifests[$name] = $manifest.FullName
+              $packages += @("-p", "krabb-plugin-$name")
+            }
+          }
+
+          cargo build --release --locked --target "$target" @packages
+          if ($LASTEXITCODE -ne 0) { throw "Build failed." }
+
+          foreach ($name in $names) {
+            if ($name -eq "core") {
+              $binary = "krabb"
+              $version = (Get-Content VERSION -Raw).Trim()
+            } else {
+              $binary = "krabb-plugin-$name"
+              $version = ((Get-Content $manifests[$name]) -match '^version = "' |
+                Select-Object -First 1) -replace '^version = "(.*)"$', '$1'
+            }
+
+            $package = "krabb-$name-v$version-$target"
             New-Item -ItemType Directory -Force -Path "$package/bin" | Out-Null
-            Copy-Item "target/$target/release/$name.exe" "$package/bin/$name.exe"
+            Copy-Item "target/$target/release/$binary.exe" "$package/bin/$binary.exe"
 
-            if ($plugin -eq "core") {
+            if ($name -eq "core") {
               Copy-Item "target/$target/release/krabb-daemon.exe" "$package/bin/"
+            } else {
+              Copy-Item $manifests[$name] "$package/"
             }
 
             Copy-Item LICENSE, NOTICE "$package/"
-            if ($plugin -ne "core") {
-              $manifest = Get-ChildItem "krabb-plugins" -Recurse -Filter "krabb-plugin.toml" |
-                Where-Object { $_.Directory.Name -eq $plugin } | Select-Object -First 1
-
-              if (-not $manifest) { throw "Plugin manifest is missing: $plugin." }
-              Copy-Item $manifest.FullName "$package/"
-            }
-
             Compress-Archive -Path $package -DestinationPath "$package.zip" -Force
             Remove-Item -Recurse -Force $package
             Write-Output "Created $package.zip."
@@ -132,14 +157,15 @@ jobs:
         shell: bash
 
         env:
-          KRABB_VERSION: ${{ inputs.version }}
+          KRABB_NAMES: ${{ inputs.names }}
           KRABB_TARGET: ${{ matrix.target }}
           KRABB_OS: ${{ matrix.os }}
 
         run: |
           set -euo pipefail
-          archives=(krabb-*-v${KRABB_VERSION}-${KRABB_TARGET}.tar.gz)
-          [[ ${#archives[@]} -eq 24 ]]
+          read -ra names <<< "$KRABB_NAMES"
+          archives=(krabb-*-"$KRABB_TARGET".tar.gz)
+          [[ ${#archives[@]} -eq ${#names[@]} ]]
           stage=$(mktemp -d)
 
           for archive in "${archives[@]}"; do
@@ -151,8 +177,7 @@ jobs:
             [[ -d "$package/bin" ]]
 
             if [[ "$name" == krabb-core-* ]]; then
-              [[ -x "$package/bin/krabb" && -x "$package/bin/krabb" && -x "$package/bin/krabb-daemon" ]]
-              "$package/bin/krabb" version
+              [[ -x "$package/bin/krabb" && -x "$package/bin/krabb-daemon" ]]
               "$package/bin/krabb" version
               smoke="$stage/service-smoke"
               mkdir -p "$smoke/home" "$smoke/config"
@@ -180,30 +205,29 @@ jobs:
             fi
           done
 
-      - if: matrix.archive == 'tar.gz'
+      - if: matrix.archive == 'tar.gz' && contains(format(' {0} ', inputs.names), ' core ')
         name: Validate Unix Installer
         shell: bash
 
         env:
-          KRABB_VERSION: ${{ inputs.version }}
           KRABB_TARGET: ${{ matrix.target }}
 
         run: |
           set -euo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
 
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum krabb-*-v${KRABB_VERSION}-${KRABB_TARGET}.tar.gz > SHA256SUMS
+            sha256sum krabb-core-v"$version"-"$KRABB_TARGET".tar.gz > SHA256SUMS
           else
-            shasum -a 256 krabb-*-v${KRABB_VERSION}-${KRABB_TARGET}.tar.gz > SHA256SUMS
+            shasum -a 256 krabb-core-v"$version"-"$KRABB_TARGET".tar.gz > SHA256SUMS
           fi
 
           prefix="$RUNNER_TEMP/krabb-prefix"
 
-          KRABB_VERSION="$KRABB_VERSION" \
+          KRABB_VERSION="$version" \
             KRABB_RELEASE_BASE="file://$PWD" \
             KRABB_PREFIX="$prefix" \
             sh install.sh
-          "$prefix/bin/krabb" version
           "$prefix/bin/krabb" version
 
       - if: matrix.archive == 'zip'
@@ -211,13 +235,14 @@ jobs:
         shell: pwsh
 
         env:
-          KRABB_VERSION: ${{ inputs.version }}
+          KRABB_NAMES: ${{ inputs.names }}
           KRABB_TARGET: ${{ matrix.target }}
 
         run: |
           $ErrorActionPreference = "Stop"
-          $archives = @(Get-ChildItem "krabb-*-v$env:KRABB_VERSION-$env:KRABB_TARGET.zip")
-          if ($archives.Count -ne 24) { throw "Expected 24 plugin and core archives, found $($archives.Count)." }
+          $names = @($env:KRABB_NAMES -split '\s+' | Where-Object { $_ })
+          $archives = @(Get-ChildItem "krabb-*-$env:KRABB_TARGET.zip")
+          if ($archives.Count -ne $names.Count) { throw "Expected $($names.Count) archives, found $($archives.Count)." }
 
           foreach ($archive in $archives) {
             $destination = Join-Path $env:RUNNER_TEMP $archive.BaseName
@@ -231,13 +256,11 @@ jobs:
             if (!(Test-Path "$package/bin")) { throw "Archive is missing binaries: $($archive.Name)." }
 
             if ($archive.BaseName -like "krabb-core-*") {
-              if (!(Test-Path "$package/bin/krabb.exe") -or !(Test-Path "$package/bin/krabb.exe") -or !(Test-Path "$package/bin/krabb-daemon.exe")) {
+              if (!(Test-Path "$package/bin/krabb.exe") -or !(Test-Path "$package/bin/krabb-daemon.exe")) {
                 throw "Core archive is missing an executable."
               }
               & "$package/bin/krabb.exe" version
               if ($LASTEXITCODE -ne 0) { throw "Packaged CLI failed to start." }
-              & "$package/bin/krabb.exe" version
-              if ($LASTEXITCODE -ne 0) { throw "Packaged CLI alias failed to start." }
             } else {
               if (!(Test-Path "$package/krabb-plugin.toml")) { throw "Plugin manifest is missing." }
               $plugin = $archive.BaseName -replace "^krabb-", "" -replace "-v.*$", ""
@@ -246,21 +269,22 @@ jobs:
             }
           }
 
-      - if: matrix.archive == 'zip'
+      - if: matrix.archive == 'zip' && contains(format(' {0} ', inputs.names), ' core ')
         name: Validate Windows Installer
         shell: pwsh
 
         env:
-          KRABB_VERSION: ${{ inputs.version }}
           KRABB_TARGET: ${{ matrix.target }}
 
         run: |
           $ErrorActionPreference = "Stop"
+          $version = (Get-Content VERSION -Raw).Trim()
 
-          $lines = Get-ChildItem "krabb-*-v$env:KRABB_VERSION-$env:KRABB_TARGET.zip" |
+          $lines = Get-ChildItem "krabb-core-v$version-$env:KRABB_TARGET.zip" |
             ForEach-Object { "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)" }
 
           $lines | Set-Content -Encoding ascii SHA256SUMS
+          $env:KRABB_VERSION = $version
           $env:KRABB_RELEASE_BASE = ([Uri]((Get-Location).Path)).AbsoluteUri.TrimEnd('/')
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "krabb-local"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
@@ -268,13 +292,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Packaged installer failed." }
           & "$env:LOCALAPPDATA/Krabb/bin/krabb.exe" version
           if ($LASTEXITCODE -ne 0) { throw "Installed CLI failed to start." }
-          & "$env:LOCALAPPDATA/Krabb/bin/krabb.exe" version
-          if ($LASTEXITCODE -ne 0) { throw "Installed CLI alias failed to start." }
 
       - name: Upload Archives
         uses: actions/upload-artifact@v7
 
         with:
-          name: krabb-v${{ inputs.version }}-${{ matrix.target }}
-          path: krabb-*-v${{ inputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+          name: ${{ inputs.artifact }}-${{ matrix.target }}
+          path: krabb-*-${{ matrix.target }}.${{ matrix.archive }}
           if-no-files-found: error

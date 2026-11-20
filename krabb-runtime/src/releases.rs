@@ -1,4 +1,4 @@
-//! Official release artifacts resolved to checksummed archive sources.
+//! Krabb host release archives resolved to checksummed sources; plugins use the index.
 
 use std::path::Path;
 
@@ -9,42 +9,19 @@ const LATEST: &str = "https://github.com/krabblab/krabb/releases/latest/download
 const SUMS: &str = "SHA256SUMS";
 const SUMS_LIMIT: u64 = 1024 * 1024;
 
-pub(super) fn source(id: &str, version: &str) -> Result<String, Error> {
-    source_at(id, version, base().as_deref())
-}
-
 /// Resolves a release source for this host from an explicit release base.
-pub(super) fn source_at(id: &str, version: &str, base: Option<&str>) -> Result<String, Error> {
-    source_from(id, version, base, std::env::consts::OS, std::env::consts::ARCH)
+pub(super) fn source_at(version: &str, base: Option<&str>) -> Result<String, Error> {
+    source_from(version, base, std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// File name of the release archive for `id` on this host.
-#[cfg(test)]
-pub(super) fn archive(id: &str, version: &str) -> Option<String> {
-    target(std::env::consts::OS, std::env::consts::ARCH)
-        .map(|(target, extension)| format!("krabb-{id}-v{version}-{target}.{extension}"))
+/// File name of the archive `package.sh` builds for `id` on a target.
+pub(super) fn archive(id: &str, version: &str, target: &str, extension: &str) -> String {
+    format!("krabb-{id}-v{version}-{target}.{extension}")
 }
 
 /// Splits a release source into its archive URL and SHA-256 digest.
 pub(super) fn parts(source: &str) -> Option<(&str, &str)> {
     source.split_once("#sha256=")
-}
-
-/// Whether a recorded plugin source is an official release archive for `id`.
-pub(super) fn official(id: &str, source: &str) -> bool {
-    official_at(id, source, base().as_deref())
-}
-
-/// Like [`official`], against an explicit release base; other hosts are never official.
-pub(super) fn official_at(id: &str, source: &str, base: Option<&str>) -> bool {
-    let url = parts(source).map_or(source, |(url, _)| url);
-    let name = url.rsplit('/').next().unwrap_or(url);
-    let origin =
-        base.map_or_else(|| format!("{BASE}/"), |base| format!("{}/", base.trim_end_matches('/')));
-
-    url.starts_with(&origin)
-        && name.starts_with(&format!("krabb-{id}-v"))
-        && super::archive_url(url)
 }
 
 /// The newest stable release that publishes the host for this target.
@@ -132,6 +109,12 @@ fn latest_from(base: Option<&str>, os: &str, arch: &str) -> Result<String, Error
         .ok_or_else(|| format!("The latest release has no Krabb build for {target}.").into())
 }
 
+/// Whether a valid version is a release rather than a pre-release.
+pub(super) fn stable(version: &str) -> bool {
+    version.bytes().filter(|byte| *byte == b'.').count() == 2
+        && version.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+}
+
 pub(super) fn valid_version(version: &str) -> bool {
     let digits = |value: &str| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
     let mut parts = version.splitn(3, '.');
@@ -151,22 +134,13 @@ pub(super) fn valid_version(version: &str) -> bool {
                 && suffix.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
 }
 
-fn source_from(
-    id: &str,
-    version: &str,
-    base: Option<&str>,
-    os: &str,
-    arch: &str,
-) -> Result<String, Error> {
+fn source_from(version: &str, base: Option<&str>, os: &str, arch: &str) -> Result<String, Error> {
     if !valid_version(version) {
         return Err(format!("Version {version} is not a valid release version.").into());
     }
 
     let (target, extension) = target(os, arch).ok_or_else(|| {
-        format!(
-            "Official releases are not published for {os} ({arch}); \
-             install from a local build with --source."
-        )
+        format!("Krabb releases are not published for {os} ({arch}); build Krabb from source.")
     })?;
 
     let base = base.map_or_else(|| format!("{BASE}/v{version}"), str::to_owned);
@@ -176,7 +150,7 @@ fn source_from(
         return Err("KRABB_RELEASE_BASE must use https:// or file://.".into());
     }
 
-    let archive = format!("krabb-{id}-v{version}-{target}.{extension}");
+    let archive = archive("core", version, target, extension);
 
     let sums = checksums(base).map_err(|error| {
         format!(
@@ -185,27 +159,33 @@ fn source_from(
         )
     })?;
 
-    let digest = checksum(&sums, &archive).ok_or_else(|| {
-        format!("Release v{version} has no {id} plugin for {target}; check the plugin ID.")
-    })?;
+    let digest = checksum(&sums, &archive)
+        .ok_or_else(|| format!("Release v{version} has no Krabb build for {target}."))?;
 
     Ok(format!("{base}/{archive}#sha256={digest}"))
 }
 
-fn target(os: &str, arch: &str) -> Option<(String, &'static str)> {
-    let arch = match arch {
-        "x86_64" | "aarch64" => arch,
-        _ => return None,
-    };
+/// Published targets: OS, architecture, target triple, and archive extension.
+const TARGETS: [(&str, &str, &str, &str); 6] = [
+    ("linux", "x86_64", "x86_64-unknown-linux-gnu", "tar.gz"),
+    ("linux", "aarch64", "aarch64-unknown-linux-gnu", "tar.gz"),
+    ("macos", "x86_64", "x86_64-apple-darwin", "tar.gz"),
+    ("macos", "aarch64", "aarch64-apple-darwin", "tar.gz"),
+    ("windows", "x86_64", "x86_64-pc-windows-msvc", "zip"),
+    ("windows", "aarch64", "aarch64-pc-windows-msvc", "zip"),
+];
 
-    let (system, extension) = match os {
-        "linux" => ("unknown-linux-gnu", "tar.gz"),
-        "macos" => ("apple-darwin", "tar.gz"),
-        "windows" => ("pc-windows-msvc", "zip"),
-        _ => return None,
-    };
+/// Whether `target` is one of the published target triples.
+pub(super) fn published(target: &str) -> bool {
+    TARGETS.iter().any(|(_, _, triple, _)| *triple == target)
+}
 
-    Some((format!("{arch}-{system}"), extension))
+/// The target triple and archive extension published for an OS and architecture.
+pub(super) fn target(os: &str, arch: &str) -> Option<(&'static str, &'static str)> {
+    TARGETS
+        .iter()
+        .find(|(system, machine, _, _)| *system == os && *machine == arch)
+        .map(|(_, _, triple, extension)| (*triple, *extension))
 }
 
 fn checksums(base: &str) -> Result<String, Error> {
@@ -213,14 +193,7 @@ fn checksums(base: &str) -> Result<String, Error> {
         return read(&Path::new(path).join(SUMS));
     }
 
-    let temp = super::temp("krabb-release")?;
-    let path = temp.join(SUMS);
-
-    let result = super::download(&format!("{base}/{SUMS}"), &path).and_then(|()| read(&path));
-
-    let _ = std::fs::remove_dir_all(&temp);
-
-    result
+    Ok(String::from_utf8(super::download_bounded(&format!("{base}/{SUMS}"), SUMS_LIMIT)?)?)
 }
 
 fn read(path: &Path) -> Result<String, Error> {

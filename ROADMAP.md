@@ -142,16 +142,17 @@ Establish a functional single-agent Krabbling with the basic installed-system
 flow working on Linux, macOS, and Windows. This baseline precedes the explicit
 agent identities, roles, and delegation introduced by later milestones.
 
-- Deliver the CLI, daemon, and official plugins as versioned GitHub Release
-  artifacts for supported targets. Validate the existing packaging and checksum
+- Deliver the CLI and daemon as versioned GitHub Release artifacts, and official
+  plugins as independently versioned, digest-addressed registry artifacts listed
+  in the plugin index, for supported targets. Validate the existing packaging and checksum
   verification end to end; users must not need Git, Cargo, or a repository clone.
   Provide copyable Unix and PowerShell installation commands and manual downloads.
-- Make `krabb plugin install <id>` resolve compatible official release artifacts
-  from any working directory. Record the installed version, origin, digest, and
+- Make `krabb plugin install <id>` resolve the newest protocol-compatible indexed
+  plugin version from any working directory. Record the installed version, origin, digest, and
   approved grants; use that origin for updates. Keep source installs and `--link`
   explicit development options rather than prerequisites for ordinary users.
-- Resolve default installs against published releases, not an unreleased version
-  on the main branch. Support explicit versions, check host/plugin compatibility
+- Resolve default installs against published versions, not unreleased code on the
+  main branch. Support explicit versions, check host/plugin compatibility
   before replacement, and explain unavailable artifacts or unsupported targets
   without silently compiling from source.
 - Introduce `krabb-migrations` as the shared, versioned migration machinery shipped
@@ -402,9 +403,10 @@ remains simple with no mandatory extra resident workers.
 Extend the v0.1 coordinated update and rollback workflow with stronger release
 provenance, distribution options, and opt-in scheduled upgrades.
 
-- Establish signed release metadata, immutable versions, verified digests, trusted
-  signing identities, key rotation, and component compatibility metadata. Include
-  dependency inventories and build provenance; plan reproducible build verification.
+- Sign the release checksums and the v0.1 plugin index, which already provides
+  immutable versions, verified digests, and protocol compatibility metadata. Add
+  trusted signing identities, key rotation, dependency inventories, and build
+  provenance; plan reproducible build verification.
 - Extend official artifact resolution and lockfiles to coordinated component
   upgrades. Preserve explicit source/link development and private-install workflows.
   Do not overwrite managed development installations.
@@ -711,9 +713,10 @@ to extend and release independently using established contracts and packaging.
   sources, immutable versions, digests, compatibility ranges, maintainers, permission
   declarations, provenance, and clear trust/review status. Support private catalogs
   and direct installs without requiring inclusion in a public registry.
-- Give components independent versions and release triggers. A plugin release must
-  not publish a kernel release. Coordinate upgrades only where compatibility or
-  migration dependencies require it; preserve agent-scoped state and grants.
+- Extend the v0.1 independent plugin versions, published from the plugin index on
+  manifest version bumps, to clients and third-party components. A plugin release
+  must not publish a kernel release. Coordinate upgrades only where compatibility
+  or migration dependencies require it; preserve agent-scoped state and grants.
 - Generate catalog views and copyable installation commands from the same metadata.
   Document authoring, testing, publication, review, removal, and compromised-package
   response. Signature validity does not itself establish code trust.

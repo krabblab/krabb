@@ -19,7 +19,8 @@ krabb completion <bash|fish|powershell|zsh>
 krabb plugin list [<page>] [--json]
 krabb plugin setup <id> [--no-activate] [--json]
 krabb <id> setup [--no-activate] [--json]
-krabb plugin install <id>[@<version>]... [--source <path-or-url>] [--revision <rev>] [--link] [-y|--yes] [--json]
+krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [-y|--yes] [--json]
+krabb plugin versions <id> [--json]
 krabb plugin update [-y|--yes] [--json]
 krabb plugin uninstall <id>... [-y|--yes] [--force] [--json]
 krabb plugin detach <id> [--json]
@@ -305,15 +306,17 @@ krabb update [<version>] [-y|--yes]
 krabb update --rollback [-y|--yes]
 ```
 
-`krabb update` moves the CLI, daemon, and official plugins to one release, the
-latest stable one unless a version is given. It downloads and verifies every
-archive and runs the new host once before changing anything. A truncated or
-mismatched download, or an official plugin whose protocol the new host does not
-support, stops the update with the installation unchanged. It then previews
-versions, plugin permission, capability, and secret changes, home migrations,
-and the service interruption. Linked or custom-source plugins stay as they are
-and must be compatible with the new host. With `--json`, the command prints
-that preview and applies it only with `--yes`.
+`krabb update` moves the CLI and daemon to one release, the latest stable one
+unless a version is given. Releases contain only the host; plugins keep their own
+versions. Krabb downloads and verifies the release and runs the new host once
+before changing anything. An official plugin whose protocol the new host does not
+support moves to the newest version that it does support, in the same
+transaction; one with no such version, or a linked or custom-source plugin the new
+host cannot load, stops the update with the installation unchanged. Other plugins
+stay as they are; update them with `krabb plugin update`. A truncated or mismatched
+download also stops the update. It then previews versions, plugin permission,
+capability, and secret changes, home migrations, and the service interruption.
+With `--json`, the command prints that preview and applies it only with `--yes`.
 
 After approval, Krabb stops a running service and saves a recovery point with
 the previous binaries, configuration, plugins, and state under
@@ -335,19 +338,25 @@ service must be stopped before an update.
 
 ```sh
 krabb plugin list [page]
-krabb plugin install <id>[@<version>]... [--source <path-or-url>] [--revision <rev>] [--link]
+krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link]
+krabb plugin versions <id>
 krabb plugin update
 krabb plugin uninstall <id>...
 krabb plugin detach <id>
 krabb plugin attach <id>
 ```
 
-Install accepts official IDs or one explicit source. Official IDs download the
-release archive for this host's version and target from any directory, verified
-against the release `SHA256SUMS`; `<id>@<version>` pins another release.
-Sources may be local paths, Git revisions, or HTTPS archives with a `#sha256=`
-digest. `--link` is for local development builds. Installation validates each manifest and stages
-files before activation; a running daemon loads new plugins over local IPC.
+Install accepts official IDs or one explicit source. An official ID installs the
+newest version in the [plugin index](plugins.md#official-plugin-index) that this
+host's protocol supports, from any directory, and follows new versions on
+`plugin update`. `<id>@<version>` installs and pins any published version at your
+own risk, including withdrawn ones; versions the host's protocol cannot load are
+refused. `<id>@latest` removes the pin. `plugin versions <id>` lists every
+published version with its release date and marks the latest, installed,
+withdrawn, pre-release, and unsupported ones. Sources may be local paths, Git
+revisions, or HTTPS archives with a `#sha256=` digest. `--link` is for local
+development builds. Installation validates each manifest and stages files before
+activation; a running daemon loads new plugins over local IPC.
 Interactive install, uninstall, update, and import operations show an in-place spinner.
 Progress stays on one terminal line, with long messages clipped to fit its width.
 Plugin install, uninstall, and update also print plain status lines to stderr

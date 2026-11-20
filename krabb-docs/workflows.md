@@ -28,8 +28,8 @@ krabb status
 krabb-daemon
 ```
 
-`krabb plugin install` downloads official plugins from the same release and
-verifies them. `krabb plugin setup` explains each field and checks values before
+`krabb plugin install` downloads the newest compatible version of each official
+plugin from the plugin index and verifies it. `krabb plugin setup` explains each field and checks values before
 saving them. Choose a hosted provider such as `openai`, `anthropic`, `gemini`, or
 `openrouter` for remote inference, or `ollama` for a local model; local inference
 needs its own memory and CPU, described in [Resources](resources.md). See
@@ -153,9 +153,10 @@ and delete only idle sessions after reviewing their worktree state.
 
 ## Updates
 
-Run `krabb update` to move the CLI, daemon, official plugins, and service to the
-latest release together; `krabb update --rollback` returns to the retained
-recovery point. See [Updates](commands.md#updates) for the preview, recovery
+Run `krabb update` to move the CLI, daemon, and service to the latest release,
+together with any official plugin the new host can no longer load; `krabb update
+--rollback` returns to the retained recovery point. Run `krabb plugin update` for
+new plugin versions. See [Updates](commands.md#updates) for the preview, recovery
 point, and limits.
 
 Use `update = "check"` to observe source changes, `"prompt"` to require an

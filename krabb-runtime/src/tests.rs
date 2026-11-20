@@ -6529,11 +6529,17 @@ fn plugin_install_accepts_pinned_release_versions() {
         })
     };
 
-    let (_, sources) = install(&["tui@0.2.0-rc.1", "codex"], None, false).unwrap();
+    let (_, sources) = install(&["tui@0.2.0-rc.1", "codex", "slack@latest"], None, false).unwrap();
 
     assert_eq!(sources[0].id, "tui");
     assert_eq!(sources[0].version.as_deref(), Some("0.2.0-rc.1"));
     assert_eq!(sources[1].version, None);
+    assert_eq!(sources[2].version, None);
+
+    assert!(matches!(
+        Cli::try_parse_from(["krabb", "plugin", "versions", "tui"]).unwrap().command,
+        Command::Plugin { command: crate::cli::PluginCommand::Versions(Id { id }) } if id == "tui"
+    ));
 
     assert!(install(&["tui@main"], None, false).is_err());
     assert!(install(&["tui@0.1.0"], None, true).is_err());

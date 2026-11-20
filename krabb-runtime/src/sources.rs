@@ -61,6 +61,17 @@ pub(crate) fn link_at(
     linked: bool,
     home_root: &Path,
 ) -> Result<Manifest, Box<dyn std::error::Error + Send + Sync>> {
+    link_recorded(source, linked, home_root, None)
+}
+
+/// Installs from `source` and locks `recorded` as its origin when it was fetched elsewhere,
+/// such as a staged archive of an official plugin.
+pub(crate) fn link_recorded(
+    source: Source,
+    linked: bool,
+    home_root: &Path,
+    recorded: Option<&str>,
+) -> Result<Manifest, Box<dyn std::error::Error + Send + Sync>> {
     let _lock = lock_at(home_root, ".plugins.lock")?;
 
     if !valid(&source.id) {
@@ -76,10 +87,10 @@ pub(crate) fn link_at(
             default_plugin_source(Path::new("krabb-plugins"), &source.id)?.display().to_string()
         }
 
-        None => releases::source(&source.id, source.version.as_deref().unwrap_or(VERSION))?,
+        None => index::source(&source.id, source.version.as_deref()),
     };
 
-    let root = resolve(&origin, source.revision.as_deref())?;
+    let root = resolve_at(home_root, &origin, source.revision.as_deref())?;
 
     if linked && root.temp.is_some() {
         return Err(
@@ -151,7 +162,13 @@ pub(crate) fn link_at(
         lock.plugins.insert(
             source.id.clone(),
             Entry {
-                source: canonical_source(&origin),
+                source: recorded.map_or_else(
+                    || match index::parse(&origin) {
+                        Some(_) => origin.clone(),
+                        None => canonical_source(&origin),
+                    },
+                    str::to_owned,
+                ),
                 revision: revision(&root_path),
                 pinned: source.revision.as_deref().is_some_and(|value| value != "local"),
                 hash: digest(&stage.join("krabb-plugin.toml"), &staged)?,
@@ -299,6 +316,18 @@ pub(crate) fn relocated_plugin_source(path: &Path) -> Option<PathBuf> {
     let relocated = plugins.join(relative);
 
     relocated.is_dir().then_some(relocated)
+}
+
+/// Resolves any plugin source, including official ones selected through the plugin index.
+pub(crate) fn resolve_at(
+    home_root: &Path,
+    source: &str,
+    wanted: Option<&str>,
+) -> Result<SourceRoot, Box<dyn std::error::Error + Send + Sync>> {
+    match index::parse(source) {
+        Some((id, version)) => index::resolve(home_root, id, version),
+        None => resolve(source, wanted),
+    }
 }
 
 pub(crate) fn resolve(

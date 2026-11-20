@@ -49,8 +49,11 @@ pub(crate) async fn plugin(
             let mut outcomes = Vec::new();
             let action = if linked { "Linking" } else { "Installing" };
 
+            let mut notices = Vec::new();
+
             for source in sources {
                 let id = source.id.clone();
+                let pinned = source.version.clone();
                 let spinner = terminal::progress(format!("{action} plugin {id}..."), json);
 
                 let existing_version =
@@ -61,6 +64,12 @@ pub(crate) async fn plugin(
                 match link(source, linked) {
                     Ok(manifest) => {
                         drop(spinner);
+
+                        if let Some(notice) =
+                            pinned.and_then(|version| index::notice(&root, &id, &version))
+                        {
+                            notices.push(notice);
+                        }
 
                         let _progress =
                             terminal::progress(format!("Activating plugin {id}..."), json);
@@ -135,6 +144,7 @@ pub(crate) async fn plugin(
                     serde_json::to_string_pretty(&serde_json::json!({
                         "action": "install",
                         "items": &installed,
+                        "notices": &notices,
                         "errors": &errors,
                         "activation_errors": &activation_errors
                     }))?
@@ -149,6 +159,10 @@ pub(crate) async fn plugin(
                 let total = installed.len() + errors.len();
 
                 println!("{}", plugin_install_output(&outcomes, linked));
+
+                for notice in &notices {
+                    println!("\n{notice}");
+                }
 
                 if !errors.is_empty() {
                     std::io::stdout().flush()?;
@@ -180,6 +194,7 @@ pub(crate) async fn plugin(
         }
 
         PluginCommand::Update(update) => update_plugins(update.yes, update.json || json).await?,
+        PluginCommand::Versions(args) => index::versions(&home(), &args.id, json)?,
 
         PluginCommand::Remove(name) => {
             let ids = plugin_uninstall_ids(name.ids)?;
@@ -333,13 +348,15 @@ pub(crate) fn plugin_sources(
 
         if let Some(version) = &version {
             if install.source.is_some() || install.link {
-                return Err("Release versions cannot be combined with --source or --link.".into());
+                return Err("Plugin versions cannot be combined with --source or --link.".into());
             }
 
-            if !releases::valid_version(version) {
-                return Err(format!("Version {version} is not a valid release version.").into());
+            if version != "latest" && !releases::valid_version(version) {
+                return Err(format!("Version {version} is not a valid plugin version.").into());
             }
         }
+
+        let version = version.filter(|version| version != "latest");
 
         sources.push(Source {
             id: id.to_owned(),

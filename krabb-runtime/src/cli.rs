@@ -101,7 +101,7 @@ pub(crate) enum Command {
         command: ServiceCommand,
     },
 
-    #[command(about = "Update Krabb and its official plugins, or roll back the last update.")]
+    #[command(about = "Update Krabb and the plugins it needs, or roll back the last update.")]
     Update(upgrade::Options),
 
     #[command(about = "Export the local configuration and plugin lock.")]
@@ -159,6 +159,8 @@ pub(crate) enum PluginCommand {
     Install(PluginInstall),
     #[command(about = "Review available plugin updates; pass -y to apply them.")]
     Update(PluginUpdate),
+    #[command(about = "List the published versions of an official plugin.")]
+    Versions(Id),
     #[command(
         visible_alias = "stop",
         about = "Detach a plugin from the runtime without uninstalling it."
@@ -440,7 +442,7 @@ pub(crate) struct PluginInstall {
         value_name = "ID[@VERSION]",
         required = true,
         num_args = 1..,
-        help = "Official plugin IDs, optionally pinned to a release version."
+        help = "Official plugin IDs, optionally pinned to a published version or @latest."
     )]
     pub(crate) ids: Vec<String>,
     #[arg(

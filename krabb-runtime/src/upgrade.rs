@@ -1,6 +1,7 @@
-//! `krabb update`: one transaction for the host, its official plugins, and the service.
+//! `krabb update`: one transaction for the host, the official plugins it can no longer
+//! load, and the service.
 //!
-//! The running host stages and verifies the release set, then takes a recovery point
+//! The running host stages and verifies the update, then takes a recovery point
 //! with the service stopped. After the binaries are swapped, the new host finishes
 //! activation with `update --finish`; any failure restores the recovery point. The
 //! hidden `--inspect` and `--finish` flags are a contract between releases.
@@ -138,17 +139,9 @@ async fn update(
 
     let lock = load_lock_at(root)?;
 
-    let (official, kept): (Vec<_>, Vec<_>) = lock
-        .plugins
-        .iter()
-        .partition(|(id, entry)| !entry.linked && releases::official(id, &entry.source));
-
-    let ids = official.iter().map(|(id, _)| (*id).clone()).collect::<Vec<_>>();
     let spinner = terminal::progress(format!("Downloading Krabb {version}..."), json);
-    let mut staged = stage::prepare(root, &version, &ids, releases::base().as_deref())?;
+    let mut staged = stage::prepare(root, &version, releases::base().as_deref())?;
     let inspection = stage::inspect(&staged.krabb, root)?;
-
-    drop(spinner);
 
     if inspection.version != version {
         return Err(format!(
@@ -158,9 +151,13 @@ async fn update(
         .into());
     }
 
+    stage::plugins(&mut staged, &lock, &inspection, &|| index::load(root))?;
+
+    drop(spinner);
+
     stage::compatible(&staged, &inspection)?;
 
-    let preview = preview(&version, &lock, &kept, &staged, &inspection.schema, &service, running);
+    let preview = preview(&version, &lock, &staged, &inspection.schema, &service, running);
 
     if json && !yes {
         println!("{}", serde_json::to_string_pretty(&preview.value)?);
@@ -352,7 +349,6 @@ struct Preview {
 fn preview(
     version: &str,
     lock: &Lock,
-    kept: &[(&String, &Entry)],
     staged: &stage::Staged,
     schema: &stage::Schema,
     service: &Path,
@@ -366,11 +362,12 @@ fn preview(
             continue;
         };
 
-        if entry.version == manifest.version {
-            rows.push(format!("{id}: {} (release {version})", manifest.version));
-        } else {
-            rows.push(format!("{id}: {} → {}", entry.version, manifest.version));
-        }
+        let pin = index::parse(&entry.source)
+            .and_then(|(_, pinned)| pinned)
+            .map(|pinned| format!(" (pin to {pinned} removed; it cannot run on {version})"))
+            .unwrap_or_default();
+
+        rows.push(format!("{id}: {} → {}{pin}", entry.version, manifest.version));
 
         let changes = [
             ("permissions", &entry.permissions, &manifest.permissions),
@@ -393,10 +390,24 @@ fn preview(
         }));
     }
 
-    for (id, entry) in kept {
-        let reason = if entry.linked { "linked development build" } else { "custom source" };
+    let mut kept = Vec::new();
+    let mut supported = Vec::new();
 
-        rows.push(format!("{id}: stays at {} ({reason})", entry.version));
+    for (id, entry) in lock.plugins.iter().filter(|(id, _)| !staged.manifests.contains_key(*id)) {
+        let reason = if entry.linked {
+            Some("linked development build")
+        } else if index::official(entry).is_none() {
+            Some("custom source")
+        } else {
+            None
+        };
+
+        match reason {
+            Some(_) => kept.push(id),
+            None => supported.push(id),
+        }
+
+        rows.push(format!("{id}: stays at {} ({})", entry.version, reason.unwrap_or("supported")));
     }
 
     if schema.to > schema.from {
@@ -428,7 +439,8 @@ fn preview(
         "from": VERSION,
         "to": version,
         "plugins": plugins,
-        "kept": kept.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+        "kept": kept,
+        "supported": supported,
         "schema": schema,
         "restart": running,
     });

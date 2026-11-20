@@ -231,10 +231,11 @@ their model is explicitly pinned; their history is preserved.
 - Stable and MSRV builds, all-target compilation, doctests, Clippy, formatting,
   dependency audits, documentation validation, and at least 80% core and 50% host
   package line coverage are release requirements.
-- Releases provide separate core and plugin archives for Linux, macOS, and
-  Windows on x86_64 and ARM64, with checksums and provenance.
+- Releases provide the host archive for Linux, macOS, and Windows on x86_64 and
+  ARM64, with checksums. Plugins have independent versions in the plugin index,
+  with per-target digests.
 - Unix and PowerShell installers support core and one-line plugin installation.
-- Crates and containers are not part of the current distribution model.
+- Crates and container images are not part of the current distribution model.
 - Update modes are off, check, prompt, and auto, with prompt default.
   Stage, verify, back up, migrate, health-check, activate atomically, and
   roll back failures. Never silently activate incompatibilities.

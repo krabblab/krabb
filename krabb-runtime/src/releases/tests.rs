@@ -1,6 +1,6 @@
 use std::fs;
 
-use super::{checksum, source_from, target, valid_version};
+use super::{checksum, source_from, stable, target, valid_version};
 
 const DIGEST: &str = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12";
 
@@ -17,9 +17,9 @@ fn versions_follow_the_installer_format() {
 
 #[test]
 fn targets_cover_the_published_matrix() {
-    assert_eq!(target("linux", "x86_64"), Some(("x86_64-unknown-linux-gnu".into(), "tar.gz")));
-    assert_eq!(target("macos", "aarch64"), Some(("aarch64-apple-darwin".into(), "tar.gz")));
-    assert_eq!(target("windows", "aarch64"), Some(("aarch64-pc-windows-msvc".into(), "zip")));
+    assert_eq!(target("linux", "x86_64"), Some(("x86_64-unknown-linux-gnu", "tar.gz")));
+    assert_eq!(target("macos", "aarch64"), Some(("aarch64-apple-darwin", "tar.gz")));
+    assert_eq!(target("windows", "aarch64"), Some(("aarch64-pc-windows-msvc", "zip")));
     assert_eq!(target("freebsd", "x86_64"), None);
     assert_eq!(target("linux", "riscv64"), None);
 }
@@ -48,37 +48,37 @@ fn sources_resolve_from_a_release_directory() {
 
     fs::write(
         root.join("SHA256SUMS"),
-        format!("{DIGEST}  krabb-tui-v0.1.0-aarch64-apple-darwin.tar.gz\n"),
+        format!("{DIGEST}  krabb-core-v0.1.0-aarch64-apple-darwin.tar.gz\n"),
     )
     .unwrap();
 
     let base = format!("file://{}/", root.display());
 
     assert_eq!(
-        source_from("tui", "0.1.0", Some(&base), "macos", "aarch64").unwrap(),
+        source_from("0.1.0", Some(&base), "macos", "aarch64").unwrap(),
         format!(
-            "file://{}/krabb-tui-v0.1.0-aarch64-apple-darwin.tar.gz#sha256={DIGEST}",
+            "file://{}/krabb-core-v0.1.0-aarch64-apple-darwin.tar.gz#sha256={DIGEST}",
             root.display()
         )
     );
 
-    let missing = source_from("slack", "0.1.0", Some(&base), "macos", "aarch64").unwrap_err();
+    let missing = source_from("0.1.0", Some(&base), "macos", "x86_64").unwrap_err();
 
-    assert!(missing.to_string().contains("has no slack plugin for aarch64-apple-darwin"));
+    assert!(missing.to_string().contains("has no Krabb build for x86_64-apple-darwin"));
 
-    let unsupported = source_from("tui", "0.1.0", Some(&base), "freebsd", "x86_64").unwrap_err();
+    let unsupported = source_from("0.1.0", Some(&base), "freebsd", "x86_64").unwrap_err();
 
-    assert!(unsupported.to_string().contains("--source"));
+    assert!(unsupported.to_string().contains("not published for freebsd"));
 
     let unavailable =
-        source_from("tui", "0.1.0", Some("file:///missing/krabb"), "macos", "aarch64").unwrap_err();
+        source_from("0.1.0", Some("file:///missing/krabb"), "macos", "aarch64").unwrap_err();
 
     assert!(unavailable.to_string().starts_with("Release v0.1.0 is unavailable:"));
 
-    let insecure = source_from("tui", "0.1.0", Some("http://example.com"), "macos", "aarch64");
+    let insecure = source_from("0.1.0", Some("http://example.com"), "macos", "aarch64");
 
     assert!(insecure.unwrap_err().to_string().contains("https://"));
-    assert!(source_from("tui", "main", None, "macos", "aarch64").is_err());
+    assert!(source_from("main", None, "macos", "aarch64").is_err());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -99,24 +99,12 @@ fn versions_order_releases_after_their_pre_releases() {
 }
 
 #[test]
-fn official_sources_name_their_plugin_archive() {
-    let source = format!(
-        "https://github.com/krabblab/krabb/releases/download/v0.1.0/\
-         krabb-tui-v0.1.0-x86_64-apple-darwin.tar.gz#sha256={DIGEST}"
-    );
-
-    let fork = format!(
-        "https://example.com/v1/krabb-tui-v0.1.0-x86_64-apple-darwin.tar.gz#sha256={DIGEST}"
-    );
-
-    assert!(super::official_at("tui", &source, None));
-    assert!(!super::official_at("tu", &source, None));
-    assert!(!super::official_at("tui", &fork, None));
-    assert!(super::official_at("tui", &fork, Some("https://example.com/v1/")));
-    assert!(!super::official_at("tui", &source, Some("https://example.com/v1")));
-    assert!(!super::official("tui", "/home/me/krabb/krabb-plugins/clients/tui"));
-    assert!(!super::official("tui", "https://example.com/krabb-tui-v0.1.0.git"));
-    assert_eq!(super::parts(&source).unwrap().1, DIGEST);
+fn published_targets_match_the_release_matrix() {
+    assert!(super::published("x86_64-unknown-linux-gnu"));
+    assert!(super::published("aarch64-pc-windows-msvc"));
+    assert!(!super::published("riscv64gc-unknown-linux-gnu"));
+    assert!(!super::published(""));
+    assert_eq!(super::parts(&format!("https://x/a.tar.gz#sha256={DIGEST}")).unwrap().1, DIGEST);
 }
 
 #[test]
@@ -145,4 +133,12 @@ fn latest_versions_come_from_the_host_archives() {
     assert!(super::latest_from(Some(&base), "plan9", "x86_64").is_err());
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn only_plain_versions_are_stable() {
+    assert!(stable("0.3.0"));
+    assert!(!stable("0.3.0-rc.1"));
+    assert!(!stable("0.3.0.rc1"));
+    assert!(!stable("0.3.0.1"));
 }

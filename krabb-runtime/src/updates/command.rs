@@ -98,6 +98,15 @@ pub(crate) fn update_with_commit(
             continue;
         }
 
+        if preview_candidate.is_none() && index::current(home_root, &previous) {
+            rows.push(serde_json::json!({
+                "id": id,
+                "version": previous.version,
+                "status": "unchanged"
+            }));
+            continue;
+        }
+
         // Previews are hashed when saved or loaded, and staging hashes their copy again.
         let inspection = if let Some(candidate) = preview_candidate {
             check_update_candidate(home_root, &id, &previous, candidate).map(|()| candidate.clone())
@@ -255,6 +264,10 @@ pub(crate) fn preview_updates_at_inner(
     let mut errors = Vec::new();
 
     for (id, entry) in &lock.plugins {
+        if index::current(home_root, entry) {
+            continue;
+        }
+
         let candidate = match inspect_update(home_root, id, entry) {
             Ok(candidate) => candidate,
 
@@ -534,7 +547,7 @@ pub(crate) fn inspect_update(
     }
 
     let pin = entry.pinned.then_some(entry.revision.as_str());
-    let source = resolve(&entry.source, pin)?;
+    let source = resolve_at(home_root, &entry.source, pin)?;
 
     let manifest = read_manifest(&source.path)
         .ok_or_else(|| format!("Manifest not found in {}.", source.path.display()))?;
@@ -732,7 +745,7 @@ pub(crate) fn prepare_update(
 
     let resolved = if preview.is_none() || entry.linked {
         let pin = entry.pinned.then_some(entry.revision.as_str());
-        Some(resolve(&entry.source, pin)?)
+        Some(resolve_at(home_root, &entry.source, pin)?)
     } else {
         None
     };
