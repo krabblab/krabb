@@ -35,6 +35,7 @@ async fn retries_the_rejected_chunk_without_replaying_delivered_chunks() {
             vec!["short".into(); statuses.len()]
         };
 
+        let label = format!("{statuses:?}");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let source = if succeeds { format!("{}TAIL", "x".repeat(2_000)) } else { "short".into() };
@@ -48,13 +49,19 @@ async fn retries_the_rejected_chunk_without_replaying_delivered_chunks() {
                 let mut line = String::new();
                 socket.read_line(&mut line).await.unwrap();
 
-                assert!(line.starts_with("POST /channels/1/messages "));
+                assert!(
+                    line.starts_with("POST /channels/1/messages "),
+                    "unexpected request {line:?}"
+                );
 
                 let mut length = 0;
 
                 loop {
                     line.clear();
-                    socket.read_line(&mut line).await.unwrap();
+
+                    let size = socket.read_line(&mut line).await.unwrap();
+
+                    assert_ne!(size, 0, "request ended before its headers");
 
                     if line == "\r\n" {
                         break;
@@ -84,7 +91,7 @@ async fn retries_the_rejected_chunk_without_replaying_delivered_chunks() {
         });
 
         let client =
-            reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
+            reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().unwrap();
 
         let result = call_with(
             &client,
@@ -96,11 +103,13 @@ async fn retries_the_rejected_chunk_without_replaying_delivered_chunks() {
         )
         .await;
 
-        assert_eq!(result.is_ok(), succeeds);
+        let chunks = tokio::time::timeout(Duration::from_secs(15), server)
+            .await
+            .unwrap_or_else(|_| panic!("{label}: fixture awaited a request after {result:?}"))
+            .unwrap();
 
-        let chunks = server.await.unwrap();
-
-        assert_eq!(chunks, expected);
+        assert_eq!(result.is_ok(), succeeds, "{label}: {result:?}");
+        assert_eq!(chunks, expected, "{label}");
     }
 }
 

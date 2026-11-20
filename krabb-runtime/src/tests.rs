@@ -8529,16 +8529,28 @@ fn prepares_channel_replies() {
 
     let first_turn = super::turn_messages("test", &context_home, history.clone());
 
-    assert_eq!(first_turn.len(), 4);
-    assert_eq!(first_turn[2].id, "user-1");
-    assert_eq!(first_turn[3].id, "assistant-1");
+    let runtime = first_turn[0].content[0].render();
+
+    assert_eq!(first_turn.len(), 5);
+    assert_eq!(first_turn[0].role, Role::System);
+    assert!(runtime.contains(&format!("Krabb {}", super::VERSION)));
+
+    assert!(
+        runtime.contains(&format!("up to {} messages", krabb_core::session::MESSAGE_HISTORY_LIMIT))
+    );
+
+    assert!(runtime.contains(&format!("latest {} messages", super::compaction::UNBUDGETED)));
+    assert!(runtime.contains("/compact") && runtime.contains("/help"));
+    assert!(runtime.contains("https://github.com/krabblab/krabb"));
+    assert_eq!(first_turn[3].id, "user-1");
+    assert_eq!(first_turn[4].id, "assistant-1");
 
     fs::write(context_root.join("KRAB.md"), "Updated identity.").unwrap();
 
     let second_turn = super::turn_messages("test", &context_home, history.clone());
 
-    assert!(second_turn[0].content[0].render().contains("Updated identity."));
-    assert_eq!(second_turn[2].id, "user-1");
+    assert!(second_turn[1].content[0].render().contains("Updated identity."));
+    assert_eq!(second_turn[3].id, "user-1");
     assert_eq!(history.len(), 2);
 
     fs::write(context_root.join("KRAB.md"), "x".repeat(super::CONTEXT_LIMIT * 4)).unwrap();

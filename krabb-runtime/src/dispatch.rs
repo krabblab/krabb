@@ -1146,15 +1146,18 @@ pub(crate) async fn execute_tool_with_registry(
 
     if name == slash::TOOL {
         let cancels = Arc::new(Mutex::new(BTreeMap::new()));
+        let stop = Stop::new();
 
         let host = slash::Host {
             plugins,
             sessions,
             cancels: &cancels,
             approvals: &approvals,
+            stop: &stop,
             provider,
             model,
             call: id.saturating_add(1),
+            answering: false,
         };
 
         let caller = slash::Caller {

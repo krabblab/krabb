@@ -522,14 +522,19 @@ a failure exit status. `krabb doctor` checks local installation integrity; use
 restart the service once so it understands new host capabilities.
 
 `plugin uninstall` unloads an active process before deleting its files. `plugin update`
-prepares and starts each replacement while the old process remains registered. Existing
-turns finish normally; new work queues during the handover instead of seeing a missing
-plugin. The daemon commits the files and lock record, swaps the registry entry, then
-stops the old process. Startup or commit failure keeps the old process and restores
-installed state. Inactive plugins stay inactive, and the daemon does not restart.
-An update can wait for a long turn; if work does not settle within 310 seconds, it
-leaves the old plugin running and reports that the update was deferred. This is a
-graceful handover, not a guarantee of unchanged request latency.
+prepares and verifies each replacement while the old process keeps serving, then switches
+that plugin over between its requests. The request in flight finishes on the old version;
+the plugin's next requests wait only for the switch, while other plugins, channels,
+clients, and conversations keep running. The old process stops before the new one starts,
+so a channel's inbox, socket, or webhook port never has two owners. The daemon commits
+the files and lock record and publishes the new version under the same process slot, so
+turns already under way continue on it. As after a restart, state a plugin keeps only in
+memory does not carry over; the host keeps conversations, deliveries, and provider
+continuations. A failed start or commit restores the installed files and restarts the
+previous version from its running image; if it cannot restart, the plugin is unloaded
+and the update says to run `krabb service restart`. Inactive plugins stay
+inactive, and the daemon does not restart. If a single request runs longer than 310
+seconds, the update is deferred and the old plugin keeps running.
 
 Running processes use private executable copies, so replacing installed files does not
 change the executable used by an existing turn or its recovery. Copies are removed on

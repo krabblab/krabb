@@ -36,15 +36,61 @@ const SEEN_KEY_LIMIT: usize = 4 * 1024;
 const BYTE_LIMIT: u64 = 32 * 1024 * 1024;
 pub const TUI_RESERVATION_TTL: u64 = krabb_core::session::RESERVATION_TTL_SECONDS;
 
+// Half the record limit, leaving room for a compacted copy of recent history.
+const HISTORY_BYTES: u64 = BYTE_LIMIT / 2 - 1024 * 1024;
+
 pub fn compact_messages(messages: &mut Vec<Message>) {
-    while messages.len() > krabb_core::session::MESSAGE_HISTORY_LIMIT {
-        if !remove_oldest_message_group(messages, None) {
+    let mut sizes = messages.iter().map(message_bytes).collect::<Vec<_>>();
+    let mut total = sizes.iter().sum::<u64>();
+
+    while messages.len() > krabb_core::session::MESSAGE_HISTORY_LIMIT || total > HISTORY_BYTES {
+        // The latest question and the newest message keep the turn in progress meaningful.
+        let question = messages.iter().rposition(|message| message.role == Role::User);
+
+        let Some((start, end)) = oldest_group(messages, question) else {
+            break;
+        };
+
+        if end + 1 == messages.len() {
             break;
         }
+
+        messages.drain(start..=end);
+        total -= sizes.drain(start..=end).sum::<u64>();
     }
 }
 
+fn message_bytes(message: &Message) -> u64 {
+    struct Count(u64);
+
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len() as u64;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut count = Count(0);
+
+    let _ = serde_json::to_writer(&mut count, message);
+
+    count.0
+}
+
 pub fn remove_oldest_message_group(messages: &mut Vec<Message>, protected: Option<usize>) -> bool {
+    let Some((start, end)) = oldest_group(messages, protected) else {
+        return false;
+    };
+
+    messages.drain(start..=end);
+    true
+}
+
+fn oldest_group(messages: &[Message], protected: Option<usize>) -> Option<(usize, usize)> {
     let mut index = 0;
 
     while index < messages.len() {
@@ -56,14 +102,13 @@ pub fn remove_oldest_message_group(messages: &mut Vec<Message>, protected: Optio
         let (start, end) = message_group(messages, index);
 
         if protected.is_none_or(|protected| protected < start || protected > end) {
-            messages.drain(start..=end);
-            return true;
+            return Some((start, end));
         }
 
         index = end + 1;
     }
 
-    false
+    None
 }
 
 fn message_group(messages: &[Message], index: usize) -> (usize, usize) {
@@ -265,6 +310,11 @@ impl Session {
 }
 
 impl Session {
+    /// A running, stopping, or pending reply still owns the conversation.
+    pub fn replying(&self) -> bool {
+        self.status == "working" || self.inflight.is_some() || !self.queued.is_empty()
+    }
+
     pub fn has_live_tui_reservation(&self) -> bool {
         self.status == "working"
             && self.inflight.is_none()
@@ -1206,10 +1256,43 @@ impl Store {
             ));
         }
 
+        let through = session.messages.last().map(|message| message.id.clone());
+
+        self.commit_compaction(id, through, context)
+    }
+
+    /// Saves an idle session's compacted context unless messages arrived after `through`.
+    pub fn set_compacted_context(
+        &mut self,
+        id: &str,
+        through: &str,
+        context: Vec<Message>,
+    ) -> std::io::Result<bool> {
+        let Some(session) = self.sessions.get(id) else {
+            return Ok(false);
+        };
+
+        if session.replying()
+            || session.messages.last().map(|message| message.id.as_str()) != Some(through)
+            || context.iter().any(|message| message.session != id)
+        {
+            return Ok(false);
+        }
+
+        self.commit_compaction(id, Some(through.to_owned()), context)?;
+
+        Ok(true)
+    }
+
+    fn commit_compaction(
+        &mut self,
+        id: &str,
+        through: Option<String>,
+        context: Vec<Message>,
+    ) -> std::io::Result<()> {
         self.change(|store| {
             if let Some(session) = store.sessions.get_mut(id) {
-                session.compacted_through =
-                    session.messages.last().map(|message| message.id.clone());
+                session.compacted_through = through;
                 session.compacted_context = Some(context);
                 session.context_usage = None;
                 session.updated = now();
@@ -3464,8 +3547,8 @@ fn seen_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryStatus, LIMIT, Session, Store, WORK_SESSION_LIMIT, compact_messages, save_file,
-        valid,
+        DeliveryStatus, HISTORY_BYTES, LIMIT, Session, Store, WORK_SESSION_LIMIT, compact_messages,
+        message_bytes, save_file, valid,
     };
 
     use krabb_core::types::{Content, ContextUsage, Message, Role};
@@ -3800,15 +3883,17 @@ mod tests {
 
         store.create("main", "local").unwrap();
 
-        for id in 0..=LIMIT {
+        let limit = krabb_core::session::MESSAGE_HISTORY_LIMIT;
+
+        for id in 0..=limit {
             store.push("main", message(id, "main")).unwrap();
         }
 
-        assert_eq!(store.sessions["main"].messages.len(), LIMIT);
+        assert_eq!(store.sessions["main"].messages.len(), limit);
 
         let loaded = Store::load(path.clone()).unwrap();
 
-        assert_eq!(loaded.sessions["main"].messages.len(), LIMIT);
+        assert_eq!(loaded.sessions["main"].messages.len(), limit);
         assert_eq!(loaded.sessions["main"].status, "idle");
 
         let mut store = loaded;
@@ -3848,11 +3933,93 @@ mod tests {
             },
         ];
 
-        messages.extend((0..LIMIT - 1).map(|id| message(id, "main")));
+        let limit = krabb_core::session::MESSAGE_HISTORY_LIMIT;
+
+        messages.extend((0..limit - 1).map(|id| message(id, "main")));
         compact_messages(&mut messages);
 
-        assert_eq!(messages.len(), LIMIT - 1);
+        assert_eq!(messages.len(), limit - 1);
         assert!(messages.iter().all(|message| message.role != Role::Tool));
+    }
+
+    #[test]
+    fn rewinds_history_and_keeps_the_summary_of_what_remains() {
+        let mut store = Store::default();
+
+        store.create("main", "local").unwrap();
+
+        for id in 0..4 {
+            store.push("main", message(id, "main")).unwrap();
+        }
+
+        {
+            let session = store.sessions.get_mut("main").unwrap();
+
+            session.compacted_through = Some("3".into());
+            session.compacted_context = Some(vec![message(9, "main"), message(3, "main")]);
+        }
+
+        let control = |id: &str| super::dialog::Control {
+            id: id.into(),
+            sender: "7".into(),
+            input: "/again".into(),
+            reply: "question".into(),
+        };
+
+        store.rewind("main", 3, control("first")).unwrap();
+
+        let session = &store.sessions["main"];
+
+        assert_eq!(session.messages.len(), 3);
+        assert_eq!(session.compacted_through.as_deref(), Some(message(2, "main").id.as_str()));
+        assert_eq!(session.compacted_context, Some(vec![message(9, "main")]));
+        assert_eq!(session.commands.last().unwrap().id, "first");
+
+        store.sessions.get_mut("main").unwrap().compacted_through = Some("0".into());
+        store.rewind("main", 2, control("second")).unwrap();
+
+        assert_eq!(store.sessions["main"].compacted_through.as_deref(), Some("0"));
+        assert!(store.rewind("missing", 0, control("third")).is_err());
+    }
+
+    #[test]
+    fn compacts_history_that_outgrows_the_byte_budget() {
+        let text = "x".repeat(256 * 1024);
+
+        let mut messages = (0..80)
+            .map(|id| {
+                let mut message = message(id, "main");
+
+                message.content = vec![Content::Text { text: text.clone() }];
+                message
+            })
+            .collect::<Vec<_>>();
+
+        compact_messages(&mut messages);
+
+        assert!(messages.iter().map(message_bytes).sum::<u64>() <= HISTORY_BYTES);
+        assert!(messages.len() < 80);
+        assert_eq!(messages.last().unwrap().id, message(79, "main").id);
+
+        let mut oversized = message(80, "main");
+
+        oversized.content = vec![Content::Text { text: "x".repeat(HISTORY_BYTES as usize) }];
+        messages.push(oversized);
+        compact_messages(&mut messages);
+
+        assert_eq!(messages.len(), 1, "the newest turn survives an oversized reply");
+        assert_eq!(messages[0].id, message(80, "main").id);
+
+        let mut result = message(82, "main");
+
+        result.role = Role::Assistant;
+        result.content = vec![Content::Text { text: "x".repeat(HISTORY_BYTES as usize / 2) }];
+        messages = vec![message(80, "main"), message(81, "main"), result.clone(), result];
+        compact_messages(&mut messages);
+
+        assert_eq!(messages.len(), 2, "the turn's question and newest message stay");
+        assert_eq!(messages[0].id, message(81, "main").id);
+        assert_eq!(messages[1].role, Role::Assistant);
     }
 
     #[test]

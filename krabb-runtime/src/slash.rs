@@ -12,6 +12,9 @@ const CONFIRM: Duration = Duration::from_secs(120);
 const PENDING: usize = 256;
 const LIST: usize = 20;
 const WORKING: &str = "A reply is in progress; send /session cancel first.";
+const SHORT: &str = "There is not enough history to compact yet.";
+const NO_REPLY: &str = "There is no reply to answer again yet.";
+const AGAIN_WORKING: &str = "Send /again when the current reply finishes.";
 
 /// Pending `/session clear` codes by conversation and sender, with their expiry.
 type Confirmations = BTreeMap<(String, String), (String, Instant)>;
@@ -28,9 +31,13 @@ pub(crate) struct Host<'a> {
     pub sessions: &'a Arc<Mutex<state::Store>>,
     pub cancels: &'a Arc<Mutex<BTreeMap<String, Arc<Cancellation>>>>,
     pub approvals: &'a Arc<AsyncMutex<approval::Gate>>,
+    /// Daemon shutdown, which interrupts long commands such as `/compact`.
+    pub stop: &'a Stop,
     pub provider: &'a str,
     pub model: &'a str,
     pub call: u64,
+    /// A reply is streaming on this connection, so long commands would hold up its delivery.
+    pub answering: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,81 +65,279 @@ impl Caller<'_> {
     }
 }
 
-/// Answers an exact slash command received on a channel; returns whether it was handled.
+/// A channel command's routing, shared by every command a channel user can send.
+struct Intake {
+    id: String,
+    chat: String,
+    thread: Option<String>,
+    session: String,
+    sender: Option<String>,
+    tools: bool,
+}
+
+impl Intake {
+    fn read(
+        host: &Host<'_>,
+        integration: &str,
+        event: &Value,
+        policy: &ChannelConfig,
+        mode: ApprovalMode,
+    ) -> Result<Self, PluginError> {
+        let id = event_id(&event["id"]).ok_or("Command message has no identity.")?;
+        let chat = event_id(&event["chat"]).ok_or("Command message has no destination.")?;
+        let thread = event_id(&event["thread"]);
+        let approval =
+            sharing::approval(&host.plugins.config, &sharing::principal(integration), mode);
+
+        Ok(Self {
+            session: session_id(integration, &chat, thread.as_deref()),
+            sender: event_id(&event["sender"]),
+            tools: tools_allowed(policy, event, &chat, approval.enabled()),
+            id,
+            chat,
+            thread,
+        })
+    }
+
+    fn key(&self, prefix: &str) -> String {
+        format!("{prefix}-{}", jobs::dialog::key(&self.session, &self.id))
+    }
+
+    fn author(&self) -> &str {
+        self.sender.as_deref().unwrap_or("user")
+    }
+
+    fn caller<'a>(&'a self, integration: &'a str) -> Caller<'a> {
+        Caller {
+            integration,
+            chat: &self.chat,
+            thread: self.thread.as_deref(),
+            session: &self.session,
+            sender: self.sender.as_deref(),
+            tools: self.tools,
+            origin: Origin::Text,
+        }
+    }
+
+    fn reply(
+        self,
+        host: &Host<'_>,
+        integration: &str,
+        event: &Value,
+        key: String,
+        reply: String,
+    ) -> Result<(), PluginError> {
+        host.sessions.lock().map_err(|_| state::POISONED)?.queue_delivery(
+            key,
+            integration,
+            self.chat,
+            event["private"] == true,
+            self.thread,
+            reply,
+        )?;
+
+        Ok(())
+    }
+}
+
+/// What a channel event's slash command left for the bridge to do.
+pub(crate) enum Command {
+    /// Not a command; the event is a message for the model.
+    Pass,
+    /// Answered, so the event is done.
+    Handled,
+    /// `/again` removed the latest exchange; answer this question as the event.
+    Ask(String),
+}
+
+fn receipt(host: &Host<'_>, session: &str, key: &str) -> Result<Option<String>, PluginError> {
+    let store = host.sessions.lock().map_err(|_| state::POISONED)?;
+
+    Ok(store
+        .sessions
+        .get(session)
+        .and_then(|value| value.commands.iter().find(|control| control.id == key))
+        .map(|control| control.reply.clone()))
+}
+
+/// Turns an `/again` event into the question it re-asks; native content would otherwise win.
+pub(crate) fn reask(event: &mut Value, question: String) {
+    if let Some(event) = event.as_object_mut() {
+        event.remove("content");
+        event.insert("text".into(), question.into());
+    }
+}
+
+/// Removes the latest exchange once, recording the question so a replayed command reuses it.
+fn rewind(
+    host: &Host<'_>,
+    integration: &str,
+    intake: &Intake,
+    key: &str,
+    text: &str,
+) -> Result<Result<String, String>, PluginError> {
+    let mut store = host.sessions.lock().map_err(|_| state::POISONED)?;
+
+    let Some(session) = store.sessions.get(&intake.session) else {
+        return Ok(Err(NO_REPLY.into()));
+    };
+
+    if let Some(control) = session.commands.iter().find(|control| control.id == key) {
+        return Ok(Ok(control.reply.clone()));
+    }
+
+    // A reply still being sent would arrive after the new answer; uncertain ones wait for
+    // an operator, so they never block this.
+    let sending = store.outbox.iter().any(|delivery| {
+        delivery.status != state::DeliveryStatus::Uncertain
+            && delivery.channel == integration
+            && delivery.chat == intake.chat
+            && delivery.thread == intake.thread
+    });
+
+    if session.replying() || sending {
+        return Ok(Err(AGAIN_WORKING.into()));
+    }
+
+    let (from, question) = match last_exchange(&session.messages) {
+        Ok(found) => found,
+        Err(reply) => return Ok(Err(reply.into())),
+    };
+
+    if session.messages[from].sender.as_deref() != intake.sender.as_deref() {
+        return Ok(Err("Only the person who asked can use /again on that question.".into()));
+    }
+
+    let control = state::dialog::Control {
+        id: key.to_owned(),
+        sender: intake.author().to_owned(),
+        input: text.to_owned(),
+        reply: question.clone(),
+    };
+
+    store.rewind(&intake.session, from, control)?;
+    info!(session = %intake.session, "Latest reply removed to answer again.");
+
+    Ok(Ok(question))
+}
+
+/// Finds the latest text question and checks that its reply ran no tools.
+fn last_exchange(messages: &[Message]) -> Result<(usize, String), &'static str> {
+    let last = messages.iter().rposition(|message| message.role == Role::User).ok_or(NO_REPLY)?;
+    let reply = &messages[last + 1..];
+    let mut from = last;
+
+    // Messages sent before the reply started were answered together, so they are asked again.
+    while from > 0 && messages[from - 1].role == Role::User {
+        if messages[from - 1].sender != messages[last].sender {
+            return Err("That reply answered several people, so it cannot be answered again.");
+        }
+
+        from -= 1;
+    }
+
+    if reply.is_empty() {
+        return Err(NO_REPLY);
+    }
+
+    // Task and schedule notices carry a sender; removing them would hide what they reported.
+    // A failed reply is the host's own answer, so it can be answered again.
+    if reply.iter().any(|message| {
+        message.role == Role::Assistant
+            && message.sender.as_deref().is_some_and(|sender| sender != krabb_core::types::SYSTEM)
+    }) {
+        return Err("Something else was posted after that reply, so it can no longer be \
+                    answered again. Ask again in your own words instead.");
+    }
+
+    if reply.iter().any(|message| {
+        message.role != Role::Assistant
+            || message.content.iter().any(|content| !matches!(content, Content::Text { .. }))
+    }) {
+        return Err("The latest reply used tools, so answering again could repeat what they did. \
+                    Ask again in your own words instead.");
+    }
+
+    let mut parts = Vec::new();
+
+    for content in messages[from..=last].iter().flat_map(|message| &message.content) {
+        match content {
+            Content::Text { text } => parts.push(text.as_str()),
+
+            Content::Context { .. } => {}
+
+            _ => {
+                return Err("/again only works for text messages; send the question again with \
+                            its attachments.");
+            }
+        }
+    }
+
+    let question = parts.join("\n");
+
+    if question.trim().is_empty() {
+        return Err(NO_REPLY);
+    }
+
+    Ok((from, question))
+}
+
+/// Answers a channel's slash command once per event, replaying the receipt on redelivery.
 pub(crate) async fn channel(
     host: &Host<'_>,
     integration: &str,
     event: &Value,
     policy: &ChannelConfig,
     mode: ApprovalMode,
-) -> Result<bool, PluginError> {
+) -> Result<Command, PluginError> {
     let Some(text) = event["text"].as_str() else {
-        return Ok(false);
+        return Ok(Command::Pass);
     };
 
     let Some(invocation) = krabb_core::slash::parse(text) else {
-        return Ok(false);
+        return Ok(Command::Pass);
     };
 
     if invocation.spec.name == "task" {
-        return Ok(false);
+        return Ok(Command::Pass);
     }
 
-    let id = event_id(&event["id"]).ok_or("Command message has no identity.")?;
-    let chat = event_id(&event["chat"]).ok_or("Command message has no destination.")?;
-    let thread = event_id(&event["thread"]);
-    let session = session_id(integration, &chat, thread.as_deref());
-    let sender = event_id(&event["sender"]);
-    let approval = sharing::approval(&host.plugins.config, &sharing::principal(integration), mode);
-    let tools = tools_allowed(policy, event, &chat, approval.enabled());
-    let key = format!("slash-{}", jobs::dialog::key(&session, &id));
-    let author = sender.as_deref().unwrap_or("user");
+    let intake = Intake::read(host, integration, event, policy, mode)?;
+    let caller = intake.caller(integration);
+    let key = intake.key("slash");
 
-    let replay = {
-        let store = host.sessions.lock().map_err(|_| state::POISONED)?;
+    if let Some(reply) = receipt(host, &intake.session, &key)? {
+        intake.reply(host, integration, event, key, reply)?;
 
-        store
-            .sessions
-            .get(&session)
-            .and_then(|value| value.commands.iter().find(|control| control.id == key))
-            .map(|control| control.reply.clone())
-    };
+        return Ok(Command::Handled);
+    }
 
-    let reply = match replay {
-        Some(reply) => reply,
-
-        None => {
-            let caller = Caller {
-                integration,
-                chat: &chat,
-                thread: thread.as_deref(),
-                session: &session,
-                sender: sender.as_deref(),
-                tools,
-                origin: Origin::Text,
-            };
-
-            let reply = run(host, &caller, invocation).await?;
-            let mut store = host.sessions.lock().map_err(|_| state::POISONED)?;
-
-            if store.sessions.contains_key(&session) {
-                store.record_control(&session, &key, author, text, &reply)?;
-            }
-
-            reply
+    // `/again` re-asks only a reply that ran no tools, so nothing it did is repeated.
+    let reply = if invocation.spec.name == "again"
+        && available(&loaded(host).await, &caller, invocation.spec)
+    {
+        match rewind(host, integration, &intake, &intake.key("again"), text)? {
+            Ok(question) => return Ok(Command::Ask(question)),
+            Err(reply) => reply,
         }
+    } else {
+        run(host, &caller, invocation).await?
     };
 
-    host.sessions.lock().map_err(|_| state::POISONED)?.queue_delivery(
-        key,
-        integration,
-        chat,
-        event["private"] == true,
-        thread,
-        reply,
-    )?;
+    let mut store = host.sessions.lock().map_err(|_| state::POISONED)?;
 
-    Ok(true)
+    if store.sessions.contains_key(&intake.session) {
+        store.record_control(&intake.session, &key, intake.author(), text, &reply)?;
+    }
+
+    drop(store);
+    intake.reply(host, integration, event, key, reply)?;
+
+    Ok(Command::Handled)
+}
+
+fn unavailable(spec: &Spec) -> String {
+    format!("/{} is not available here. Send /help to see what is.", spec.name)
 }
 
 pub(crate) async fn run(
@@ -144,7 +349,14 @@ pub(crate) async fn run(
     let loaded = loaded(host).await;
 
     if !available(&loaded, caller, spec) {
-        return Ok(format!("/{} is not available here. Send /help to see what is.", spec.name));
+        return Ok(unavailable(spec));
+    }
+
+    if host.answering && spec.lengthy() {
+        return Ok(format!(
+            "Krabb is busy with another message on this channel; send /{} once it finishes.",
+            spec.name
+        ));
     }
 
     let arguments = invocation.arguments;
@@ -154,6 +366,11 @@ pub(crate) async fn run(
         "status" => status(host, caller),
         "model" => model(host, caller, arguments).await,
         "session" => session(host, caller, spec, arguments),
+        "compact" => compact(host, caller).await,
+
+        "again" => Ok("Only the user can send /again, and it cannot redo a reply that used \
+                       tools, like this one. Answer the question again yourself instead."
+            .into()),
         "workspace" => workspace(host, caller),
         "approvals" => approvals(host, caller).await,
         "plugin" => Ok(plugin(host).await),
@@ -176,8 +393,9 @@ pub(crate) fn spec() -> ToolSpec {
              any language: help, status, this conversation's model (show, list, or switch with \
              the model name as arguments), session (new starts a fresh conversation after this \
              reply), task, workspace, approvals, plugin, memory (search terms as arguments), or \
-             data (a database name as arguments). Cancelling a reply and clearing history need \
-             the user's own message; relay the instructions this tool returns."
+             data (a database name as arguments). Cancelling a reply, clearing history, \
+             compacting, and regenerating a reply need the user's own message; relay the \
+             instructions this tool returns."
                 .into(),
         ),
         schema: serde_json::json!({
@@ -253,6 +471,7 @@ fn available(loaded: &[Capability], caller: &Caller<'_>, spec: &Spec) -> bool {
     let granted = match spec.access {
         Access::Anyone => true,
         Access::Local => !caller.channel(),
+        Access::Channel => caller.channel(),
         Access::Tools => caller.tools,
     };
 
@@ -309,7 +528,7 @@ fn status(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginError> {
             let state = if session.status == "working" { "replying" } else { "idle" };
 
             let count = session.conversation().count();
-            let noun = if count == 1 { "message" } else { "messages" };
+            let noun = messages(count);
 
             format!("{state}, {count} {noun}")
         }
@@ -324,11 +543,133 @@ fn status(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginError> {
     let mut text =
         format!("Krabb {VERSION}\nModel: {} / {model}\nConversation: {activity}", host.provider);
 
+    if let Some(usage) = session.and_then(|session| session.context_usage.as_ref())
+        && usage.limit > 0
+    {
+        text.push_str(&format!(
+            "\nContext: {} of {} tokens ({}%)",
+            tokens(usage.used),
+            tokens(usage.limit),
+            usage.used.saturating_mul(100) / usage.limit
+        ));
+    }
+
     if tasks > 0 {
         text.push_str(&format!("\nUnfinished tasks: {tasks} (send /task to list them)"));
     }
 
     Ok(text)
+}
+
+/// Summarizes all but the latest exchanges into the model context; stored history stays intact.
+async fn compact(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginError> {
+    if caller.origin == Origin::Tool {
+        return Ok("Tell the user to send /compact after this reply.".into());
+    }
+
+    let (model, workspace, context, through) = {
+        let store = host.sessions.lock().map_err(|_| state::POISONED)?;
+
+        let Some(session) = store.sessions.get(caller.session) else {
+            return Ok(SHORT.into());
+        };
+
+        if session.replying() {
+            return Ok(WORKING.into());
+        }
+
+        let Some(through) = session.messages.last().map(|message| message.id.clone()) else {
+            return Ok(SHORT.into());
+        };
+
+        if session.compacted_through.as_deref() == Some(through.as_str()) {
+            return Ok("This conversation is already compacted.".into());
+        }
+
+        (session.model.clone(), session.workspace.clone(), session.context(), through)
+    };
+
+    let Some(boundary) = ipc::compaction_boundary(&context) else {
+        return Ok(SHORT.into());
+    };
+
+    let Some(provider) =
+        host.plugins.get(host.provider).await.filter(|plugin| plugin.supports(Capability::Model))
+    else {
+        return Ok("The model is not running; try again in a moment.".into());
+    };
+
+    let cleanup = process::Cleanup::default();
+
+    let summary = tokio::select! {
+        biased;
+        _ = host.stop.notified() => Err("Compaction was interrupted.".into()),
+
+        summary = ipc::compact_summary(
+            &provider,
+            &model,
+            workspace.as_deref(),
+            &context[..boundary],
+            host.call,
+            &cleanup,
+            host.plugins.config.inference.task_millis(),
+        ) => summary.map_err(PluginError::from),
+    };
+
+    // Provider failures answer the user; they must not stop the channel's message loop.
+    let summary = match (cleanup.finish().await, summary) {
+        (Ok(()), Ok(summary)) => summary,
+
+        (finished, summary) => {
+            let error = finished
+                .err()
+                .map(|error| error.to_string())
+                .or(summary.err().map(|error| error.to_string()));
+
+            warn!(
+                session = caller.session,
+                error = %diagnostic(sentence(error.unwrap_or_default())),
+                "Conversation compaction failed."
+            );
+
+            return Ok(
+                "Summarizing failed, so the conversation is unchanged. Try again later.".into()
+            );
+        }
+    };
+
+    let compacted = ipc::summarized(
+        format!("compact-{through}"),
+        caller.session,
+        &summary,
+        &context[boundary..],
+    );
+
+    let saved = host.sessions.lock().map_err(|_| state::POISONED)?.set_compacted_context(
+        caller.session,
+        &through,
+        compacted,
+    )?;
+
+    if !saved {
+        return Ok("The conversation changed while summarizing; send /compact again.".into());
+    }
+
+    info!(session = caller.session, summarized = boundary, "Conversation compacted by command.");
+
+    Ok(format!(
+        "Summarized {boundary} earlier {} for the model; the latest exchanges stay as they are \
+         and the full history is kept.",
+        messages(boundary)
+    ))
+}
+
+fn messages(count: usize) -> &'static str {
+    if count == 1 { "message" } else { "messages" }
+}
+
+fn tokens(count: u64) -> String {
+    if count < 1_000 { count.to_string() } else { format!("{}k", count / 1_000) }
 }
 
 async fn model(
@@ -438,8 +779,9 @@ fn session(
 
     match action {
         "" => Ok(format!(
-            "This conversation has {count} message(s). Send /session new to start fresh, \
-             /session cancel to stop the current reply, or /session clear to delete its history."
+            "This conversation has {count} {}. Send /session new to start fresh, \
+             /session cancel to stop the current reply, or /session clear to delete its history.",
+            messages(count)
         )),
 
         "new" if count == 0 => Ok("This is already a new conversation.".into()),

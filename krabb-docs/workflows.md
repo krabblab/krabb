@@ -78,9 +78,9 @@ Build only the plugins you plan to use. After changing a linked plugin, rebuild
 its package and run `krabb plugin install <id> --link`; the host health-checks the
 staged executable and loads it into a running daemon without a restart.
 `krabb plugin update` previews available changes, then prompts to apply them
-in a terminal. Use `--yes` to skip that prompt. It reloads active plugins in
-place without restarting the daemon, and plugins that were inactive remain
-inactive.
+in a terminal. Use `--yes` to skip that prompt. It switches active plugins over
+between their requests without restarting the daemon or pausing other
+conversations, and plugins that were inactive remain inactive.
 
 Continuous integration also checks the `x86_64-pc-windows-gnu` target from
 Linux. The job installs MinGW for native dependencies before running the

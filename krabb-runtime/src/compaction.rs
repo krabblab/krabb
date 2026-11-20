@@ -19,6 +19,8 @@ use sha2::{Digest, Sha256};
 use tokio::time::{Duration, Instant};
 
 const CACHE: usize = 16;
+/// Without a context window there is no token budget, so requests keep a short history.
+pub(crate) const UNBUDGETED: usize = 100;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Record {
@@ -128,6 +130,13 @@ impl Context {
                 ));
             }
 
+            if params["messages"].as_array().is_some_and(|messages| messages.len() > UNBUDGETED) {
+                let mut input: ModelRequest = serde_json::from_value(params.take())?;
+
+                recent(&mut input.messages);
+                *params = serde_json::to_value(input)?;
+            }
+
             return Ok(());
         }
 
@@ -177,6 +186,7 @@ impl Context {
                 }
             }
 
+            recent(&mut input.messages);
             timing::restrict(&mut input, deadline)?;
             *params = serde_json::to_value(input)?;
             return Ok(());
@@ -298,7 +308,7 @@ impl Context {
 
         let through = last.id.clone();
         let Some(index) = source.iter().rposition(|message| message.id == through) else {
-            if older.iter().all(|message| message.sender.as_deref() == Some("compaction")) {
+            if older.iter().all(|message| message.sender.as_deref() == Some(SUMMARY)) {
                 return Ok(());
             }
 
@@ -312,7 +322,7 @@ impl Context {
             id: format!("compact-{through}"),
             session: session.clone(),
             role: Role::Assistant,
-            sender: Some("compaction".into()),
+            sender: Some(SUMMARY.into()),
             content: vec![Content::Text {
                 text: format!("Earlier conversation summary:\n{summary}"),
             }],
@@ -349,6 +359,28 @@ impl Record {
     }
 }
 
+/// The sender of compaction summaries in what the model sees.
+pub(crate) const SUMMARY: &str = "compaction";
+
+/// Keeps the latest history and what it builds on: a `/compact` summary, or else the opening
+/// request a long task depends on. System messages do not count toward the limit.
+fn recent(messages: &mut Vec<Message>) {
+    let count = |messages: &[Message]| {
+        messages.iter().filter(|message| message.role != Role::System).count()
+    };
+
+    while count(messages) > UNBUDGETED {
+        let pinned = messages
+            .iter()
+            .position(|message| message.sender.as_deref() == Some(SUMMARY))
+            .or_else(|| messages.iter().position(|message| message.role == Role::User));
+
+        if !crate::state::remove_oldest_message_group(messages, pinned) {
+            break;
+        }
+    }
+}
+
 fn replace(messages: &mut Vec<Message>, boundary: usize, summary: Message) {
     let mut index = 0;
 
@@ -359,11 +391,12 @@ fn replace(messages: &mut Vec<Message>, boundary: usize, summary: Message) {
     });
 
     let index = messages.iter().take_while(|message| message.role == Role::System).count();
+
     messages.insert(index, summary);
 }
 
 fn truncate(messages: &mut Vec<Message>) -> bool {
-    let summary = messages.iter().position(|item| item.sender.as_deref() == Some("compaction"));
+    let summary = messages.iter().position(|item| item.sender.as_deref() == Some(SUMMARY));
     let saved = summary.map(|index| (index, messages.remove(index)));
     let removed = context::truncate(messages);
 

@@ -575,9 +575,15 @@ pub(crate) async fn queue_during_turn(
         return Ok(true);
     }
 
-    let commanded = match host {
+    let command = match host {
         Some((host, mode)) => slash::channel(host, channel_id, event, policy, mode).await?,
-        None => false,
+        None => slash::Command::Pass,
+    };
+
+    let (commanded, content) = match command {
+        slash::Command::Pass => (false, content),
+        slash::Command::Handled => (true, content),
+        slash::Command::Ask(question) => (false, vec![Content::Text { text: question }]),
     };
 
     let controlled = if commanded {

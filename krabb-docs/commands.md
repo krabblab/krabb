@@ -257,9 +257,11 @@ WhatsApp have no menu; typed commands work the same way.
 | Command | Effect |
 | --- | --- |
 | `/help [command]` | List the commands available here, or explain one. |
-| `/status` | Show this conversation's model and activity. |
+| `/status` | Show this conversation's model, activity, and context use. |
 | `/model [list \| <model>]` | Show, list, or switch this conversation's model. |
 | `/session [new \| cancel \| clear]` | Start fresh, stop the current reply, or delete history. |
+| `/again` | Answer the latest question again when its reply used no tools. |
+| `/compact` | Summarize older messages to free the model's context. |
 | `/task ...` | List or control background tasks. |
 | `/workspace` | Show whether this conversation has its own workspace. |
 | `/approvals` | List actions waiting for approval here. |
@@ -269,18 +271,28 @@ WhatsApp have no menu; typed commands work the same way.
 | `/schedule` | List scheduled work (local clients only). |
 
 Krabb answers these itself, without an intelligence turn, so they also work while a
-reply is running or the provider is unavailable. Each acts only on the sender's own
-conversation, and channel users never gain local operator authority: `/memory` and
-`/data` need the conversation's tool access, and `/schedule` is limited to local
-clients. `/model <model>` affects only this conversation. `/session new` archives the
-earlier messages. `/session clear` deletes history only after the same sender repeats
-it with the four-digit code it returns, within two minutes.
+reply is running or the provider is unavailable. `/compact` and `/again` are the
+exceptions: they need the model, so send them again once the current reply finishes. Each acts
+only on the sender's own conversation, and channel users never gain local operator
+authority: `/memory` and `/data` need the conversation's tool access, and `/schedule`
+is limited to local clients. `/model <model>` affects only this conversation.
+`/session new` archives the earlier messages. `/session clear` deletes history only
+after the same sender repeats it with the four-digit code it returns, within two
+minutes.
+
+`/compact` replaces all but the last two exchanges with a summary in what the model
+sees; the stored history is unchanged. Messages from other chats on the channel are
+received while it summarizes and answered right after. `/again` removes the latest reply
+and its question, then answers the question as if it had just been sent, including after
+a failed reply. It works in chat channels, only for the person who asked, and refuses
+when that reply ran any tool, so it never repeats an action, when the question had
+attachments, or when a task or schedule notice arrived after the reply.
 
 You can also ask in your own words and any language, such as "start a new
 conversation" or "which model are you using?". The model then uses the same commands
-through a host tool. It cannot cancel its own reply, confirm `/session clear`, or
-approve or deny a task's saved action; it relays the exact command to send instead. A new conversation it starts begins after
-its current reply.
+through a host tool. It cannot cancel its own reply, compact, answer again, confirm
+`/session clear`, or approve or deny a task's saved action; it relays the exact command
+to send instead. A new conversation it starts begins after its current reply.
 
 Text that only looks like a command, such as `/usr/bin/env`, stays an ordinary
 message. In Telegram groups, `/status@your_bot` is answered only by the bot it names.
@@ -340,8 +352,9 @@ Interactive install, uninstall, update, and import operations show an in-place s
 Progress stays on one terminal line, with long messages clipped to fit its width.
 Plugin install, uninstall, and update also print plain status lines to stderr
 when it is redirected. Update progress covers checking sources, preparing the
-update, and validating each replacement while its current process stays loaded.
-Existing work finishes before the replacement takes over. Installation identifies the plugin being installed and activated;
+update, and switching each plugin over after its current request; other plugins and
+conversations keep running. Installation identifies the plugin being installed and
+activated;
 uninstallation identifies the plugin being removed. Spinners clear before
 prompts and results. `--json` suppresses these progress messages.
 Plugin results use one-line tree entries; failed installs and updates point to
@@ -352,8 +365,8 @@ setup commands. Binary presence does not mean a plugin is authenticated or activ
 `plugin update` previews changes, then replaces changed plugins after
 confirmation, including reviewed changes to capabilities, permissions, secret names,
 settings, and commands. Reinstallation is not needed for these changes. `--yes` accepts
-the saved preview; stale or modified candidates are rejected. Running plugins stay
-registered during preparation and are replaced at a safe turn boundary. Installation
+the saved preview; stale or modified candidates are rejected. Running plugins keep
+serving during preparation and switch over between their requests. Installation
 activation errors print their cause and return a failure exit status.
 Uninstall accepts multiple plugin IDs and confirms the batch once;
 the last model or channel plugin can require deleting dependent session or

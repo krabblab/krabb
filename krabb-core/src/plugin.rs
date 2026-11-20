@@ -794,7 +794,8 @@ pub struct Process {
     tree: Tree,
     input: BufReader<tokio::process::ChildStdout>,
     frame: Vec<u8>,
-    output: tokio::process::ChildStdin,
+    /// Closed by `halt`, so a plugin waiting on its input exits; `restart` opens a new one.
+    output: Option<tokio::process::ChildStdin>,
     stderr: Option<mpsc::Receiver<Vec<u8>>>,
     path: PathBuf,
     args: Vec<OsString>,
@@ -810,7 +811,7 @@ impl Drop for Tree {
     fn drop(&mut self) {
         #[cfg(unix)]
         if let Some(group) = self.group.and_then(external_group) {
-            kill_session(group, Signal::KILL);
+            let _ = kill_session(group, Signal::KILL);
         }
 
         #[cfg(windows)]
@@ -968,9 +969,17 @@ impl Process {
         .await;
 
         match result {
-            Ok((hello, input, output)) => {
-                Ok(Self { hello, tree, input, frame: Vec::new(), output, stderr, path, args, env })
-            }
+            Ok((hello, input, output)) => Ok(Self {
+                hello,
+                tree,
+                input,
+                frame: Vec::new(),
+                output: Some(output),
+                stderr,
+                path,
+                args,
+                env,
+            }),
 
             Err(error) => {
                 stop_tree(&mut tree.child, tree.group).await;
@@ -992,7 +1001,7 @@ impl Process {
             return Err(Error::Protocol("notifications must be valid JSON-RPC notes".into()));
         }
 
-        jsonl::write(&mut self.output, &request).await
+        jsonl::write(writer(&mut self.output)?, &request).await
     }
 
     pub async fn call_stream<F>(&mut self, request: Request, mut note: F) -> Result<Response>
@@ -1150,7 +1159,7 @@ impl Process {
         let (outgoing, mut outgoing_events) = mpsc::unbounded_channel();
 
         let operation = async {
-            jsonl::write(&mut self.output, &request).await?;
+            jsonl::write(writer(&mut self.output)?, &request).await?;
             let mut notes = 0_usize;
             let mut calls = 0_usize;
             let mut events_closed = false;
@@ -1190,7 +1199,7 @@ impl Process {
                                     ));
                                 }
 
-                                jsonl::write(&mut self.output, &event).await?;
+                                jsonl::write(writer(&mut self.output)?, &event).await?;
                             }
                         }
                     },
@@ -1218,7 +1227,7 @@ impl Process {
 
                         if tokio::time::Instant::now() >= deadline {
                             jsonl::write(
-                                &mut self.output,
+                                writer(&mut self.output)?,
                                 &Response::fail(server_id, -32800, "host request expired"),
                             )
                             .await?;
@@ -1307,7 +1316,7 @@ impl Process {
                                                 ));
                                             }
 
-                                            jsonl::write(&mut self.output, &event).await?;
+                                            jsonl::write(writer(&mut self.output)?, &event).await?;
                                         }
 
                                         None => events_closed = true,
@@ -1339,7 +1348,7 @@ impl Process {
                                 ));
                             }
 
-                            jsonl::write(&mut self.output, &event).await?;
+                            jsonl::write(writer(&mut self.output)?, &event).await?;
                         }
 
                         if !response.valid() || response.id != server_id {
@@ -1348,7 +1357,7 @@ impl Process {
                             ));
                         }
 
-                        jsonl::write(&mut self.output, &response).await?;
+                        jsonl::write(writer(&mut self.output)?, &response).await?;
 
                         if limit.is_none() {
                             notes = 0;
@@ -1393,6 +1402,7 @@ impl Process {
 
     pub async fn restart(&mut self) -> Result<()> {
         stop_tree(&mut self.tree.child, self.tree.group).await;
+        self.tree.group = None;
 
         let replacement =
             Self::start_owned(self.path.clone(), self.args.clone(), self.env.clone()).await?;
@@ -1401,16 +1411,24 @@ impl Process {
         Ok(())
     }
 
-    pub async fn stop(mut self) -> Result<()> {
+    /// Stops the process gracefully but keeps it restartable from the same executable.
+    pub async fn halt(&mut self) {
         let shutdown = self.call(Request::call(9_999, "shutdown", serde_json::json!({})));
         let _ = timeout(Duration::from_secs(2), shutdown).await;
 
         // Closing stdin lets a plugin blocked on its input reader exit without the grace wait.
-        let Self { mut tree, output, .. } = self;
-        drop(output);
+        self.output = None;
 
-        let _ = timeout(Duration::from_secs(2), tree.child.wait()).await;
-        stop_tree(&mut tree.child, tree.group).await;
+        let _ = timeout(Duration::from_secs(2), self.tree.child.wait()).await;
+
+        stop_tree(&mut self.tree.child, self.tree.group).await;
+
+        // The group is gone and its ID may be reused, so later stops must not signal it.
+        self.tree.group = None;
+    }
+
+    pub async fn stop(mut self) -> Result<()> {
+        self.halt().await;
         Ok(())
     }
 }
@@ -1433,10 +1451,18 @@ async fn spawn(command: &mut Command) -> std::io::Result<Child> {
     }
 }
 
+fn writer(
+    output: &mut Option<tokio::process::ChildStdin>,
+) -> Result<&mut tokio::process::ChildStdin> {
+    output.as_mut().ok_or_else(|| Error::Protocol("Plugin input is closed.".into()))
+}
+
 async fn stop_tree(child: &mut Child, group: Option<u32>) {
     #[cfg(unix)]
-    if let Some(group) = group.and_then(external_group) {
-        kill_session(group, Signal::TERM);
+    // An empty session cannot gain members, so the grace period is only for survivors.
+    if let Some(group) = group.and_then(external_group)
+        && kill_session(group, Signal::TERM)
+    {
         tokio::time::sleep(Duration::from_millis(100)).await;
         kill_session(group, Signal::KILL);
     }
@@ -1468,18 +1494,26 @@ fn external_group(id: u32) -> Option<Pid> {
 }
 
 #[cfg(unix)]
-fn kill_session(group: Pid, signal: Signal) {
+/// Signals the plugin's process group and session; returns whether a live member remains.
+fn kill_session(group: Pid, signal: Signal) -> bool {
     if group == getpgrp() {
-        return;
+        return false;
     }
 
-    let _ = kill_process_group(group, signal);
+    let grouped = kill_process_group(group, signal).is_ok();
 
-    let Ok(output) = std::process::Command::new("ps").args(["-eo", "pid=,pgid="]).output() else {
-        return;
+    // Listing after the group signal reports what outlived it, including members forked before.
+    let Ok(output) = std::process::Command::new("ps").args(["-eo", "pid=,pgid=,stat="]).output()
+    else {
+        return true;
     };
 
+    if !output.status.success() {
+        return grouped;
+    }
+
     let current = std::process::id();
+    let mut found = false;
 
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let mut fields = line.split_whitespace();
@@ -1496,13 +1530,21 @@ fn kill_session(group: Pid, signal: Signal) {
             continue;
         };
 
+        // Exited processes stay listed and signalable until an unrelated reaper collects them.
+        if fields.next().is_none_or(|state| state.starts_with(['Z', 'X'])) {
+            continue;
+        }
+
         if pid.as_raw_pid() as u32 != current
             && (pgid == group || getsid(Some(pid)).ok() == Some(group))
         {
             let _ = kill_process_group(pgid, signal);
             let _ = kill_process(pid, signal);
+            found = true;
         }
     }
+
+    found
 }
 
 #[cfg(test)]
@@ -1515,7 +1557,7 @@ mod tests {
     };
 
     #[cfg(unix)]
-    use super::{external_group, getpgrp};
+    use super::{Pid, Signal, external_group, getpgrp, kill_session};
 
     use crate::{
         jsonl,
@@ -2726,6 +2768,79 @@ fn main() {
         let _ = std::fs::remove_file(marker);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn reports_survivors_until_the_whole_session_is_gone() {
+        use std::os::unix::process::CommandExt;
+
+        let mut leader = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 30 >/dev/null 2>&1 & echo $!"])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+
+        let group = Pid::from_raw(leader.id() as i32).unwrap();
+        let mut descendant = String::new();
+
+        std::io::Read::read_to_string(leader.stdout.as_mut().unwrap(), &mut descendant).unwrap();
+        leader.wait().unwrap();
+
+        let descendant = descendant.trim();
+
+        assert!(kill_session(group, Signal::TERM), "{descendant} ignores TERM and must remain");
+
+        let mut gone = false;
+
+        for _ in 0..200 {
+            if !kill_session(group, Signal::KILL) {
+                gone = true;
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(gone, "{descendant} must stop counting once KILL ends it");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreaped_exited_members_are_not_survivors() {
+        use std::os::unix::process::CommandExt;
+
+        let mut leader =
+            std::process::Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+
+        let group = Pid::from_raw(leader.id() as i32).unwrap();
+
+        leader.kill().unwrap();
+
+        let mut exited = false;
+
+        for _ in 0..200 {
+            let status = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &leader.id().to_string()])
+                .output()
+                .unwrap();
+
+            if String::from_utf8_lossy(&status.stdout).trim_start().starts_with('Z') {
+                exited = true;
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(exited, "the leader must remain unreaped for this check");
+
+        let survived = kill_session(group, Signal::KILL);
+
+        leader.wait().unwrap();
+
+        assert!(!survived, "an exited, unreaped member must not count as a survivor");
+    }
+
     #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn rejects_incompatible_and_malformed_handshakes() {
@@ -2764,6 +2879,28 @@ fn main() {
         );
 
         assert!(process.call(Request::call(2, "ping", json!({}))).await.is_err());
+
+        process.stop().await.unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn halted_processes_stop_and_restart_from_the_same_executable() {
+        let script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"test","version":"0.1.0","capabilities":[]}}' ;; *ping*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"ok":true}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}' ;; esac; done"#;
+        let mut process = start_test_plugin("halt", script).await.unwrap();
+        let started = std::time::Instant::now();
+
+        process.halt().await;
+
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+
+        assert!(process.call(Request::call(2, "ping", json!({}))).await.is_err());
+
+        process.restart().await.unwrap();
+
+        let response = process.call(Request::call(2, "ping", json!({}))).await.unwrap();
+
+        assert_eq!(response.result.unwrap()["ok"], true);
 
         process.stop().await.unwrap();
     }

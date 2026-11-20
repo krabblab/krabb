@@ -339,6 +339,66 @@ async fn native_compaction_failure_falls_back_without_executing_tools() {
 }
 
 #[tokio::test]
+async fn unknown_budgets_send_only_recent_history() {
+    let mut process = provider(false, "unknown").await;
+    let mut input = input();
+
+    input.messages = (0..150)
+        .map(|index| {
+            let mut message = text("session", Role::User, format!("Note {index}"));
+
+            message.id = format!("{index}");
+            message
+        })
+        .collect();
+
+    generate(&mut process, &input).await.unwrap();
+
+    let requests = calls(&mut process).await;
+    let sent = requests.iter().find(|request| request["method"] == "generate").unwrap();
+    let messages = sent["params"]["messages"].as_array().unwrap();
+
+    assert_eq!(messages.len(), super::UNBUDGETED);
+    assert_eq!(messages[0]["id"], "0", "the opening request stays");
+    assert_eq!(messages[1]["id"], "51");
+    assert_eq!(messages.last().unwrap()["id"], "149");
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn unknown_budgets_keep_the_summary_and_do_not_count_system_messages() {
+    let mut process = provider(false, "unknown").await;
+    let mut input = input();
+
+    input.messages = (0..150)
+        .map(|index| {
+            let mut message = text("session", Role::User, format!("Note {index}"));
+
+            message.id = format!("{index}");
+            message
+        })
+        .collect();
+
+    input.messages[0].role = Role::System;
+
+    input.messages[1].role = Role::Assistant;
+    input.messages[1].sender = Some(super::SUMMARY.into());
+
+    generate(&mut process, &input).await.unwrap();
+
+    let requests = calls(&mut process).await;
+    let sent = requests.iter().find(|request| request["method"] == "generate").unwrap();
+    let messages = sent["params"]["messages"].as_array().unwrap();
+
+    assert_eq!(messages.len(), super::UNBUDGETED + 1);
+    assert_eq!((messages[0]["id"].as_str(), messages[1]["id"].as_str()), (Some("0"), Some("1")));
+    assert_eq!(messages.last().unwrap()["id"], "149");
+
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn unknown_budgets_preserve_requests_and_wide_windows_compact_before_retention() {
     let mut process = provider(false, "unknown").await;
     let input = input();
@@ -355,7 +415,7 @@ async fn unknown_budgets_preserve_requests_and_wide_windows_compact_before_reten
     let mut process = provider(false, "wide").await;
     let mut input = input;
 
-    input.messages = (0..90)
+    input.messages = (0..krabb_core::session::MESSAGE_HISTORY_LIMIT - 10)
         .map(|index| {
             let mut message = text("session", Role::User, format!("Preference {index}"));
 
@@ -363,6 +423,7 @@ async fn unknown_budgets_preserve_requests_and_wide_windows_compact_before_reten
             message
         })
         .collect();
+
     generate(&mut process, &input).await.unwrap();
 
     let requests = calls(&mut process).await;
