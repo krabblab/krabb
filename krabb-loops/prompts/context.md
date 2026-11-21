@@ -5,9 +5,9 @@ Scope: $REVIEW_SCOPE
 $review_scope
 $scope_guard
 
-Read root and applicable nested AGENTS.md. Preserve unrelated working-tree changes.
-Keep the core capability-free and provider-neutral; normalize plugin boundaries and
-keep stdout protocol-only. Respect existing coverage thresholds and repository gates.
+Root and applicable nested AGENTS.md are the project's standards; read and follow them.
+Follow DESIGN.md for anything visual: colors, logos, assets and terminal styling.
+Preserve unrelated working-tree changes and respect existing coverage thresholds and gates.
 Never commit, push, reset, stash, rebase, amend, rewrite history, publish releases,
 change credentials or production configuration, delete unrelated files, or edit AGENTS.md.
 Never call paid provider APIs as product tests or probe external systems or real accounts.

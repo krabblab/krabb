@@ -44,6 +44,9 @@ class Naming(unittest.TestCase):
         self.loop.branch = ''
         self.loop.sha = self.git('rev-parse', 'HEAD')
         self.loop.attempt = 0
+        self.loop.commits = []
+        self.loop.recoveries = []
+        self.loop.number = None
         self.loop.state = self.root / '.git/evidence'
         self.loop.args = argparse.Namespace(branch=None, max_repairs=0)
         self.loop.agent = Mock(return_value='multiprovider')
