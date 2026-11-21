@@ -135,19 +135,18 @@ jobs:
 
         run: bash krabb-scripts/coverage.sh "${{ matrix.coverage_profile }}"
 
+      # Daemon shutdown tests hung on Windows ARM under Git Bash, so this keeps PowerShell.
       - if: matrix.coverage == false
         name: Run Workspace Tests
-        shell: bash
 
         run: |
-          selection=(--workspace)
+          $selection = @('--workspace')
 
-          if [[ -n "$KRABB_COVERAGE_PACKAGES" ]]; then
-            selection=()
-            for package in $KRABB_COVERAGE_PACKAGES; do selection+=(-p "$package"); done
-          fi
+          if ($env:KRABB_COVERAGE_PACKAGES) {
+            $selection = $env:KRABB_COVERAGE_PACKAGES -split ' ' | ForEach-Object { '-p', $_ }
+          }
 
-          cargo test "${selection[@]}" --no-fail-fast --locked --target "${{ matrix.target }}"
+          cargo test @selection --no-fail-fast --locked --target "${{ matrix.target }}"
 
       - name: Test Installer Integrity
         run: python -B krabb-scripts/tests/installers.py
