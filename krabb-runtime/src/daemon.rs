@@ -34,18 +34,12 @@ pub(crate) async fn serve_inner(
     on_ready: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_at(root)?;
-    let _daemon_lock = daemon_lock(root)?;
-    storage::retain(root)?;
-    recover_plugins(root)?;
+    let _daemon_lock = daemon_lock(root).map_err(phase("Taking ownership of the state"))?;
+    storage::retain(root).map_err(phase("Checking storage"))?;
+    recover_plugins(root).map_err(phase("Recovering plugins"))?;
 
     for name in ["run/ipc.token", "run/ipc.port", "ipc.token", "ipc.port"] {
-        match std::fs::remove_file(root.join(name)) {
-            Ok(()) => {}
-
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-
-            Err(error) => return Err(error.into()),
-        }
+        remove_stale(&root.join(name)).await?;
     }
 
     let config: Config = load_config_at(root)?;
@@ -181,8 +175,16 @@ pub(crate) async fn serve_inner(
     let _ = std::fs::remove_file(root.join("run/ipc.port"));
     let mut cleanup = None;
 
+    // Each stop can wait seconds for a graceful exit, so plugins stop together.
+    let mut stops = tokio::task::JoinSet::new();
+
     for (_, process) in plugins.all().await {
-        if let Err(error) = process.stop().await {
+        stops.spawn(async move { process.stop().await });
+
+    }
+
+    while let Some(stopped) = stops.join_next().await {
+        if let Ok(Err(error)) = stopped {
             cleanup.get_or_insert(error);
         }
     }
@@ -195,4 +197,75 @@ pub(crate) async fn serve_inner(
 
     info!("Daemon stopped.");
     Ok(())
+}
+
+/// Names the startup phase in an error and keeps its kind for callers that match on it.
+fn phase(name: &'static str) -> impl FnOnce(std::io::Error) -> std::io::Error {
+    move |error| std::io::Error::new(error.kind(), format!("{name} failed: {error}"))
+}
+
+/// Removes a file left by an earlier daemon. Windows can deny access for a moment after the
+/// process that held it exits, so a denial is retried briefly before it is reported.
+async fn remove_stale(path: &Path) -> std::io::Result<()> {
+    let mut attempts = 0;
+
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+
+            Err(error)
+                if cfg!(windows)
+                    && error.kind() == std::io::ErrorKind::PermissionDenied
+                    && attempts < 40 =>
+            {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+
+            Err(error) => {
+                return Err(std::io::Error::new(
+                    error.kind(),
+                    format!("Removing {} failed: {error}", path.display()),
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_errors_name_their_phase_and_keep_their_kind() {
+        let error = phase("Recovering plugins")(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Access is denied.",
+        ));
+
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "Recovering plugins failed: Access is denied.");
+    }
+
+    #[tokio::test]
+    async fn stale_files_are_removed_and_failures_name_the_file() {
+        let root = crate::tests::test_root("stale-files");
+        let file = root.join("ipc.token");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "old").unwrap();
+
+        remove_stale(&file).await.unwrap();
+        remove_stale(&file).await.unwrap();
+
+        assert!(!file.exists());
+
+        let error = remove_stale(&root).await.unwrap_err();
+
+        assert!(error.to_string().starts_with(&format!("Removing {} failed:", root.display())));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
