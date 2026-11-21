@@ -63,12 +63,17 @@ are exports for places that need raster images. Each PNG has the SVG's name plus
 Logo PNGs are 512 pixels tall and as wide as the wordmark needs. Recompress new PNG
 exports losslessly before adding them.
 
-## Terminal Interface
+## Terminal
 
-- Use `ACCENT_COLOR = Color::Rgb(255, 111, 44)`, the Coral value, for accents.
+- The TUI accent is `ACCENT_COLOR = Color::Rgb(255, 111, 44)`, the Coral value, in
+  `krabb-plugins/clients/tui/src/ui.rs`. It marks headers, borders, prompts, and inline
+  code.
+- CLI help uses the same Coral for section headers and usage, set in
+  `krabb-runtime/src/external.rs`.
 - Animated glows stay in the Coral range: vary green within about 111 to 150 and blue
   within about 44 to 90. They must never drift toward yellow-orange, which reads as a
   warning rather than the brand.
+- Use the terminal's own grays for secondary text; they follow the user's theme.
 
 ## Don't
 
@@ -81,11 +86,7 @@ exports losslessly before adding them.
 
 ## Known Gaps
 
-- The terminal interface still uses the previous orange:
-  - `ACCENT_COLOR` is `Color::Rgb(255, 140, 0)` in
-    `krabb-plugins/clients/tui/src/ui.rs`.
-  - Its glow varies green from 140 to 185 with blue at 0, which drifts toward
-    yellow-orange.
-  - Both should move to the Coral values above.
+- The terminal can't tell a light background from a dark one, so the TUI and CLI always
+  use Coral, which is below 4.5:1 for small text on light terminal themes.
 - The social previews use tints outside the palette for their large background K:
   `#F2621F` on Coral and `#262D32` on Slate. Keep these tints to the covers.

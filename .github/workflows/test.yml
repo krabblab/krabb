@@ -135,7 +135,6 @@ jobs:
 
         run: bash krabb-scripts/coverage.sh "${{ matrix.coverage_profile }}"
 
-      # Daemon shutdown tests hung on Windows ARM under Git Bash, so this keeps PowerShell.
       - if: matrix.coverage == false
         name: Run Workspace Tests
 

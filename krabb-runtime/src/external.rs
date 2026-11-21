@@ -453,6 +453,9 @@ pub(crate) fn verify_plugin_binary(
     Ok(())
 }
 
+/// Bold Coral, the brand accent from DESIGN.md.
+const ACCENT: &str = "\x1b[1;38;2;255;111;44m";
+
 pub(crate) fn cli_styles() -> clap::builder::Styles {
     use clap::builder::styling::{RgbColor, Style};
 
@@ -460,7 +463,7 @@ pub(crate) fn cli_styles() -> clap::builder::Styles {
         return clap::builder::Styles::plain();
     }
 
-    let accent = Style::new().fg_color(Some(RgbColor(255, 140, 0).into())).bold();
+    let accent = Style::new().fg_color(Some(RgbColor(255, 111, 44).into())).bold();
 
     clap::builder::Styles::styled().header(accent).usage(accent).literal(Style::new().bold())
 }
@@ -493,11 +496,12 @@ pub(crate) fn style_cli_help(help: &str) -> String {
                 | "Conditional Commands:"
                 | "Plugin Commands:"
         ) {
-            output.push_str("\x1b[1;38;2;255;140;0m");
+            output.push_str(ACCENT);
             output.push_str(content);
             output.push_str("\x1b[0m");
         } else if let Some(usage) = content.strip_prefix("Usage: ") {
-            output.push_str("\x1b[1;38;2;255;140;0mUsage:\x1b[0m \x1b[1m");
+            output.push_str(ACCENT);
+            output.push_str("Usage:\x1b[0m \x1b[1m");
             output.push_str(usage);
             output.push_str("\x1b[0m");
         } else if let Some(gap) = cli_help_row_gap(content) {
