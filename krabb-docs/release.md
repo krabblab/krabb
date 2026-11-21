@@ -5,8 +5,13 @@ Releases follow the versions in the code. Krabb's version is the workspace
 `krabb-plugin.toml` and `Cargo.toml`. A version with an `-rc.N` suffix is a
 pre-release. Changing a version is the only way to release, and a person always
 approves it: run `make bump`, review the plan, confirm it, and merge the pull
-request. Every merge to `main` runs the Release workflow, which publishes each
-version that is not published yet and skips the rest with a warning.
+request. When CI passes for the head of `main`, the Release workflow publishes
+each version it declares that is not published yet and skips the rest with a
+warning. Each release covers every earlier commit, so CI that finishes after
+`main` has moved on releases nothing; the newer commit's CI releases it. When CI
+fails for the head, rerun it, and the release follows once it passes. When the
+head has no CI run, such as after a `[skip ci]` commit, run the Main workflow on
+`main` to release it.
 
 For the current `0.1.0` release, add changelog entries only under `Added`.
 Include only important, shipped, user-facing additions, each in one very short
@@ -43,18 +48,17 @@ stable plugin bump for a plugin with its own `CHANGELOG.md`.
 
 ## Krabb Releases
 
-When the workspace version has no published GitHub Release, the Release
-workflow verifies the workspace, builds the host archive (`krabb` and
-`krabb-daemon`) for Linux, macOS, and Windows on x86_64 and ARM64, emits
-`SHA256SUMS`, and publishes the release as `vX.Y.Z`. The release stays a draft
-until every file is attached. A stable release takes its notes from the
-matching `CHANGELOG.md` section under a `krabb@vX.Y.Z | YYYY-MM-DD` headline,
-dated by the heading or else the release day, and uses a short standard
-description when the section is missing or empty. A pre-release gets a short
-standard description and is published as a GitHub pre-release. Releases contain
-no plugins. Installers take the newest stable release unless `KRABB_VERSION`
-names another, and verify checksums before activation. Krabb does not publish
-crates.
+When the workspace version has no published GitHub Release, the Release workflow
+builds the host archive (`krabb` and `krabb-daemon`) for Linux, macOS, and
+Windows on x86_64 and ARM64, emits `SHA256SUMS`, and publishes the release as
+`vX.Y.Z`. The release stays a draft until every file is attached. A stable
+release takes its notes from the matching `CHANGELOG.md` section under a
+`krabb@vX.Y.Z | YYYY-MM-DD` headline, dated by the heading or else the release
+day, and uses a short standard description when the section is missing or empty.
+A pre-release gets a short standard description and is published as a GitHub
+pre-release. Releases contain no plugins. Installers take the newest stable
+release unless `KRABB_VERSION` names another, and verify checksums before
+activation. Krabb does not publish crates.
 
 ## Plugin Releases
 
@@ -67,8 +71,13 @@ manifest and `Cargo.toml` versions differ. It then rebuilds the
 tags, pushes it as the `index` tag when it changed, and confirms that anonymous
 clients can download it. A failed run leaves nothing half recorded: the next run
 publishes what is missing and rebuilds the index again. To release only plugins,
-run the Release workflow manually and clear its Krabb option; clear the plugin
-option to release only Krabb.
+run the Release workflow manually from `main` and clear its Krabb option; clear
+the plugin option to release only Krabb. A manual run releases the head of
+`main` and refuses to release until CI has passed for it. Release runs take turns,
+and a newer run replaces a waiting one; that loses nothing, because each run
+releases the whole head of `main`. A manual run with an option cleared can
+therefore replace a waiting full release, so run a full release afterwards if
+one was waiting.
 
 The first publication creates the `plugins` package as private. Make it public
 once in the package settings and run the Release workflow again.
