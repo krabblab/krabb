@@ -4,6 +4,8 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 
+![Krabb: a self-hostable, open-source agent operating system](krabb-assets/krabb/krabb-social-preview-orange-1280x640.png)
+
 Krabb is a self-hostable, open-source agent operating system for building,
 running, and orchestrating native and external AI agents.
 
