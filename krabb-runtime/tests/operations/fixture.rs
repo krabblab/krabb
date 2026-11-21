@@ -259,8 +259,7 @@ impl Fixture {
     }
 
     pub async fn until(&self, id: &str, label: &str, predicate: impl Fn(&Value) -> bool) -> Value {
-        // Loaded Windows runners can take tens of seconds to restart a host and its plugins.
-        tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::time::timeout(slow(20), async {
             loop {
                 let job = self.job(id);
 
@@ -311,8 +310,7 @@ impl Fixture {
         let shutdown = self.rpc("shutdown", json!({})).await;
 
         if let Some(mut host) = self.host.take() {
-            let Ok(status) = tokio::time::timeout(Duration::from_secs(30), host.wait()).await
-            else {
+            let Ok(status) = tokio::time::timeout(slow(15), host.wait()).await else {
                 panic!(
                     "Host did not stop after shutdown {shutdown:?}: {}",
                     fs::read_to_string(self.root.join("host.stderr")).unwrap_or_default()
@@ -325,4 +323,9 @@ impl Fixture {
         Self::kill(&mut self.backend).await;
         fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+/// Loaded Windows runners can take tens of seconds to restart a host and its plugins.
+fn slow(seconds: u64) -> Duration {
+    Duration::from_secs(if cfg!(windows) { seconds * 3 } else { seconds })
 }

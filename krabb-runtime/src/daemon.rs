@@ -183,6 +183,9 @@ pub(crate) async fn serve_inner(
         .map(|(_, process)| async move { process.stop().await })
         .collect();
 
+    // A panicking stop must not abort the others halfway, so it is raised once all finish.
+    let mut panic = None;
+
     while let Some(stopped) = stops.join_next().await {
         match stopped {
             Ok(Ok(())) => {}
@@ -191,10 +194,16 @@ pub(crate) async fn serve_inner(
                 cleanup.get_or_insert(error);
             }
 
-            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(error) if error.is_panic() => {
+                panic.get_or_insert(error.into_panic());
+            }
 
             Err(_) => {}
         }
+    }
+
+    if let Some(panic) = panic {
+        std::panic::resume_unwind(panic);
     }
 
     outcome?;
