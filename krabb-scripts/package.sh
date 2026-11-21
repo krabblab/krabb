@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     printf '%s\n' 'Usage: krabb-scripts/package.sh TARGET [NAME...]'
     printf '%s\n' 'Build and archive core or plugins for a target triple; NAME defaults to core.'
-    printf '%s\n' 'Core uses VERSION; each plugin uses the version in its manifest.'
+    printf '%s\n' 'Core uses the workspace version; each plugin uses the version in its manifest.'
 }
 
 die() {
@@ -67,7 +67,7 @@ manifest_for() {
 
 version_for() {
     if [[ "$1" == core ]]; then
-        tr -d '[:space:]' < "$repo_root/VERSION"
+        bash "$repo_root/krabb-scripts/version.sh"
     else
         sed -n 's/^version = "\(.*\)"$/\1/p' "$(manifest_for "$1")" | head -n 1
     fi

@@ -455,6 +455,11 @@ pub(crate) struct PluginInstall {
     pub(crate) revision: Option<String>,
     #[arg(long, help = "Link a local build instead of copying its executable.")]
     pub(crate) link: bool,
+    #[arg(
+        long,
+        help = "Install the newest version, pre-releases included; pre-releases are pinned."
+    )]
+    pub(crate) unstable: bool,
     #[arg(short, long, help = "Skip replacement confirmation.")]
     pub(crate) yes: bool,
 }

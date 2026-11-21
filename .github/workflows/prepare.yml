@@ -3,14 +3,14 @@ name: Prepare
 on:
   workflow_call:
     outputs:
-      tag:
-        value: ${{ jobs.release.outputs.tag }}
-
       version:
         value: ${{ jobs.release.outputs.version }}
 
       prerelease:
         value: ${{ jobs.release.outputs.prerelease }}
+
+      release:
+        value: ${{ jobs.release.outputs.release }}
 
 permissions:
   contents: read
@@ -19,55 +19,51 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    container: rust:1.89-trixie
 
     defaults:
       run:
         shell: bash
 
     outputs:
-      tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
       prerelease: ${{ steps.release.outputs.prerelease }}
+      release: ${{ steps.release.outputs.release }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+        with:
+          persist-credentials: false
+
       - id: release
-        name: Validate Release Metadata
+        name: Find The Release
 
         env:
-          KRABB_RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
 
         run: |
           set -euo pipefail
-          tag="$KRABB_RELEASE_TAG"
-          tag="${tag#refs/tags/}"
+          notes=$(bash krabb-scripts/notes.sh release-notes.md)
+          read -r version prerelease <<< "$notes"
+          release=true
 
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          version="${tag#v}"
-          test "$tag" != "$version"
-          test "$version" = "$(tr -d '[:space:]' < VERSION)"
-          grep -q "## \[$version\]" CHANGELOG.md
-          prerelease=false
+          if answer=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" --silent 2>&1); then
+            release=false
+            echo "::warning title=Krabb release skipped::Krabb $version is already released, so this run publishes no new Krabb release."
+          elif [[ "$answer" != *"HTTP 404"* ]]; then
+            echo "$answer" >&2
+            exit 1
+          fi
 
-          [[ "$version" == *-* ]] && prerelease=true
           {
-            echo "tag=$tag"
             echo "version=$version"
             echo "prerelease=$prerelease"
+            echo "release=$release"
           } >> "$GITHUB_OUTPUT"
 
-          awk -v version="$version" '
-            index($0, "## [" version "]") == 1 { found=1 }
-            found && $0 ~ /^## / && index($0, "## [" version "]") != 1 { exit }
-            found { print }
-          ' CHANGELOG.md > release-notes.md
-
-          test -s release-notes.md
-
       - name: Upload Release Notes
+        if: steps.release.outputs.release == 'true'
         uses: actions/upload-artifact@v7
 
         with:

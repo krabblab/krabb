@@ -13,6 +13,7 @@ pub(crate) async fn plugin(
         PluginCommand::Attach(args) => lifecycle::run(&home(), &args.id, true, json).await?,
 
         PluginCommand::Install(install) => {
+            let unstable = install.unstable;
             let (linked, mut sources) = plugin_sources(install)?;
             let working_dir = std::env::current_dir()?;
 
@@ -51,17 +52,24 @@ pub(crate) async fn plugin(
 
             let mut notices = Vec::new();
 
-            for source in sources {
+            for mut source in sources {
                 let id = source.id.clone();
-                let pinned = source.version.clone();
                 let spinner = terminal::progress(format!("{action} plugin {id}..."), json);
+
+                let pin = if unstable { index::unstable(&root, &id) } else { Ok(None) };
+
+                if let Ok(Some(version)) = &pin {
+                    source.version = Some(version.clone());
+                }
+
+                let pinned = source.version.clone();
 
                 let existing_version =
                     read_manifest(&root.join("plugins").join(&id)).map(|manifest| manifest.version);
 
                 let mut credentials_deferred = false;
 
-                match link(source, linked) {
+                match pin.and_then(|_| link(source, linked)) {
                     Ok(manifest) => {
                         drop(spinner);
 
@@ -330,6 +338,10 @@ pub(crate) fn plugin_sources(
         return Err("--revision requires --source.".into());
     }
 
+    if install.unstable && (install.source.is_some() || install.link) {
+        return Err("--unstable cannot be combined with --source or --link.".into());
+    }
+
     let mut seen = std::collections::BTreeSet::new();
     let mut sources = Vec::new();
 
@@ -347,6 +359,10 @@ pub(crate) fn plugin_sources(
         }
 
         if let Some(version) = &version {
+            if install.unstable {
+                return Err("--unstable cannot be combined with a plugin version.".into());
+            }
+
             if install.source.is_some() || install.link {
                 return Err("Plugin versions cannot be combined with --source or --link.".into());
             }

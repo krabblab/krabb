@@ -24,6 +24,9 @@ pub(super) struct Artifact {
     /// Verified archive file name inside the staging directory.
     pub file: String,
     pub sha256: String,
+    /// Pre-release version that stays pinned; stable versions follow updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
 }
 
 /// What the downloaded host reports about itself and this home.
@@ -118,7 +121,7 @@ pub(super) fn plugins(
             continue;
         }
 
-        if index::official(entry).is_none() {
+        let Some((_, pin)) = index::official(entry) else {
             return Err(format!(
                 "Plugin {id} uses protocol {}.{}, which Krabb {} does not support. Uninstall it, \
                  update, then install a build for the new protocol. The installation was not \
@@ -126,14 +129,16 @@ pub(super) fn plugins(
                 entry.protocol.major, entry.protocol.minor, inspection.version
             )
             .into());
-        }
+        };
 
         let published = match &published {
             Some(published) => published,
             None => published.insert(load()?),
         };
 
-        let choice = index::select(published, id, None, protocol).map_err(|error| {
+        let unstable = pin.is_some_and(|version| !releases::stable(version));
+
+        let choice = index::newest(published, id, unstable, protocol).map_err(|error| {
             format!(
                 "Krabb {} cannot load the installed {id} plugin: {} The installation was not \
                  changed.",
@@ -144,6 +149,8 @@ pub(super) fn plugins(
 
         let archive = index::pull(published, id, &choice, &staged.dir)?;
         let digest = choice.artifact.sha256.clone();
+        let version = &choice.release.version;
+        let pin = (!releases::stable(version)).then(|| version.clone());
         let manifest = inspect_plugin(id, &archive, &digest)?;
         let file = archive.file_name().map(|name| name.to_string_lossy().into_owned());
 
@@ -152,6 +159,7 @@ pub(super) fn plugins(
             id: id.clone(),
             file: file.unwrap_or_default(),
             sha256: digest,
+            pin,
         });
     }
 

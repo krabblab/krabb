@@ -19,7 +19,7 @@ krabb completion <bash|fish|powershell|zsh>
 krabb plugin list [<page>] [--json]
 krabb plugin setup <id> [--no-activate] [--json]
 krabb <id> setup [--no-activate] [--json]
-krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [-y|--yes] [--json]
+krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [--unstable] [-y|--yes] [--json]
 krabb plugin versions <id> [--json]
 krabb plugin update [-y|--yes] [--json]
 krabb plugin uninstall <id>... [-y|--yes] [--force] [--json]
@@ -338,7 +338,7 @@ service must be stopped before an update.
 
 ```sh
 krabb plugin list [page]
-krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link]
+krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [--unstable]
 krabb plugin versions <id>
 krabb plugin update
 krabb plugin uninstall <id>...
@@ -351,8 +351,9 @@ newest version in the [plugin index](plugins.md#official-plugin-index) that this
 host's protocol supports, from any directory, and follows new versions on
 `plugin update`. `<id>@<version>` installs and pins any published version at your
 own risk, including withdrawn ones; versions the host's protocol cannot load are
-refused. `<id>@latest` removes the pin. `plugin versions <id>` lists every
-published version with its release date and marks the latest, installed,
+refused. `<id>@latest` removes the pin. `--unstable` installs the newest version,
+pre-releases included, and pins it when it is a pre-release. `plugin versions <id>`
+lists every published version with its release date and marks the latest, installed,
 withdrawn, pre-release, and unsupported ones. Sources may be local paths, Git
 revisions, or HTTPS archives with a `#sha256=` digest. `--link` is for local
 development builds. Installation validates each manifest and stages files before

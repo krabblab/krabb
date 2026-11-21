@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -26,9 +27,10 @@ class Packaging(unittest.TestCase):
             for path in [scripts, commands, release]:
                 path.mkdir(parents=True)
 
-            shutil.copyfile(ROOT / 'krabb-scripts/package.sh', scripts / 'package.sh')
+            for script in ['package.sh', 'version.sh']:
+                shutil.copyfile(ROOT / 'krabb-scripts' / script, scripts / script)
 
-            for name in ['Cargo.toml', 'LICENSE', 'NOTICE', 'VERSION']:
+            for name in ['Cargo.toml', 'LICENSE', 'NOTICE']:
                 shutil.copyfile(ROOT / name, root / name)
 
             cargo = commands / 'cargo'
@@ -88,9 +90,28 @@ class Packaging(unittest.TestCase):
             for archive in root.glob('*.tar.gz'):
                 archive.unlink()
 
+            cargo_toml = root / 'Cargo.toml'
+
+            cargo_toml.write_text(re.sub(r'(?m)^version = ".*"$', 'version = "0.2.0-rc.1"',
+                                         cargo_toml.read_text(), count=1))
+
+            result = subprocess.run(
+                ['bash', str(scripts / 'package.sh'), target],
+                cwd=root, env=env, text=True, capture_output=True, check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            self.assertEqual([path.name for path in root.glob('*.tar.gz')],
+                             [f'krabb-core-v0.2.0-rc.1-{target}.tar.gz'])
+
+            for archive in root.glob('*.tar.gz'):
+                archive.unlink()
+
             tools = next((root / 'krabb-plugins').rglob('tools/krabb-plugin.toml'))
 
-            tools.write_text(tools.read_text().replace('version = "0.1.0"', 'version = "0.2.0"'))
+            tools.write_text(re.sub(r'(?m)^version = ".*"$', 'version = "0.2.0"',
+                                    tools.read_text(), count=1))
 
             result = subprocess.run(
                 ['bash', str(scripts / 'package.sh'), target, 'tools'],

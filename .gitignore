@@ -15,4 +15,4 @@ metadata/
 !.env.example
 SENSITIVE.md
 
-krabb-loops/**/__pycache__/
+__pycache__/

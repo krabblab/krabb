@@ -1,5 +1,5 @@
 id = "signal"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 capabilities = ["channel"]
 permissions = ["process", "filesystem"]
 secrets = ["KRABB_SIGNAL_ACCOUNT"]

@@ -1869,8 +1869,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
             }),
     );
 
-    let footer_text =
-        format!(" | {} v{} | /help for commands", app.name, env!("CARGO_PKG_VERSION"));
+    let footer_text = format!(" | {} | /help for commands", app.name);
 
     let footer_width = UnicodeWidthStr::width(footer_text.as_str()).min(u16::MAX as usize) as u16;
 
@@ -5804,10 +5803,7 @@ mod tests {
                 && buffer[(input_area.x + input_area.width - 1, y)].symbol() != "│"
         }));
 
-        assert!(
-            rendered
-                .contains(&format!("Krabb v{} | /help for commands", env!("CARGO_PKG_VERSION")))
-        );
+        assert!(rendered.contains(" | Krabb | /help for commands"));
 
         assert!(!rendered.contains("Ready | /help for commands"));
 

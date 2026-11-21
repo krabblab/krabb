@@ -7,7 +7,7 @@ function Show-Usage {
 }
 
 function Stop-Install([string] $Message) {
-    Write-Error "[ERROR] $Message"
+    [Console]::Error.WriteLine("[ERROR] $Message")
     exit 2
 }
 
@@ -61,47 +61,72 @@ $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitect
     default { Stop-Install "Unsupported architecture." }
 }
 
+$pattern = '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
+$releases = "https://github.com/krabblab/krabb/releases"
+$target = "$arch-pc-windows-msvc"
 if ($env:KRABB_VERSION) {
     $version = $env:KRABB_VERSION
+    if ($version -notmatch $pattern) { Stop-Install "Version '$version' is not valid." }
+    $base = "$releases/download/v$version"
+    $missing = "Cannot reach Krabb $version; check the version and the connection."
 } else {
-    $version = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 https://raw.githubusercontent.com/krabblab/krabb/main/VERSION).Content.Trim()
+    $version = $null
+    $base = "$releases/latest/download"
+    $missing = "Cannot reach the latest Krabb release; check the connection or set KRABB_VERSION."
 }
-if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$') {
-    Stop-Install "Version '$version' is not valid."
+if ($env:KRABB_RELEASE_BASE) {
+    $base = $env:KRABB_RELEASE_BASE
+    $missing = "Cannot download SHA256SUMS from $base."
 }
-
-$name = "krabb"
-$archive = "krabb-core-v$version-$arch-pc-windows-msvc.zip"
-$base = if ($env:KRABB_RELEASE_BASE) {
-    $env:KRABB_RELEASE_BASE.TrimEnd('/')
-} else {
-    "https://github.com/krabblab/krabb/releases/download/v$version"
-}
+$base = $base.TrimEnd('/')
 if ($base -notmatch '^(https://|file://)') {
     Stop-Install "KRABB_RELEASE_BASE must use https:// or file://."
 }
+
+function Get-Release([string]$Uri, [string]$Path) {
+    if ($Uri.StartsWith("file://")) {
+        Copy-Item ([Uri]$Uri).LocalPath $Path
+    } else {
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 $Uri -OutFile $Path
+    }
+}
+
+$name = "krabb"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-    $archivePath = Join-Path $tmp $archive
     $checksumsPath = Join-Path $tmp "SHA256SUMS"
-    Write-Install "Downloading $archive."
-    $archiveUri = "$base/$archive"
-    $checksumsUri = "$base/SHA256SUMS"
-    if ($base.StartsWith("file://")) {
-        Copy-Item ([Uri]$archiveUri).LocalPath $archivePath
-        Copy-Item ([Uri]$checksumsUri).LocalPath $checksumsPath
-    } else {
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 $archiveUri -OutFile $archivePath
-        Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 $checksumsUri -OutFile $checksumsPath
+    try { Get-Release "$base/SHA256SUMS" $checksumsPath } catch { Stop-Install $missing }
+    $checksums = @{}
+    foreach ($entry in Get-Content $checksumsPath) {
+        $parts = $entry -split '\s+', 3
+        if ($parts.Count -ge 2) {
+            $checksums[$parts[1].TrimStart('*')] = $parts[0].ToLowerInvariant()
+        }
     }
 
-    $line = Get-Content $checksumsPath | Where-Object {
-        $parts = $_ -split '\s+', 3
-        $parts.Count -ge 2 -and $parts[1].TrimStart('*') -eq $archive
-    } | Select-Object -First 1
-    if (-not $line) { Stop-Install "Checksum is missing for '$archive'." }
-    $expected = (($line -split '\s+', 3)[0]).ToLowerInvariant()
+    if (-not $version) {
+        $suffix = "-$target.zip"
+        $latest = $checksums.Keys |
+            Where-Object { $_.StartsWith("krabb-core-v") -and $_.EndsWith($suffix) } |
+            Select-Object -First 1
+        if (-not $latest) { Stop-Install "The latest Krabb release has no build for $target." }
+        $version = $latest -replace '^krabb-core-v', '' -replace "$([regex]::Escape($suffix))$", ''
+        if ($version -notmatch $pattern) { Stop-Install "Version '$version' is not valid." }
+        if (-not $env:KRABB_RELEASE_BASE) { $base = "$releases/download/v$version" }
+    }
+
+    $archive = "krabb-core-v$version-$target.zip"
+    $archivePath = Join-Path $tmp $archive
+    Write-Install "Downloading $archive."
+    try {
+        Get-Release "$base/$archive" $archivePath
+    } catch {
+        Stop-Install "Cannot download $archive."
+    }
+
+    $expected = $checksums[$archive]
+    if (-not $expected) { Stop-Install "Checksum is missing for '$archive'." }
     $actual = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $expected) { Stop-Install "Checksum verification failed for '$archive'." }
 
