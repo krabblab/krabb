@@ -1,0 +1,67 @@
+name: Withdraw
+
+# Marks a published plugin version as withdrawn. Krabb then skips it when choosing a version,
+# while installs that name it keep working.
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: "Plugin ID"
+        required: true
+        type: string
+
+      version:
+        description: "Published version to withdraw"
+        required: true
+        type: string
+
+      reason:
+        description: "Why the version is withdrawn, as a full sentence"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: withdraw
+  cancel-in-progress: false
+
+jobs:
+  withdraw:
+    name: Withdraw
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          persist-credentials: false
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Sign In To The Registry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+        run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Withdraw The Version
+        env:
+          KRABB_PLUGIN: ${{ inputs.plugin }}
+          KRABB_REASON: ${{ inputs.reason }}
+          KRABB_REGISTRY_TOKEN: ${{ github.token }}
+          KRABB_REGISTRY_USER: ${{ github.actor }}
+          KRABB_VERSION: ${{ inputs.version }}
+
+        run: |
+          set -euo pipefail
+          python3 krabb-scripts/plugins.py withdraw "ghcr.io/${GITHUB_REPOSITORY,,}/plugins" \
+            "$KRABB_PLUGIN" "$KRABB_VERSION" "$KRABB_REASON"

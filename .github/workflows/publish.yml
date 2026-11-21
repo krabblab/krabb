@@ -3,10 +3,6 @@ name: Publish
 on:
   workflow_call:
     inputs:
-      tag:
-        required: true
-        type: string
-
       version:
         required: true
         type: string
@@ -22,7 +18,10 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    container: rust:1.89-trixie
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Download Release Notes
@@ -40,13 +39,25 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # The release stays a draft until every file is attached, so installers that read the
+      # latest release never see it half uploaded.
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          KRABB_PRERELEASE: ${{ inputs.prerelease }}
+          KRABB_VERSION: ${{ inputs.version }}
 
-        with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.tag }}
-          body_path: notes/release-notes.md
-          prerelease: ${{ inputs.prerelease }}
-          files: |
-            dist/*
+        run: |
+          set -euo pipefail
+          tag="v$KRABB_VERSION"
+          options=(--title "$tag" --notes-file notes/release-notes.md)
+          [[ "$KRABB_PRERELEASE" == true ]] && options+=(--prerelease)
+
+          # A draft left by a failed run may point at an older commit, so it is replaced.
+          if [[ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" == true ]]; then
+            gh release delete "$tag" --yes
+          fi
+
+          gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" "${options[@]}"
+          gh release edit "$tag" --draft=false

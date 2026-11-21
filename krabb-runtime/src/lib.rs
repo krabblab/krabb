@@ -128,12 +128,7 @@ mod worktree;
 use process::Process;
 
 const NAME: &str = "krabb";
-/// The release tag's version for packaged builds, else the workspace version.
-const VERSION: &str = match option_env!("KRABB_BUILD_VERSION") {
-    Some(version) if !version.is_empty() => version,
-    _ => env!("CARGO_PKG_VERSION"),
-};
-
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const RUNTIME_COMMAND_OWNER: &str = "__runtime.";
 
 const BANNER: &str = concat!(

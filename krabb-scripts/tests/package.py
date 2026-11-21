@@ -27,7 +27,8 @@ class Packaging(unittest.TestCase):
             for path in [scripts, commands, release]:
                 path.mkdir(parents=True)
 
-            shutil.copyfile(ROOT / 'krabb-scripts/package.sh', scripts / 'package.sh')
+            for script in ['package.sh', 'version.sh']:
+                shutil.copyfile(ROOT / 'krabb-scripts' / script, scripts / script)
 
             for name in ['Cargo.toml', 'LICENSE', 'NOTICE']:
                 shutil.copyfile(ROOT / name, root / name)
@@ -89,24 +90,23 @@ class Packaging(unittest.TestCase):
             for archive in root.glob('*.tar.gz'):
                 archive.unlink()
 
-            workspace = tomllib.loads((ROOT / 'Cargo.toml').read_text())
-            default = workspace['workspace']['package']['version']
+            cargo_toml = root / 'Cargo.toml'
 
-            for version, expected in [(None, default), ('0.2.0-rc.1', '0.2.0-rc.1')]:
-                build = {**env, 'KRABB_BUILD_VERSION': version or ''}
+            cargo_toml.write_text(re.sub(r'(?m)^version = ".*"$', 'version = "0.2.0-rc.1"',
+                                         cargo_toml.read_text(), count=1))
 
-                result = subprocess.run(
-                    ['bash', str(scripts / 'package.sh'), target],
-                    cwd=root, env=build, text=True, capture_output=True, check=False,
-                )
+            result = subprocess.run(
+                ['bash', str(scripts / 'package.sh'), target],
+                cwd=root, env=env, text=True, capture_output=True, check=False,
+            )
 
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-                self.assertEqual([path.name for path in root.glob('*.tar.gz')],
-                                 [f'krabb-core-v{expected}-{target}.tar.gz'])
+            self.assertEqual([path.name for path in root.glob('*.tar.gz')],
+                             [f'krabb-core-v0.2.0-rc.1-{target}.tar.gz'])
 
-                for archive in root.glob('*.tar.gz'):
-                    archive.unlink()
+            for archive in root.glob('*.tar.gz'):
+                archive.unlink()
 
             tools = next((root / 'krabb-plugins').rglob('tools/krabb-plugin.toml'))
 

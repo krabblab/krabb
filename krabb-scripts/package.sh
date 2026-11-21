@@ -4,8 +4,7 @@ set -euo pipefail
 usage() {
     printf '%s\n' 'Usage: krabb-scripts/package.sh TARGET [NAME...]'
     printf '%s\n' 'Build and archive core or plugins for a target triple; NAME defaults to core.'
-    printf '%s\n' 'Core uses KRABB_BUILD_VERSION, else the workspace version; each plugin uses'
-    printf '%s\n' 'the version in its manifest.'
+    printf '%s\n' 'Core uses the workspace version; each plugin uses the version in its manifest.'
 }
 
 die() {
@@ -68,14 +67,12 @@ manifest_for() {
 
 version_for() {
     if [[ "$1" == core ]]; then
-        printf '%s\n' "$KRABB_BUILD_VERSION"
+        bash "$repo_root/krabb-scripts/version.sh"
     else
         sed -n 's/^version = "\(.*\)"$/\1/p' "$(manifest_for "$1")" | head -n 1
     fi
 }
 
-workspace_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_root/Cargo.toml" | head -n 1)
-export KRABB_BUILD_VERSION=${KRABB_BUILD_VERSION:-$workspace_version}
 release="$repo_root/target/$target/release"
 stage=$(mktemp -d "$repo_root/.package.XXXXXX")
 trap 'rm -rf "$stage"' EXIT

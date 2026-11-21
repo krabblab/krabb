@@ -492,10 +492,12 @@ to one plugin ID per command).
 ### Official Plugin Index
 
 Plugins are versioned and published independently of Krabb releases, which
-contain only the host. The index is `index.json` on the repository's `plugins`
-branch. Each plugin lists every published version with its protocol, release
-date, permissions, secret names, an optional withdrawal reason, and one SHA-256
-digest and size per target:
+contain only the host. Every published version is a tag in one public OCI
+repository, `ghcr.io/krabblab/krabb/plugins`, and the repository's `index` tag
+holds a summary that release automation rebuilds from those tags, so it never
+drifts from what is published. Each plugin lists every published version with
+its protocol, release date, permissions, secret names, an optional withdrawal
+reason, and one SHA-256 digest and size per target:
 
 ```json
 {
@@ -518,19 +520,20 @@ digest and size per target:
 }
 ```
 
-Archives are blobs in one public OCI repository, addressed by their digest. Krabb
-requests an anonymous pull token, downloads the blob by digest, and verifies it,
-so published versions are immutable and need no GitHub account or other tools.
-Krabb reads the index over HTTPS on each install, update, or `plugin versions`
+Archives are blobs in that repository, addressed by their digest. Krabb requests
+an anonymous pull token, downloads the index or an archive by digest, and
+verifies it, so published versions are immutable and need no GitHub account or
+other tools. Krabb reads the index on each install, update, or `plugin versions`
 call (reusing it for a minute) and keeps a copy of each index location under
-`cache/` for use when that index is unreachable. `KRABB_PLUGIN_INDEX` reads another index from
-an `https://` or `file://` location; a `file://` index may also name a
-`file://` registry directory laid out as `blobs/sha256/<digest>`.
+`cache/` for use when that index is unreachable. `KRABB_PLUGIN_INDEX` reads
+another index from an OCI reference such as `ghcr.io/owner/plugins:index`, an
+`https://` URL, or a `file://` path; a `file://` index may also name a `file://`
+registry directory laid out as `blobs/sha256/<digest>`.
 
 Compatibility comes only from the plugin protocol: a version installs
 automatically when its protocol has the host's major version and a minor version
 no newer than the host's. Pre-release versions such as `0.2.0-rc.1` install only
-when named.
+when named or with `--unstable`.
 
 With `--link` and no `--source`, Krabb looks for each plugin in the local
 `krabb-plugins/<id>` directory or in a category directory such as

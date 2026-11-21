@@ -131,7 +131,12 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
   first release.
 - For later releases, keep upcoming notes under `Unreleased` and use Keep a
   Changelog categories only when they contain a user-visible entry. Omit empty
-  headings.
+  headings. A stable bump turns `Unreleased` into the new version's section; a
+  plugin may keep its own `CHANGELOG.md` with the same layout.
+- A version bump is a release: merging it publishes the new version. Change
+  versions only with `make bump`, only when a maintainer asks for the release,
+  and only after a person confirms the planned versions. Never bump a version
+  as part of another change. See the [release guide](krabb-docs/release.md).
 - Keep the core capability-free and provider-neutral.
 - Add provider or channel behavior only in its plugin.
 - Keep plugin stdout as protocol-only JSONL and logs on stderr.

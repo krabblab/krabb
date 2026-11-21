@@ -1719,7 +1719,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "krabb"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "krabb-runtime",
  "tokio",
@@ -1727,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-core"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "krabb-process",
  "rustix 1.1.6",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-daemon"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "krabb-runtime",
  "tokio",
@@ -1748,14 +1748,14 @@ dependencies = [
 
 [[package]]
 name = "krabb-date"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "jiff",
 ]
 
 [[package]]
 name = "krabb-file"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1764,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-http"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "krabb-core",
  "krabb-date",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-log"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "krabb-date",
  "serde_json",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-migrations"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "krabb-file",
  "serde",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-openai"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "futures-util",
  "krabb-core",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-process"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -2177,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-runtime"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-test"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "krabb-core",
  "krabb-file",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "krabb-text"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "pulldown-cmark",
 ]

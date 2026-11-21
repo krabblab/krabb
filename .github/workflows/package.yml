@@ -13,12 +13,6 @@ on:
         required: true
         type: string
 
-      version:
-        description: "Core version from the release tag; required to package core."
-        required: false
-        default: ""
-        type: string
-
 permissions:
   contents: read
 
@@ -92,34 +86,23 @@ jobs:
         name: Build Unix Archives
 
         env:
-          KRABB_BUILD_VERSION: ${{ inputs.version }}
           KRABB_NAMES: ${{ inputs.names }}
           KRABB_TARGET: ${{ matrix.target }}
 
         # Word splitting turns the validated name list into arguments.
-        run: |
-          set -euo pipefail
-
-          if [[ " $KRABB_NAMES " == *" core "* && -z "$KRABB_BUILD_VERSION" ]]; then
-            echo "Packaging core needs a release version." >&2
-            exit 1
-          fi
-
-          bash krabb-scripts/package.sh "$KRABB_TARGET" $KRABB_NAMES
+        run: bash krabb-scripts/package.sh "$KRABB_TARGET" $KRABB_NAMES
 
       - if: matrix.archive == 'zip'
         name: Build Windows Archives
         shell: pwsh
 
         env:
-          KRABB_BUILD_VERSION: ${{ inputs.version }}
           KRABB_NAMES: ${{ inputs.names }}
           KRABB_TARGET: ${{ matrix.target }}
 
         run: |
           $ErrorActionPreference = "Stop"
           $target = $env:KRABB_TARGET
-
           $names = @($env:KRABB_NAMES -split '\s+' | Where-Object { $_ })
           $manifests = @{}
           $packages = @()
@@ -128,7 +111,6 @@ jobs:
             if ($name -notmatch '^[a-z0-9][a-z0-9-]*$') { throw "Name '$name' is not valid." }
 
             if ($name -eq "core") {
-              if (-not $env:KRABB_BUILD_VERSION) { throw "Packaging core needs a release version." }
               $packages += @("-p", "krabb", "-p", "krabb-daemon")
             } else {
               $manifest = Get-ChildItem "krabb-plugins" -Recurse -Filter "krabb-plugin.toml" |
@@ -147,7 +129,8 @@ jobs:
           foreach ($name in $names) {
             if ($name -eq "core") {
               $binary = "krabb"
-              $version = $env:KRABB_BUILD_VERSION
+              $version = bash krabb-scripts/version.sh
+              if ($LASTEXITCODE -ne 0 -or -not $version) { throw "Cargo.toml has no workspace version." }
             } else {
               $binary = "krabb-plugin-$name"
               $version = ((Get-Content $manifests[$name]) -match '^version = "' |
@@ -228,12 +211,12 @@ jobs:
         shell: bash
 
         env:
-          KRABB_BUILD_VERSION: ${{ inputs.version }}
           KRABB_TARGET: ${{ matrix.target }}
 
         run: |
           set -euo pipefail
-          archive="krabb-core-v$KRABB_BUILD_VERSION-$KRABB_TARGET.tar.gz"
+          version=$(bash krabb-scripts/version.sh)
+          archive="krabb-core-v$version-$KRABB_TARGET.tar.gz"
 
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "$archive" > SHA256SUMS
@@ -246,7 +229,7 @@ jobs:
           KRABB_RELEASE_BASE="file://$PWD" \
             KRABB_PREFIX="$prefix" \
             sh install.sh
-          test "$("$prefix/bin/krabb" version)" = "krabb $KRABB_BUILD_VERSION"
+          test "$("$prefix/bin/krabb" version)" = "krabb $version"
 
       - if: matrix.archive == 'zip'
         name: Validate Windows Archives
@@ -292,17 +275,17 @@ jobs:
         shell: pwsh
 
         env:
-          KRABB_BUILD_VERSION: ${{ inputs.version }}
           KRABB_TARGET: ${{ matrix.target }}
 
         run: |
           $ErrorActionPreference = "Stop"
-          $archive = Get-Item "krabb-core-v$env:KRABB_BUILD_VERSION-$env:KRABB_TARGET.zip"
+          $version = bash krabb-scripts/version.sh
+          if ($LASTEXITCODE -ne 0 -or -not $version) { throw "Cargo.toml has no workspace version." }
 
-          $lines = $archive |
-            ForEach-Object { "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)" }
+          $archive = Get-Item "krabb-core-v$version-$env:KRABB_TARGET.zip"
+          $hash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 
-          $lines | Set-Content -Encoding ascii SHA256SUMS
+          "$hash  $($archive.Name)" | Set-Content -Encoding ascii SHA256SUMS
           $env:KRABB_RELEASE_BASE = ([Uri]((Get-Location).Path)).AbsoluteUri.TrimEnd('/')
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "krabb-local"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
@@ -310,9 +293,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Packaged installer failed." }
           $reported = & "$env:LOCALAPPDATA/Krabb/bin/krabb.exe" version
           if ($LASTEXITCODE -ne 0) { throw "Installed CLI failed to start." }
-          if ($reported -ne "krabb $env:KRABB_BUILD_VERSION") {
-            throw "Installed CLI reports '$reported'."
-          }
+          if ($reported -ne "krabb $version") { throw "Installed CLI reports '$reported'." }
 
       - name: Upload Archives
         uses: actions/upload-artifact@v7

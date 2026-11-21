@@ -243,8 +243,11 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
 
     let preview = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
 
+    let update = format!("Update Krabb {VERSION} to 0.2.0");
+    let rollback = format!("`krabb update --rollback` restores {VERSION}");
+
     for row in [
-        "Update Krabb 0.1.0 to 0.2.0",
+        update.as_str(),
         "echo: 0.1.0 → 0.2.0 (pin to 0.1.0 removed; it cannot run on 0.2.0)",
         "echo permissions: adds network; removes filesystem",
         "echo secrets: adds KRABB_ECHO_KEY",
@@ -252,7 +255,7 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
         "codex: stays at 0.1.0 (supported)",
         "home schema: 1 → 2 (1 migration)",
         "service: not installed",
-        "`krabb update --rollback` restores 0.1.0",
+        rollback.as_str(),
     ] {
         assert!(preview.text.contains(row), "{row}\n{}", preview.text);
     }

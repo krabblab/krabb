@@ -417,3 +417,33 @@ fn updates_never_select_an_older_version() {
     assert!(!newer("0.2.0", &entry));
     assert!(!newer("0.3.0-rc.1", &entry));
 }
+
+#[test]
+fn registry_references_and_index_manifests_are_parsed_strictly() {
+    assert_eq!(reference(INDEX), Some(("ghcr.io", "krabblab/krabb/plugins", "index")));
+    assert_eq!(reference("localhost:5000/plugins:v1"), Some(("localhost:5000", "plugins", "v1")));
+
+    for invalid in ["ghcr.io/plugins", "ghcr.io:index", "GHCR.io/x:index", "ghcr.io/x:-tag"] {
+        assert_eq!(reference(invalid), None, "{invalid}");
+    }
+
+    let digest = "a".repeat(64);
+
+    let manifest = |media: &str, digest: &str| {
+        serde_json::json!({"layers": [{"mediaType": media, "digest": format!("sha256:{digest}")}]})
+            .to_string()
+    };
+
+    assert_eq!(layer(manifest(INDEX_MEDIA, &digest).as_bytes()).unwrap(), digest);
+    assert!(layer(manifest("application/json", &digest).as_bytes()).is_err());
+    assert!(layer(manifest(INDEX_MEDIA, "short").as_bytes()).is_err());
+    assert!(layer(b"[]").is_err());
+    assert!(layer(b"not json").is_err());
+
+    let root = crate::tests::test_root("registry-reference");
+    let error = load_from(&root, "ghcr.io/plugins").unwrap_err().to_string();
+
+    assert!(error.starts_with("KRABB_PLUGIN_INDEX must be an OCI reference"), "{error}");
+
+    let _ = fs::remove_dir_all(root);
+}

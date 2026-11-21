@@ -3,8 +3,8 @@ JOBS ?= 2
 COVERAGE_PROFILE ?= full
 comma := ,
 .DEFAULT_GOAL := all
-.PHONY: all help install hooks fmt spacing clippy check test coverage build release metrics ci \
-        revloop secloop testloop contribloop loops verify
+.PHONY: all help install hooks fmt spacing clippy check test coverage build release bump metrics \
+        ci revloop secloop testloop contribloop loops verify
 
 all: build
 	$(MAKE) install
@@ -22,6 +22,7 @@ help:
 	@printf '%s\n' '  coverage  Run all package tests and coverage gates, then summarize failures'
 	@printf '%s\n' '  build     Build the debug workspace'
 	@printf '%s\n' '  release   Build optimized binaries'
+	@printf '%s\n' '  bump      Plan and apply release version bumps (BUMP_ARGS=--unstable,tools)'
 	@printf '%s\n' '  metrics   Report source and test counts'
 	@printf '%s\n' '  ci        Run local preflight, then the non-release CI pipeline with act'
 	@printf '%s\n' '  revloop   Run independent reviews until verified clean'
@@ -63,6 +64,9 @@ build:
 
 release:
 	CARGO_BUILD_JOBS=$(JOBS) $(CARGO) build --workspace --release --locked
+
+bump:
+	python3 -B krabb-scripts/bump.py $(subst $(comma), ,$(BUMP_ARGS))
 
 metrics:
 	bash krabb-scripts/metrics.sh

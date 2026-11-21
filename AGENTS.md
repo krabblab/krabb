@@ -97,6 +97,9 @@ important, shipped, user-facing additions, each in one very short sentence.
 Carefully assess the value to users; routine or minor additions need no entry.
 Do not add entries for internal work, tests, documentation, or planning.
 
+Version bumps are releases: run `make bump`; pass `--yes` only after a person
+confirms. After `0.1.0`, log changes under `Unreleased`.
+
 Maintainer policy: keep changes unstaged unless asked. Use lowercase
 conventional commits. Keep the implementation ledger current. Do not run
 release or publication commands without explicit approval. When the active plan

@@ -1,9 +1,10 @@
 //! The official plugin index and verified downloads from its registry.
 //!
 //! The index lists every published plugin version with its protocol, declarations, and one
-//! SHA-256 digest per target. CI appends to it on the repository's `plugins` branch. Archives
-//! are blobs in one OCI repository, addressed by that digest, so each download is verified
-//! by construction and published versions are immutable.
+//! SHA-256 digest per target. It is the `index` tag of the OCI repository that holds every
+//! archive, and CI rebuilds it from that repository's version tags after each publication.
+//! Archives are blobs addressed by their digest, so each download is verified by
+//! construction and published versions are immutable.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -15,8 +16,11 @@ use crate::*;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-const INDEX: &str = "https://raw.githubusercontent.com/krabblab/krabb/plugins/index.json";
+const INDEX: &str = "ghcr.io/krabblab/krabb/plugins:index";
+const INDEX_MEDIA: &str = "application/vnd.krabb.plugin-index.v1+json";
+const OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
 const INDEX_LIMIT: u64 = 4 * 1024 * 1024;
+const MANIFEST_LIMIT: u64 = 64 * 1024;
 const TOKEN_LIMIT: u64 = 64 * 1024;
 const SCHEMA: u32 = 1;
 const SCHEME: &str = "index:";
@@ -146,8 +150,10 @@ pub(crate) fn load_from(home: &Path, location: &str) -> Result<Arc<Index>, Error
         return parse_index(&bytes, true).map(Arc::new);
     }
 
-    if !location.starts_with("https://") {
-        return Err("KRABB_PLUGIN_INDEX must use https:// or file://.".into());
+    if !location.starts_with("https://") && reference(location).is_none() {
+        return Err("KRABB_PLUGIN_INDEX must be an OCI reference such as \
+                    ghcr.io/owner/plugins:index, an https:// URL, or a file:// path."
+            .into());
     }
 
     if let Ok(recent) = RECENT.lock()
@@ -170,7 +176,7 @@ pub(crate) fn load_from(home: &Path, location: &str) -> Result<Arc<Index>, Error
 fn refresh(home: &Path, location: &str) -> Result<Arc<Index>, Error> {
     let cache = cache(home, location);
 
-    let error: Error = match download_bounded(location, INDEX_LIMIT) {
+    let error: Error = match fetch(location) {
         Ok(bytes) => match parse_index(&bytes, false) {
             Ok(index) => {
                 if let Err(error) = krabb_file::save(&cache, &bytes) {
@@ -195,6 +201,84 @@ fn refresh(home: &Path, location: &str) -> Result<Arc<Index>, Error> {
         Some(bytes) => stale(&bytes, error),
         None => Err(error),
     }
+}
+
+/// Downloads the index document from an OCI reference or an https:// URL.
+fn fetch(location: &str) -> Result<Vec<u8>, Error> {
+    let Some((host, repository, tag)) = reference(location) else {
+        return download_bounded(location, INDEX_LIMIT);
+    };
+
+    let session = temp("krabb-registry")?;
+    let headers = session.join("headers");
+    let accept = session.join("accept");
+    let manifest = session.join("manifest");
+    let document = session.join("index");
+
+    let result = token(host, repository).and_then(|authorization| {
+        krabb_file::save(&headers, format!("{authorization}\n"))?;
+        krabb_file::save(&accept, format!("{authorization}\nAccept: {OCI_MANIFEST}\n"))?;
+
+        download_with(
+            &format!("https://{host}/v2/{repository}/manifests/{tag}"),
+            &manifest,
+            Some(&accept),
+            MANIFEST_LIMIT,
+        )?;
+
+        let digest = layer(&read_bounded(&manifest, MANIFEST_LIMIT)?)?;
+
+        download_with(
+            &format!("https://{host}/v2/{repository}/blobs/sha256:{digest}"),
+            &document,
+            Some(&headers),
+            INDEX_LIMIT,
+        )?;
+
+        let bytes = read_bounded(&document, INDEX_LIMIT)?;
+
+        if crate::digest::sha256(&bytes) != digest {
+            return Err("The plugin index does not match its registry digest.".into());
+        }
+
+        Ok(bytes)
+    });
+
+    let _ = std::fs::remove_dir_all(&session);
+
+    result
+}
+
+/// The digest of the index document an index manifest points to.
+fn layer(manifest: &[u8]) -> Result<String, Error> {
+    let value: Value = serde_json::from_slice(manifest)
+        .map_err(|_| "The plugin registry returned an invalid index manifest.")?;
+
+    let layer = &value["layers"][0];
+
+    layer["digest"]
+        .as_str()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .filter(|digest| hex_digest(digest) && layer["mediaType"] == INDEX_MEDIA)
+        .map(str::to_owned)
+        .ok_or_else(|| "The plugin registry has no index document.".into())
+}
+
+/// Splits `host/repository:tag` into its parts when each part is valid.
+fn reference(location: &str) -> Option<(&str, &str, &str)> {
+    let (repository, tag) = location.rsplit_once(':')?;
+    let (host, path) = repository.split_once('/')?;
+
+    let tag_valid = !tag.is_empty()
+        && tag.len() <= 128
+        && !tag.starts_with(['.', '-'])
+        && tag.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte));
+
+    (tag_valid && registry(repository, false)).then_some((host, path, tag))
+}
+
+fn hex_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Uses the offline copy after a failed refresh, keeping the refresh error if it is unusable.
@@ -257,13 +341,7 @@ fn validate(index: &Index, local: bool) -> Result<(), String> {
             }
 
             for (target, artifact) in &release.artifacts {
-                let digest = artifact.sha256.len() == 64
-                    && artifact
-                        .sha256
-                        .bytes()
-                        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-
-                if !digest {
+                if !hex_digest(&artifact.sha256) {
                     return Err(format!(
                         "{id} {} has an invalid {target} archive",
                         release.version
@@ -448,7 +526,9 @@ pub(crate) fn pull(index: &Index, id: &str, choice: &Choice, dir: &Path) -> Resu
         let session = temp("krabb-registry")?;
         let headers = session.join("headers");
 
-        let result = token(host, repository, &headers).and_then(|()| {
+        let result = token(host, repository).and_then(|authorization| {
+            krabb_file::save(&headers, format!("{authorization}\n"))?;
+
             download_with(
                 &format!("https://{host}/v2/{repository}/blobs/sha256:{digest}"),
                 &destination,
@@ -474,8 +554,8 @@ pub(crate) fn pull(index: &Index, id: &str, choice: &Choice, dir: &Path) -> Resu
     Ok(destination)
 }
 
-/// Requests an anonymous pull token and stores it as a request header in `headers`.
-fn token(host: &str, repository: &str, headers: &Path) -> Result<(), Error> {
+/// Requests an anonymous pull token as an `Authorization` request header.
+fn token(host: &str, repository: &str) -> Result<String, Error> {
     let response = download_bounded(
         &format!("https://{host}/token?scope=repository:{repository}:pull&service={host}"),
         TOKEN_LIMIT,
@@ -490,9 +570,7 @@ fn token(host: &str, repository: &str, headers: &Path) -> Result<(), Error> {
         .filter(|token| !token.is_empty() && token.bytes().all(|byte| byte.is_ascii_graphic()))
         .ok_or("The plugin registry returned no access token.")?;
 
-    krabb_file::save(headers, format!("Authorization: Bearer {token}\n"))?;
-
-    Ok(())
+    Ok(format!("Authorization: Bearer {token}"))
 }
 
 /// Explains a pinned install and names the newest supported version when it differs.

@@ -3,14 +3,14 @@ name: Prepare
 on:
   workflow_call:
     outputs:
-      tag:
-        value: ${{ jobs.release.outputs.tag }}
-
       version:
         value: ${{ jobs.release.outputs.version }}
 
       prerelease:
         value: ${{ jobs.release.outputs.prerelease }}
+
+      release:
+        value: ${{ jobs.release.outputs.release }}
 
 permissions:
   contents: read
@@ -19,39 +19,51 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    container: rust:1.89-trixie
 
     defaults:
       run:
         shell: bash
 
     outputs:
-      tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
       prerelease: ${{ steps.release.outputs.prerelease }}
+      release: ${{ steps.release.outputs.release }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+        with:
+          persist-credentials: false
+
       - id: release
-        name: Validate Release Metadata
+        name: Find The Release
 
         env:
-          KRABB_RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
 
         run: |
           set -euo pipefail
-          tag="${KRABB_RELEASE_TAG#refs/tags/}"
-          release=$(bash krabb-scripts/release.sh --notes "$tag" release-notes.md)
-          read -r version prerelease <<< "$release"
+          notes=$(bash krabb-scripts/notes.sh release-notes.md)
+          read -r version prerelease <<< "$notes"
+          release=true
+
+          if answer=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" --silent 2>&1); then
+            release=false
+            echo "::warning title=Krabb release skipped::Krabb $version is already released, so this run publishes no new Krabb release."
+          elif [[ "$answer" != *"HTTP 404"* ]]; then
+            echo "$answer" >&2
+            exit 1
+          fi
+
           {
-            echo "tag=$tag"
             echo "version=$version"
             echo "prerelease=$prerelease"
+            echo "release=$release"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload Release Notes
+        if: steps.release.outputs.release == 'true'
         uses: actions/upload-artifact@v7
 
         with:
