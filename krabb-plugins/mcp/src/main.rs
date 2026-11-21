@@ -433,6 +433,8 @@ fn denied(message: impl Into<String>) -> krabb_core::Error {
 }
 
 #[cfg(test)]
+// Some fixtures here serve only Unix tests.
+#[cfg_attr(not(unix), allow(unused_imports, dead_code))]
 mod tests {
     #[cfg(target_os = "linux")]
     mod lifecycle;

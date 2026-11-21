@@ -7,7 +7,7 @@ pre-release. Changing a version is the only way to release, and a person always
 approves it: run `make bump`, review the plan, confirm it, and merge the pull
 request. When CI passes for the head of `main`, the Release workflow publishes
 each version it declares that is not published yet and skips the rest with a
-warning. Each release covers every earlier commit, so CI that finishes after
+notice. Each release covers every earlier commit, so CI that finishes after
 `main` has moved on releases nothing; the newer commit's CI releases it. When CI
 fails for the head, rerun it, and the release follows once it passes. When the
 head has no CI run, such as after a `[skip ci]` commit, run the Main workflow on

@@ -547,7 +547,7 @@ async fn poll(account: &str) -> krabb_core::Result<Value> {
     Ok(json!({"events": events}))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn poll_with(account: &str, command: &str, prefix: &[String]) -> krabb_core::Result<Value> {
     let args = receive_args(account, prefix);
     let values = run_jsonl_with(command, &args).await?;
@@ -806,7 +806,7 @@ fn clear_redundant_receive_spool(inbox: &Inbox) -> krabb_core::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn run_jsonl_with(command: &str, args: &[String]) -> krabb_core::Result<Vec<Value>> {
     let output =
         command_output(command, args, OUTPUT_LIMIT, OUTPUT_LIMIT).await.map_err(signal_error)?;

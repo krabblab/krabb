@@ -9,7 +9,7 @@ pub(crate) use jobs::{
     TokensExhausted,
 };
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use jobs::Approval;
 
 pub use runs::{Receipt, Run, Target};

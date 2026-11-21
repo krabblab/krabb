@@ -160,7 +160,7 @@ impl Cleanup {
         result
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub async fn call_full_timeout_async<F, Fut, C, Cfut>(
         &self,
         process: std::sync::Arc<Mutex<Option<Process>>>,

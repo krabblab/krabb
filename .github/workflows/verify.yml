@@ -303,3 +303,4 @@ jobs:
 
         env:
           CARGO_BUILD_JOBS: 4
+          RUSTFLAGS: -D warnings

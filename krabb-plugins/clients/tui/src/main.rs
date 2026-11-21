@@ -6947,6 +6947,7 @@ mod tests {
         Ok(json!({"id": params["id"], "worktree": {"status": "removed"}}))
     }
 
+    #[cfg(unix)]
     async fn delayed_answer_control(
         home: String,
         method: String,

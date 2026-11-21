@@ -2,6 +2,9 @@
 
 mod scoped;
 
+#[cfg(test)]
+use krabb_log as _;
+
 #[cfg(not(test))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -89,6 +92,9 @@ fn private(path: &std::path::Path) -> krabb_core::Result<()> {
         permissions.set_mode(0o600);
         std::fs::set_permissions(path, permissions)?;
     }
+
+    #[cfg(not(unix))]
+    let _ = path;
 
     Ok(())
 }
@@ -1333,6 +1339,8 @@ fn now() -> i64 {
 }
 
 #[cfg(test)]
+// Some fixtures here serve only Unix tests.
+#[cfg_attr(not(unix), allow(unused_imports, dead_code))]
 mod tests {
     mod data;
 

@@ -3,7 +3,7 @@
 use crate::*;
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) async fn bridge(
     plugins: &Plugins,
     channel_id: &str,

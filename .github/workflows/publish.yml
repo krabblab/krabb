@@ -55,7 +55,7 @@ jobs:
           [[ "$KRABB_PRERELEASE" == true ]] && options+=(--prerelease)
 
           if answer=$(gh api "repos/$GH_REPO/releases/tags/$tag" --silent 2>&1); then
-            echo "::warning title=Krabb release skipped::Krabb $KRABB_VERSION is already" \
+            echo "::notice title=Krabb release skipped::Krabb $KRABB_VERSION is already" \
               "released, so this run publishes nothing."
             exit 0
           elif [[ "$answer" != *"HTTP 404"* ]]; then

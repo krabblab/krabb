@@ -2,6 +2,9 @@
 
 use std::{future::Future, process::ExitCode};
 
+#[cfg(test)]
+use krabb_runtime as _;
+
 #[tokio::main]
 #[cfg(not(test))]
 async fn main() -> ExitCode {

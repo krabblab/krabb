@@ -47,8 +47,6 @@ rust-version = "1.89"
 license = "Apache-2.0"
 authors = ["Francesco Sardone"]
 repository = "https://github.com/krabblab/krabb"
-homepage = "https://github.com/krabblab/krabb"
-readme = "README.md"
 publish = false
 
 [profile.dev]

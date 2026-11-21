@@ -3,6 +3,9 @@
 #[cfg(not(test))]
 use krabb_core::plugin::serve_with;
 
+#[cfg(test)]
+use krabb_log as _;
+
 use krabb_core::{
     policy::Policy,
     types::{Capability, Hello, Protocol, Request, Response},

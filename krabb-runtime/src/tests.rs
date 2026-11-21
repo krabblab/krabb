@@ -1,3 +1,6 @@
+// Some fixtures here serve only Unix tests.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 mod krabfile;
 
 #[cfg(unix)]
@@ -46,7 +49,7 @@ use super::{
 use super::{MACOS_SERVICE_LABEL, service_path};
 
 #[cfg(windows)]
-use super::{daemon_executable, secure};
+use super::daemon_executable;
 
 use base64::Engine;
 use clap::{CommandFactory, Parser, error::ErrorKind};
