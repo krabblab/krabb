@@ -263,13 +263,16 @@ mod tests {
 
         assert_eq!(failure(transport(&error, "Provider")).kind, Kind::TimedOut);
 
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed = tokio::net::TcpSocket::new_v4().unwrap();
+
+        closed.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+
         let address = format!("http://{}", closed.local_addr().unwrap());
+        let error = client.get(&address).send().await.unwrap_err();
 
         drop(closed);
 
-        let error = client.get(&address).send().await.unwrap_err();
-
+        assert!(error.is_connect(), "{error:?}");
         assert_eq!(failure(transport(&error, "Provider")).kind, Kind::Transient);
         assert!(transport(&error, "Provider").to_string().contains("could not be reached"));
 

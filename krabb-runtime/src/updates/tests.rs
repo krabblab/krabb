@@ -272,10 +272,19 @@ async fn a_version_that_cannot_be_restored_is_unloaded_with_a_next_step() {
         slot.as_ref().unwrap().image.as_ref().unwrap().binary.clone()
     };
 
-    // Windows refuses to delete a running executable but lets it be renamed.
+    // Windows refuses to delete a running executable but lets it be renamed, though it can deny
+    // the rename for a moment while the file is still being scanned or mapped.
     let moved = image.with_extension("moved");
+    let mut attempts = 0;
 
-    fs::rename(&image, &moved).unwrap();
+    while let Err(error) = fs::rename(&image, &moved) {
+        attempts += 1;
+
+        assert!(error.kind() == std::io::ErrorKind::PermissionDenied && attempts < 40, "{error}");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
     fixture.version("0.2.0", "");
 
     crate::tests::write_test_plugin(
