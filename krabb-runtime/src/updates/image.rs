@@ -73,8 +73,13 @@ impl Image {
 
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
 
-                // Windows can deny a lease for a moment after its process exits.
-                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Windows can deny a lease for a moment after its process exits; the symbolic
+                // link refusal carries no OS code, so it still stops startup.
+                Err(error)
+                    if cfg!(windows)
+                        && error.kind() == std::io::ErrorKind::PermissionDenied
+                        && error.raw_os_error().is_some() =>
+                {
                     warn!(
                         error = %diagnostic(error.to_string()),
                         "A stale plugin image is busy; cleanup will retry at next start."

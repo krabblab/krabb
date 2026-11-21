@@ -34,7 +34,7 @@ pub(crate) async fn serve_inner(
     on_ready: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_at(root)?;
-    let _daemon_lock = daemon_lock(root).map_err(phase("Taking ownership of the state"))?;
+    let _daemon_lock = daemon_lock(root).map_err(phase("Opening the state"))?;
     storage::retain(root).map_err(phase("Checking storage"))?;
     recover_plugins(root).map_err(phase("Recovering plugins"))?;
 
@@ -176,16 +176,24 @@ pub(crate) async fn serve_inner(
     let mut cleanup = None;
 
     // Each stop can wait seconds for a graceful exit, so plugins stop together.
-    let mut stops = tokio::task::JoinSet::new();
-
-    for (_, process) in plugins.all().await {
-        stops.spawn(async move { process.stop().await });
-
-    }
+    let mut stops: tokio::task::JoinSet<_> = plugins
+        .all()
+        .await
+        .into_iter()
+        .map(|(_, process)| async move { process.stop().await })
+        .collect();
 
     while let Some(stopped) = stops.join_next().await {
-        if let Ok(Err(error)) = stopped {
-            cleanup.get_or_insert(error);
+        match stopped {
+            Ok(Ok(())) => {}
+
+            Ok(Err(error)) => {
+                cleanup.get_or_insert(error);
+            }
+
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+
+            Err(_) => {}
         }
     }
 
@@ -218,6 +226,7 @@ async fn remove_stale(path: &Path) -> std::io::Result<()> {
             Err(error)
                 if cfg!(windows)
                     && error.kind() == std::io::ErrorKind::PermissionDenied
+                    && !path.is_dir()
                     && attempts < 40 =>
             {
                 attempts += 1;
