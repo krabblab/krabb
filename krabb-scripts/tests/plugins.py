@@ -204,7 +204,41 @@ class Publication(unittest.TestCase):
                 mock.patch('builtins.print') as output:
             self.assertEqual(plugins.index(registry), digest)
 
-        output.assert_any_call('[INFO] The plugin index is current.')
+        output.assert_any_call('[INFO] The plugin index is current with 1 plugin version.')
+
+    def test_the_index_is_rebuilt_until_it_matches_concurrent_changes(self):
+        registry = Fake({'tools-0.1.0': version_manifest('tools', '0.1.0')})
+        pushes = []
+
+        def oras(command, cwd, failure):
+            registry.oras(command, cwd, failure)
+            pushes.append(command[1])
+
+            if len(pushes) == 1:
+                registry.manifests['echo-0.1.0'] = version_manifest('echo', '0.1.0')
+
+        with mock.patch.object(plugins, 'oras', oras), mock.patch('builtins.print'):
+            digest = plugins.index(registry)
+
+        self.assertEqual(len(pushes), 2)
+        self.assertEqual(plugins.document(registry)[1], digest)
+
+        changes = []
+
+        def unstable(command, cwd, failure):
+            registry.oras(command, cwd, failure)
+            changes.append(command[1])
+
+            registry.manifests[f'echo-1.{len(changes)}.0'] = version_manifest(
+                'echo', f'1.{len(changes)}.0')
+
+        registry.manifests['echo-0.9.0'] = version_manifest('echo', '0.9.0')
+
+        with mock.patch.object(plugins, 'oras', unstable), mock.patch('builtins.print'), \
+                self.assertRaisesRegex(plugins.Failure, 'kept changing'):
+            plugins.index(registry)
+
+        self.assertEqual(len(changes), 5)
 
     def test_publication_stops_on_unusable_versions(self):
         registry = Fake()

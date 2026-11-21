@@ -1,10 +1,13 @@
 name: Release
 
-# Publishes what the code declares: Krabb at its workspace version, and each plugin at the
-# version in its manifest. Versions that are already published are skipped with a warning.
+# Publishes what the head of main declares once CI passes for it: Krabb at its workspace
+# version, and each plugin at the version in its manifest. Versions that are already
+# published are skipped with a warning.
 
 on:
-  push:
+  workflow_run:
+    workflows: [Main]
+    types: [completed]
     branches: [main]
 
   workflow_dispatch:
@@ -22,20 +25,99 @@ on:
 permissions:
   contents: read
 
+# Release runs take turns. Manual runs from main and passing CI runs for the head join the
+# queue; each releases the whole head of main, so a newer run replacing a waiting one loses
+# nothing.
 concurrency:
-  group: release
+  group: >-
+    ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+         (github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event != 'pull_request' &&
+          github.event.workflow_run.head_sha == github.sha)) &&
+        'release' || format('release-skip-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
 
+  # Releases only the current head of main, once CI has passed for it. Each release covers
+  # every earlier commit, so CI for a commit that is no longer the head releases nothing.
+  gate:
+    name: Gate
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request')
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+
+    outputs:
+      release: ${{ steps.gate.outputs.release }}
+
+    steps:
+      - id: gate
+        name: Confirm CI Passed For The Head Of Main
+
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          KRABB_CI_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+          KRABB_COMMIT: ${{ github.sha }}
+          KRABB_EVENT: ${{ github.event_name }}
+          KRABB_REF: ${{ github.ref }}
+
+        run: |
+          set -euo pipefail
+          refuse() { echo "::error title=Release refused::$*"; exit 1; }
+          skip() {
+            echo "::warning title=Release skipped::$*"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [[ "$KRABB_EVENT" == workflow_dispatch && "$KRABB_REF" != refs/heads/main ]]; then
+            refuse "Run the Release workflow from main."
+          fi
+
+          head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          short=${KRABB_CI_COMMIT:0:7}
+
+          if [[ "$KRABB_EVENT" == workflow_dispatch && "$KRABB_COMMIT" != "$head" ]]; then
+            refuse "Main moved past $short while this run was queued; run it again."
+          fi
+
+          if [[ "$KRABB_CI_COMMIT" != "$head" || "$KRABB_COMMIT" != "$head" ]]; then
+            skip "Main has moved past $short, so this run releases nothing;" \
+              "CI for the newer commit releases it."
+          fi
+
+          if [[ "$KRABB_EVENT" == workflow_dispatch ]]; then
+            passed=$(gh run list --workflow main.yml --branch main --commit "$head" \
+              --status success --limit 100 --json event \
+              --jq '[.[] | select(.event != "pull_request")] | length')
+
+            [[ "$passed" != 0 ]] ||
+              refuse "The latest CI run for $short, the head of main, has not passed."
+          fi
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
   prepare:
     name: Prepare
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.krabb)
+    needs: gate
+    if: >-
+      needs.gate.outputs.release == 'true' &&
+      (github.event_name == 'workflow_run' || inputs.krabb)
     uses: ./.github/workflows/prepare.yml
 
   plan:
     name: Plan Plugins
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.plugins)
+    needs: gate
+    if: >-
+      needs.gate.outputs.release == 'true' &&
+      (github.event_name == 'workflow_run' || inputs.plugins)
     runs-on: ubuntu-latest
 
     permissions:
@@ -65,22 +147,15 @@ jobs:
           echo "names=$names" >> "$GITHUB_OUTPUT"
 
           if [[ -z "$names" ]]; then
-            echo "::warning title=Plugin release skipped::Every plugin version is already published, so this run releases no plugin."
+            echo "::warning title=Plugin release skipped::Every plugin version is already" \
+              "published, so this run releases no plugin."
           else
             echo "Unpublished plugins: $names."
           fi
 
-  verify:
-    name: Verify
-    needs: [prepare, plan]
-    if: >-
-      !cancelled() && needs.prepare.result != 'failure' && needs.plan.result != 'failure' &&
-      (needs.prepare.outputs.release == 'true' || needs.plan.outputs.names != '')
-    uses: ./.github/workflows/verify.yml
-
   package:
     name: Package
-    needs: [prepare, verify]
+    needs: prepare
     if: needs.prepare.outputs.release == 'true'
     uses: ./.github/workflows/package.yml
 
@@ -110,11 +185,7 @@ jobs:
 
   plugins:
     name: Plugins
-    needs: [plan, verify]
-    if: >-
-      !cancelled() && needs.plan.result == 'success' &&
-      (needs.verify.result == 'success' ||
-       (needs.verify.result == 'skipped' && needs.plan.outputs.names == ''))
+    needs: plan
     uses: ./.github/workflows/plugins.yml
 
     permissions:

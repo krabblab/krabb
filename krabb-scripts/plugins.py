@@ -335,10 +335,9 @@ def release(tag, manifest):
     return plugin, entry
 
 
-def index(registry):
-    """Rebuilds the index from every version tag and pushes it when it changed.
-
-    Returns the digest of the index document."""
+def document(registry):
+    """The index built from every version tag, with its digest, version count, and the tags
+    it leaves out."""
 
     tags = sorted(tag for tag in registry.tags() if tag != INDEX_TAG)
 
@@ -346,39 +345,68 @@ def index(registry):
         found = list(pool.map(registry.manifest, tags))
 
     plugins = {}
+    foreign = []
 
     for tag, manifest in zip(tags, found):
         entry = release(tag, manifest)
 
         if entry is None:
-            print(f'[WARN] Tag {tag} has no Krabb plugin metadata, so the index leaves it out.',
-                  file=sys.stderr)
-
+            foreign.append(tag)
             continue
 
         plugins.setdefault(entry[0], []).append(entry[1])
 
     value = {'schema': SCHEMA, 'registry': registry.reference, 'plugins': plugins}
-    document = (json.dumps(value, indent=2) + '\n').encode()
-    digest = hashlib.sha256(document).hexdigest()
-    current = registry.manifest(INDEX_TAG)
-    layers = (current or {}).get('layers') or [{}]
-
-    if layers[0].get('digest') == f'sha256:{digest}':
-        print('[INFO] The plugin index is current.')
-        return digest
-
-    with tempfile.TemporaryDirectory(prefix='krabb-index-') as directory:
-        Path(directory, 'index.json').write_bytes(document)
-
-        oras(['push', f'{registry.reference}:{INDEX_TAG}', '--artifact-type', INDEX_TYPE,
-              f'index.json:{INDEX_MEDIA}'], directory, 'Pushing the plugin index failed')
-
+    content = (json.dumps(value, indent=2) + '\n').encode()
     count = sum(len(entries) for entries in plugins.values())
 
-    print(f'[INFO] Published the plugin index with {count} plugin versions.')
+    return content, hashlib.sha256(content).hexdigest(), count, foreign
 
-    return digest
+
+def versions(count):
+    return f"{count} plugin version{'' if count == 1 else 's'}"
+
+
+def leftover(tags):
+    for tag in tags:
+        print(f'[WARN] Tag {tag} has no Krabb plugin metadata, so the index leaves it out.',
+              file=sys.stderr)
+
+
+def index(registry, attempts=5):
+    """Rebuilds the index from every version tag and pushes it when it changed.
+
+    A withdrawal may change the registry meanwhile, so after each push the index is rebuilt
+    again until it matches what the registry holds. Returns the digest of the index
+    document."""
+
+    for attempt in range(attempts + 1):
+        content, digest, count, foreign = document(registry)
+        current = registry.manifest(INDEX_TAG)
+        layers = (current or {}).get('layers') or [{}]
+
+        if layers[0].get('digest') == f'sha256:{digest}':
+            leftover(foreign)
+
+            if attempt:
+                print(f'[INFO] Published the plugin index with {versions(count)}.')
+            else:
+                print(f'[INFO] The plugin index is current with {versions(count)}.')
+
+            return digest
+
+        if attempt == attempts:
+            leftover(foreign)
+            break
+
+        with tempfile.TemporaryDirectory(prefix='krabb-index-') as directory:
+            Path(directory, 'index.json').write_bytes(content)
+
+            oras(['push', f'{registry.reference}:{INDEX_TAG}', '--artifact-type', INDEX_TYPE,
+                  f'index.json:{INDEX_MEDIA}'], directory, 'Pushing the plugin index failed')
+
+    raise Failure('The plugin index kept changing while it was rebuilt; run the workflow '
+                  'again.')
 
 
 def publish(dist, reference, source, root=ROOT, now=None):

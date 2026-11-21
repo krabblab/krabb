@@ -54,10 +54,33 @@ jobs:
           options=(--title "$tag" --notes-file notes/release-notes.md)
           [[ "$KRABB_PRERELEASE" == true ]] && options+=(--prerelease)
 
+          if answer=$(gh api "repos/$GH_REPO/releases/tags/$tag" --silent 2>&1); then
+            echo "::warning title=Krabb release skipped::Krabb $KRABB_VERSION is already" \
+              "released, so this run publishes nothing."
+            exit 0
+          elif [[ "$answer" != *"HTTP 404"* ]]; then
+            echo "$answer" >&2
+            exit 1
+          fi
+
           # A draft left by a failed run may point at an older commit, so it is replaced.
           if [[ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" == true ]]; then
             gh release delete "$tag" --yes
           fi
 
+          # Installers download the latest release, so it stays on the newest stable version
+          # even when an older one is published afterwards.
+          latest=false
+
+          if [[ "$KRABB_PRERELEASE" != true ]]; then
+            published=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1000 \
+              --json tagName --jq '.[].tagName')
+
+            newest=$(printf '%s\n' "$published" "$tag" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+              sort -V | tail -n 1)
+
+            [[ "$newest" != "$tag" ]] || latest=true
+          fi
+
           gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" "${options[@]}"
-          gh release edit "$tag" --draft=false
+          gh release edit "$tag" --draft=false --latest="$latest"
