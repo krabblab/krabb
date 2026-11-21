@@ -42,7 +42,7 @@ class SelectTests(unittest.TestCase):
             'ROADMAP.md',
             'LICENSE',
             'krabb-docs/release.md',
-            'krabb-assets/krabb/krabb-mark-orange.svg',
+            'krabb-assets/brand/svg/krabb-mark-coral.svg',
             'krabb-plugins/channels/slack/README.md',
             'krabb-runtime/AGENTS.md',
         ), [])
