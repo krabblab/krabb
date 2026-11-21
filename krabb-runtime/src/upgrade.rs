@@ -362,10 +362,26 @@ fn preview(
             continue;
         };
 
-        let pin = index::parse(&entry.source)
-            .and_then(|(_, pinned)| pinned)
-            .map(|pinned| format!(" (pin to {pinned} removed; it cannot run on {version})"))
-            .unwrap_or_default();
+        let staged_pin = staged
+            .plan
+            .plugins
+            .iter()
+            .find(|artifact| &artifact.id == id)
+            .and_then(|artifact| artifact.pin.as_deref());
+
+        let pin = match (index::parse(&entry.source).and_then(|(_, pinned)| pinned), staged_pin) {
+            (_, Some(pin)) => format!(" (pinned to pre-release {pin})"),
+
+            (Some(pinned), None) if !releases::stable(pinned) => {
+                format!(" (pre-release pin to {pinned} replaced by the stable release)")
+            }
+
+            (Some(pinned), None) => {
+                format!(" (pin to {pinned} removed; it cannot run on {version})")
+            }
+
+            (None, None) => String::new(),
+        };
 
         rows.push(format!("{id}: {} → {}{pin}", entry.version, manifest.version));
 

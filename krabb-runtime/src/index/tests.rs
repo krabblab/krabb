@@ -41,7 +41,11 @@ fn sample() -> Index {
 }
 
 fn pick(index: &Index, version: Option<&str>) -> Result<String, String> {
-    select_for(index, "echo", version, Protocol::CURRENT, "linux", "x86_64")
+    choose(index, version, false)
+}
+
+fn choose(index: &Index, version: Option<&str>, unstable: bool) -> Result<String, String> {
+    select_for(index, "echo", version, unstable, Protocol::CURRENT, "linux", "x86_64")
         .map(|choice| choice.release.version.clone())
         .map_err(|error| error.to_string())
 }
@@ -68,25 +72,46 @@ fn selection_prefers_the_newest_supported_stable_version() {
     assert!(pick(&index, Some("1.0.0")).unwrap_err().contains("needs plugin protocol 1.0"));
     assert!(pick(&index, Some("9.9.9")).unwrap_err().contains("has no version 9.9.9"));
 
-    let error = select_for(&index, "slack", None, Protocol::CURRENT, "linux", "x86_64");
+    let error = select_for(&index, "slack", None, false, Protocol::CURRENT, "linux", "x86_64");
 
     assert!(error.err().unwrap().to_string().contains("not in the official plugin index"));
 
-    let error = select_for(&index, "echo", None, Protocol::CURRENT, "macos", "aarch64");
+    let error = select_for(&index, "echo", None, false, Protocol::CURRENT, "macos", "aarch64");
 
     assert!(error.err().unwrap().to_string().contains("No published version of echo has a build"));
 
-    let error = select_for(&index, "echo", Some("0.1.0"), Protocol::CURRENT, "macos", "aarch64");
+    let error =
+        select_for(&index, "echo", Some("0.1.0"), false, Protocol::CURRENT, "macos", "aarch64");
 
     assert!(error.err().unwrap().to_string().contains("has no build for aarch64-apple-darwin"));
 
-    let error = select_for(&index, "echo", None, Protocol::CURRENT, "plan9", "x86_64");
+    let error = select_for(&index, "echo", None, false, Protocol::CURRENT, "plan9", "x86_64");
 
     assert!(error.err().unwrap().to_string().contains("--source"));
 
-    let next = select_for(&index, "echo", None, Protocol { major: 1, minor: 2 }, "linux", "x86_64");
+    let next =
+        select_for(&index, "echo", None, false, Protocol { major: 1, minor: 2 }, "linux", "x86_64");
 
     assert_eq!(next.unwrap().release.version, "1.0.0");
+}
+
+#[test]
+fn unstable_selection_includes_pre_releases_but_not_withdrawn_versions() {
+    let unstable = |index: &Index| choose(index, None, true);
+
+    assert_eq!(unstable(&sample()).unwrap(), "0.4.0-rc.1");
+
+    let candidates = index(vec![
+        release("0.1.0-rc.1", (0, 1), None),
+        release("0.1.0-rc.2", (0, 1), Some("broken")),
+    ]);
+
+    assert_eq!(unstable(&candidates).unwrap(), "0.1.0-rc.1");
+    assert!(pick(&candidates, None).unwrap_err().starts_with("No stable version of echo"));
+
+    let withdrawn = index(vec![release("0.1.0-rc.1", (0, 1), Some("broken"))]);
+
+    assert!(unstable(&withdrawn).unwrap_err().starts_with("No version of echo supports"));
 }
 
 #[test]
@@ -288,6 +313,31 @@ fn pins_explain_their_risk_and_how_to_follow_updates() {
     }
 
     assert!(old.ends_with("Run `krabb plugin install echo@latest --yes` to follow updates again."));
+
+    assert_eq!(
+        pin(&index, "echo", "0.4.0-rc.1").unwrap(),
+        "echo is pinned to pre-release 0.4.0-rc.1."
+    );
+
+    let released = self::index(vec![
+        release("0.1.0-rc.1", (0, 1), None),
+        release("0.1.0-rc.2", (0, 1), None),
+        release("0.1.0", (0, 1), None),
+    ]);
+
+    let candidates =
+        self::index(vec![release("0.1.0-rc.1", (0, 1), None), release("0.1.0-rc.2", (0, 1), None)]);
+
+    if target == Some(LINUX) {
+        let notice = pin(&released, "echo", "0.1.0-rc.1").unwrap();
+
+        assert!(notice.starts_with("echo is pinned to pre-release 0.1.0-rc.1; 0.1.0 is newer."));
+        assert!(notice.ends_with("to follow stable releases."), "{notice}");
+
+        let notice = pin(&candidates, "echo", "0.1.0-rc.1").unwrap();
+
+        assert!(notice.ends_with("--unstable --yes` to move to a newer pre-release."), "{notice}");
+    }
 
     let withdrawn = pin(&index, "echo", "0.3.0").unwrap();
 

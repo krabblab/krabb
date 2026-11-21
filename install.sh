@@ -85,35 +85,33 @@ case "$os" in
     *) die 'Use install.ps1 on Windows.' ;;
 esac
 
-version_file=''
 tmp=''
 cleanup() {
     [ -z "$tmp" ] || rm -rf "$tmp"
-    [ -z "$version_file" ] || rm -f "$version_file"
 }
 trap cleanup EXIT
 
-if [ -n "${KRABB_VERSION:-}" ]; then
-    version=$KRABB_VERSION
-else
-    [ -n "${HOME:-}" ] || die 'HOME is not set; configure KRABB_VERSION or KRABB_PREFIX.'
-    version_file=$(mktemp)
-    curl --fail --silent --show-error --location --retry 3 \
-        --connect-timeout 10 --max-time 120 \
-        'https://raw.githubusercontent.com/krabblab/krabb/main/VERSION' \
-        -o "$version_file"
-    version=$(tr -d '[:space:]' < "$version_file")
-fi
-if ! printf '%s\n' "$version" | awk \
-    '$0 ~ /^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/ { valid = 1 } END { exit !valid }'
-then
-    die "Version '$version' is not valid."
-fi
+valid_version() {
+    printf '%s\n' "$1" | awk \
+        '$0 ~ /^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/ { valid = 1 } END { exit !valid }' || \
+        die "Version '$1' is not valid."
+}
 
 target="$target_arch-$target_os"
 name=krabb
-archive_name="krabb-core-v$version-$target.$archive_format"
-base=${KRABB_RELEASE_BASE:-"https://github.com/krabblab/krabb/releases/download/v$version"}
+releases=https://github.com/krabblab/krabb/releases
+
+if [ -n "${KRABB_VERSION:-}" ]; then
+    version=$KRABB_VERSION
+    valid_version "$version"
+    base=${KRABB_RELEASE_BASE:-"$releases/download/v$version"}
+    missing="Cannot reach Krabb $version; check the version and the connection."
+else
+    version=''
+    base=${KRABB_RELEASE_BASE:-"$releases/latest/download"}
+    missing='Cannot reach the latest Krabb release; check the connection or set KRABB_VERSION.'
+fi
+[ -z "${KRABB_RELEASE_BASE:-}" ] || missing="Cannot download SHA256SUMS from $base."
 base=${base%/}
 case "$base" in
     https://*|file://*) ;;
@@ -121,13 +119,32 @@ case "$base" in
 esac
 tmp=$(mktemp -d)
 
+curl --fail --silent --show-error --location --retry 3 \
+    --connect-timeout 10 --max-time 120 \
+    "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" || die "$missing"
+
+if [ -z "$version" ]; then
+    suffix="-$target.$archive_format"
+    latest=$(awk -v suffix="$suffix" '
+        { file = $2; sub(/^\*/, "", file) }
+        index(file, "krabb-core-v") == 1 && substr(file, length(file) - length(suffix) + 1) == suffix {
+            print file
+            exit
+        }
+    ' "$tmp/SHA256SUMS")
+    version=${latest#krabb-core-v}
+    version=${version%"$suffix"}
+    [ -n "$version" ] || die "The latest Krabb release has no build for $target."
+    valid_version "$version"
+    [ -n "${KRABB_RELEASE_BASE:-}" ] || base="$releases/download/v$version"
+fi
+
+archive_name="krabb-core-v$version-$target.$archive_format"
+
 info "Downloading $archive_name."
 curl --fail --silent --show-error --location --retry 3 \
     --connect-timeout 10 --max-time 120 \
-    "$base/$archive_name" -o "$tmp/$archive_name"
-curl --fail --silent --show-error --location --retry 3 \
-    --connect-timeout 10 --max-time 120 \
-    "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+    "$base/$archive_name" -o "$tmp/$archive_name" || die "Cannot download $archive_name."
 
 expected=$(awk -v archive="$archive_name" '$2 == archive || $2 == "*" archive { print $1; exit }' \
     "$tmp/SHA256SUMS")

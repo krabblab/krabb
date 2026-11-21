@@ -483,9 +483,11 @@ has a build for this target. The lock records the source as `index:<id>`, which
 `plugin update` follows to newer versions. `<id>@<version>` installs and pins one
 published version instead (recorded as `index:<id>@<version>`); a pinned version
 other than the latest is used at your own risk, and `<id>@latest` returns to
-following updates. Krabb never compiles a plugin when no build exists for the
-target; pass an explicit local path or Git URL with `--source` instead (explicit
-sources apply to one plugin ID per command).
+following updates. `--unstable` installs the newest version, pre-releases
+included, and pins it when it is a pre-release; run it again to move to a newer
+one. Krabb never compiles a plugin when no build exists for the target; pass an
+explicit local path or Git URL with `--source` instead (explicit sources apply
+to one plugin ID per command).
 
 ### Official Plugin Index
 

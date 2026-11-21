@@ -346,10 +346,20 @@ async fn with_model(fixture: &Fixture) {
     with_mode(fixture, "answer").await;
 }
 
+/// Starts the model plugin, retrying a handshake that a loaded CI runner delays.
 async fn with_mode(fixture: &Fixture, mode: &str) {
-    let process = krabb_core::plugin::Process::start_with("python3", ["-u", "-c", MODEL, mode])
-        .await
-        .unwrap();
+    let mut attempts = 0;
+
+    let process = loop {
+        attempts += 1;
+
+        match krabb_core::plugin::Process::start_with("python3", ["-u", "-c", MODEL, mode]).await {
+            Ok(process) => break process,
+
+            Err(krabb_core::Error::Handshake(reason)) if reason == "timeout" && attempts < 3 => {}
+            Err(error) => panic!("the model plugin did not start: {error}"),
+        }
+    };
 
     fixture.plugins.insert(Live::new(process)).await;
 }

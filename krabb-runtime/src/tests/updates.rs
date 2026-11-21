@@ -78,6 +78,7 @@ async fn progress_precedes_lifecycle_waits_and_keeps_json_silent() {
             source: Some(source.display().to_string()),
             revision: None,
             link: false,
+            unstable: false,
             yes: true,
         }),
         json,

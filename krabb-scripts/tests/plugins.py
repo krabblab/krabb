@@ -44,11 +44,12 @@ class Publication(unittest.TestCase):
         for plugin, version in [('echo', '0.2.0'), ('tools', '0.1.0')]:
             self.manifest(plugin, version)
 
-    def manifest(self, plugin, version, group='channels'):
+    def manifest(self, plugin, version, group='channels', crate=None):
         path = self.root / 'krabb-plugins' / group / plugin / 'krabb-plugin.toml'
 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(MANIFEST.format(id=plugin, version=version))
+        (path.parent / 'Cargo.toml').write_text(f'[package]\nversion = "{crate or version}"\n')
 
     def archives(self, plugin, version):
         for target, extension in plugins.TARGETS.items():
@@ -171,6 +172,19 @@ class Publication(unittest.TestCase):
 
         with self.assertRaisesRegex(plugins.Failure, 'invalid version: main'):
             plugins.manifests(self.root)
+
+        self.manifest('echo', '0.2.0-rc.1', crate='0.1.0')
+
+        with self.assertRaisesRegex(plugins.Failure, '0.2.0-rc.1 in its manifest but 0.1.0'):
+            plugins.manifests(self.root)
+
+        cargo = self.root / 'krabb-plugins/channels/echo/Cargo.toml'
+
+        for content in ['[package]\nversion.workspace = true\n', 'package = 1\n']:
+            cargo.write_text(content)
+
+            with self.assertRaisesRegex(plugins.Failure, 'needs its own version in Cargo.toml'):
+                plugins.manifests(self.root)
 
     def test_pull_checks_stop_at_the_storage_redirect(self):
         token = mock.MagicMock()

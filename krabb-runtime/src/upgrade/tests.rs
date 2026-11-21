@@ -79,16 +79,16 @@ fn release(root: &Path, version: &str) -> PathBuf {
     release
 }
 
-/// Publishes echo 0.1.0 (protocol 0.1) and 0.2.0 (`manifest`) to a local index and registry,
-/// returning the index location.
-fn publish(root: &Path, manifest: &str) -> String {
+/// Publishes echo 0.1.0 (protocol 0.1) and `version` (`manifest`) to a local index and
+/// registry, returning the index location.
+fn publish(root: &Path, manifest: &str, version: &str) -> String {
     let registry = root.join("registry");
     let work = root.join("plugins");
 
     let (target, extension) =
         releases::target(std::env::consts::OS, std::env::consts::ARCH).unwrap();
 
-    let name = format!("krabb-echo-v0.2.0-{target}.{extension}");
+    let name = format!("krabb-echo-v{version}-{target}.{extension}");
     let exe = std::env::consts::EXE_SUFFIX;
 
     fs::create_dir_all(&work).unwrap();
@@ -118,7 +118,7 @@ fn publish(root: &Path, manifest: &str) -> String {
                 "artifacts": {},
             },
             {
-                "version": "0.2.0",
+                "version": version,
                 "protocol": NEXT,
                 "released": "2026-11-20",
                 "permissions": ["network"],
@@ -208,7 +208,7 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
     let home = root.join("home");
     let release = release(&root, "0.2.0");
     let base = format!("file://{}", release.display());
-    let location = publish(&root, ECHO);
+    let location = publish(&root, ECHO, "0.2.0");
     let load = || index::load_from(&home, &location);
 
     fs::create_dir_all(&home).unwrap();
@@ -426,7 +426,7 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
 
     lock.plugins.insert("echo".into(), entry("0.1.0", "index:echo", false));
 
-    let location = publish(&root, ECHO);
+    let location = publish(&root, ECHO, "0.2.0");
     let load = || index::load_from(&home, &location);
     let blobs = root.join("registry/blobs/sha256");
     let blob = fs::read_dir(&blobs).unwrap().next().unwrap().unwrap().path();
@@ -467,7 +467,7 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
     drop(staged);
     fs::remove_dir_all(root.join("registry")).unwrap();
 
-    let location = publish(&root, &ECHO.replace("major = 1", "major = 9"));
+    let location = publish(&root, &ECHO.replace("major = 1", "major = 9"), "0.2.0");
     let load = || index::load_from(&home, &location);
     let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
 
@@ -481,6 +481,64 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
     );
 
     assert!(stage::compatible(&staged, &inspection(None)).is_ok());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn staging_keeps_pre_release_pins_on_pre_releases() {
+    let root = temp_root("stage-unstable");
+    let home = root.join("home");
+    let base = format!("file://{}", release(&root, "0.2.0").display());
+    let location = publish(&root, ECHO, "0.2.0-rc.1");
+    let load = || index::load_from(&home, &location);
+    let mut lock = Lock::default();
+
+    fs::create_dir_all(&home).unwrap();
+    lock.plugins.insert("echo".into(), entry("0.1.0", "index:echo", false));
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+    let error = stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap_err();
+
+    assert!(error.to_string().contains("No stable version of echo"), "{error}");
+
+    drop(staged);
+    lock.plugins.insert("echo".into(), entry("0.1.0-rc.1", "index:echo@0.1.0-rc.1", false));
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+    let plan = stage::plan(&staged.dir).unwrap();
+
+    assert!(plan.plugins[0].file.contains("-v0.2.0-rc.1-"));
+    assert_eq!(plan.plugins[0].pin.as_deref(), Some("0.2.0-rc.1"));
+
+    let schema = stage::Schema { from: 1, to: 1, steps: Vec::new() };
+    let service = root.join("none.service");
+    let text = preview("0.2.0", &lock, &staged, &schema, &service, false).text;
+
+    assert!(text.contains("echo: 0.1.0-rc.1 → 0.2.0 (pinned to pre-release 0.2.0-rc.1)"), "{text}");
+
+    drop(staged);
+    fs::remove_dir_all(root.join("registry")).unwrap();
+
+    let location = publish(&root, ECHO, "0.2.0");
+    let load = || index::load_from(&home, &location);
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+    assert_eq!(stage::plan(&staged.dir).unwrap().plugins[0].pin, None);
+
+    let text = preview("0.2.0", &lock, &staged, &schema, &service, false).text;
+
+    assert!(
+        text.contains("(pre-release pin to 0.1.0-rc.1 replaced by the stable release)"),
+        "{text}"
+    );
+
+    drop(staged);
 
     let _ = fs::remove_dir_all(root);
 }

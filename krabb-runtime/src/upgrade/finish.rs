@@ -56,7 +56,7 @@ fn install(root: &Path, dir: &Path, artifact: &stage::Artifact) -> Result<(), Pl
         },
         false,
         root,
-        Some(&index::source(&artifact.id, None)),
+        Some(&index::source(&artifact.id, artifact.pin.as_deref())),
     )
     .map_err(|error| format!("Plugin {} failed: {}", artifact.id, sentence(error.to_string())))?;
 

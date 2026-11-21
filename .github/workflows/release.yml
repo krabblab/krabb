@@ -26,6 +26,7 @@ jobs:
     with:
       names: core
       artifact: krabb-v${{ needs.prepare.outputs.version }}
+      version: ${{ needs.prepare.outputs.version }}
 
   checksum:
     name: Checksum

@@ -45,7 +45,7 @@ jobs:
 
         with:
           tag_name: ${{ inputs.tag }}
-          name: Krabb ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
           body_path: notes/release-notes.md
           prerelease: ${{ inputs.prerelease }}
           files: |

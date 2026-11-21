@@ -131,6 +131,30 @@ class Installers(unittest.TestCase):
 
         self.assertFalse(self.calls.exists())
 
+    def test_unpinned_installs_take_the_latest_release_version(self):
+        archive, _, payload = self.artifact('core', 'valid')
+        result = self.run_installer('core', KRABB_VERSION='')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'Downloading {archive.name}.', result.stdout)
+
+        for name, content in payload.items():
+            self.assertEqual((self.bin / name).read_bytes(), content)
+
+        (self.release / 'SHA256SUMS').write_text(f'{"0" * 64}  krabb-core-v1.2.3-plan9.zip\n')
+
+        result = self.run_installer('core', KRABB_VERSION='')
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('The latest Krabb release has no build for', result.stderr)
+
+        (self.release / 'SHA256SUMS').unlink()
+
+        result = self.run_installer('core', KRABB_VERSION='')
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Cannot download SHA256SUMS from file:', result.stderr)
+
     def test_plugins_are_delegated_to_the_plugin_index(self):
         result = self.run_installer('tools', KRABB_VERSION='', KRABB_RELEASE_BASE='')
 

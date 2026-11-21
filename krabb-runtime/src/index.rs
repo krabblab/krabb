@@ -309,13 +309,32 @@ pub(crate) fn select<'a>(
     version: Option<&str>,
     protocol: Protocol,
 ) -> Result<Choice<'a>, Error> {
-    select_for(index, id, version, protocol, std::env::consts::OS, std::env::consts::ARCH)
+    select_for(index, id, version, false, protocol, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// The newest version that speaks `protocol`, including pre-releases when `unstable`.
+pub(crate) fn newest<'a>(
+    index: &'a Index,
+    id: &str,
+    unstable: bool,
+    protocol: Protocol,
+) -> Result<Choice<'a>, Error> {
+    select_for(index, id, None, unstable, protocol, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// The pin for the newest version of `id`, pre-releases included; none when it is stable.
+pub(crate) fn unstable(home: &Path, id: &str) -> Result<Option<String>, Error> {
+    let index = load(home)?;
+    let version = &newest(&index, id, true, Protocol::CURRENT)?.release.version;
+
+    Ok((!releases::stable(version)).then(|| version.clone()))
 }
 
 fn select_for<'a>(
     index: &'a Index,
     id: &str,
     version: Option<&str>,
+    unstable: bool,
     protocol: Protocol,
     os: &str,
     arch: &str,
@@ -360,16 +379,18 @@ fn select_for<'a>(
                 .iter()
                 .filter(|release| {
                     release.yanked.is_none()
-                        && releases::stable(&release.version)
+                        && (unstable || releases::stable(&release.version))
                         && protocol.compatible(release.protocol)
                 })
                 .collect::<Vec<_>>();
 
             if supported.is_empty() {
                 return Err(format!(
-                    "No stable version of {id} supports plugin protocol {}.{}; run `krabb plugin \
+                    "No {}version of {id} supports plugin protocol {}.{}; run `krabb plugin \
                      versions {id}` to choose one.",
-                    protocol.major, protocol.minor
+                    if unstable { "" } else { "stable " },
+                    protocol.major,
+                    protocol.minor
                 )
                 .into());
             }
@@ -481,23 +502,42 @@ pub(crate) fn notice(home: &Path, id: &str, version: &str) -> Option<String> {
 
 fn pin(index: &Index, id: &str, version: &str) -> Option<String> {
     let release = index.plugins.get(id)?.iter().find(|release| release.version == version)?;
-    let latest = select(index, id, None, Protocol::CURRENT).ok();
+    let newest_version = |unstable| {
+        newest(index, id, unstable, Protocol::CURRENT).ok().map(|choice| &choice.release.version)
+    };
+
+    let latest = newest_version(false);
+    let newer = |candidate: &str| releases::compare(candidate, version).is_gt();
+
+    let follow = format!("Run `krabb plugin install {id}@latest --yes` to");
     let mut lines = Vec::new();
 
     if let Some(reason) = &release.yanked {
         lines.push(format!("{id} {version} was withdrawn: {}", sentence(reason.as_str())));
     }
 
-    match latest.map(|choice| choice.release.version.as_str()) {
-        Some(latest) if latest != version => lines.push(format!(
-            "{id} is pinned to {version}; the latest supported version is {latest}, so this one \
-             is used at your own risk."
-        )),
+    lines.push(if releases::stable(version) {
+        match latest {
+            Some(latest) if latest != version => format!(
+                "{id} is pinned to {version}; the latest supported version is {latest}, so this \
+                 one is used at your own risk. {follow} follow updates again."
+            ),
 
-        _ => lines.push(format!("{id} is pinned to {version}.")),
-    }
-
-    lines.push(format!("Run `krabb plugin install {id}@latest --yes` to follow updates again."));
+            _ => format!("{id} is pinned to {version}. {follow} follow updates again."),
+        }
+    } else if let Some(stable) = latest.filter(|stable| newer(stable)) {
+        format!(
+            "{id} is pinned to pre-release {version}; {stable} is newer. {follow} follow stable \
+             releases."
+        )
+    } else if newest_version(true).is_some_and(|candidate| newer(candidate)) {
+        format!(
+            "{id} is pinned to pre-release {version}. Run `krabb plugin install {id} --unstable \
+             --yes` to move to a newer pre-release."
+        )
+    } else {
+        format!("{id} is pinned to pre-release {version}.")
+    });
 
     Some(lines.join(" "))
 }

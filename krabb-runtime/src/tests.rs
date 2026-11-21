@@ -6247,6 +6247,7 @@ fn cli_exposes_global_modes_and_aliases() {
                 source: None,
                 revision: None,
                 link: true,
+                unstable: false,
                 yes: true,
             })
         } if ids == ["tui", "codex", "tools"]
@@ -6272,6 +6273,7 @@ fn cli_exposes_global_modes_and_aliases() {
                 source: Some(source),
                 revision: Some(revision),
                 link: false,
+                unstable: false,
                 yes: false,
             })
         } if ids == ["custom"] && source == "./plugin" && revision == "abc123"
@@ -6468,6 +6470,7 @@ fn plugin_install_accepts_multiple_ids_and_limits_explicit_sources() {
         source: None,
         revision: None,
         link: true,
+        unstable: false,
         yes: true,
     })
     .unwrap();
@@ -6481,27 +6484,8 @@ fn plugin_install_accepts_multiple_ids_and_limits_explicit_sources() {
 
     assert!(sources.iter().all(|source| source.yes));
 
-    assert!(
-        super::plugin_sources(super::PluginInstall {
-            ids: vec!["tui".into(), "codex".into()],
-            source: Some("./plugin".into()),
-            revision: None,
-            link: false,
-            yes: false,
-        })
-        .is_err()
-    );
-
-    assert!(
-        super::plugin_sources(super::PluginInstall {
-            ids: vec!["tui".into(), "tui".into()],
-            source: None,
-            revision: None,
-            link: false,
-            yes: false,
-        })
-        .is_err()
-    );
+    assert!(install_sources(&["tui", "codex"], Some("./plugin"), false, false).is_err());
+    assert!(install_sources(&["tui", "tui"], None, false, false).is_err());
 }
 
 #[test]
@@ -6517,17 +6501,39 @@ fn state_commands_check_the_home_schema_first() {
     assert!(!gated(&["krabb", "service", "stop"]));
 }
 
+type Sources = Result<(bool, Vec<super::Source>), Box<dyn std::error::Error + Send + Sync>>;
+
+fn install_sources(ids: &[&str], source: Option<&str>, link: bool, unstable: bool) -> Sources {
+    super::plugin_sources(super::PluginInstall {
+        ids: ids.iter().map(|id| (*id).into()).collect(),
+        source: source.map(Into::into),
+        revision: None,
+        link,
+        unstable,
+        yes: false,
+    })
+}
+
+#[test]
+fn unstable_plugin_installs_resolve_from_the_index_only() {
+    let install = |ids: &[&str], source: Option<&str>, link: bool| {
+        install_sources(ids, source, link, true)
+            .map(|(_, sources)| sources.len())
+            .map_err(|error| error.to_string())
+    };
+
+    assert_eq!(install(&["tui", "codex"], None, false), Ok(2));
+
+    assert!(install(&["tui@0.1.0"], None, false).unwrap_err().contains("plugin version"));
+    assert!(install(&["tui@latest"], None, false).unwrap_err().contains("plugin version"));
+    assert!(install(&["tui"], Some("./plugin"), false).unwrap_err().contains("--source"));
+    assert!(install(&["tui"], None, true).unwrap_err().contains("--link"));
+}
+
 #[test]
 fn plugin_install_accepts_pinned_release_versions() {
-    let install = |ids: &[&str], source: Option<&str>, link: bool| {
-        super::plugin_sources(super::PluginInstall {
-            ids: ids.iter().map(|id| (*id).into()).collect(),
-            source: source.map(Into::into),
-            revision: None,
-            link,
-            yes: false,
-        })
-    };
+    let install =
+        |ids: &[&str], source: Option<&str>, link: bool| install_sources(ids, source, link, false);
 
     let (_, sources) = install(&["tui@0.2.0-rc.1", "codex", "slack@latest"], None, false).unwrap();
 
@@ -9074,6 +9080,7 @@ async fn manages_local_sessions_and_plugins() {
                 source: None,
                 revision: None,
                 link: false,
+                unstable: false,
                 yes: true,
             }),
             false,

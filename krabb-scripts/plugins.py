@@ -75,6 +75,18 @@ def manifests(root=ROOT):
         if not VERSION.match(manifest['version']):
             raise Failure(f"Plugin {plugin} has an invalid version: {manifest['version']}.")
 
+        crate = tomllib.loads((path.parent / 'Cargo.toml').read_text()).get('package', {})
+        crate = crate.get('version') if isinstance(crate, dict) else None
+
+        if not isinstance(crate, str):
+            raise Failure(f'Plugin {plugin} needs its own version in Cargo.toml.')
+
+        if crate != manifest['version']:
+            raise Failure(
+                f"Plugin {plugin} is version {manifest['version']} in its manifest but {crate} "
+                'in Cargo.toml; set both to the same version.'
+            )
+
         found[plugin] = manifest
 
     return found
