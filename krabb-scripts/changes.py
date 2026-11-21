@@ -48,6 +48,7 @@ def select(changed, members, dependencies):
     MEMBERS maps each package to its directory relative to the root, and DEPENDENCIES maps
     each package to the workspace packages it depends on, including dev-dependencies.
     """
+
     selected = set()
 
     for path in changed:
@@ -88,6 +89,7 @@ def workspace():
     ).stdout
 
     packages = json.loads(output)['packages']
+
     members = {
         package['name']: Path(package['manifest_path']).parent.relative_to(ROOT).as_posix()
         for package in packages
