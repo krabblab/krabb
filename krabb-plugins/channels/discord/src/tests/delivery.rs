@@ -176,11 +176,11 @@ async fn a_plain_send_records_its_message_for_later_replies() {
 
 #[tokio::test]
 async fn an_unreachable_discord_reports_its_transport_cause() {
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed = tokio::net::TcpSocket::new_v4().unwrap();
+
+    closed.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+
     let base = format!("http://{}", closed.local_addr().unwrap());
-
-    drop(closed);
-
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let error =
@@ -200,11 +200,16 @@ async fn an_unreachable_discord_reports_its_transport_cause() {
     .await
     .unwrap_err();
 
-    assert!(matches!(
-        error,
-        krabb_core::Error::Failed { failure, .. }
-            if failure.kind == krabb_core::failure::Kind::Transient
-    ));
+    assert!(
+        matches!(
+            &error,
+            krabb_core::Error::Failed { failure, .. }
+                if failure.kind == krabb_core::failure::Kind::Transient
+        ),
+        "{error}"
+    );
+
+    drop(closed);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -225,9 +230,12 @@ async fn an_unreachable_discord_reports_its_transport_cause() {
     .await
     .unwrap_err();
 
-    assert!(matches!(
-        error,
-        krabb_core::Error::Failed { failure, .. }
-            if failure.kind == krabb_core::failure::Kind::Uncertain
-    ));
+    assert!(
+        matches!(
+            &error,
+            krabb_core::Error::Failed { failure, .. }
+                if failure.kind == krabb_core::failure::Kind::Uncertain
+        ),
+        "{error}"
+    );
 }
