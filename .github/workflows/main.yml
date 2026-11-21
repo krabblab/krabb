@@ -31,6 +31,7 @@ jobs:
 
         with:
           fetch-depth: 2
+          persist-credentials: false
 
       - id: changes
         name: Select Packages

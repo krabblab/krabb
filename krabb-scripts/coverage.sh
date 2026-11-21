@@ -71,6 +71,13 @@ esac
 
 cargo_command=${CARGO:-cargo}
 
+for threshold in "$package_threshold" "$runtime_threshold"; do
+    if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold > 100 )); then
+        printf '[coverage] threshold must be an integer from 0 to 100: %s\n' "$threshold" >&2
+        exit 2
+    fi
+done
+
 if [[ -n "$selection" ]]; then
     selected=()
 
@@ -87,13 +94,6 @@ if [[ -n "$selection" ]]; then
 
     packages=("${selected[@]}")
 fi
-
-for threshold in "$package_threshold" "$runtime_threshold"; do
-    if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold > 100 )); then
-        printf '[coverage] threshold must be an integer from 0 to 100: %s\n' "$threshold" >&2
-        exit 2
-    fi
-done
 
 printf '[coverage] package line threshold: %s%%\n' "$package_threshold"
 printf '[coverage] runtime line threshold: %s%%\n' "$runtime_threshold"

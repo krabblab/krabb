@@ -35,6 +35,9 @@ jobs:
     name: Krabb (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
 
+    env:
+      KRABB_COVERAGE_PACKAGES: ${{ join(fromJSON(inputs.packages || '[]'), ' ') }}
+
     strategy:
       fail-fast: false
 
@@ -127,7 +130,6 @@ jobs:
         name: Run Coverage
         shell: bash
         env:
-          KRABB_COVERAGE_PACKAGES: ${{ join(fromJSON(inputs.packages || '[]'), ' ') }}
           KRABB_COVERAGE_PACKAGE_MIN: ${{ matrix.coverage_package_min }}
           KRABB_COVERAGE_RUNTIME_MIN: ${{ matrix.coverage_runtime_min }}
 
@@ -137,15 +139,12 @@ jobs:
         name: Run Workspace Tests
         shell: bash
 
-        env:
-          PACKAGES: ${{ join(fromJSON(inputs.packages || '[]'), ' ') }}
-
         run: |
           selection=(--workspace)
 
-          if [[ -n "$PACKAGES" ]]; then
+          if [[ -n "$KRABB_COVERAGE_PACKAGES" ]]; then
             selection=()
-            for package in $PACKAGES; do selection+=(-p "$package"); done
+            for package in $KRABB_COVERAGE_PACKAGES; do selection+=(-p "$package"); done
           fi
 
           cargo test "${selection[@]}" --no-fail-fast --locked --target "${{ matrix.target }}"
@@ -185,7 +184,7 @@ jobs:
   sandbox:
     name: Sandbox
     if: >-
-      inputs.packages == '' || inputs.packages == '[]' ||
+      inputs.packages == '' ||
       contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-tools')
     runs-on: ubuntu-24.04
     timeout-minutes: 15

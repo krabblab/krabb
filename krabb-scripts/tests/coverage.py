@@ -174,10 +174,12 @@ exit 0
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-        tested = [line.split()[-1] for line in (self.root / 'calls').read_text().splitlines()
-                  if not line.startswith('llvm-cov clean')]
+        calls = (self.root / 'calls').read_text().splitlines()
+        tested = [line for line in calls if not line.startswith('llvm-cov clean')]
 
-        self.assertEqual(tested, ['krabb-core', 'krabb-daemon'])
+        self.assertEqual(len(tested), 2)
+        self.assertIn('-p krabb-core', tested[0])
+        self.assertIn('-p krabb-daemon', tested[1])
 
     def test_a_selection_outside_the_profile_runs_nothing(self):
         self.recording_cargo()

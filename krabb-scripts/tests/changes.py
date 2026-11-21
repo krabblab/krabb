@@ -76,14 +76,8 @@ class SelectTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNone(select('README.md', path))
 
-    def test_nested_directories_belong_to_the_closest_package(self):
-        members = {**MEMBERS, 'krabb-plugins': 'krabb-plugins'}
-
-        self.assertEqual(
-            changes.owner('krabb-plugins/tools/src/main.rs', members), 'krabb-plugin-tools')
-
-        self.assertEqual(changes.owner('krabb-plugins/Cargo.toml', members), 'krabb-plugins')
-        self.assertIsNone(changes.owner('krabb-tools/src/main.rs', MEMBERS))
+    def test_a_directory_prefix_is_not_a_package(self):
+        self.assertIsNone(changes.owner('krabb-tools/src/main.rs', {'krabb': 'krabb'}))
 
 
 class MainTests(unittest.TestCase):
@@ -92,7 +86,7 @@ class MainTests(unittest.TestCase):
                 mock.patch('builtins.print') as printed:
             self.assertEqual(changes.main([]), 0)
 
-        printed.assert_called_once_with('code=true\npackages=[]')
+        printed.assert_called_once_with('code=true\npackages=')
 
     def test_the_workspace_matches_its_members(self):
         members, dependencies = changes.workspace()

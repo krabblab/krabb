@@ -5,7 +5,7 @@ changes.py [BASE]
     Compare BASE with HEAD and print `code` and `packages` as GitHub outputs (to
     $GITHUB_OUTPUT when it is set). `code=false` means only documentation or assets
     changed. `packages` is a JSON array of the changed packages and every package that
-    depends on them; it is empty when every package must run. Without BASE, every package
+    depends on them, or empty when every package must run. Without BASE, every package
     runs.
 """
 
@@ -38,9 +38,8 @@ def inert(path):
 
 
 def owner(path, members):
-    """Return the package whose directory holds PATH most closely, or None."""
-    matches = [name for name, directory in members.items() if path.startswith(directory + '/')]
-    return max(matches, key=lambda name: len(members[name]), default=None)
+    return next(
+        (name for name, directory in members.items() if path.startswith(directory + '/')), None)
 
 
 def select(changed, members, dependencies):
@@ -69,12 +68,12 @@ def select(changed, members, dependencies):
 
     for name, needs in dependencies.items():
         for need in needs:
-            dependents.setdefault(need, set()).add(name)
+            dependents[need].add(name)
 
     pending = list(selected)
 
     while pending:
-        for dependent in dependents.get(pending.pop(), ()):
+        for dependent in dependents[pending.pop()]:
             if dependent not in selected:
                 selected.add(dependent)
                 pending.append(dependent)
@@ -129,7 +128,7 @@ def main(arguments):
         packages = select(changes(arguments[0]), *workspace())
 
     code = packages != []
-    lines = [f'code={str(code).lower()}', f'packages={json.dumps(packages or [])}']
+    lines = [f'code={str(code).lower()}', f'packages={json.dumps(packages) if packages else ""}']
     target = os.environ.get('GITHUB_OUTPUT')
 
     if target:

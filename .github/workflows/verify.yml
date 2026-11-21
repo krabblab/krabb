@@ -126,12 +126,10 @@ jobs:
             {"name": "TUI Plugin", "package": "krabb-plugin-tui"}
           ]'
 
-          if [[ -n "$PACKAGES" && "$PACKAGES" != '[]' ]]; then
-            crates=$(jq --argjson packages "$PACKAGES" \
-              'map(select(.package as $package | $packages | index($package)))' <<<"$crates")
-          fi
+          crates=$(jq -c --argjson packages "${PACKAGES:-null}" \
+            'map(select($packages == null or (.package | IN($packages[]))))' <<<"$crates")
 
-          printf 'crates=%s\n' "$(jq -c . <<<"$crates")" >> "$GITHUB_OUTPUT"
+          printf 'crates=%s\n' "$crates" >> "$GITHUB_OUTPUT"
 
   crate:
     name: Crate (${{ matrix.name }})
@@ -171,7 +169,7 @@ jobs:
   browser_integration:
     name: Browser Integration
     if: >-
-      inputs.packages == '' || inputs.packages == '[]' ||
+      inputs.packages == '' ||
       contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-browser')
     runs-on: ubuntu-latest
 
@@ -206,7 +204,7 @@ jobs:
   computer_integration:
     name: Computer Integration
     if: >-
-      inputs.packages == '' || inputs.packages == '[]' ||
+      inputs.packages == '' ||
       contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-computer')
     runs-on: ubuntu-latest
 
