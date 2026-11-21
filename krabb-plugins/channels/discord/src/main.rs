@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+use krabb_log as _;
+
 use krabb_core::reply::Reply;
 
 mod formatting;

@@ -5,6 +5,9 @@ mod execution;
 mod failure;
 mod model;
 
+#[cfg(test)]
+use krabb_log as _;
+
 use krabb_core::{
     plugin::Emitter,
     types::{Content, Event, ModelReply, ModelRequest, Request, Response},

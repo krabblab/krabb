@@ -41,7 +41,7 @@ use super::{
     memory_tools, model_content, plugin_binary, read_manifest, read_manifest_checked,
     reclaim_worktrees, recover, recover_plugins, redact, resolve, restart_tool, revision,
     safe_archive, send_params, send_request, service_at, service_at_with, service_environment_from,
-    service_name, service_path_value, service_text, session_at, tool, turn_messages, update_at,
+    service_name, service_path_value, service_text, session_at, turn_messages, update_at,
     validate_archive, verify_archive,
 };
 
@@ -12831,7 +12831,7 @@ async fn restarts_a_failed_tool_process() {
     let plugins = registry([process]).await;
     let mut failed = None;
 
-    let error = tool(
+    let error = super::tool(
         &plugins,
         7,
         "read",
@@ -12851,7 +12851,7 @@ async fn restarts_a_failed_tool_process() {
 
     let mut ignored = None;
 
-    let output = tool(
+    let output = super::tool(
         &plugins,
         7,
         "read",
