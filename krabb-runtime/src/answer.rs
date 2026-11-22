@@ -291,9 +291,19 @@ pub(crate) async fn answer(
         }
     }
 
+    let requested = restart.load(std::sync::atomic::Ordering::Acquire);
+    let handed_off = task.handoff.borrow().is_some();
+
     // A turn that handed its work to a background task must not restart under that task.
-    let restart =
-        restart.load(std::sync::atomic::Ordering::Acquire) && task.handoff.borrow().is_none();
+    if requested && handed_off {
+        let _ = notices.try_send(StreamNotice::System(
+            "The saved setting was not applied, because the work continues in the background. \
+             Restart the daemon with `krabb service restart` to apply it."
+                .into(),
+        ));
+    }
+
+    let restart = requested && !handed_off;
 
     result.map(|model| jobs::Answer { model, foreground, restart })
 }
