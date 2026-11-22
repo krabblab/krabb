@@ -671,6 +671,10 @@ where
                         app.running_command = None;
                     }
 
+                    Some(crate::EngineEvent::UserSaved(line)) => {
+                        app.mark_user_line_saved(&line);
+                    }
+
                     Some(crate::EngineEvent::GenerationFinished { interrupted }) => {
                         app.finish_generation(interrupted);
                     }
@@ -835,6 +839,8 @@ where
                 crate::EngineEvent::SystemNotice(text) => app.push_system(&text),
 
                 crate::EngineEvent::Progress(text) => app.push_progress(&text),
+
+                crate::EngineEvent::UserSaved(line) => app.mark_user_line_saved(&line),
 
                 crate::EngineEvent::GenerationStarted => {}
 
@@ -1769,10 +1775,6 @@ where
                             app.begin_compaction();
                         }
 
-                        if crate::starts_turn(&line) {
-                            app.mark_pending_user_message_persisted();
-                        }
-
                         command_tx.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
                         command_tx.write_all(b"\n").await?;
 
@@ -2026,35 +2028,28 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     );
 
     if is_working && content_height > 0 {
-        let text = if app.compaction_active {
-            let elapsed = app
-                .compaction_started
-                .map(|started| format_elapsed(started.elapsed()))
-                .unwrap_or_else(|| "0s".into());
-
-            format!("{}  |  {elapsed}", app.compaction_message)
-        } else if app.generation_active {
-            let indicator =
-                if app.interrupt_requested { "Stopping…" } else { "Esc to interrupt" };
-
-            let elapsed = app
-                .generation_started
-                .map(|started| format_elapsed(started.elapsed()))
-                .unwrap_or_else(|| "0s".into());
-
-            format!("{}  |  {indicator}  |  {elapsed}", app.generation_message)
-        } else if let Some((name, started)) = &app.running_command {
-            format!("Krabb is running {name}  |  {}", format_elapsed(started.elapsed()))
-        } else {
-            "Krabb is working in this session  |  waiting for the turn to finish".into()
-        };
-
         let started = if app.compaction_active {
             app.compaction_started
         } else if app.generation_active {
             app.generation_started
         } else {
             app.running_command.as_ref().map(|(_, started)| *started)
+        };
+
+        let elapsed_text =
+            started.map_or_else(|| "0s".into(), |started| format_elapsed(started.elapsed()));
+
+        let text = if app.compaction_active {
+            format!("{}  |  {elapsed_text}", app.compaction_message)
+        } else if app.generation_active {
+            let indicator =
+                if app.interrupt_requested { "Stopping…" } else { "Esc to interrupt" };
+
+            format!("{}  |  {indicator}  |  {elapsed_text}", app.generation_message)
+        } else if let Some((name, _)) = &app.running_command {
+            format!("Krabb is running {name}  |  {elapsed_text}")
+        } else {
+            "Krabb is working in this session  |  waiting for the turn to finish".into()
         };
 
         let elapsed = started.map_or_else(
@@ -3320,8 +3315,14 @@ impl App {
         });
     }
 
-    fn mark_pending_user_message_persisted(&mut self) {
-        if let Some(interaction) = self.pending_interactions.back_mut() {
+    /// Marks the interaction whose line the engine saved with its turn. Commands answered
+    /// without a turn never get here, so their line is saved with the reply instead.
+    fn mark_user_line_saved(&mut self, line: &str) {
+        let interaction = self.pending_interactions.iter_mut().find(|interaction| {
+            !interaction.user_message_persisted && interaction.input.trim() == line
+        });
+
+        if let Some(interaction) = interaction {
             interaction.user_message_persisted = true;
         }
     }
@@ -4088,6 +4089,7 @@ mod tests {
         .await
         .unwrap();
 
+        app.mark_user_line_saved("ping");
         app.generation_active = true;
         app.push_request_failure("Request failed: The selected model plugin is not running.");
         app.finish_generation(false);
@@ -4542,15 +4544,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn keeps_a_shared_command_line_after_the_session_refreshes() {
+    async fn saves_a_command_line_the_engine_did_not_save() {
         let (mut command_tx, _command_rx) = tokio::io::duplex(1024);
 
         let mut app = App {
             name: "Krabb".into(),
             session: "default".into(),
             model_available: true,
-            input: "/hatch be brief".chars().collect(),
-            cursor: 15,
+            input: "  /hatch be brief".chars().collect(),
+            cursor: 17,
             ..App::default()
         };
 
@@ -4564,40 +4566,46 @@ mod tests {
         .unwrap();
 
         let saved = app.push_assistant_output("I'm brief now.\n> ".into());
-        app.reveal_all();
 
         assert_eq!(saved.len(), 1);
-        assert!(!saved[0].user_message_persisted);
 
-        let message = |id: &str, role, text: &str| krabb_core::types::Message {
-            id: id.into(),
-            session: "default".into(),
-            role,
-            sender: None,
-            content: vec![krabb_core::types::Content::Text { text: text.into() }],
+        let appended = std::sync::Mutex::new(Vec::new());
+
+        let host = |_home: String, method: String, params: serde_json::Value| {
+            appended.lock().unwrap().push((method, params));
+            async { Ok(serde_json::json!({})) }
         };
 
-        let reply = message(
-            &saved[0].assistant_message_id,
-            krabb_core::types::Role::Assistant,
-            "I'm brief now.",
-        );
+        for interaction in saved {
+            super::persist_interaction("home", interaction, host).await.unwrap();
+        }
 
-        let snapshot = |messages| super::SessionView {
-            id: "default".into(),
-            model: String::new(),
-            workspace: None,
-            context_usage: None,
-            messages,
-            working: false,
-        };
+        let appended = appended.into_inner().unwrap();
+        let texts = appended
+            .iter()
+            .map(|(_, params)| params["message"]["content"][0]["text"].as_str().unwrap())
+            .collect::<Vec<_>>();
 
-        let line =
-            message(&saved[0].user_message_id, krabb_core::types::Role::User, "/hatch be brief");
+        assert!(appended.iter().all(|(method, _)| method == "session.append"));
+        assert_eq!(texts, ["  /hatch be brief", "I'm brief now."]);
+    }
 
-        assert!(app.refresh_session(snapshot(vec![line, reply])));
-        assert!(app.transcript.contains("/hatch be brief"));
-        assert!(app.transcript.contains("I'm brief now."));
+    #[test]
+    fn marks_only_the_interaction_whose_line_the_engine_saved() {
+        let mut app = App { session: "default".into(), ..App::default() };
+
+        app.begin_interaction("/approve abc");
+        app.begin_interaction(" hello ");
+        app.mark_user_line_saved("hello");
+        app.mark_user_line_saved("also do this");
+
+        let saved = app
+            .pending_interactions
+            .iter()
+            .map(|interaction| interaction.user_message_persisted)
+            .collect::<Vec<_>>();
+
+        assert_eq!(saved, [false, true]);
     }
 
     #[test]

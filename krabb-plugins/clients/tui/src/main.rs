@@ -161,6 +161,7 @@ enum EngineEvent {
     CompactionFinished,
     CommandStarted(String),
     CommandFinished,
+    UserSaved(String),
     AssistantText(String),
     SystemText(String),
     RequestFailed(String),
@@ -1250,13 +1251,12 @@ where
 
                 let text = shared_command(&home, &session, line, host).await;
 
-                output.write_all(format!("{text}\n> ").as_bytes()).await?;
-                output.flush().await?;
-
                 if let Some(events) = &engine_events {
                     let _ = events.send(EngineEvent::CommandFinished);
                 }
 
+                output.write_all(format!("{text}\n> ").as_bytes()).await?;
+                output.flush().await?;
                 continue;
             }
 
@@ -1265,6 +1265,8 @@ where
                 output.flush().await?;
                 continue;
             }
+
+            let submitted = line;
 
             let (line, reply_to) = match reply {
                 Some(Some((target, text))) => (text, Some(target)),
@@ -1421,6 +1423,7 @@ where
             messages.push(user);
 
             if let Some(events) = &engine_events {
+                let _ = events.send(EngineEvent::UserSaved(submitted.into()));
                 let _ = events.send(EngineEvent::GenerationStarted);
             }
 
@@ -5232,16 +5235,6 @@ fn shared(line: &str) -> bool {
     line.split_whitespace().next() == Some("/hatch")
 }
 
-/// Whether LINE starts a model turn, whose user message the engine saves itself. Other
-/// commands are answered without a turn, so the TUI saves their line with the reply.
-fn starts_turn(line: &str) -> bool {
-    if let Some(command) = line.strip_prefix('!') {
-        return !command.trim().is_empty();
-    }
-
-    !line.starts_with('/') || matches!(reply_command(line), Some(Some(_)))
-}
-
 fn unknown_command(line: &str) -> String {
     format!(
         "Unknown TUI command: {}.\nUse /help to see available commands.",
@@ -5872,18 +5865,6 @@ mod tests {
         assert!(super::parse_options(&["--once".into(), "  ".into()]).is_err());
         assert!(super::parse_options(&["--session".into(), "Bad_ID".into()]).is_err());
         assert!(super::parse_options(&["--bogus".into()]).is_err());
-    }
-
-    #[test]
-    fn only_turns_leave_their_line_to_the_engine() {
-        assert!(super::starts_turn("hello"));
-        assert!(super::starts_turn("!ls"));
-        assert!(super::starts_turn("/reply last thanks"));
-
-        assert!(!super::starts_turn("/hatch be brief"));
-        assert!(!super::starts_turn("/model show"));
-        assert!(!super::starts_turn("/reply"));
-        assert!(!super::starts_turn("! "));
     }
 
     #[test]
@@ -7640,6 +7621,13 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
                 .await
                 .unwrap(),
+            Some(super::EngineEvent::UserSaved("prepare the report".into()))
+        );
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
+                .await
+                .unwrap(),
             Some(super::EngineEvent::GenerationStarted)
         );
 
@@ -8437,6 +8425,13 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
             super::EngineEvents { engine: Some(engine_event_tx), ..super::EngineEvents::default() },
             interrupt_rx,
         ));
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), engine_event_rx.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::UserSaved("hello".into()))
+        );
 
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(3), engine_event_rx.recv())
