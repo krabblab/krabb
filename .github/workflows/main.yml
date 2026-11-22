@@ -16,9 +16,35 @@ concurrency:
 
 jobs:
 
+  # Pull requests test only the packages they can affect; main and manual runs test all.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+      packages: ${{ steps.changes.outputs.packages }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - id: changes
+        name: Select Packages
+        run: python3 -B krabb-scripts/changes.py ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+
   verify:
     name: Verify
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/verify.yml
+
+    with:
+      packages: ${{ needs.changes.outputs.packages }}
 
   agentskill:
     name: Agentskill
@@ -35,5 +61,8 @@ jobs:
 
   test:
     name: Test
-    needs: verify
+    needs: [changes, verify]
     uses: ./.github/workflows/test.yml
+
+    with:
+      packages: ${{ needs.changes.outputs.packages }}

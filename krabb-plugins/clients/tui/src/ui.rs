@@ -48,7 +48,7 @@ use tokio::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const ACCENT_COLOR: Color = Color::Rgb(255, 140, 0);
+pub(super) const ACCENT_COLOR: Color = Color::Rgb(255, 111, 44);
 const TRANSCRIPT_LIMIT: usize = 512 * 1024;
 const INTERACTION_LIMIT: usize = 12 * 1024;
 const INPUT_HISTORY_LIMIT: usize = super::data::HISTORY_LIMIT;
@@ -2103,9 +2103,12 @@ fn generation_status_line(text: &str, elapsed: Duration) -> Line<'static> {
         .map(|(index, character)| {
             let distance = (index as isize - glow_center).unsigned_abs();
 
-            let green = if distance <= 16 { 140 + (45 * (16 - distance) / 16) as u8 } else { 140 };
+            // The glow brightens Coral toward (255, 150, 90) so it never turns yellow.
+            let strength = 16usize.saturating_sub(distance);
+            let green = 111 + (39 * strength / 16) as u8;
+            let blue = 44 + (46 * strength / 16) as u8;
 
-            let color = Color::Rgb(255, green, 0);
+            let color = Color::Rgb(255, green, blue);
             let style = if distance <= 16 { Style::default().fg(color) } else { base_style };
 
             Span::styled(character.to_string(), style)
@@ -4782,7 +4785,7 @@ mod tests {
 
         assert!(matches!(
             phrase_start.fg,
-            Color::Rgb(255, green, 0) if (140..=185).contains(&green)
+            Color::Rgb(255, green, blue) if (111..=150).contains(&green) && (44..=90).contains(&blue)
         ));
 
         assert!(!terminal.backend().cursor_visible());
@@ -4828,7 +4831,7 @@ mod tests {
 
         let indicator = generation_status_line("Compacting conversation", Duration::ZERO);
 
-        assert_eq!(indicator.spans[0].style.fg, Some(Color::Rgb(255, 140, 0)));
+        assert_eq!(indicator.spans[0].style.fg, Some(super::ACCENT_COLOR));
     }
 
     #[test]
@@ -4836,7 +4839,7 @@ mod tests {
         let text = "The Krabb is thinking...  |  Esc to interrupt  |  2s";
         let first = generation_status_line(text, Duration::from_secs(1));
         let later = generation_status_line(text, Duration::from_secs(3));
-        let bright = Color::Rgb(255, 185, 0);
+        let bright = Color::Rgb(255, 150, 90);
         let bright_positions = |line: &Line<'_>| {
             line.spans
                 .iter()
@@ -4848,7 +4851,8 @@ mod tests {
         assert_ne!(bright_positions(&first), bright_positions(&later));
         assert!(first.spans.iter().all(|span| matches!(
             span.style.fg,
-            Some(Color::Rgb(255, green, 0)) if (140..=185).contains(&green)
+            Some(Color::Rgb(255, green, blue))
+                if (111..=150).contains(&green) && (44..=90).contains(&blue)
         )));
 
         assert_eq!(first.spans.iter().map(|span| span.content.as_ref()).collect::<String>(), text);
