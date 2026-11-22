@@ -1191,11 +1191,11 @@ fn prompts_explain_fields_and_show_how_enter_behaves() {
         heading(&field, 1, false),
         concat!(
             "\n1. Bot token  KRABB_SETUP_TOKEN\n",
-            "   Ask @BotFather.\n",
-            "   Get it at https://t.me/BotFather\n",
-            "   For example: 123:abc\n",
-            "   This one is required.\n",
-            "   Your typing stays hidden.\n"
+            "Ask @BotFather.\n",
+            "Get it at https://t.me/BotFather\n",
+            "For example: 123:abc\n",
+            "This one is required.\n",
+            "Your typing stays hidden.\n"
         )
     );
 
@@ -1218,7 +1218,7 @@ fn prompts_explain_fields_and_show_how_enter_behaves() {
 
     assert_eq!(
         heading(&host, 2, false),
-        "\n2. KRABB_SETUP_HOST\n   Press Enter to use https://ollama.com.\n"
+        "\n2. KRABB_SETUP_HOST\nPress Enter to use https://ollama.com.\n"
     );
 
     let mut plain = host;

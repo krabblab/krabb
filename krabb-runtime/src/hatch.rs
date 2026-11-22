@@ -412,13 +412,13 @@ fn ask(
     )?;
     writeln!(
         output,
-        "   {} {}",
+        "{} {}",
         crate::style::dim(&limit, color),
         crate::style::example(question.example, color)
     )?;
 
     loop {
-        write!(output, "   > ")?;
+        write!(output, "|> ")?;
         output.flush()?;
 
         let mut line = String::new();
@@ -430,7 +430,7 @@ fn ask(
 
         match clean(&line, question.limit) {
             Ok(answer) => return Ok(answer),
-            Err(problem) => writeln!(output, "   {problem}")?,
+            Err(problem) => writeln!(output, "{problem}")?,
         }
     }
 }
@@ -736,8 +736,8 @@ mod tests {
         assert!(output.starts_with("Your Krabb already has a personality.\n"));
         assert!(output.contains("Press Enter on any question to keep its current setting."));
         assert!(output.contains("\nIdentity\n\n1. What should your Krabb be called?\n"));
-        assert!(output.contains("   Up to 40 characters, for example: Pinch\n"));
-        assert!(output.contains("   Keep this answer to 40 characters or fewer.\n"));
+        assert!(output.contains("\nUp to 40 characters, for example: Pinch\n"));
+        assert!(output.contains("Keep this answer to 40 characters or fewer.\n"));
         assert!(output.contains("\nWork\n\n7. How should it get things done?"));
         assert_eq!(output.matches("\nVoice\n").count(), 1);
     }

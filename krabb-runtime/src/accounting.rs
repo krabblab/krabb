@@ -123,7 +123,7 @@ impl Drop for Account {
             .and_then(|mut store| store.settle_budget(&self.id, reservation, None));
 
         if result.is_err() {
-            warn!("Execution settlement remains pending; the saved reservation is retained.");
+            warn!("Execution settlement remains pending, and the saved reservation is retained.");
         }
     }
 }

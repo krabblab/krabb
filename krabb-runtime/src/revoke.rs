@@ -28,13 +28,13 @@ pub(super) fn revoke(root: &Path, id: &str, lock: &Lock) -> Result<Revoked, Plug
 
 fn failure(id: &str, revoked: &Revoked, error: PluginError) -> PluginError {
     let done = if revoked.grants > 0 {
-        format!(" Removed {} sharing grant(s) already.", revoked.grants)
+        format!("\nRemoved {} sharing grant(s) already.", revoked.grants)
     } else {
         String::new()
     };
 
     format!(
-        "Could not revoke the saved access of {id}: {}{done} The plugin is still installed; \
+        "Could not revoke the saved access of {id}: {}{done}\nThe plugin is still installed, so \
          retry the uninstall.",
         sentence(error.to_string())
     )

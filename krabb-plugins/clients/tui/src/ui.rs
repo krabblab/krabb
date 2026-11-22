@@ -1182,6 +1182,7 @@ fn command_options(home: &str, has_model: bool) -> Vec<(&'static str, &'static s
     if has_model {
         commands.push(("/model <help|list|show|set>", "Manage the selected model."));
         commands.push(("/compact", "Summarize older turns and keep recent conversation."));
+        commands.push(crate::HATCH_COMMAND);
     }
 
     if crate::has_capability(home, "tool") {

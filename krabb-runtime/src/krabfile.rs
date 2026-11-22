@@ -81,7 +81,7 @@ pub(crate) fn export_krabfile_at_mode(
 
     if path.exists() && !args.force {
         return Err(format!(
-            "Krabfile already exists at {}; use --force to overwrite it.",
+            "Krabfile already exists at {}, so use --force to overwrite it.",
             path.display()
         )
         .into());
@@ -188,7 +188,7 @@ pub(crate) fn import_krabfile_at_mode(
     let previous_config = load_config_text(root)?;
 
     if previous_config.is_some() && !args.force {
-        return Err("Configuration already exists; use --force to replace it.".into());
+        return Err("Configuration already exists, so use --force to replace it.".into());
     }
 
     if !confirm_action(args.yes, json, &format!("Import configuration from {}?", path.display()))? {

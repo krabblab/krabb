@@ -26,7 +26,7 @@ pub(super) async fn run(
     for (id, entry) in load_lock_at(root)?.plugins {
         if !Protocol::CURRENT.compatible(entry.protocol) {
             return Err(format!(
-                "Plugin {id} uses a protocol Krabb {VERSION} does not support; \
+                "Plugin {id} uses a protocol Krabb {VERSION} does not support, so \
                  reinstall a compatible build after rolling back."
             )
             .into());

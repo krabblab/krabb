@@ -17,7 +17,7 @@ pub(super) async fn channel(
             plugin = id,
             attempt = *failures,
             delay_seconds = delay.as_secs(),
-            "Channel failed; retrying after backoff."
+            "Channel failed, retrying after backoff."
         );
 
         tokio::select! {
@@ -55,7 +55,7 @@ pub(super) async fn channel(
 
             Err(error) => {
                 tracing::warn!(plugin = id, error = %super::diagnostic(error.to_string()),
-                    "Channel restart failed; retrying.");
+                    "Channel restart failed, retrying.");
             }
         }
     }

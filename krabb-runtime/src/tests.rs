@@ -2091,7 +2091,7 @@ fn scheduled_outcomes_distinguish_retryable_uncertain_and_cancelled_runs() {
                 false,
                 true,
                 false,
-                "The agent did not confirm task completion; review the response before retrying. Backup completed.".into()
+                "The agent did not confirm task completion, so review the response before retrying. Backup completed.".into()
             )
         );
 
@@ -2159,7 +2159,7 @@ fn scheduled_tool_failures_retry_only_before_possible_mutation() {
 fn schedule_notices_distinguish_continue_from_pause() {
     assert_eq!(
         super::scheduled_result_heading("continuing"),
-        "Scheduled task failed; next run remains active"
+        "Scheduled task failed, next run remains active"
     );
 
     assert_eq!(super::scheduled_result_heading("paused"), "Scheduled task paused");
@@ -5263,7 +5263,7 @@ fn service_actions_report_when_no_transition_is_needed() {
 
     assert_eq!(
         super::service_action_text(super::ServiceAction::Stop, Some(Failed)),
-        "The service has failed; there is nothing to stop."
+        "The service has failed, so there is nothing to stop."
     );
 
     assert_eq!(

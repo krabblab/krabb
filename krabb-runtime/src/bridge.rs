@@ -766,7 +766,7 @@ pub(crate) async fn bridge_with_media(
                 } else if !store.sessions.contains_key(&session_name)
                     && store.sessions.len() >= state::LIMIT
                 {
-                    warn!(session = %session_name, event = %event_id, "Session capacity reached; message deferred.");
+                    warn!(session = %session_name, event = %event_id, "Session capacity reached, message deferred.");
                     defer = true;
                     None
                 } else {
@@ -777,7 +777,7 @@ pub(crate) async fn bridge_with_media(
                     None
                 } else if let Err(error) = store.ensure_channel(&session_name, &selected_model) {
                     if error.kind() == std::io::ErrorKind::WouldBlock {
-                        warn!(session = %session_name, event = %event_id, "Session capacity reached; message deferred.");
+                        warn!(session = %session_name, event = %event_id, "Session capacity reached, message deferred.");
                         defer = true;
                         None
                     } else {
@@ -838,7 +838,7 @@ pub(crate) async fn bridge_with_media(
                             store.queue_with_roles(&session_name, message, roles.clone())
                         {
                             if error.kind() == std::io::ErrorKind::WouldBlock {
-                                warn!(session = %session_name, event = %event_id, "Session queue is full; message deferred.");
+                                warn!(session = %session_name, event = %event_id, "Session queue is full, message deferred.");
                                 defer = true;
                                 None
                             } else {
@@ -1251,7 +1251,7 @@ pub(crate) async fn bridge_with_media(
                         } else if !safe {
                             warn!(
                                 session = %session_name,
-                                "Failed turn contained a mutating tool; it will not be retried."
+                                "Failed turn contained a mutating tool, and it will not be retried."
                             );
                         }
 
@@ -1383,7 +1383,7 @@ pub(crate) async fn bridge_with_media(
             let Some(request) = request else {
                 warn!(
                     session = %session_name,
-                    "Channel delivery is uncertain; retry it only after checking the channel."
+                    "Channel delivery is uncertain, so retry it only after checking the channel."
                 );
                 continue;
             };
@@ -1496,7 +1496,7 @@ pub(crate) async fn recover(
             plugin = name,
             attempt = *failures,
             delay_seconds = delay.as_secs(),
-            "Plugin transport failed; retrying after backoff."
+            "Plugin transport failed, retrying after backoff."
         );
 
         tokio::select! {
@@ -1523,7 +1523,7 @@ pub(crate) async fn recover(
                 warn!(
                     plugin = name,
                     error = %diagnostic(error.to_string()),
-                    "Plugin restart failed; retrying."
+                    "Plugin restart failed, retrying."
                 );
             }
         }

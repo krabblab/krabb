@@ -67,15 +67,15 @@ impl Picker {
             .enumerate()
             .map(|(index, option)| {
                 if index == self.selected {
-                    format!("   {}", accent(&format!("› {option}"), color))
+                    accent(&format!("› {option}"), color)
                 } else {
-                    format!("     {option}")
+                    format!("  {option}")
                 }
             })
             .collect::<Vec<_>>();
 
         lines.push(String::new());
-        lines.push(format!("   {}", dim(HINT, color)));
+        lines.push(dim(HINT, color));
         lines
     }
 }
@@ -120,7 +120,7 @@ pub(crate) fn pick(options: &[&str], selected: usize) -> std::io::Result<Option<
 
             Outcome::Chosen(index) => {
                 clear(&mut output, options.len() + 2)?;
-                write!(output, "   {}\r\n", accent(&format!("› {}", options[index]), color))?;
+                write!(output, "{}\r\n", accent(&format!("› {}", options[index]), color))?;
                 output.flush()?;
                 return Ok(Some(index));
             }
@@ -200,12 +200,12 @@ mod tests {
         let picker = Picker { selected: 1, len: 2 };
         let lines = picker.lines(&["OpenAI", "Skip"], false);
 
-        assert_eq!(lines, ["     OpenAI", "   › Skip", "", "   ↑/↓ to move, Enter to choose"]);
+        assert_eq!(lines, ["  OpenAI", "› Skip", "", "↑/↓ to move, Enter to choose"]);
 
         let colored = picker.lines(&["OpenAI", "Skip"], true);
 
-        assert_eq!(colored[1], format!("   {}› Skip\x1b[0m", crate::style::accent_code()));
-        assert_eq!(colored[3], format!("   \x1b[2m{HINT}\x1b[0m"));
+        assert_eq!(colored[1], format!("{}› Skip\x1b[0m", crate::style::accent_code()));
+        assert_eq!(colored[3], format!("\x1b[2m{HINT}\x1b[0m"));
     }
 
     #[test]

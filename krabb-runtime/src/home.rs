@@ -203,7 +203,7 @@ pub(crate) fn initialize_home(root: &Path, force_config: bool) -> std::io::Resul
             if let Some(current) = load_metadata(&destination, LOCK_LIMIT)? {
                 if current != bytes {
                     return Err(std::io::Error::other(
-                        "Conflicting system instructions; reconcile workspace and data/system before starting.",
+                        "Conflicting system instructions, so reconcile workspace and data/system before starting.",
                     ));
                 }
             } else {

@@ -992,7 +992,7 @@ pub(crate) fn schedule_outcome_label(outcome: &str) -> &'static str {
         "continuing" => "failed, next occurrence remains scheduled",
         "cancelled" => "cancelled",
         "skipped" => "skipped",
-        _ => "failed; task paused",
+        _ => "failed, task paused",
     }
 }
 

@@ -75,7 +75,7 @@ impl Store {
 
         if budget.sequence != grant.sequence {
             return Err(std::io::Error::other(
-                "The execution account changed; review it before granting more allowance.",
+                "The execution account changed, so review it before granting more allowance.",
             ));
         }
 

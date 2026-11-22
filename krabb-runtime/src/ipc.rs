@@ -94,7 +94,7 @@ pub async fn serve(listener: TcpListener, state: Arc<State>) -> io::Result<()> {
             result = listener.accept() => {
                 let (stream, _) = result?;
                 let Ok(slot) = Arc::clone(&connections).try_acquire_owned() else {
-                    warn!("IPC client limit reached; connection rejected.");
+                    warn!("IPC client limit reached, connection rejected.");
                     continue;
                 };
 
@@ -178,7 +178,7 @@ async fn handle(
                 IpcResponse::fail(
                     request.id,
                     -32000,
-                    "All work slots are busy; task controls remain available.",
+                    "All work slots are busy, but task controls remain available.",
                 ),
             )
             .await;
@@ -2296,7 +2296,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             if let Err(error) = super::state::rename_worktree(&state.home, source, target) {
                 if let Err(rollback) = sessions.rename_session(target, source) {
                     return Err(io::Error::other(format!(
-                        "Could not rename the session worktree ({error}); session rollback failed ({rollback})."
+                        "Could not rename the session worktree ({error}), and session rollback failed ({rollback})."
                     )));
                 }
 

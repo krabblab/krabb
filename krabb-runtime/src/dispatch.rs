@@ -118,7 +118,7 @@ pub(crate) async fn tool_with_registry(
         return Ok(ToolResult::text(match method {
             "list" => format_schedule_list(&value),
             "remove" if value["cancel_requested"] == true => format!(
-                "Cancellation requested for schedule {}. Its current action will be interrupted; a side effect may already have happened.",
+                "Cancellation requested for schedule {}.\nIts current action will be interrupted, and a side effect may already have happened.",
                 args["id"]
             ),
             "remove" if value["deleted"] == true => format!("Schedule {} cancelled.", args["id"]),

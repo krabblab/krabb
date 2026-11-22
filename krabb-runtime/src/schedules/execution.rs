@@ -451,13 +451,13 @@ pub(crate) async fn run_scheduled_task(
                 info!(
                     schedule = task_id,
                     retry_at = finish_result["retry_at"].as_u64().unwrap_or_default(),
-                    "Scheduled agent task failed; a retry was queued."
+                    "Scheduled agent task failed, and a retry was queued."
                 );
             } else if status_text == "continuing" {
                 info!(
                     schedule = task_id,
                     next_run = finish_result["due"].as_u64().unwrap_or_default(),
-                    "Scheduled agent task failed; the occurrence was skipped and the next run remains active."
+                    "Scheduled agent task failed, so the occurrence was skipped, and the next run remains active."
                 );
             } else {
                 warn!(schedule = task_id, error = %diagnostic(sentence(text)), "Scheduled agent task paused.");
@@ -495,7 +495,7 @@ pub(crate) async fn retry_schedule_finish(
                         || "Scheduler returned no finish result.".into(),
                         |error| error.message
                     ),
-                    "Scheduled task result could not be saved; retrying the completion record."
+                    "Scheduled task result could not be saved, retrying the completion record."
                 );
             }
 
@@ -504,7 +504,7 @@ pub(crate) async fn retry_schedule_finish(
                     schedule = task_id,
                     plugin = scheduler_id,
                     error = %diagnostic(sentence(error.to_string())),
-                    "Scheduled task result could not be saved; retrying the completion record."
+                    "Scheduled task result could not be saved, retrying the completion record."
                 );
             }
 
@@ -740,7 +740,7 @@ pub(crate) fn scheduled_outcome(text: String) -> (bool, bool, bool, String) {
         true,
         false,
         format!(
-            "The agent did not confirm task completion; review the response before retrying. {}",
+            "The agent did not confirm task completion, so review the response before retrying. {}",
             sentence(text.trim())
         ),
     )
@@ -783,7 +783,7 @@ pub(crate) fn scheduled_error_outcome(
             true,
             false,
             format!(
-                "A mutating action may have completed; review it before retrying. {}",
+                "A mutating action may have completed, so review it before retrying. {}",
                 sentence(error)
             ),
         );
@@ -798,7 +798,7 @@ pub(crate) fn scheduled_tool_failure(error: &str, may_have_mutated: bool) -> Str
 
     if may_have_mutated {
         format!(
-            "PAUSED: A scheduled tool failed after a mutating action may have completed; review it before retrying. {error}"
+            "PAUSED: A scheduled tool failed after a mutating action may have completed, so review it before retrying. {error}"
         )
     } else {
         format!("RETRYABLE: A scheduled tool failed. {error}")
@@ -809,8 +809,8 @@ pub(crate) fn scheduled_result_heading(status: &str) -> &'static str {
     match status {
         "completed" => "Scheduled task completed",
         "skipped" => "Scheduled task skipped",
-        "retrying" => "Scheduled task failed; retry queued",
-        "continuing" => "Scheduled task failed; next run remains active",
+        "retrying" => "Scheduled task failed, retry queued",
+        "continuing" => "Scheduled task failed, next run remains active",
         "cancelled" => "Scheduled task cancelled",
         _ => "Scheduled task paused",
     }
@@ -1182,7 +1182,7 @@ pub(crate) async fn execute_scheduled_task(
             if may_have_mutated && reply.text.trim_start().starts_with("RETRYABLE:") =>
         {
             format!(
-                "PAUSED: A mutating action may already have completed; review it before retrying. {}",
+                "PAUSED: A mutating action may already have completed, so review it before retrying. {}",
                 scheduled_visible_text(&reply.text)
             )
         }
@@ -1194,7 +1194,7 @@ pub(crate) async fn execute_scheduled_task(
         }
 
         (Err(error), _) if may_have_mutated => format!(
-            "PAUSED: A mutating action may already have completed; review it before retrying. {}",
+            "PAUSED: A mutating action may already have completed, so review it before retrying. {}",
             sentence(error.to_string())
         ),
 

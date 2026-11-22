@@ -118,7 +118,9 @@ fn offers(response: Response, plugin: &Arc<Live>, generation: u64) -> BTreeMap<S
     });
 
     let Some(specs) = specs else {
-        warn!("Runner returned invalid operation declarations; extended tools are unavailable.");
+        warn!(
+            "Runner returned invalid operation declarations, and extended tools are unavailable."
+        );
         return offers;
     };
 
@@ -132,7 +134,7 @@ fn offers(response: Response, plugin: &Arc<Live>, generation: u64) -> BTreeMap<S
             || offers.insert(tool.name, offer).is_some()
         {
             warn!(
-                "Runner returned invalid or duplicate operations; extended tools are unavailable."
+                "Runner returned invalid or duplicate operations, and extended tools are unavailable."
             );
             return BTreeMap::new();
         }
@@ -185,13 +187,13 @@ pub(crate) async fn start(
         .get(&offer.plugin)
         .await
         .filter(|plugin| plugin.supports(Capability::Runner))
-        .ok_or("Runner is unavailable; the extended operation was not started.")?;
+        .ok_or("Runner is unavailable, and the extended operation was not started.")?;
 
     if offer.instance.upgrade().is_none_or(|previous| !Arc::ptr_eq(&previous, &plugin))
         || offer.generation != plugin.restart_generation()
     {
         return Err(
-            "Runner changed after discovery; refresh its capabilities before starting.".into()
+            "Runner changed after discovery, so refresh its capabilities before starting.".into()
         );
     }
 
@@ -219,7 +221,7 @@ pub(crate) async fn start(
             .reject_operation(&run.id, &start.id, previous)?;
 
         return Ok(ToolResult::text(format!(
-            "The runner refused the operation; nothing was started. {}",
+            "The runner refused the operation, and nothing was started. {}",
             krabb_core::failure::decode(error.clone())
         )));
     }

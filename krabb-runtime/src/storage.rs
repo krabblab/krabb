@@ -65,7 +65,9 @@ pub async fn maintain(home: PathBuf, stop: Arc<Stop>) {
         let result = tokio::task::spawn_blocking(move || retain(&home)).await;
 
         if !matches!(result, Ok(Ok(()))) {
-            warn!("Diagnostic and cache retention could not complete; it will retry next hour.");
+            warn!(
+                "Diagnostic and cache retention could not complete, and it will retry next hour."
+            );
         }
     }
 }

@@ -60,7 +60,7 @@ impl Keyring for Native {
         keyring::Entry::new("it.airscript.krabb", &format!("credentials:{id}"))
             .and_then(|entry| entry.set_secret(key))
             .map_err(|_| {
-                "Could not save the credential key in the keyring; unlock it and retry.".into()
+                "Could not save the credential key in the keyring, so unlock it and retry.".into()
             })
     }
 
@@ -76,7 +76,7 @@ impl Keyring for Native {
             Err(keyring::Error::NoEntry) => Ok(false),
 
             Err(_) => {
-                Err("Could not delete the keyring entry; unlock the keyring and retry.".into())
+                Err("Could not delete the keyring entry, so unlock the keyring and retry.".into())
             }
         }
     }
@@ -172,7 +172,7 @@ fn read_with(path: &Path, key_path: &Path, keyring: &impl Keyring) -> Result<Loa
 
 fn load_key(path: &Path) -> Result<Vec<u8>, Error> {
     let key = krabb_file::load(path, 32)?
-        .ok_or("Credential encryption key is missing; restore it from backup.")?;
+        .ok_or("Credential encryption key is missing, so restore it from backup.")?;
 
     validate_key(key)
 }
@@ -261,7 +261,7 @@ fn decrypt(envelope: &Envelope, key: &[u8]) -> Result<Secrets, Error> {
     let plaintext = cipher(key)?
         .open_in_place(Nonce::assume_unique_for_key(nonce), Aad::from(aad(envelope)), &mut bytes)
         .map_err(
-            |_| "Credential authentication failed; the file is damaged or the key is wrong.",
+            |_| "Credential authentication failed, because the file is damaged or the key is wrong.",
         )?;
 
     serde_json::from_slice(plaintext).map_err(|_| "Invalid credential contents.".into())

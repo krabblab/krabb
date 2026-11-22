@@ -66,7 +66,7 @@ impl Image {
                     if let Err(error) = remove(&path) {
                         warn!(
                             error = %diagnostic(error.to_string()),
-                            "A stale plugin image is in use; cleanup will retry at next start."
+                            "A stale plugin image is in use, and cleanup will retry at next start."
                         );
                     }
                 }
@@ -82,7 +82,7 @@ impl Image {
                 {
                     warn!(
                         error = %diagnostic(error.to_string()),
-                        "A stale plugin image is busy; cleanup will retry at next start."
+                        "A stale plugin image is busy, and cleanup will retry at next start."
                     );
                 }
 

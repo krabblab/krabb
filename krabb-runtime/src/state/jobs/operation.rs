@@ -335,7 +335,7 @@ impl Store {
 
                     _ if exceeded => concat!(
                         "The operation exceeded its allowance and has now settled. Its receipt ",
-                        "is saved; resume the task to continue from it, or cancel it."
+                        "is saved, so resume the task to continue from it, or cancel it."
                     ),
 
                     _ => concat!(
@@ -387,12 +387,12 @@ impl Store {
                 text: if cancel {
                     concat!(
                         "The external operation exceeded its allowance. Cancellation was ",
-                        "requested; the task waits for it to settle and keeps its handle."
+                        "requested, and the task waits for it to settle and keeps its handle."
                     )
                 } else {
                     concat!(
                         "The external operation exceeded its allowance and cannot be cancelled. ",
-                        "It may continue externally; the task keeps its handle until it settles."
+                        "It may continue externally, and the task keeps its handle until it settles."
                     )
                 }
                 .into(),

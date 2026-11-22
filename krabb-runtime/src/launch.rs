@@ -775,7 +775,7 @@ pub(crate) fn updates(
 
     match mode {
         "check" => info!(plugins = %changed.join(", "), "Plugin updates are available."),
-        "prompt" => info!("Plugin updates are available; run `krabb plugin update` to review."),
+        "prompt" => info!("Plugin updates are available, so run `krabb plugin update` to review."),
         "auto" => update_at(root, false, false)?,
         _ => unreachable!("update mode was validated above"),
     }

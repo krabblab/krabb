@@ -140,7 +140,7 @@ fn source_from(version: &str, base: Option<&str>, os: &str, arch: &str) -> Resul
     }
 
     let (target, extension) = target(os, arch).ok_or_else(|| {
-        format!("Krabb releases are not published for {os} ({arch}); build Krabb from source.")
+        format!("Krabb releases are not published for {os} ({arch}), so build Krabb from source.")
     })?;
 
     let base = base.map_or_else(|| format!("{BASE}/v{version}"), str::to_owned);

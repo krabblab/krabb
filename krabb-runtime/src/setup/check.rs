@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 pub(super) const METHOD: &str = "check";
 const LIMIT: Duration = Duration::from_secs(20);
 const DETAIL: usize = 200;
-const UNAVAILABLE: &str = "The connection test could not run; the settings were saved anyway.";
+const UNAVAILABLE: &str = "The connection test could not run, and the settings were saved anyway.";
 
 /// Reports `passed`, `failed`, or `skipped`; plugin failures never fail the setup.
 pub(super) async fn run(root: &Path, id: &str) -> Value {

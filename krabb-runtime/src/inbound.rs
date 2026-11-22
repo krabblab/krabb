@@ -46,7 +46,7 @@ pub(crate) async fn resolve_media(
         let request = Request::call(*call, "media", serde_json::json!({"uri": uri}));
         *call = (*call).saturating_add(1);
         let Ok(response) = channel.call(request).await else {
-            warn!(channel = channel_id, "Media could not be resolved; retaining its reference.");
+            warn!(channel = channel_id, "Media could not be resolved, retaining its reference.");
             continue;
         };
 
@@ -55,7 +55,7 @@ pub(crate) async fn resolve_media(
             .and_then(|value| value["uri"].as_str().map(str::to_owned))
             .filter(|value| value.starts_with("file://"))
         else {
-            warn!(channel = channel_id, "Media could not be resolved; retaining its reference.");
+            warn!(channel = channel_id, "Media could not be resolved, retaining its reference.");
             continue;
         };
 
