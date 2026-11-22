@@ -36,15 +36,16 @@ pub(crate) fn spec() -> ToolSpec {
 }
 
 /// Whether this conversation can receive an owner's approval for a settings change. The tool
-/// does not need workspace tools, because turning them on is its most common use.
+/// does not need workspace tools, because turning them on is its most common use. Resumed
+/// tasks and schedules cannot show an approval prompt, so only live conversations get it.
 pub(crate) fn offered(
     config: &Config,
     source: &sharing::Principal,
     approval: ApprovalMode,
-    interactive: bool,
+    conversation: bool,
     isolated: bool,
 ) -> bool {
-    if approval == ApprovalMode::Off || !interactive || isolated {
+    if approval == ApprovalMode::Off || !conversation || isolated {
         return false;
     }
 

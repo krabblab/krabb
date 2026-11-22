@@ -1172,7 +1172,7 @@ pub(crate) async fn execute_tool_with_registry(
             &plugins.config,
             source,
             approval_mode,
-            registry.execution.interactive(),
+            registry.execution == state::SessionKind::Conversation,
             workspace.is_some_and(worktree::isolated),
         ) {
             return Err("Settings cannot be changed from this conversation.".into());

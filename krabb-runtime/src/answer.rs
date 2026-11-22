@@ -196,6 +196,7 @@ pub(crate) async fn answer(
 
     let cleanup = registry.cleanup.clone();
     let restart = Arc::clone(&registry.restart);
+    let task = Arc::clone(&registry.task);
 
     let mut result = answer_with_registry(
         provider,
@@ -290,7 +291,9 @@ pub(crate) async fn answer(
         }
     }
 
-    let restart = restart.load(std::sync::atomic::Ordering::Acquire);
+    // A turn that handed its work to a background task must not restart under that task.
+    let restart =
+        restart.load(std::sync::atomic::Ordering::Acquire) && task.handoff.borrow().is_none();
 
     result.map(|model| jobs::Answer { model, foreground, restart })
 }
@@ -398,7 +401,7 @@ pub(crate) async fn answer_with_registry(
             &plugins.config,
             source,
             approval_mode,
-            registry.execution.interactive(),
+            registry.execution == state::SessionKind::Conversation,
             isolated,
         )
     });
