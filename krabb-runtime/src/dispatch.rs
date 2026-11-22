@@ -990,7 +990,14 @@ pub(crate) async fn execute_tool_with_registry(
         (true, ApprovalMode::Prompt) => {
             let arguments = approval_arguments(name, &args)?;
 
-            let text = approval_text(name, &args);
+            let text = if name == settings::TOOL {
+                let source =
+                    registry.source.as_ref().ok_or("This conversation has no settings section.")?;
+
+                settings::describe(source, &args)?
+            } else {
+                approval_text(name, &args)
+            };
 
             if text.len() > APPROVAL_TEXT_LIMIT {
                 return Err(concat!(
@@ -1041,7 +1048,11 @@ pub(crate) async fn execute_tool_with_registry(
             } else {
                 let challenge = approvals.lock().await.issue_in(target, approval_workspace)?;
 
-                if let Some(run) = &registry.run {
+                // A settings change is never saved to resume later, so no stored approval can
+                // grant authority after the conversation has moved on.
+                let saved_run = registry.run.as_ref().filter(|_| name != settings::TOOL);
+
+                if let Some(run) = saved_run {
                     let saved = sessions
                         .lock()
                         .map_err(|_| state::POISONED)?
@@ -1074,7 +1085,7 @@ pub(crate) async fn execute_tool_with_registry(
 
                 let answer = if delivered { challenge.answer.await.ok() } else { None };
 
-                match (answer, &registry.run) {
+                match (answer, saved_run) {
                     (Some(approved), Some(run)) => {
                         sessions.lock().map_err(|_| state::POISONED)?.withdraw_approval(run, id)?;
 
@@ -1167,7 +1178,7 @@ pub(crate) async fn execute_tool_with_registry(
             return Err("Settings cannot be changed from this conversation.".into());
         }
 
-        return Ok(ToolResult::text(settings::apply(&home(), source, &args)?));
+        return Ok(ToolResult::text(settings::apply(&home(), source, session, &args)?));
     }
 
     if name == slash::TOOL {

@@ -812,7 +812,10 @@ async fn session_answer(
         }
     };
 
-    write_frame(output, response).await
+    let written = write_frame(output, response).await;
+
+    super::settings::restart_after(id);
+    written
 }
 
 async fn session_compact(

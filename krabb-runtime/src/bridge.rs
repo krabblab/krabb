@@ -1440,6 +1440,7 @@ pub(crate) async fn bridge_with_media(
 
             status_if_present(&sessions, &session_name, "idle")?;
             slash::settle(&mut *sessions.lock().map_err(|_| state::POISONED)?, &session_name)?;
+            settings::restart_after(&session_name);
         }
     }
 }

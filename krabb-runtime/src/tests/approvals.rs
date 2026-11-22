@@ -676,3 +676,71 @@ for line in sys.stdin:
     tools.lock().await.take().unwrap().stop().await.unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn settings_changes_always_ask_and_show_the_exact_change() {
+    let plugins = Plugins::default();
+    let sessions = Arc::new(Mutex::new(state::Store::default()));
+
+    sessions.lock().unwrap().ensure("session", "test").unwrap();
+
+    let approvals = Arc::new(AsyncMutex::new(approval::Gate::new().unwrap()));
+    let mut registry = ToolRegistry::default();
+
+    registry.specs.push(settings::spec());
+    registry.source = Some(sharing::Principal::Channel("telegram".into()));
+
+    let args = serde_json::json!({"setting": "shell", "value": "on"});
+
+    for _ in 0..2 {
+        let (notices, mut events) = tokio::sync::mpsc::channel(1);
+        let mut failed = None;
+
+        let operation = execute_tool_with_registry(
+            &plugins,
+            &registry,
+            "test-turn",
+            1,
+            settings::TOOL,
+            args.clone(),
+            "fixture",
+            "test",
+            ApprovalMode::Auto,
+            approvals.clone(),
+            "telegram",
+            "7",
+            None,
+            "session",
+            &sessions,
+            None,
+            false,
+            false,
+            false,
+            notices,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            &mut failed,
+            None,
+            None,
+            0,
+        );
+
+        let review = async {
+            let Some(StreamNotice::Approval { text, deny, .. }) = events.recv().await else {
+                panic!("A settings change ran without asking for approval.");
+            };
+
+            assert_eq!(text, "Set channels.telegram.shell = true in Krabb's config.toml.");
+
+            let denied = approvals.lock().await.resolve(&deny, "telegram", "7", None, true);
+
+            assert_eq!(denied, Some(false));
+        };
+
+        let (result, ()) = tokio::join!(operation, review);
+
+        assert_eq!(
+            dispatch::tool_result_text(&result.unwrap()),
+            "The request was denied. No changes were made."
+        );
+    }
+}

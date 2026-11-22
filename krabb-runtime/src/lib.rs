@@ -203,7 +203,9 @@ const SCHEDULE_CALL_RANGE: u64 = 1 << 20;
 type WorkspaceLocks = Arc<AsyncMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>;
 const COMMAND_OUTPUT: usize = 2 * 1024 * 1024;
 /// Task tools the host owns; plugins may not register these names.
-const HOST_TOOLS: [&str; 5] = ["task", "job", "checkpoint", jobs::input::NAME, slash::TOOL];
+const HOST_TOOLS: [&str; 6] =
+    ["task", "job", "checkpoint", jobs::input::NAME, slash::TOOL, settings::TOOL];
+
 const ACK_ATTEMPTS: u32 = 3;
 const TOOL_CALL_PROTOCOL_MINOR: u16 = 1;
 type PluginError = Box<dyn std::error::Error + Send + Sync>;
@@ -2312,10 +2314,14 @@ async fn config_command(
     Ok(())
 }
 
+fn service_managed() -> Result<bool, PluginError> {
+    Ok(service_path().is_file() && service_manager_state()? == ServiceState::Active)
+}
+
 /// Restarts the daemon through its service manager, which starts the new process even when
 /// the caller is the daemon itself. Returns false when no active service manages it.
 fn restart_service() -> Result<bool, PluginError> {
-    if !(service_path().is_file() && service_manager_state()? == ServiceState::Active) {
+    if !service_managed()? {
         return Ok(false);
     }
 

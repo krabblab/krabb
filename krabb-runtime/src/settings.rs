@@ -2,7 +2,9 @@ use super::*;
 
 pub(crate) const TOOL: &str = "settings";
 
-const RESTART_DELAY: Duration = Duration::from_secs(3);
+/// The session whose approved change asked for a restart, which waits until that session's
+/// reply is delivered.
+static RESTART: Mutex<Option<String>> = Mutex::new(None);
 
 /// The settings a conversation may change in its own section. Each one only widens or narrows
 /// what this conversation can do, and the owner approves every change.
@@ -83,18 +85,41 @@ fn value(setting: &str, value: &str) -> Option<toml_edit::Value> {
     }
 }
 
-/// Saves an approved change, and restarts the daemon only when the request asked for it and a
-/// service manager can start the new process.
-pub(crate) fn apply(
-    root: &Path,
+/// The exact change a request makes, shown in its approval prompt; rejects an invalid request
+/// before anyone is asked to approve it.
+pub(crate) fn describe(
     source: &sharing::Principal,
     args: &serde_json::Value,
 ) -> Result<String, PluginError> {
+    let (key, value) = change(source, args)?;
+
+    let restart = if args["restart"] == true { ", then restart the daemon" } else { "" };
+
+    Ok(format!("Set {key} = {value} in Krabb's config.toml{restart}."))
+}
+
+fn change(
+    source: &sharing::Principal,
+    args: &serde_json::Value,
+) -> Result<(String, toml_edit::Value), PluginError> {
     let setting = args["setting"].as_str().unwrap_or_default();
     let key = key(source, setting).ok_or("This setting cannot be changed from a conversation.")?;
 
     let value = value(setting, args["value"].as_str().unwrap_or_default())
         .ok_or("This value is not valid for the setting.")?;
+
+    Ok((key, value))
+}
+
+/// Saves an approved change. A requested restart waits for SESSION's reply, and needs a
+/// service manager to start the new process.
+pub(crate) fn apply(
+    root: &Path,
+    source: &sharing::Principal,
+    session: &str,
+    args: &serde_json::Value,
+) -> Result<String, PluginError> {
+    let (key, value) = change(source, args)?;
 
     save_setting(root, &key, value.clone())?;
 
@@ -107,21 +132,35 @@ pub(crate) fn apply(
         ));
     }
 
-    if !(service_path().is_file() && service_manager_state()? == ServiceState::Active) {
+    if !service_managed()? {
         return Ok(format!(
             "{saved} No service manages the daemon, so restart it to apply the change."
         ));
     }
 
-    tokio::spawn(async {
-        tokio::time::sleep(RESTART_DELAY).await;
+    *RESTART.lock().map_err(|_| "The restart request lock is poisoned.")? = Some(session.into());
 
+    Ok(format!("{saved} The daemon restarts after this reply to apply it."))
+}
+
+/// Restarts the daemon once SESSION's reply is delivered, if its approved change asked for it.
+pub(crate) fn restart_after(session: &str) {
+    let Ok(mut requested) = RESTART.lock() else {
+        return;
+    };
+
+    if requested.as_deref() != Some(session) {
+        return;
+    }
+
+    *requested = None;
+    drop(requested);
+
+    tokio::task::spawn_blocking(|| {
         if let Err(error) = restart_service() {
             warn!(error = %error, "Could not restart the daemon after a settings change.");
         }
     });
-
-    Ok(format!("{saved} The daemon restarts in a few seconds to apply it."))
 }
 
 #[cfg(test)]
@@ -176,6 +215,32 @@ mod tests {
     }
 
     #[test]
+    fn shows_the_exact_change_before_approval() {
+        let telegram = sharing::Principal::Channel("telegram".into());
+        let shell = serde_json::json!({"setting": "shell", "value": "on", "restart": true});
+
+        assert_eq!(
+            describe(&telegram, &shell).unwrap(),
+            "Set channels.telegram.shell = true in Krabb's config.toml, then restart the daemon."
+        );
+
+        let invalid = serde_json::json!({"setting": "shell", "value": "prompt"});
+
+        assert!(describe(&telegram, &invalid).is_err());
+    }
+
+    #[test]
+    fn restarts_only_after_the_requesting_sessions_reply() {
+        *RESTART.lock().unwrap() = Some("telegram-7".into());
+
+        restart_after("tui-main");
+
+        assert_eq!(RESTART.lock().unwrap().as_deref(), Some("telegram-7"));
+
+        *RESTART.lock().unwrap() = None;
+    }
+
+    #[test]
     fn saves_the_change_and_leaves_the_restart_to_the_person() {
         let root = std::env::temp_dir().join(format!("krabb-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -189,7 +254,7 @@ mod tests {
 
         let telegram = sharing::Principal::Channel("telegram".into());
         let args = serde_json::json!({"setting": "tools", "value": "on"});
-        let reply = apply(&root, &telegram, &args).unwrap();
+        let reply = apply(&root, &telegram, "telegram-7", &args).unwrap();
 
         assert!(reply.starts_with("Saved channels.telegram.tools = true."));
         assert!(reply.contains("krabb service restart"));
@@ -201,7 +266,7 @@ mod tests {
 
         let owner = serde_json::json!({"setting": "owner", "value": "on"});
 
-        assert!(apply(&root, &telegram, &owner).is_err());
+        assert!(apply(&root, &telegram, "telegram-7", &owner).is_err());
 
         std::fs::remove_dir_all(root).unwrap();
     }

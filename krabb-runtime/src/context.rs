@@ -140,9 +140,7 @@ impl Setup<'_> {
 
     fn tools_blocker(&self, key: &str) -> Option<String> {
         if !self.grants.tools {
-            return Some(format!(
-                "`tools` is off in [{key}]. Fix: `krabb config set {key}.tools=true --force`."
-            ));
+            return Some(tools_off(key));
         }
 
         if self.approval == ApprovalMode::Off {
@@ -152,9 +150,7 @@ impl Setup<'_> {
         }
 
         if !self.grants.sender {
-            return Some(format!(
-                "[{key}] does not allow this sender. Fix: add the sender to `member` in [{key}]."
-            ));
+            return Some(sender_blocked(key));
         }
 
         None
@@ -195,15 +191,11 @@ impl Setup<'_> {
         }
 
         if !self.grants.tools {
-            return Some(format!(
-                "`tools` is off in [{key}]. Fix: `krabb config set {key}.tools=true --force`."
-            ));
+            return Some(tools_off(key));
         }
 
         if !self.grants.sender {
-            return Some(format!(
-                "[{key}] does not allow this sender. Fix: add the sender to `member` in [{key}]."
-            ));
+            return Some(sender_blocked(key));
         }
 
         None
@@ -244,6 +236,14 @@ impl Setup<'_> {
 
         listed.join("; ")
     }
+}
+
+fn tools_off(key: &str) -> String {
+    format!("`tools` is off in [{key}]. Fix: `krabb config set {key}.tools=true --force`.")
+}
+
+fn sender_blocked(key: &str) -> String {
+    format!("[{key}] does not allow this sender. Fix: add the sender to `member` in [{key}].")
 }
 
 fn status(enabled: bool, blocker: Option<String>) -> String {
