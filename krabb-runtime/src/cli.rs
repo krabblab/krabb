@@ -423,9 +423,11 @@ pub(crate) struct InitArgs {
     pub(crate) yes: bool,
 }
 
-/// Answers given as flags are not asked again; any left out are asked interactively.
+/// Wishes come as free text or flags; with neither, a terminal asks for them.
 #[derive(Debug, Default, Args)]
 pub(crate) struct HatchArgs {
+    #[arg(help = "The change you want, in your own words.")]
+    pub(crate) wishes: Vec<String>,
     #[arg(long, help = "Name your Krabb uses for itself.")]
     pub(crate) name: Option<String>,
     #[arg(long, help = "What your Krabb should call you.")]
@@ -442,6 +444,8 @@ pub(crate) struct HatchArgs {
     pub(crate) language: Option<String>,
     #[arg(long, help = "Anything else it should know about itself or you.")]
     pub(crate) notes: Option<String>,
+    #[arg(long, conflicts_with = "wishes", help = "Restore the previous personality.")]
+    pub(crate) undo: bool,
     #[arg(short, long, help = "Save without the preview and confirmation.")]
     pub(crate) yes: bool,
 }

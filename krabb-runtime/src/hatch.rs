@@ -1,129 +1,105 @@
-//! Personalizes a Krabb: a short interview becomes its KRAB.md.
+//! Personalizes a Krabb: the model rewrites KRAB.md and KLAW.md from its owner's wishes.
 //!
-//! Answers are kept as the person wrote them. The model reads them as instructions, so no
-//! answer is parsed for keywords and any language works.
+//! Wishes stay in the owner's own words and language. The model interprets them, so the host
+//! never parses them for keywords; it only checks the shape and size of what comes back.
 
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use krabb_core::types::{Content, Message, Role};
 
 use crate::cli::HatchArgs;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-const NAME_LIMIT: usize = 40;
+/// Each file stays well inside its share of the instruction context.
+const FILE_LIMIT: usize = crate::CONTEXT_LIMIT / 2 - 128;
+const SUMMARY_LIMIT: usize = 600;
 const ANSWER_LIMIT: usize = 400;
-const DEFAULT_NAME: &str = "Krabb";
-const BACKUP: &str = "KRAB.previous.md";
+pub(crate) const WISH_LIMIT: usize = 2000;
+const FILES: [(&str, &str); 2] = [("KRAB.md", "KRAB.previous.md"), ("KLAW.md", "KLAW.previous.md")];
+const MARKERS: [&str; 3] = ["=== KRAB.md ===", "=== KLAW.md ===", "=== SUMMARY ==="];
 
-/// One interview question, where its answer goes in KRAB.md, and its starting answer.
-struct Question {
-    heading: &'static str,
-    prompt: &'static str,
-    example: &'static str,
-    starter: Option<&'static str>,
+/// Explains what hatching needs when no intelligence provider is ready.
+pub(crate) fn no_provider(directory: &Path) -> String {
+    format!(
+        "Hatching needs an intelligence provider, because your Krabb's model writes its \
+         personality from your answers. Set one up first with `krabb plugin install openai` \
+         and `krabb plugin setup openai`, or use `ollama` for a local model. Meanwhile, you can \
+         edit your Krabb by hand in {}: KRAB.md says who it is, and KLAW.md says how it works.",
+        directory.display(),
+    )
 }
 
-const QUESTIONS: [Question; 7] = [
+/// One interview question, labelled for the model.
+struct Question {
+    label: &'static str,
+    prompt: &'static str,
+    example: &'static str,
+}
+
+const QUESTIONS: [Question; 8] = [
+    Question { label: "Name", prompt: "What should your Krabb be called?", example: "Pinch" },
+    Question { label: "Call the owner", prompt: "What should it call you?", example: "Sam" },
     Question {
-        heading: "How To Address The Person You Work With",
-        prompt: "What should it call you?",
-        example: "Sam",
-        starter: None,
-    },
-    Question {
-        heading: "Personality",
+        label: "Personality",
         prompt: "Describe its personality.",
         example: "warm, curious, a little playful, never sarcastic",
-        starter: Some("Warm, curious, and steady: a capable partner, not a servant."),
     },
     Question {
-        heading: "Tone Of Voice",
+        label: "Tone of voice",
         prompt: "How should it sound?",
         example: "plain and direct, like a trusted colleague",
-        starter: Some("Plain and direct; friendly without filler."),
     },
     Question {
-        heading: "Writing",
+        label: "Writing",
         prompt: "How should it write replies?",
         example: "lead with the answer, short paragraphs, no emoji",
-        starter: Some(
-            "Lead with the answer. Keep replies short, and use lists or code blocks only when \
-             they help.",
-        ),
     },
     Question {
-        heading: "Way Of Working",
+        label: "Way of working",
         prompt: "How should it get things done?",
         example: "act on clear requests, ask before anything irreversible",
-        starter: Some(
-            "Take requested steps without needless questions; ask when ambiguity changes the \
-             outcome.",
-        ),
     },
     Question {
-        heading: "Language",
+        label: "Language",
         prompt: "Which language should it use?",
         example: "reply in the language I write in",
-        starter: Some("Reply in the language the person writes in."),
     },
     Question {
-        heading: "Anything Else",
+        label: "Anything else",
         prompt: "Anything else it should know about itself or you?",
         example: "I build embedded firmware and prefer Rust examples",
-        starter: None,
     },
 ];
 
-/// A Krabb's personality: a name plus one optional answer per question.
+/// The two instruction files, as text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Profile {
-    pub(crate) name: Option<String>,
-    pub(crate) answers: [Option<String>; QUESTIONS.len()],
+pub(crate) struct Files {
+    pub(crate) krab: String,
+    pub(crate) klaw: String,
 }
 
-impl Profile {
-    pub(crate) fn from_args(args: &HatchArgs) -> Result<Self, String> {
-        let given = [
-            &args.call,
-            &args.personality,
-            &args.voice,
-            &args.writing,
-            &args.work,
-            &args.language,
-            &args.notes,
-        ];
-
-        let mut profile =
-            Self { name: clean(args.name.as_deref(), NAME_LIMIT)?, ..Self::default() };
-
-        for (slot, value) in profile.answers.iter_mut().zip(given) {
-            *slot = clean(value.as_deref(), ANSWER_LIMIT)?;
-        }
-
-        Ok(profile)
+impl Files {
+    fn texts(&self) -> [&str; 2] {
+        [&self.krab, &self.klaw]
     }
+}
 
-    /// Fills every unanswered question with its starting answer.
-    pub(crate) fn completed(mut self) -> Self {
-        for (question, slot) in QUESTIONS.iter().zip(self.answers.iter_mut()) {
-            if slot.is_none() {
-                *slot = question.starter.map(str::to_owned);
-            }
-        }
-
-        self
-    }
-
-    pub(crate) fn name(&self) -> &str {
-        self.name.as_deref().unwrap_or(DEFAULT_NAME)
-    }
+/// What the model proposed: new files and a summary for the owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Draft {
+    pub(crate) files: Files,
+    pub(crate) summary: String,
 }
 
 /// Trims an answer and rejects one that is too long or spans several lines.
-fn clean(value: Option<&str>, limit: usize) -> Result<Option<String>, String> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+fn clean(value: &str, limit: usize) -> Result<Option<String>, String> {
+    let value = value.trim();
+
+    if value.is_empty() {
         return Ok(None);
-    };
+    }
 
     if value.chars().any(char::is_control) {
         return Err("Each answer must be a single line of text.".into());
@@ -136,67 +112,229 @@ fn clean(value: Option<&str>, limit: usize) -> Result<Option<String>, String> {
     Ok(Some(value.to_owned()))
 }
 
-/// Writes PROFILE as KRAB.md, the instructions Krabb reads on every turn.
-pub(crate) fn render(profile: &Profile) -> String {
-    let name = profile.name();
+/// Joins labelled answers and free text into the wishes the model reads.
+fn wishes(answers: &[Option<String>], free: &str) -> Option<String> {
+    let mut lines = QUESTIONS
+        .iter()
+        .zip(answers)
+        .filter_map(|(question, answer)| {
+            answer.as_ref().map(|answer| format!("- {}: {answer}", question.label))
+        })
+        .collect::<Vec<_>>();
 
-    let mut text = format!(
-        "# Personality Instructions\n\n## Name\n\nYou are {name}. Use this name when you \
-         introduce yourself.\n"
+    let free = free.trim();
+
+    if !free.is_empty() {
+        lines.push(free.to_owned());
+    }
+
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// Reads the current files; a missing, linked, or unreadable file reads as empty.
+pub(crate) fn read(directory: &Path) -> Files {
+    let load = |name: &str| match existing(&directory.join(name)) {
+        Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+        _ => String::new(),
+    };
+
+    Files { krab: load(FILES[0].0), klaw: load(FILES[1].0) }
+}
+
+/// Builds the model request that turns CURRENT and WISHES into new files.
+pub(crate) fn request(session: &str, current: &Files, wishes: &str) -> Vec<Message> {
+    let shown = |text: &str| {
+        if text.trim().is_empty() { "(empty)".to_owned() } else { text.trim_end().to_owned() }
+    };
+
+    let material = format!(
+        "Current KRAB.md:\n<<<\n{}\n>>>\n\nCurrent KLAW.md:\n<<<\n{}\n>>>\n\nThe owner's \
+         wishes:\n<<<\n{wishes}\n>>>",
+        shown(&current.krab),
+        shown(&current.klaw),
     );
 
-    for (question, answer) in QUESTIONS.iter().zip(&profile.answers) {
-        if let Some(answer) = answer {
-            text.push_str(&format!("\n## {}\n\n{answer}\n", question.heading));
+    let message = |id: &str, role, text: String| Message {
+        id: id.into(),
+        session: session.into(),
+        role,
+        sender: None,
+        content: vec![Content::Text { text }],
+    };
+
+    vec![
+        message("hatch-instructions", Role::System, crate::templates::HATCH.into()),
+        message("hatch-wishes", Role::User, material),
+    ]
+}
+
+/// Checks the model's reply and splits it into files and a summary.
+pub(crate) fn parse(reply: &str) -> Result<Draft, String> {
+    let mut parts = Vec::with_capacity(MARKERS.len());
+    let mut rest = reply;
+
+    for (index, marker) in MARKERS.iter().enumerate() {
+        let start = rest.find(marker).ok_or_else(|| format!("The draft is missing {marker}."))?;
+        let after = &rest[start + marker.len()..];
+        let end = MARKERS.get(index + 1).and_then(|next| after.find(next)).unwrap_or(after.len());
+
+        parts.push(unfence(&after[..end]));
+        rest = &after[end..];
+    }
+
+    let summary = parts.pop().unwrap_or_default();
+    let klaw = parts.pop().unwrap_or_default();
+    let krab = parts.pop().unwrap_or_default();
+
+    for (text, heading, name) in [
+        (&krab, "# Personality Instructions", "KRAB.md"),
+        (&klaw, "# Behavioral Instructions", "KLAW.md"),
+    ] {
+        if !text.starts_with(heading) {
+            return Err(format!("The draft's {name} must start with {heading}."));
+        }
+
+        if text.len() > FILE_LIMIT {
+            return Err(format!("The draft's {name} is longer than {FILE_LIMIT} bytes."));
         }
     }
 
-    text
-}
+    let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
 
-/// Asks for every answer PROFILE lacks, on OUTPUT, reading replies from INPUT. An empty
-/// reply keeps the starting answer, if the question has one.
-pub(crate) fn interview(
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    mut profile: Profile,
-) -> Result<Profile, Error> {
-    writeln!(
-        output,
-        "Let's hatch your Krabb. Answer in your own words and in any language. Press Enter to \
-         keep the default or skip a question.\n"
-    )?;
-
-    if profile.name.is_none() {
-        let question = format!("What should your Krabb be called? (default: {DEFAULT_NAME})");
-
-        profile.name = ask(input, output, &question, NAME_LIMIT)?;
+    if summary.is_empty() || summary.chars().count() > SUMMARY_LIMIT {
+        return Err("The draft's summary is missing or too long.".into());
     }
 
-    for (question, slot) in QUESTIONS.iter().zip(profile.answers.iter_mut()) {
-        if slot.is_some() {
+    Ok(Draft { files: Files { krab: krab + "\n", klaw: klaw + "\n" }, summary })
+}
+
+/// Trims a part and drops a code fence the model may have wrapped around it.
+fn unfence(text: &str) -> String {
+    let text = text.trim();
+    let text =
+        text.strip_prefix("```markdown").or_else(|| text.strip_prefix("```")).unwrap_or(text);
+    let text = text.strip_suffix("```").unwrap_or(text);
+
+    text.trim().to_owned()
+}
+
+/// Saves FILES in DIRECTORY. When anything changes, both files are first backed up as they
+/// were, so the backups always hold the state before the latest change; a missing file is
+/// backed up as empty, which reads as absent. Returns whether anything changed. Every path
+/// is checked before anything is written, and links or other non-files are refused.
+pub(crate) fn save(directory: &Path, files: &Files) -> std::io::Result<bool> {
+    let mut current = Vec::with_capacity(FILES.len());
+
+    for (name, backup) in FILES {
+        existing(&directory.join(backup))?;
+        current.push(existing(&directory.join(name))?.unwrap_or_default());
+    }
+
+    let texts = files.texts();
+
+    if current.iter().zip(texts).all(|(previous, text)| previous == text.as_bytes()) {
+        return Ok(false);
+    }
+
+    for ((_, backup), previous) in FILES.iter().zip(&current) {
+        krabb_file::save(directory.join(backup), previous)?;
+    }
+
+    for ((name, _), (previous, text)) in FILES.iter().zip(current.iter().zip(texts)) {
+        if previous != text.as_bytes() {
+            krabb_file::save(directory.join(name), text)?;
+        }
+    }
+
+    Ok(true)
+}
+
+/// Swaps both files with their backups, so a second undo restores the newer version.
+/// Returns the files whose text changed.
+pub(crate) fn undo(directory: &Path) -> std::io::Result<Vec<&'static str>> {
+    let mut pairs = Vec::with_capacity(FILES.len());
+
+    for (name, backup) in FILES {
+        let (path, backup) = (directory.join(name), directory.join(backup));
+        let current = existing(&path)?.unwrap_or_default();
+
+        let Some(previous) = existing(&backup)? else {
+            return Ok(Vec::new());
+        };
+
+        pairs.push((name, path, backup, current, previous));
+    }
+
+    let mut restored = Vec::new();
+
+    for (name, path, backup, current, previous) in pairs {
+        if current == previous {
             continue;
         }
 
-        let hint = question.starter.map_or_else(
-            || format!("for example: {}", question.example),
-            |starter| format!("default: {starter}"),
-        );
-
-        *slot = ask(input, output, &format!("{} ({hint})", question.prompt), ANSWER_LIMIT)?;
+        krabb_file::save(&backup, &current)?;
+        krabb_file::save(&path, &previous)?;
+        restored.push(name);
     }
 
-    Ok(profile)
+    Ok(restored)
+}
+
+/// Reads PATH if it is a regular file, and refuses a link or any other kind of entry.
+fn existing(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Instruction file must be a regular file: {}.", path.display()),
+            ))
+        }
+
+        Ok(_) => std::fs::read(path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether DIRECTORY holds a personality other than the one `init` writes.
+pub(crate) fn hatched(directory: &Path) -> bool {
+    let current = read(directory);
+
+    current.krab != crate::templates::KRAB || current.klaw != crate::templates::KLAW
+}
+
+/// Asks each question on OUTPUT, reading replies from INPUT. An empty reply skips it.
+pub(crate) fn interview(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    rerun: bool,
+) -> Result<Vec<Option<String>>, Error> {
+    let intro = if rerun {
+        "Your Krabb already has a personality. Answer only what you want to change; press \
+         Enter to keep the rest as it is."
+    } else {
+        "Let's hatch your Krabb. Answer in your own words and in any language; press Enter to \
+         skip a question."
+    };
+
+    writeln!(output, "{intro}\n")?;
+
+    let mut answers = Vec::with_capacity(QUESTIONS.len());
+
+    for question in &QUESTIONS {
+        answers.push(ask(input, output, question)?);
+    }
+
+    Ok(answers)
 }
 
 fn ask(
     input: &mut impl BufRead,
     output: &mut impl Write,
-    question: &str,
-    limit: usize,
+    question: &Question,
 ) -> Result<Option<String>, Error> {
     loop {
-        write!(output, "{question}\n> ")?;
+        write!(output, "{} (for example: {})\n> ", question.prompt, question.example)?;
         output.flush()?;
 
         let mut line = String::new();
@@ -206,7 +344,7 @@ fn ask(
             return Ok(None);
         }
 
-        match clean(Some(line.trim_end_matches(['\r', '\n'])), limit) {
+        match clean(&line, ANSWER_LIMIT) {
             Ok(answer) => {
                 writeln!(output)?;
                 return Ok(answer);
@@ -217,96 +355,137 @@ fn ask(
     }
 }
 
-/// Saves TEXT as the KRAB.md in DIRECTORY and returns the backup of a different previous
-/// version, if any. Refuses to follow a symbolic link or to replace anything but a file.
-pub(crate) fn save(directory: &Path, text: &str) -> std::io::Result<Option<PathBuf>> {
-    let path = directory.join("KRAB.md");
-
-    let previous = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("KRAB.md must be a regular file: {}.", path.display()),
-            ));
-        }
-
-        Ok(_) => Some(std::fs::read(&path)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-
-    let backup = match previous {
-        Some(bytes) if bytes != text.as_bytes() => {
-            let backup = directory.join(BACKUP);
-
-            krabb_file::save(&backup, &bytes)?;
-            Some(backup)
-        }
-
-        _ => None,
-    };
-
-    krabb_file::save(&path, text)?;
-
-    Ok(backup)
-}
-
 fn interactive() -> bool {
     std::env::var_os("CI").is_none()
         && std::io::stdin().is_terminal()
         && std::io::stderr().is_terminal()
 }
 
-pub(crate) fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), Error> {
+pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), Error> {
     let directory = root.join("data/system");
 
     if !directory.is_dir() {
         return Err("Krabb is not initialized. Run `krabb init` first.".into());
     }
 
-    let mut profile = Profile::from_args(&args)?;
-
-    if !json && interactive() {
-        profile = interview(&mut std::io::stdin().lock(), &mut std::io::stderr(), profile)?;
+    if args.undo {
+        return restore(&directory, args.yes, json);
     }
 
-    let profile = profile.completed();
-    let text = render(&profile);
-    let path = directory.join("KRAB.md");
+    let config = crate::load_config_at(root)?;
+
+    config.validate()?;
+
+    let (provider, model) = crate::selection::client(&config, "cli", (None, None));
+
+    let Ok(plugin) = crate::model_plugin_at(root, &provider) else {
+        return Err(no_provider(&directory).into());
+    };
+
+    let given = [
+        &args.name,
+        &args.call,
+        &args.personality,
+        &args.voice,
+        &args.writing,
+        &args.work,
+        &args.language,
+        &args.notes,
+    ];
+
+    let mut answers = given
+        .iter()
+        .map(|value| value.as_deref().map_or(Ok(None), |value| clean(value, ANSWER_LIMIT)))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let free = args.wishes.join(" ");
+
+    if free.chars().count() > WISH_LIMIT {
+        return Err(format!("Wishes must be at most {WISH_LIMIT} characters.").into());
+    }
+
+    if !json && interactive() && answers.iter().all(Option::is_none) && free.trim().is_empty() {
+        answers =
+            interview(&mut std::io::stdin().lock(), &mut std::io::stderr(), hatched(&directory))?;
+    }
+
+    let Some(wishes) = wishes(&answers, &free) else {
+        if json {
+            println!("{}", serde_json::json!({"status": "unchanged"}));
+        } else {
+            println!(
+                "Nothing to change. Answer at least one question, or describe the change: \
+                 `krabb hatch be more concise`."
+            );
+        }
+
+        return Ok(());
+    };
+
+    let current = read(&directory);
+    let spinner = crate::terminal::progress("Your Krabb is writing its personality", json);
+    let reply = crate::model_at(plugin, model, root, request("cli", &current, &wishes)).await;
+
+    drop(spinner);
+
+    let draft = parse(&reply?.text).map_err(|problem| {
+        format!(
+            "{problem} Nothing was changed. Run `krabb hatch` again, or edit the files in {} \
+             by hand.",
+            directory.display()
+        )
+    })?;
+
+    if draft.files == current {
+        report(json, "unchanged", &draft.summary);
+        return Ok(());
+    }
 
     if !json && !args.yes {
-        eprintln!("{text}");
+        eprintln!("{}\n{}\n{}\n", draft.files.krab, draft.files.klaw, draft.summary);
     }
 
-    let question = format!("Save {}'s personality to {}?", profile.name(), path.display());
-
-    if !crate::agent::confirm_action(args.yes, json, &question)? {
+    if !crate::agent::confirm_action(args.yes, json, "Save this personality?")? {
         crate::agent::print_cancelled("Hatching", json);
         return Ok(());
     }
 
-    let backup = save(&directory, &text)?;
+    save(&directory, &draft.files)?;
+    report(json, "hatched", &draft.summary);
 
+    Ok(())
+}
+
+fn report(json: bool, status: &str, summary: &str) {
     if json {
-        let report = serde_json::json!({
-            "status": "hatched",
-            "name": profile.name(),
-            "path": path,
-            "backup": backup,
-        });
+        let report = serde_json::json!({"status": status, "summary": summary});
 
         println!("{report}");
+        return;
+    }
+
+    println!("{summary}");
+
+    if status == "hatched" {
+        println!("It applies from your Krabb's next reply. Undo with `krabb hatch --undo`.");
+    }
+}
+
+fn restore(directory: &Path, yes: bool, json: bool) -> Result<(), Error> {
+    if !crate::agent::confirm_action(yes, json, "Restore the previous personality?")? {
+        crate::agent::print_cancelled("Restoring", json);
         return Ok(());
     }
 
-    println!("{} has hatched and takes on this personality from its next reply.", profile.name());
-    println!("Personality: {}", path.display());
+    let restored = undo(directory)?;
 
-    if let Some(backup) = backup {
-        println!("Previous personality: {}", backup.display());
+    if json {
+        println!("{}", serde_json::json!({"status": "restored", "files": restored}));
+    } else if restored.is_empty() {
+        println!("There is no previous personality to restore.");
+    } else {
+        println!("Restored the previous {}. Undo again to switch back.", restored.join(" and "));
     }
-
-    println!("Edit that file anytime, or run `krabb hatch` again.");
 
     Ok(())
 }
@@ -314,6 +493,7 @@ pub(crate) fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn directory() -> PathBuf {
         let path = crate::tests::test_root("hatch");
@@ -322,72 +502,11 @@ mod tests {
         path
     }
 
-    #[test]
-    fn the_starter_personality_is_the_krab_template() {
-        assert_eq!(render(&Profile::default().completed()), crate::templates::KRAB);
+    fn draft(krab: &str, klaw: &str, summary: &str) -> String {
+        format!("=== KRAB.md ===\n{krab}\n=== KLAW.md ===\n{klaw}\n=== SUMMARY ===\n{summary}\n")
     }
 
-    #[test]
-    fn answers_become_sections_in_the_order_asked() {
-        let mut profile = Profile { name: Some("Pinch".into()), ..Profile::default() };
-
-        profile.answers[0] = Some("Sam".into());
-        profile.answers[2] = Some("Calma e diretta.".into());
-
-        let text = render(&profile);
-
-        assert!(text.starts_with("# Personality Instructions\n\n## Name\n\nYou are Pinch."));
-        assert!(text.contains("## How To Address The Person You Work With\n\nSam\n"));
-        assert!(text.contains("## Tone Of Voice\n\nCalma e diretta.\n"));
-        assert!(!text.contains("## Personality\n"));
-        assert!(text.find("Address").unwrap() < text.find("Tone Of Voice").unwrap());
-    }
-
-    #[test]
-    fn the_interview_asks_only_what_is_missing_and_retries_invalid_answers() {
-        let mut profile = Profile::default();
-
-        profile.answers[5] = Some("English".into());
-
-        let replies = format!("Pinch\n\n{}\nplayful\n\n\n\n\n", "x".repeat(ANSWER_LIMIT + 1));
-        let mut output = Vec::new();
-
-        let profile = interview(&mut replies.as_bytes(), &mut output, profile).unwrap();
-        let output = String::from_utf8(output).unwrap();
-
-        assert_eq!(profile.name.as_deref(), Some("Pinch"));
-        assert_eq!(profile.answers[0], None);
-        assert_eq!(profile.answers[1].as_deref(), Some("playful"));
-        assert_eq!(profile.answers[5].as_deref(), Some("English"));
-        assert!(!output.contains("Which language"));
-        assert!(output.contains("at most 400 characters. Please try again."));
-        assert!(output.contains("(for example: Sam)"));
-        assert!(output.contains("(default: Plain and direct; friendly without filler.)"));
-
-        let completed = profile.completed();
-
-        assert_eq!(completed.answers[2].as_deref(), QUESTIONS[2].starter);
-        assert_eq!(completed.answers[0], None);
-    }
-
-    #[test]
-    fn closed_input_ends_the_interview_with_defaults() {
-        let profile = interview(&mut "".as_bytes(), &mut Vec::new(), Profile::default()).unwrap();
-
-        assert_eq!(profile, Profile::default());
-        assert_eq!(profile.name(), "Krabb");
-    }
-
-    #[test]
-    fn answers_are_single_bounded_lines() {
-        assert_eq!(clean(Some("  calm  "), 10), Ok(Some("calm".into())));
-        assert_eq!(clean(Some("   "), 10), Ok(None));
-        assert!(clean(Some("one\ntwo"), 10).is_err());
-        assert!(clean(Some("toolongname"), 10).is_err());
-        assert_eq!(clean(Some("ééééé"), 5), Ok(Some("ééééé".into())));
-    }
-
-    fn parse(flags: &[&str]) -> HatchArgs {
+    fn parse_args(flags: &[&str]) -> HatchArgs {
         use clap::Parser;
 
         let arguments = ["krabb", "hatch"].iter().chain(flags);
@@ -399,63 +518,183 @@ mod tests {
     }
 
     #[test]
-    fn the_command_saves_flags_without_asking_and_backs_up_the_last_personality() {
-        let root = crate::tests::test_root("hatch-command");
-
-        assert!(
-            run(parse(&["--yes"]), &root, true).unwrap_err().to_string().contains("krabb init")
+    fn a_well_formed_draft_becomes_files_and_a_summary() {
+        let reply = format!(
+            "Here you go.\n{}",
+            draft(
+                "```markdown\n# Personality Instructions\n\nYou are Pinch.\n```",
+                "# Behavioral Instructions\n\nAsk first.",
+                "Ora ti chiami\nPinch.\n",
+            )
         );
+
+        let draft = parse(&reply).unwrap();
+
+        assert_eq!(draft.files.krab, "# Personality Instructions\n\nYou are Pinch.\n");
+        assert_eq!(draft.files.klaw, "# Behavioral Instructions\n\nAsk first.\n");
+        assert_eq!(draft.summary, "Ora ti chiami Pinch.");
+    }
+
+    #[test]
+    fn malformed_drafts_are_rejected_with_the_reason() {
+        let krab = "# Personality Instructions\n\nYou are Pinch.";
+        let klaw = "# Behavioral Instructions\n\nAsk first.";
+
+        assert!(parse("I could not do that.").unwrap_err().contains("missing === KRAB.md ==="));
+        assert!(parse(&draft("You are Pinch.", klaw, "Done.")).unwrap_err().contains("KRAB.md"));
+        assert!(parse(&draft(krab, "Ask first.", "Done.")).unwrap_err().contains("KLAW.md"));
+        assert!(parse(&draft(krab, klaw, " ")).unwrap_err().contains("summary"));
+
+        let long = format!("{krab}\n{}", "x".repeat(FILE_LIMIT));
+
+        assert!(parse(&draft(&long, klaw, "Done.")).unwrap_err().contains("longer"));
+    }
+
+    #[test]
+    fn the_request_carries_the_hatching_prompt_current_files_and_wishes() {
+        let current = Files {
+            krab: "# Personality Instructions\nYou are Pinch.\n".into(),
+            ..Files::default()
+        };
+
+        let messages = request("cli", &current, "- Name: Nipper");
+
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[0].content[0].render(), crate::templates::HATCH);
+
+        let material = messages[1].content[0].render();
+
+        assert!(material.contains("<<<\n# Personality Instructions\nYou are Pinch.\n>>>"));
+        assert!(material.contains("Current KLAW.md:\n<<<\n(empty)\n>>>"));
+        assert!(material.ends_with("wishes:\n<<<\n- Name: Nipper\n>>>"));
+    }
+
+    #[test]
+    fn wishes_join_labelled_answers_and_free_text() {
+        let mut answers = vec![None; QUESTIONS.len()];
+
+        assert_eq!(wishes(&answers, "  "), None);
+
+        answers[0] = Some("Pinch".into());
+        answers[6] = Some("italiano".into());
+
+        assert_eq!(
+            wishes(&answers, "be brief").unwrap(),
+            "- Name: Pinch\n- Language: italiano\nbe brief"
+        );
+    }
+
+    #[test]
+    fn the_interview_keeps_answers_in_order_and_retries_invalid_ones() {
+        let replies = format!("Pinch\n\n{}\nplayful\n", "x".repeat(ANSWER_LIMIT + 1));
+        let mut output = Vec::new();
+
+        let answers = interview(&mut replies.as_bytes(), &mut output, true).unwrap();
+        let output = String::from_utf8(output).unwrap();
+
+        assert_eq!(answers.len(), QUESTIONS.len());
+        assert_eq!(answers[0].as_deref(), Some("Pinch"));
+        assert_eq!(answers[1], None);
+        assert_eq!(answers[2].as_deref(), Some("playful"));
+        assert!(answers[3..].iter().all(Option::is_none));
+        assert!(output.starts_with("Your Krabb already has a personality."));
+        assert!(output.contains("at most 400 characters. Please try again."));
+    }
+
+    #[test]
+    fn answers_are_single_bounded_lines() {
+        assert_eq!(clean("  calm  ", 10), Ok(Some("calm".into())));
+        assert_eq!(clean("   ", 10), Ok(None));
+        assert!(clean("one\ntwo", 10).is_err());
+        assert!(clean("toolongname", 10).is_err());
+        assert_eq!(clean("ééééé", 5), Ok(Some("ééééé".into())));
+    }
+
+    #[test]
+    fn saving_backs_up_changed_files_and_undo_swaps_them_back() {
+        let directory = directory();
+        let first = Files { krab: "krab one".into(), klaw: "klaw one".into() };
+        let second = Files { krab: "krab two".into(), klaw: "klaw one".into() };
+
+        assert!(undo(&directory).unwrap().is_empty());
+        assert!(save(&directory, &first).unwrap());
+        assert!(!save(&directory, &first).unwrap());
+        assert!(save(&directory, &second).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(directory.join("KLAW.previous.md")).unwrap(),
+            "klaw one"
+        );
+
+        assert_eq!(read(&directory), second);
+
+        assert_eq!(undo(&directory).unwrap(), ["KRAB.md"]);
+        assert_eq!(read(&directory), first);
+        assert_eq!(undo(&directory).unwrap(), ["KRAB.md"]);
+        assert_eq!(read(&directory), second);
+
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_refuses_linked_files_before_writing_anything() {
+        let directory = directory();
+        let outside = directory.join("outside.md");
+
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, directory.join("KLAW.md")).unwrap();
+
+        let files = Files { krab: "krab".into(), klaw: "klaw".into() };
+
+        assert!(save(&directory, &files).is_err());
+        assert!(undo(&directory).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        assert!(!directory.join("KRAB.md").exists());
+        assert_eq!(read(&directory).klaw, "");
+
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn without_a_provider_hatching_explains_setup_and_hand_editing() {
+        let root = crate::tests::test_root("hatch-command");
+        let error = run(parse_args(&["be", "brief"]), &root, true).await.unwrap_err();
+
+        assert!(error.to_string().contains("krabb init"));
 
         crate::init_at(&root).unwrap();
 
-        let flags = ["--name", "Pinch", "--voice", "Calma e diretta.", "--call", "Sam", "--yes"];
+        let error = run(parse_args(&["--name", "Pinch", "--yes"]), &root, true).await.unwrap_err();
+        let message = error.to_string();
+        let directory = root.join("data/system");
 
-        run(parse(&flags), &root, true).unwrap();
-
-        let path = root.join("data/system/KRAB.md");
-        let text = std::fs::read_to_string(&path).unwrap();
-
-        assert!(text.contains("You are Pinch."));
-        assert!(text.contains("## Tone Of Voice\n\nCalma e diretta.\n"));
-        assert!(text.contains("## How To Address The Person You Work With\n\nSam\n"));
-        assert!(text.contains(QUESTIONS[1].starter.unwrap()));
-
-        let backup = root.join("data/system").join(BACKUP);
-
-        assert_eq!(std::fs::read_to_string(&backup).unwrap(), crate::templates::KRAB);
-
-        assert!(run(parse(&["--name", "Nipper"]), &root, true).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
-        assert!(parse(&["--name", "a\nb", "--yes"]).name.is_some());
-        assert!(run(parse(&["--name", "a\nb", "--yes"]), &root, true).is_err());
+        assert!(message.contains("needs an intelligence provider"));
+        assert!(message.contains("krabb plugin setup openai"));
+        assert!(message.contains(&directory.display().to_string()));
+        assert!(message.ends_with("KLAW.md says how it works."));
+        assert!(!hatched(&directory));
 
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn saving_backs_up_a_different_personality_and_refuses_links() {
-        let directory = directory();
+    #[tokio::test]
+    async fn undo_restores_the_previous_personality_without_a_provider() {
+        let root = crate::tests::test_root("hatch-undo");
 
-        assert_eq!(save(&directory, "first").unwrap(), None);
-        assert_eq!(save(&directory, "first").unwrap(), None);
+        crate::init_at(&root).unwrap();
 
-        let backup = save(&directory, "second").unwrap().unwrap();
+        let directory = root.join("data/system");
+        let changed = Files { krab: "krab hatched".into(), klaw: crate::templates::KLAW.into() };
 
-        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "first");
-        assert_eq!(std::fs::read_to_string(directory.join("KRAB.md")).unwrap(), "second");
+        save(&directory, &changed).unwrap();
 
-        #[cfg(unix)]
-        {
-            let outside = directory.join("outside.md");
+        assert!(hatched(&directory));
+        assert!(run(parse_args(&["--undo"]), &root, true).await.is_err());
 
-            std::fs::write(&outside, "outside").unwrap();
-            std::fs::remove_file(directory.join("KRAB.md")).unwrap();
-            std::os::unix::fs::symlink(&outside, directory.join("KRAB.md")).unwrap();
+        run(parse_args(&["--undo", "--yes"]), &root, true).await.unwrap();
 
-            assert!(save(&directory, "third").is_err());
-            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
-        }
+        assert!(!hatched(&directory));
 
-        let _ = std::fs::remove_dir_all(directory);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

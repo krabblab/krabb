@@ -7,7 +7,7 @@ Semantic Versioning.
 
 ### Added
 
-- Give your Krabb a name, personality, and writing style with `krabb hatch`.
+- Give your Krabb a name, personality, and writing style with `krabb hatch` or `/hatch`.
 - Keep Krabb honest and careful with a built-in charter that personalization cannot remove.
 - Install official plugins from the plugin index without a source checkout.
 - List and install any published plugin version with `krabb plugin versions`.

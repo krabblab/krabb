@@ -23,7 +23,7 @@ KRABB_HOME/
     memories/                    # default memory index and records
     plugins/<plugin>/            # cursors, inboxes, SQLite, local TUI state
     media/                       # downloaded media, including pending input
-    system/                      # host-loaded KRAB.md and KLAW.md
+    system/                      # host-loaded KRAB.md and KLAW.md, plus hatch backups
     workspaces/
       files.json                 # plain workspace file provenance
       repository/                # managed Git baseline and metadata

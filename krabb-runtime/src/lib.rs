@@ -1772,7 +1772,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match cli.command {
         Command::Init(args) => init(args.force, args.yes, json)?,
-        Command::Hatch(args) => hatch::run(args, &home(), json)?,
+        Command::Hatch(args) => hatch::run(args, &home(), json).await?,
         Command::Doctor(args) => doctor(args.fix, json)?,
         Command::Config(args) => config_command(args.command, &home(), json).await?,
         Command::Worktree { command } => worktree::run(command, &home(), json).await?,
@@ -2456,7 +2456,8 @@ fn runtime_context(session: &str) -> Message {
          no known context window see a /compact summary or the opening request, plus the \
          latest {} messages.\n\
          - Users personalize your name, personality, tone, and writing style with `krabb \
-         hatch`, which rewrites KRAB.md.\n\
+         hatch` or by sending /hatch with the change; your model rewrites KRAB.md and \
+         KLAW.md from their words.\n\
          - Users steer conversations with slash commands: {commands}. /help lists the ones \
          available in the current chat.\n\
          When this is not enough and you have a web tool, read Krabb's documentation and \

@@ -16,6 +16,16 @@ const SHORT: &str = "There is not enough history to compact yet.";
 const NO_REPLY: &str = "There is no reply to answer again yet.";
 const AGAIN_WORKING: &str = "Send /again when the current reply finishes.";
 
+const HATCH_HELP: &str = "Tell me how you'd like me to be, in your own words, after /hatch. For \
+                          example: /hatch call me Sam, be playful but brief, and reply in \
+                          Italian. You can change my name, how I address you, my personality, \
+                          tone of voice, writing style, way of working, and language. Send \
+                          /hatch undo to go back to the previous version.";
+
+/// Serializes personality changes, so each one edits the result of the one before.
+static HATCHING: std::sync::LazyLock<AsyncMutex<()>> =
+    std::sync::LazyLock::new(|| AsyncMutex::new(()));
+
 /// Pending `/session clear` codes by conversation and sender, with their expiry.
 type Confirmations = BTreeMap<(String, String), (String, Instant)>;
 
@@ -38,6 +48,9 @@ pub(crate) struct Host<'a> {
     pub call: u64,
     /// A reply is streaming on this connection, so long commands would hold up its delivery.
     pub answering: bool,
+    /// Krabb's home, for commands that change its instructions; absent where only the model
+    /// can call commands.
+    pub home: Option<&'a Path>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -367,6 +380,7 @@ pub(crate) async fn run(
         "model" => model(host, caller, arguments).await,
         "session" => session(host, caller, spec, arguments),
         "compact" => compact(host, caller).await,
+        "hatch" => hatch(host, caller, spec, arguments).await,
 
         "again" => Ok("Only the user can send /again, and it cannot redo a reply that used \
                        tools, like this one. Answer the question again yourself instead."
@@ -394,8 +408,8 @@ pub(crate) fn spec() -> ToolSpec {
              the model name as arguments), session (new starts a fresh conversation after this \
              reply), task, workspace, approvals, plugin, memory (search terms as arguments), or \
              data (a database name as arguments). Cancelling a reply, clearing history, \
-             compacting, and regenerating a reply need the user's own message; relay the \
-             instructions this tool returns."
+             compacting, regenerating a reply, and changing your personality (hatch) need the \
+             user's own message; relay the instructions this tool returns."
                 .into(),
         ),
         schema: serde_json::json!({
@@ -605,7 +619,7 @@ async fn compact(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginE
         biased;
         _ = host.stop.notified() => Err("Compaction was interrupted.".into()),
 
-        summary = ipc::compact_summary(
+        summary = ipc::complete(
             &provider,
             &model,
             workspace.as_deref(),
@@ -662,6 +676,114 @@ async fn compact(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginE
          and the full history is kept.",
         messages(boundary)
     ))
+}
+
+/// Rewrites KRAB.md and KLAW.md from the user's wishes, or restores the previous version.
+async fn hatch(
+    host: &Host<'_>,
+    caller: &Caller<'_>,
+    spec: &Spec,
+    arguments: &str,
+) -> Result<String, PluginError> {
+    if caller.origin == Origin::Tool {
+        return Ok("Changing my personality needs the user's own message. Tell them to send \
+                   /hatch followed by what to change."
+            .into());
+    }
+
+    let Some(home) = host.home else {
+        return Ok(unavailable(spec));
+    };
+
+    let directory = home.join("data/system");
+    let wishes = arguments.trim();
+
+    if wishes.is_empty() {
+        return Ok(HATCH_HELP.into());
+    }
+
+    if wishes.chars().count() > hatch::WISH_LIMIT {
+        return Ok(format!("Describe the change in at most {} characters.", hatch::WISH_LIMIT));
+    }
+
+    let _hatching = HATCHING.lock().await;
+
+    if wishes.eq_ignore_ascii_case("undo") {
+        let restored = hatch::undo(&directory)?;
+
+        if restored.is_empty() {
+            return Ok("There is no previous personality to go back to.".into());
+        }
+
+        info!(session = caller.session, "Personality restored by command.");
+
+        return Ok(
+            "I'm back to my previous personality. Send /hatch undo again to switch back.".into()
+        );
+    }
+
+    let Some(provider) =
+        host.plugins.get(host.provider).await.filter(|plugin| plugin.supports(Capability::Model))
+    else {
+        return Ok(hatch::no_provider(&directory));
+    };
+
+    let current = hatch::read(&directory);
+    let request = hatch::request(caller.session, &current, wishes);
+    let cleanup = process::Cleanup::default();
+
+    let reply = tokio::select! {
+        biased;
+        _ = host.stop.notified() => Err("Hatching was interrupted.".into()),
+
+        reply = ipc::complete(
+            &provider,
+            host.model,
+            None,
+            &request,
+            host.call,
+            &cleanup,
+            host.plugins.config.inference.task_millis(),
+        ) => reply.map_err(PluginError::from),
+    };
+
+    let text = match (cleanup.finish().await, reply) {
+        (Ok(()), Ok(text)) => text,
+
+        (finished, reply) => {
+            let error = finished
+                .err()
+                .map(|error| error.to_string())
+                .or(reply.err().map(|error| error.to_string()));
+
+            warn!(
+                session = caller.session,
+                error = %diagnostic(sentence(error.unwrap_or_default())),
+                "Hatching failed."
+            );
+
+            return Ok("I couldn't reach the model, so nothing changed. Try again later.".into());
+        }
+    };
+
+    let draft = match hatch::parse(&text) {
+        Ok(draft) => draft,
+
+        Err(problem) => {
+            warn!(session = caller.session, %problem, "Hatching draft was rejected.");
+
+            return Ok(format!("{problem} Nothing changed; send /hatch again to retry."));
+        }
+    };
+
+    if draft.files == current {
+        return Ok(format!("{} Nothing needed to change.", draft.summary));
+    }
+
+    hatch::save(&directory, &draft.files)?;
+    info!(session = caller.session, "Personality changed by command.");
+
+    Ok(format!("{}\nSend /hatch undo to go back.", draft.summary))
 }
 
 fn messages(count: usize) -> &'static str {

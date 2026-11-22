@@ -43,16 +43,17 @@ Then create the home, add one intelligence provider and one channel, and check t
 
 ```sh
 krabb init
-krabb hatch
 krabb plugin install openai telegram
 krabb plugin setup openai
+krabb hatch
 krabb plugin setup telegram
 krabb status
 krabb service install
 krabb service start
 ```
 
-`krabb hatch` gives your Krabb a name, a personality, and a way of writing.
+After adding a provider, `krabb hatch` gives your Krabb a name, a personality, and a way
+of writing; until then you can edit `KRAB.md` and `KLAW.md` in `data/system/` by hand.
 `krabb status` lists each plugin's state and the next command to run. Use
 `ollama` instead of a hosted provider for local inference. The
 [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice, data

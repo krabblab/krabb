@@ -507,6 +507,7 @@ pub(crate) async fn bridge_with_media(
                 model: &selected_model,
                 call,
                 answering: false,
+                home: Some(&home_root),
             };
 
             // Summarizing can take a while, so other chats keep being received meanwhile.
@@ -547,6 +548,7 @@ pub(crate) async fn bridge_with_media(
                     plugins: plugins.clone(),
                     cancels: Arc::clone(&cancels),
                     provider: selected_provider.clone(),
+                    home: home_root.clone(),
                 })
             });
 
@@ -1044,6 +1046,7 @@ pub(crate) async fn bridge_with_media(
                     plugins: plugins.clone(),
                     cancels: Arc::clone(&cancels),
                     provider: selected_provider.clone(),
+                    home: home_root.clone(),
                 })
             };
 

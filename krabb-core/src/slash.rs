@@ -49,7 +49,7 @@ impl Spec {
 
     /// Whether the command waits on the model, so it must not hold up a reply being delivered.
     pub fn lengthy(&self) -> bool {
-        self.name == "compact"
+        matches!(self.name, "compact" | "hatch")
     }
 }
 
@@ -95,6 +95,13 @@ pub const SPECS: &[Spec] = &[
         usage: "/compact",
         need: Need::Capability(Capability::Model),
         access: Access::Anyone,
+    },
+    Spec {
+        name: "hatch",
+        summary: "Change my name, personality, and writing style",
+        usage: "/hatch [<what to change> | undo]",
+        need: Need::Nothing,
+        access: Access::Tools,
     },
     Spec {
         name: "task",

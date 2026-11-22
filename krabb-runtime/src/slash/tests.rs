@@ -35,6 +35,7 @@ impl Fixture {
             model: "default-model",
             call: 1,
             answering: false,
+            home: Some(&self.root),
         }
     }
 
@@ -336,7 +337,17 @@ for line in sys.stdin:
             print(json.dumps({'jsonrpc':'2.0','id':request['id'],
                               'error':{'code':-32000,'message':'Rate limited.'}}), flush=True)
             continue
-        result = {'text':'Keep the user goals.','stop':'stop'}
+        if sys.argv[1] == 'garbage':
+            result = {'text':'I would rather not.','stop':'stop'}
+        elif sys.argv[1] == 'hatch':
+            wishes = request['params']['messages'][-1]['content'][0]['text']
+            name = 'Pinch' if 'Pinch' in wishes else 'Krabb'
+            text = ('=== KRAB.md ===\n# Personality Instructions\n\nYou are ' + name +
+                    '.\n=== KLAW.md ===\n# Behavioral Instructions\n\nAsk first.\n'
+                    '=== SUMMARY ===\nYou are now ' + name + '.')
+            result = {'text':text,'stop':'stop'}
+        else:
+            result = {'text':'Keep the user goals.','stop':'stop'}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
     if method == 'shutdown':
         break
@@ -783,4 +794,97 @@ async fn again_during_another_chats_reply_queues_the_question() {
     assert!(conversation.messages.is_empty());
     assert_eq!(conversation.queued.len(), 1);
     assert_eq!(conversation.queued[0].content, vec![Content::Text { text: "question 0".into() }]);
+}
+
+fn hatch_caller(session: &str, origin: Origin) -> Caller<'_> {
+    Caller { tools: true, ..caller(session, origin) }
+}
+
+#[tokio::test]
+async fn hatch_needs_a_provider_and_the_users_own_words() {
+    let fixture = Fixture::new("slash-hatch-guard");
+    let session = "telegram-7";
+    let directory = fixture.root.join("data/system");
+    let text = hatch_caller(session, Origin::Text);
+
+    std::fs::create_dir_all(&directory).unwrap();
+
+    assert!(
+        send(&fixture, &caller(session, Origin::Text), "/hatch be brief")
+            .await
+            .contains("/hatch is not available here")
+    );
+
+    assert!(send(&fixture, &text, "/hatch").await.starts_with("Tell me how you'd like me to be"));
+
+    let missing = send(&fixture, &text, "/hatch be brief").await;
+
+    assert!(missing.contains("needs an intelligence provider"), "{missing}");
+    assert!(missing.contains(&directory.display().to_string()));
+
+    with_model(&fixture).await;
+
+    let tool = send(&fixture, &hatch_caller(session, Origin::Tool), "/hatch be brief").await;
+
+    assert!(tool.contains("needs the user's own message"));
+
+    let long = format!("/hatch {}", "x".repeat(crate::hatch::WISH_LIMIT + 1));
+
+    assert!(send(&fixture, &text, &long).await.contains("at most 2000 characters"));
+    assert!(send(&fixture, &text, "/hatch be brief").await.contains("Nothing changed"));
+    assert!(!directory.join("KRAB.md").exists());
+}
+
+#[tokio::test]
+async fn hatch_rewrites_both_files_and_undo_switches_back() {
+    let fixture = Fixture::new("slash-hatch");
+    let session = "telegram-7";
+    let directory = fixture.root.join("data/system");
+    let text = hatch_caller(session, Origin::Text);
+
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("KRAB.md"), "# Personality Instructions\n\nYou are Krabb.\n")
+        .unwrap();
+
+    with_mode(&fixture, "hatch").await;
+
+    let reply = send(&fixture, &text, "/hatch call yourself Pinch").await;
+    let hatched = crate::hatch::read(&directory);
+
+    assert_eq!(reply, "You are now Pinch.\nSend /hatch undo to go back.");
+    assert_eq!(hatched.krab, "# Personality Instructions\n\nYou are Pinch.\n");
+    assert_eq!(hatched.klaw, "# Behavioral Instructions\n\nAsk first.\n");
+
+    let unchanged = send(&fixture, &text, "/hatch call yourself Pinch").await;
+
+    assert_eq!(unchanged, "You are now Pinch. Nothing needed to change.");
+
+    assert!(send(&fixture, &text, "/hatch undo").await.starts_with("I'm back"));
+
+    assert_eq!(
+        crate::hatch::read(&directory).krab,
+        "# Personality Instructions\n\nYou are Krabb.\n"
+    );
+
+    assert_eq!(crate::hatch::read(&directory).klaw, "");
+
+    assert!(send(&fixture, &text, "/hatch UNDO").await.starts_with("I'm back"));
+    assert_eq!(crate::hatch::read(&directory), hatched);
+}
+
+#[tokio::test]
+async fn hatch_keeps_the_files_when_the_draft_is_unusable() {
+    let fixture = Fixture::new("slash-hatch-garbage");
+    let directory = fixture.root.join("data/system");
+    let text = hatch_caller("telegram-7", Origin::Text);
+
+    std::fs::create_dir_all(&directory).unwrap();
+    with_mode(&fixture, "garbage").await;
+
+    let reply = send(&fixture, &text, "/hatch be brief").await;
+
+    assert!(reply.starts_with("The draft is missing === KRAB.md ==="), "{reply}");
+    assert!(reply.ends_with("Nothing changed; send /hatch again to retry."));
+    assert!(send(&fixture, &text, "/hatch undo").await.contains("no previous personality"));
+    assert_eq!(crate::hatch::read(&directory), crate::hatch::Files::default());
 }
