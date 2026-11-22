@@ -79,9 +79,10 @@ The runtime also adds a short description of itself, built from its version, his
 limit, and commands, so the model can explain how Krabb works. When that is not enough
 and the model has a web tool, it points the model to the Krabb repository's
 documentation. Each turn also states the conversation's own effective settings: its
-configuration section, model, approval mode, and whether workspace tools, shell,
-schedules, and memory are on, with the setting each one needs. Krabb can then tell a
-misconfiguration from a bug and name the setting to change. It sees only its own
+configuration section, model, approval mode, installed plugins, and whether workspace
+tools, shell, schedules, and memory are on. For each one that is off, it names the first
+unmet requirement and the exact `krabb config set` or `krabb plugin install` command
+that fixes it, so Krabb can tell a misconfiguration from a bug. It sees only its own
 section and no secrets, never the settings of other channels or clients. Anyone in a
 group chat can ask it about these settings. Conversation history is a bounded
 transcript of up to 1,000 messages, counting tool calls and results. When the

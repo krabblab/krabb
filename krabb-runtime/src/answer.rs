@@ -403,6 +403,8 @@ pub(crate) async fn answer_with_registry(
     let schedules = scheduler && registry.execution.interactive() && !isolated && schedule_enabled;
 
     if let Some(source) = &registry.source {
+        let installed = installed_plugins(plugins).await;
+
         let setup = context::Setup {
             source,
             provider: &provider.hello.id,
@@ -413,6 +415,10 @@ pub(crate) async fn answer_with_registry(
             schedules,
             scheduler,
             memory: memory_plugin.is_some() && tools_enabled,
+            grants: grants(&plugins.config, source, tools_enabled, approval_mode),
+            background: !registry.execution.interactive(),
+            isolated,
+            plugins: &installed,
         };
 
         if let Some(message) = setup.message(session) {
@@ -1589,5 +1595,83 @@ pub(crate) fn keep_one_mutation(events: &mut Vec<Event>) {
         matches!(event, Event::Tool { name, args, .. } if mutating(name, args)).then_some(index)
     }) {
         events.truncate(next);
+    }
+}
+
+async fn installed_plugins(plugins: &Plugins) -> Vec<(String, Vec<&'static str>)> {
+    plugins
+        .all()
+        .await
+        .into_iter()
+        .map(|(id, plugin)| {
+            let capabilities = plugin.hello.capabilities.iter().map(launch::capability_name);
+            (id, capabilities.collect())
+        })
+        .collect()
+}
+
+/// Reads the source's own settings, so the setup note can say which one turned a capability
+/// off. A channel's sender rules are checked before the turn, so a channel with tools and
+/// approvals on but no tools this turn did not allow the sender.
+fn grants(
+    config: &Config,
+    source: &sharing::Principal,
+    tools_enabled: bool,
+    approval: ApprovalMode,
+) -> context::Grants {
+    match source {
+        sharing::Principal::Channel(id) => {
+            let section = config.channels.get(id).cloned().unwrap_or_default();
+            let sender = tools_enabled || !section.tools || approval == ApprovalMode::Off;
+
+            context::Grants { tools: section.tools, shell: section.shell, sender }
+        }
+
+        sharing::Principal::Client(id) => {
+            let tools = config.clients.get(id).is_some_and(|client| client.tools);
+
+            context::Grants {
+                tools: tools || tools_enabled,
+                shell: config.client_shell(id),
+                sender: true,
+            }
+        }
+
+        sharing::Principal::Agent(_) => {
+            context::Grants { tools: tools_enabled, shell: true, sender: true }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_setting_that_turned_tools_off_for_a_source() {
+        let mut config = Config::default();
+
+        config
+            .channels
+            .insert("telegram".into(), ChannelConfig { tools: true, ..ChannelConfig::default() });
+
+        let telegram = sharing::Principal::Channel("telegram".into());
+        let stranger = grants(&config, &telegram, false, ApprovalMode::Prompt);
+
+        assert!(stranger.tools && !stranger.sender && !stranger.shell);
+        assert!(grants(&config, &telegram, false, ApprovalMode::Off).sender);
+        assert!(grants(&config, &telegram, true, ApprovalMode::Prompt).sender);
+
+        let discord = sharing::Principal::Channel("discord".into());
+        let unconfigured = grants(&config, &discord, false, ApprovalMode::Prompt);
+
+        assert!(!unconfigured.tools && unconfigured.sender);
+
+        let tui = sharing::Principal::Client("tui".into());
+        config.shell = true;
+
+        let client = grants(&config, &tui, false, ApprovalMode::Prompt);
+
+        assert!(!client.tools && client.shell && client.sender);
     }
 }
