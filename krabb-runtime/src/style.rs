@@ -108,26 +108,33 @@ fn reply_light(reply: &str) -> Option<bool> {
 }
 
 /// Asks the terminal for its background color, followed by a device-attributes query that
-/// every terminal answers, so an unsupported query ends promptly instead of timing out.
+/// every terminal answers, so an unsupported query ends promptly instead of timing out. A
+/// terminal that starts an escape reply gets up to a second to finish, and anything left unread
+/// is discarded so it never reaches a later prompt.
 #[cfg(unix)]
 fn query() -> Option<bool> {
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
 
-    if !std::io::stdin().is_terminal() || crossterm::terminal::is_raw_mode_enabled().ok()? {
+    if cfg!(test)
+        || !std::io::stdin().is_terminal()
+        || crossterm::terminal::is_raw_mode_enabled().ok()?
+    {
         return None;
     }
 
-    let mut tty = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").ok()?;
+    let tty = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").ok()?;
 
     crossterm::terminal::enable_raw_mode().ok()?;
 
-    let _raw = Cooked;
+    let tty = Cooked(tty);
+    let mut tty = &tty.0;
 
     tty.write_all(b"\x1b]11;?\x1b\\\x1b[c").ok()?;
     tty.flush().ok()?;
 
-    let deadline = Instant::now() + Duration::from_millis(200);
+    let start = Instant::now();
+    let mut deadline = start + Duration::from_millis(200);
     let mut reply = Vec::new();
     let mut buffer = [0; 64];
 
@@ -151,6 +158,10 @@ fn query() -> Option<bool> {
 
         reply.extend_from_slice(&buffer[..read]);
 
+        if reply.contains(&0x1b) {
+            deadline = start + Duration::from_secs(1);
+        }
+
         if read == 0 || answered(&reply) {
             break;
         }
@@ -173,12 +184,14 @@ fn answered(reply: &[u8]) -> bool {
         .is_some_and(|start| reply[start..].contains(&b'c'))
 }
 
+/// Discards unread reply bytes and leaves raw mode however the query ends.
 #[cfg(unix)]
-struct Cooked;
+struct Cooked(std::fs::File);
 
 #[cfg(unix)]
 impl Drop for Cooked {
     fn drop(&mut self) {
+        let _ = rustix::termios::tcflush(&self.0, rustix::termios::QueueSelector::IFlush);
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
