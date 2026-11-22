@@ -5201,7 +5201,11 @@ where
             result["text"].as_str().unwrap_or_default().to_owned()
         }
 
-        Err(error) if !daemon_unavailable(&error) => format!("{}.", sentence(error.to_string())),
+        Err(error @ krabb_core::Error::Io(_)) if daemon_unavailable(&error) => {
+            unknown_command(line)
+        }
+
+        Err(error) => format!("{}.", sentence(error.to_string())),
 
         _ => unknown_command(line),
     }
@@ -6388,6 +6392,8 @@ mod tests {
                 Ok(json!({"handled": true, "text": "I'm brief now.\nSend /hatch undo to go back."}))
             } else if params["text"] == "/offline" {
                 Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused).into())
+            } else if params["text"] == "/slow" {
+                Err(krabb_core::Error::Denied("The daemon did not respond in time.".into()))
             } else if params["text"] == "/busy" {
                 Err(krabb_core::Error::Denied("all work slots are busy".into()))
             } else {
@@ -6402,6 +6408,10 @@ mod tests {
         let busy = super::shared_command("home", "tui-main", "/busy", host).await;
 
         assert!(busy.ends_with("All work slots are busy."), "{busy}");
+
+        let slow = super::shared_command("home", "tui-main", "/slow", host).await;
+
+        assert!(slow.ends_with("The daemon did not respond in time."), "{slow}");
         assert!(super::shared("/hatch undo") && !super::shared("/hatchet"));
         assert!(!super::shared("/help session"));
 
