@@ -235,6 +235,7 @@ struct App {
     generation_active: bool,
     compaction_active: bool,
     session_working: bool,
+    running_command: Option<(String, Instant)>,
     generation_started: Option<Instant>,
     compaction_started: Option<Instant>,
     generation_message: &'static str,
@@ -662,6 +663,14 @@ where
                         app.finish_compaction();
                     }
 
+                    Some(crate::EngineEvent::CommandStarted(name)) => {
+                        app.running_command = Some((name, Instant::now()));
+                    }
+
+                    Some(crate::EngineEvent::CommandFinished) => {
+                        app.running_command = None;
+                    }
+
                     Some(crate::EngineEvent::GenerationFinished { interrupted }) => {
                         app.finish_generation(interrupted);
                     }
@@ -830,6 +839,8 @@ where
                 crate::EngineEvent::GenerationStarted => {}
 
                 crate::EngineEvent::CompactionStarted | crate::EngineEvent::CompactionFinished => {}
+
+                crate::EngineEvent::CommandStarted(_) | crate::EngineEvent::CommandFinished => {}
 
                 crate::EngineEvent::GenerationFinished { .. } => {}
             }
@@ -1758,7 +1769,10 @@ where
                             app.begin_compaction();
                         }
 
-                        app.mark_pending_user_message_persisted();
+                        if crate::starts_turn(&line) {
+                            app.mark_pending_user_message_persisted();
+                        }
+
                         command_tx.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
                         command_tx.write_all(b"\n").await?;
 
@@ -1843,7 +1857,11 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         suggestions.as_ref().map_or(0, |items| items.len().min(7) as u16)
     };
 
-    let is_working = app.generation_active || app.compaction_active || app.session_working;
+    let is_working = app.generation_active
+        || app.compaction_active
+        || app.session_working
+        || app.running_command.is_some();
+
     let composer_gap = if is_working { 0 } else { COMPOSER_GAP_ROWS };
 
     let picker_gap = if popup_rows > 0 { COMPOSER_GAP_ROWS } else { 0 };
@@ -2025,12 +2043,19 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
                 .unwrap_or_else(|| "0s".into());
 
             format!("{}  |  {indicator}  |  {elapsed}", app.generation_message)
+        } else if let Some((name, started)) = &app.running_command {
+            format!("Krabb is running {name}  |  {}", format_elapsed(started.elapsed()))
         } else {
             "Krabb is working in this session  |  waiting for the turn to finish".into()
         };
 
-        let started =
-            if app.compaction_active { app.compaction_started } else { app.generation_started };
+        let started = if app.compaction_active {
+            app.compaction_started
+        } else if app.generation_active {
+            app.generation_started
+        } else {
+            app.running_command.as_ref().map(|(_, started)| *started)
+        };
 
         let elapsed = started.map_or_else(
             || {
@@ -4514,6 +4539,87 @@ mod tests {
 
         assert!(!app.compaction_active);
         assert!(app.compaction_started.is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_a_shared_command_line_after_the_session_refreshes() {
+        let (mut command_tx, _command_rx) = tokio::io::duplex(1024);
+
+        let mut app = App {
+            name: "Krabb".into(),
+            session: "default".into(),
+            model_available: true,
+            input: "/hatch be brief".chars().collect(),
+            cursor: 15,
+            ..App::default()
+        };
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let saved = app.push_assistant_output("I'm brief now.\n> ".into());
+        app.reveal_all();
+
+        assert_eq!(saved.len(), 1);
+        assert!(!saved[0].user_message_persisted);
+
+        let message = |id: &str, role, text: &str| krabb_core::types::Message {
+            id: id.into(),
+            session: "default".into(),
+            role,
+            sender: None,
+            content: vec![krabb_core::types::Content::Text { text: text.into() }],
+        };
+
+        let reply = message(
+            &saved[0].assistant_message_id,
+            krabb_core::types::Role::Assistant,
+            "I'm brief now.",
+        );
+
+        let snapshot = |messages| super::SessionView {
+            id: "default".into(),
+            model: String::new(),
+            workspace: None,
+            context_usage: None,
+            messages,
+            working: false,
+        };
+
+        let line =
+            message(&saved[0].user_message_id, krabb_core::types::Role::User, "/hatch be brief");
+
+        assert!(app.refresh_session(snapshot(vec![line, reply])));
+        assert!(app.transcript.contains("/hatch be brief"));
+        assert!(app.transcript.contains("I'm brief now."));
+    }
+
+    #[test]
+    fn shows_progress_while_a_shared_command_runs() {
+        let mut app = App {
+            name: "Krabb".into(),
+            running_command: Some(("/hatch".into(), std::time::Instant::now())),
+            ..App::default()
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Krabb is running /hatch"));
     }
 
     #[test]
