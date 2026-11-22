@@ -82,7 +82,9 @@ documentation. Each turn also states the conversation's own effective settings: 
 configuration section, model, approval mode, installed plugins, and whether workspace
 tools, shell, schedules, and memory are on. For each one that is off, it names the first
 unmet requirement and the exact `krabb config set` or `krabb plugin install` command
-that fixes it, so Krabb can tell a misconfiguration from a bug. It sees only its own
+that fixes it, so Krabb can tell a misconfiguration from a bug. When you ask, it can
+also apply such a fix itself after the owner approves it; see [safety](safety.md). It
+sees only its own
 section and no secrets, never the settings of other channels or clients. Anyone in a
 group chat can ask it about these settings. Conversation history is a bounded
 transcript of up to 1,000 messages, counting tool calls and results. When the

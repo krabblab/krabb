@@ -78,10 +78,15 @@ pub(super) struct Setup<'a> {
     pub grants: Grants,
     pub background: bool,
     pub isolated: bool,
+    pub adjustable: bool,
     pub plugins: &'a [(String, Vec<&'static str>)],
 }
 
 const PLUGIN_LIMIT: usize = 32;
+
+const ADJUST: &str = "When the person explicitly asks you to change tools, shell, or approval \
+                      in this section, you may use the settings tool; the owner approves each \
+                      change. Restart only when they ask to apply it now.\n";
 
 impl Setup<'_> {
     /// Agents have no settings section of their own, so they get no note.
@@ -110,7 +115,7 @@ impl Setup<'_> {
              - Schedules: {schedules}\n\
              - Memory: {memory}\n\
              - Installed plugins: {plugins}.\n\
-             `--force` restarts the daemon when a setting needs it. The owner can check the \
+             {adjust}`--force` restarts the daemon when a setting needs it. The owner can check the \
              installation with `krabb doctor`, read settings with `krabb config get`, and list \
              installed plugins with `krabb plugin list`.\n\
              Settings of other channels and clients are not shown here.",
@@ -121,6 +126,7 @@ impl Setup<'_> {
             schedules = status(self.schedules, self.schedules_blocker(&key)),
             memory = status(self.memory, self.memory_blocker(&key)),
             plugins = self.plugin_list(),
+            adjust = if self.adjustable { ADJUST } else { "" },
         );
 
         Some(Message {
@@ -388,6 +394,7 @@ mod tests {
             grants: Grants { tools: false, shell: false, sender: true },
             background: false,
             isolated: false,
+            adjustable: false,
             plugins,
         }
     }
@@ -478,6 +485,20 @@ mod tests {
         let text = render(&Setup { tools: true, background: true, grants: granted, ..setup });
 
         assert!(text.contains("- Schedules: off, because background tasks cannot schedule."));
+    }
+
+    #[test]
+    fn mentions_the_settings_tool_only_where_it_is_offered() {
+        let telegram = sharing::Principal::Channel("telegram".into());
+        let plugins = plugins();
+        let setup = telegram_setup(&telegram, &plugins);
+
+        assert!(!render(&setup).contains("settings tool"));
+
+        let text = render(&Setup { adjustable: true, ..setup });
+
+        assert!(text.contains("you may use the settings tool; the owner approves each change."));
+        assert!(text.contains("Restart only when they ask to apply it now."));
     }
 
     #[test]

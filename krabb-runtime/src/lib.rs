@@ -116,6 +116,7 @@ use updates::command::*;
 mod schema;
 mod selection;
 mod service;
+mod settings;
 mod setup;
 mod sharing;
 mod slash;
@@ -2154,12 +2155,56 @@ async fn control_at(
     }
 }
 
+/// Saves one configuration value without disturbing the rest of the file, and rejects a
+/// result the host could not load.
+fn save_setting(root: &Path, key: &str, value: toml_edit::Value) -> Result<Config, PluginError> {
+    let path = root.join("config.toml");
+    let text = load_config_text(root)?.ok_or("Configuration was not found.")?;
+    let parts = key.split('.').collect::<Vec<_>>();
+
+    if parts.is_empty()
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || !part.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'
+                        || byte == b'-'
+                })
+        })
+    {
+        return Err("Configuration key is invalid.".into());
+    }
+
+    let mut document = text.parse::<toml_edit::DocumentMut>()?;
+    let mut table = document.as_table_mut();
+
+    for part in &parts[..parts.len() - 1] {
+        if !table.contains_key(part) {
+            table[*part] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+
+        table = table[*part]
+            .as_table_mut()
+            .ok_or_else(|| format!("{part} is not a configuration table."))?;
+    }
+
+    table[parts[parts.len() - 1]] = toml_edit::Item::Value(value);
+
+    let rendered = document.to_string();
+    let config: Config = toml::from_str(&rendered)?;
+    config.validate().map_err(|error| -> PluginError { error.into() })?;
+    secure(&path, rendered.as_bytes())?;
+    info!(key, "Configuration value saved.");
+
+    Ok(config)
+}
+
 async fn config_command(
     command: ConfigCommand,
     root: &Path,
     json: bool,
 ) -> Result<(), PluginError> {
-    let path = root.join("config.toml");
     let text = load_config_text(root)?.ok_or("Configuration was not found.")?;
 
     match command {
@@ -2194,45 +2239,8 @@ async fn config_command(
             };
 
             let raw_value = raw_value.trim();
-
-            let parts = key.split('.').collect::<Vec<_>>();
-
-            if parts.is_empty()
-                || parts.iter().any(|part| {
-                    part.is_empty()
-                        || !part.bytes().all(|byte| {
-                            byte.is_ascii_lowercase()
-                                || byte.is_ascii_digit()
-                                || byte == b'_'
-                                || byte == b'-'
-                        })
-                })
-            {
-                return Err("Configuration key is invalid.".into());
-            }
-
             let value = raw_value.parse::<toml_edit::Value>()?;
-            let mut document = text.parse::<toml_edit::DocumentMut>()?;
-
-            let mut table = document.as_table_mut();
-
-            for part in &parts[..parts.len() - 1] {
-                if !table.contains_key(part) {
-                    table[*part] = toml_edit::Item::Table(toml_edit::Table::new());
-                }
-
-                table = table[*part]
-                    .as_table_mut()
-                    .ok_or_else(|| format!("{part} is not a configuration table."))?;
-            }
-
-            table[parts[parts.len() - 1]] = toml_edit::Item::Value(value);
-
-            let rendered = document.to_string();
-            let config: Config = toml::from_str(&rendered)?;
-            config.validate().map_err(|error| -> PluginError { error.into() })?;
-            secure(&path, rendered.as_bytes())?;
-            info!(key, "Configuration value saved.");
+            let config = save_setting(root, key, value)?;
 
             let selection = selection::reloadable(key);
             let hot = key == "clients.tui.tools" || selection;
@@ -2304,32 +2312,42 @@ async fn config_command(
     Ok(())
 }
 
+/// Restarts the daemon through its service manager, which starts the new process even when
+/// the caller is the daemon itself. Returns false when no active service manages it.
+fn restart_service() -> Result<bool, PluginError> {
+    if !(service_path().is_file() && service_manager_state()? == ServiceState::Active) {
+        return Ok(false);
+    }
+
+    #[cfg(target_os = "linux")]
+    let result = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "krabb.service"])
+        .status()?;
+
+    #[cfg(target_os = "macos")]
+    let result = {
+        let uid = std::process::Command::new("id").arg("-u").output()?;
+        let uid = String::from_utf8_lossy(&uid.stdout).trim().to_owned();
+        std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", &format!("gui/{uid}/{MACOS_SERVICE_LABEL}")])
+            .status()?
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        service_action(&service_path(), ServiceAction::Restart)?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    if !result.success() {
+        return Err("Could not restart the Krabb service.".into());
+    }
+
+    Ok(true)
+}
+
 async fn restart_daemon(root: &Path) -> Result<bool, PluginError> {
-    if service_path().is_file() && service_manager_state()? == ServiceState::Active {
-        #[cfg(target_os = "linux")]
-        let result = std::process::Command::new("systemctl")
-            .args(["--user", "restart", "krabb.service"])
-            .status()?;
-
-        #[cfg(target_os = "macos")]
-        let result = {
-            let uid = std::process::Command::new("id").arg("-u").output()?;
-            let uid = String::from_utf8_lossy(&uid.stdout).trim().to_owned();
-            std::process::Command::new("launchctl")
-                .args(["kickstart", "-k", &format!("gui/{uid}/{MACOS_SERVICE_LABEL}")])
-                .status()?
-        };
-
-        #[cfg(target_os = "windows")]
-        {
-            service_action(&service_path(), ServiceAction::Restart)?;
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        if !result.success() {
-            return Err("Could not restart the Krabb service.".into());
-        }
-
+    if restart_service()? {
         return Ok(true);
     }
 

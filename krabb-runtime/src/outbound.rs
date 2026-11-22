@@ -408,9 +408,13 @@ pub(crate) async fn handle_callback(
     }
 
     let authorized = tools_allowed(policy, &authority, &chat, mode.enabled());
+    let sender = event_id(&event["sender"]);
+    let owner = policy.owner.is_some() && policy.owner == sender;
 
     let decision =
-        approvals.lock().await.resolve(token, channel_id, &chat, thread.as_deref(), authorized);
+        approvals.lock().await.resolve_for(token, channel_id, &chat, thread.as_deref(), |target| {
+            if target.tool == settings::TOOL { owner } else { authorized }
+        });
 
     let message = match decision {
         Some(true) => "Approval accepted.",

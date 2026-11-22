@@ -41,6 +41,14 @@ active workspace are rejected. Shell tools in TUI turns require
 `clients.tui.shell = true` and approval. Typed `!` commands need the setting and
 count as explicit user actions. Output and execution time are bounded.
 
+When a person explicitly asks, Krabb can change `tools`, `shell`, or `approval` in its
+own conversation's section with the `settings` tool. It cannot touch other sections or
+other keys. Every change asks for approval, even in `auto` mode, and never reuses an
+earlier decision; in a channel, only the section's `owner` can approve it, so the tool is
+not offered in channels without an owner, in background tasks, in isolated workspaces,
+or when approvals are off. Saved settings apply after a restart, and Krabb restarts the
+service only when asked to apply the change now.
+
 Confined Unix file writes preserve existing regular files’ ordinary permission
 bits, including executable bits. New files use mode `0600`; replacement files
 do not inherit set-user-ID, set-group-ID, or sticky bits.

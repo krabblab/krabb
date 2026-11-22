@@ -399,6 +399,20 @@ pub(crate) async fn answer_with_registry(
         specs.extend(memory_tools());
     }
 
+    let adjustable = registry.source.as_ref().is_some_and(|source| {
+        settings::offered(
+            &plugins.config,
+            source,
+            approval_mode,
+            registry.execution.interactive(),
+            isolated,
+        )
+    });
+
+    if adjustable {
+        specs.push(settings::spec());
+    }
+
     let scheduler = plugins.find(Capability::Scheduler).await.is_some();
     let schedules = scheduler && registry.execution.interactive() && !isolated && schedule_enabled;
 
@@ -418,6 +432,7 @@ pub(crate) async fn answer_with_registry(
             grants: grants(&plugins.config, source, tools_enabled, approval_mode),
             background: !registry.execution.interactive(),
             isolated,
+            adjustable,
             plugins: &installed,
         };
 
@@ -1528,9 +1543,19 @@ pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
         "checkpoint" | "input" => false,
         "job" => args["action"] != "list",
         "task" => matches!(args["kind"].as_str(), Some("background")),
-        "write" | "patch" | "shell" | "memory_remember" | "schedule_propose"
-        | "schedule_cancel" | "schedule_pause" | "schedule_resume" | "schedule_run"
-        | "schedule_retry" | "schedule_update" | "message_send" => true,
+        "write"
+        | "patch"
+        | "shell"
+        | "memory_remember"
+        | "schedule_propose"
+        | "schedule_cancel"
+        | "schedule_pause"
+        | "schedule_resume"
+        | "schedule_run"
+        | "schedule_retry"
+        | "schedule_update"
+        | "message_send"
+        | settings::TOOL => true,
         "read"
         | "list"
         | "search"

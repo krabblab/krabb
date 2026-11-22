@@ -973,6 +973,11 @@ pub(crate) async fn execute_tool_with_registry(
 
     let changes = mutating(name, &args);
 
+    let approval_mode = match approval_mode {
+        ApprovalMode::Auto if name == settings::TOOL => ApprovalMode::Prompt,
+        mode => mode,
+    };
+
     let approve = match (changes, approval_mode) {
         (false, _) => false,
 
@@ -1014,7 +1019,7 @@ pub(crate) async fn execute_tool_with_registry(
                     .display()
                     .to_string(),
             );
-            let cached = if workspace.is_some_and(worktree::isolated) {
+            let cached = if workspace.is_some_and(worktree::isolated) || name == settings::TOOL {
                 None
             } else {
                 approvals.lock().await.decision(&target, &approval_workspace, |previous| {
@@ -1146,6 +1151,23 @@ pub(crate) async fn execute_tool_with_registry(
 
     if name == "job" {
         return control_job(sessions, session, &args, plugins);
+    }
+
+    if name == settings::TOOL {
+        let source =
+            registry.source.as_ref().ok_or("This conversation has no settings section.")?;
+
+        if !settings::offered(
+            &plugins.config,
+            source,
+            approval_mode,
+            registry.execution.interactive(),
+            workspace.is_some_and(worktree::isolated),
+        ) {
+            return Err("Settings cannot be changed from this conversation.".into());
+        }
+
+        return Ok(ToolResult::text(settings::apply(&home(), source, &args)?));
     }
 
     if name == slash::TOOL {
