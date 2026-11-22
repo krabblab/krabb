@@ -3,7 +3,7 @@ use std::ops::Range;
 use krabb_text::{Document, Style as TextStyle};
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::Line,
 };
 
@@ -124,7 +124,7 @@ fn style(active: [usize; 5]) -> Style {
     }
 
     if active[3] > 0 {
-        style = style.fg(Color::Yellow);
+        style = style.fg(super::ACCENT_COLOR);
     }
 
     style
@@ -182,6 +182,11 @@ mod tests {
         assert!(styled("italic", Modifier::ITALIC));
         assert!(styled("old", Modifier::CROSSED_OUT));
         assert!(styled("a_b * c", Modifier::DIM));
+
+        assert!(spans.iter().any(|span| {
+            span.content.contains("a_b * c") && span.style.fg == Some(super::super::ACCENT_COLOR)
+        }));
+
         assert!(styled("quoted", Modifier::ITALIC));
         assert!(
             spans

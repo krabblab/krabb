@@ -22,6 +22,12 @@ on:
         type: string
         default: ""
 
+      packages:
+        description: "JSON array of packages to test; empty tests every package"
+        required: false
+        type: string
+        default: ""
+
       local:
         required: false
         type: string
@@ -71,8 +77,64 @@ jobs:
       - name: Report Metrics
         run: bash krabb-scripts/metrics.sh
 
+  # Selects the crates to test: every crate unless the caller names the packages it changed.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+
+    outputs:
+      crates: ${{ steps.plan.outputs.crates }}
+
+    steps:
+      - id: plan
+        name: Select Crates
+
+        env:
+          PACKAGES: ${{ inputs.packages }}
+
+        run: |
+          crates='[
+            {"name": "Core", "package": "krabb-core"},
+            {"name": "File", "package": "krabb-file"},
+            {"name": "Migrations", "package": "krabb-migrations"},
+            {"name": "Runtime", "package": "krabb-runtime"},
+            {"name": "CLI", "package": "krabb"},
+            {"name": "Daemon", "package": "krabb-daemon"},
+            {"name": "Anthropic Plugin", "package": "krabb-plugin-anthropic"},
+            {"name": "Codex Plugin", "package": "krabb-plugin-codex"},
+            {"name": "OpenAI Plugin", "package": "krabb-plugin-openai"},
+            {"name": "ACP Plugin", "package": "krabb-plugin-acp"},
+            {"name": "A2A Plugin", "package": "krabb-plugin-a2a"},
+            {"name": "Runner Plugin", "package": "krabb-plugin-runner"},
+            {"name": "AG-UI Plugin", "package": "krabb-plugin-ag-ui"},
+            {"name": "Gemini Plugin", "package": "krabb-plugin-gemini"},
+            {"name": "Ollama Plugin", "package": "krabb-plugin-ollama"},
+            {"name": "OpenRouter Plugin", "package": "krabb-plugin-openrouter"},
+            {"name": "Telegram Plugin", "package": "krabb-plugin-telegram"},
+            {"name": "Discord Plugin", "package": "krabb-plugin-discord"},
+            {"name": "WhatsApp Plugin", "package": "krabb-plugin-whatsapp"},
+            {"name": "Signal Plugin", "package": "krabb-plugin-signal"},
+            {"name": "Slack Plugin", "package": "krabb-plugin-slack"},
+            {"name": "Tools Plugin", "package": "krabb-plugin-tools"},
+            {"name": "Browser Plugin", "package": "krabb-plugin-browser"},
+            {"name": "Computer Plugin", "package": "krabb-plugin-computer"},
+            {"name": "Memory Plugin", "package": "krabb-plugin-memory"},
+            {"name": "Scheduler Plugin", "package": "krabb-plugin-scheduler"},
+            {"name": "SQLite Plugin", "package": "krabb-plugin-sqlite"},
+            {"name": "Whisper Plugin", "package": "krabb-plugin-whisper"},
+            {"name": "MCP Plugin", "package": "krabb-plugin-mcp"},
+            {"name": "TUI Plugin", "package": "krabb-plugin-tui"}
+          ]'
+
+          crates=$(jq -c --argjson packages "${PACKAGES:-null}" \
+            'map(select($packages == null or (.package | IN($packages[]))))' <<<"$crates")
+
+          printf 'crates=%s\n' "$crates" >> "$GITHUB_OUTPUT"
+
   crate:
     name: Crate (${{ matrix.name }})
+    needs: plan
+    if: needs.plan.outputs.crates != '[]'
     runs-on: ubuntu-latest
     container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
 
@@ -85,97 +147,7 @@ jobs:
       max-parallel: 6
 
       matrix:
-        include:
-          - name: Core
-            package: krabb-core
-
-          - name: File
-            package: krabb-file
-
-          - name: Migrations
-            package: krabb-migrations
-
-          - name: Runtime
-            package: krabb-runtime
-
-          - name: CLI
-            package: krabb
-
-          - name: Daemon
-            package: krabb-daemon
-
-          - name: Anthropic Plugin
-            package: krabb-plugin-anthropic
-
-          - name: Codex Plugin
-            package: krabb-plugin-codex
-
-          - name: OpenAI Plugin
-            package: krabb-plugin-openai
-
-          - name: ACP Plugin
-            package: krabb-plugin-acp
-
-          - name: A2A Plugin
-            package: krabb-plugin-a2a
-
-          - name: Runner Plugin
-            package: krabb-plugin-runner
-
-          - name: AG-UI Plugin
-            package: krabb-plugin-ag-ui
-
-          - name: Gemini Plugin
-            package: krabb-plugin-gemini
-
-          - name: Ollama Plugin
-            package: krabb-plugin-ollama
-
-          - name: OpenRouter Plugin
-            package: krabb-plugin-openrouter
-
-          - name: Telegram Plugin
-            package: krabb-plugin-telegram
-
-          - name: Discord Plugin
-            package: krabb-plugin-discord
-
-          - name: WhatsApp Plugin
-            package: krabb-plugin-whatsapp
-
-          - name: Signal Plugin
-            package: krabb-plugin-signal
-
-          - name: Slack Plugin
-            package: krabb-plugin-slack
-
-
-          - name: Tools Plugin
-            package: krabb-plugin-tools
-
-          - name: Browser Plugin
-            package: krabb-plugin-browser
-
-          - name: Computer Plugin
-            package: krabb-plugin-computer
-
-          - name: Memory Plugin
-            package: krabb-plugin-memory
-
-          - name: Scheduler Plugin
-            package: krabb-plugin-scheduler
-
-          - name: SQLite Plugin
-            package: krabb-plugin-sqlite
-
-          - name: Whisper Plugin
-            package: krabb-plugin-whisper
-
-          - name: MCP Plugin
-            package: krabb-plugin-mcp
-
-          - name: TUI Plugin
-            package: krabb-plugin-tui
+        include: ${{ fromJSON(needs.plan.outputs.crates) }}
 
     steps:
       - name: Checkout
@@ -196,6 +168,9 @@ jobs:
 
   browser_integration:
     name: Browser Integration
+    if: >-
+      inputs.packages == '' ||
+      contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-browser')
     runs-on: ubuntu-latest
 
     steps:
@@ -228,6 +203,9 @@ jobs:
 
   computer_integration:
     name: Computer Integration
+    if: >-
+      inputs.packages == '' ||
+      contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-computer')
     runs-on: ubuntu-latest
 
     steps:

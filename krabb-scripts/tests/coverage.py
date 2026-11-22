@@ -158,6 +158,39 @@ exit 0
         self.assertEqual(result.stderr.count('(exit 37)'), len(PACKAGES))
         self.assertNotIn('All package tests and coverage gates passed.', result.stdout)
 
+    def recording_cargo(self):
+        cargo = self.root / 'cargo fixture'
+
+        cargo.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> calls\n')
+        cargo.chmod(0o700)
+
+        self.env['CARGO'] = str(cargo)
+
+    def test_a_selection_gates_only_its_packages(self):
+        self.recording_cargo()
+
+        self.env['KRABB_COVERAGE_PACKAGES'] = 'krabb-daemon krabb-plugin-slack krabb-core'
+        result = self.gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        calls = (self.root / 'calls').read_text().splitlines()
+        tested = [line for line in calls if not line.startswith('llvm-cov clean')]
+
+        self.assertEqual(len(tested), 2)
+        self.assertIn('-p krabb-core', tested[0])
+        self.assertIn('-p krabb-daemon', tested[1])
+
+    def test_a_selection_outside_the_profile_runs_nothing(self):
+        self.recording_cargo()
+
+        self.env['KRABB_COVERAGE_PACKAGES'] = 'krabb-plugin-slack'
+        result = self.gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('No selected package has a coverage gate', result.stdout)
+        self.assertFalse((self.root / 'calls').exists())
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
