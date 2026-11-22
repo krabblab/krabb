@@ -258,7 +258,7 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
 
         if !details.is_empty() {
             output.push_str("\nHealth details:     ");
-            output.push_str(&details.join("; "));
+            output.push_str(&details.join(", "));
         }
     }
 

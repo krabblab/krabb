@@ -1156,25 +1156,22 @@ const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/history clear", "Clear saved TUI input history."),
     ("/history help", "Show input history commands."),
     ("/status", "Show whether the background runtime is running."),
-    ("/task", "List saved tasks; optionally pause, resume, cancel, approve, or deny one by ID."),
+    ("/task", "List saved tasks, or pause, resume, cancel, approve, or deny one by ID."),
     ("/task steer|defer|extend", "Redirect, delay, or extend a task: <id> <value>."),
-    ("/plugin", "Browse installed plugins; optionally choose a page."),
+    ("/plugin", "Browse installed plugins, optionally by page."),
     ("/session help", "Show session commands."),
-    ("/session list", "List saved sessions; optionally choose a page."),
+    ("/session list", "List saved sessions, optionally by page."),
     ("/session create <id>", "Create and switch to a session."),
     ("/session switch <id>", "Switch to a saved session."),
     ("/session rename <new-id>", "Rename the active session."),
     ("/session archive <id>...|--all", "Archive saved sessions."),
     ("/session unarchive <id>...|--all", "Restore archived sessions."),
-    ("/session delete <id>...|--all", "Permanently delete sessions; optionally pass -y or --deep."),
+    ("/session delete <id>...|--all", "Permanently delete sessions, optionally with -y or --deep."),
     ("/new <id>", "Create and switch to a session."),
-    (
-        "/workspace",
-        "Show or change this session's filesystem root; optionally set a path or reset it.",
-    ),
+    ("/workspace", "Show, set, or reset this session's filesystem root."),
     ("/clear", "Clear this session's conversation."),
-    ("/statusline", "Choose which details appear in the statusline; optionally reset it."),
-    ("/animation", "Show or configure typewriter animation; optionally turn it on or off."),
+    ("/statusline", "Choose which details appear in the statusline, or reset them."),
+    ("/animation", "Show typewriter animation, or turn it on or off."),
     ("/quit", "Leave the TUI."),
     ("/exit", "Leave the TUI."),
 ];
@@ -1457,11 +1454,12 @@ where
                         && character != '/' =>
                 {
                     app.status = if app.generation_active {
-                        "A response is running; use approval commands or Esc to interrupt.".into()
+                        "A response is running, so use approval commands or Esc to interrupt."
+                            .into()
                     } else if app.compaction_active {
-                        "Krabb is compacting this conversation. Wait for it to finish.".into()
+                        "Krabb is compacting this conversation, so wait for it to finish.".into()
                     } else {
-                        "This session is busy; wait for Krabb's turn to finish.".into()
+                        "This session is busy until Krabb's turn finishes.".into()
                     };
                 }
 
@@ -1552,12 +1550,15 @@ where
                         && !is_live_control
                     {
                         app.status = if app.generation_active {
-                            "A response is still running. Use /approvals, /approve, /deny, or Esc."
+                            "A response is still running, so use /approvals, /approve, /deny, or \
+                            Esc."
                                 .into()
                         } else if app.compaction_active {
-                            "Krabb is compacting this conversation. Wait for it to finish.".into()
+                            "Krabb is compacting this conversation, so wait for it to finish."
+                                .into()
                         } else {
-                            "Krabb is working in this session. Wait for the turn to finish.".into()
+                            "Krabb is working in this session, so wait for the turn to finish."
+                                .into()
                         };
 
                         if !app.generation_active && !app.compaction_active {
@@ -1656,7 +1657,10 @@ where
                     if line == "/animation" {
                         let state = if app.typewriter { "on" } else { "off" };
 
-                        app.push_bot(format!("Typewriter animation is {state}. Use /animation on or /animation off.\n"));
+                        app.push_bot(format!(
+                            "Typewriter animation is {state}.\nUse /animation \
+                                             on or /animation off.\n"
+                        ));
                         app.complete_local_interaction(format!("Typewriter animation is {state}."));
                         return Ok(false);
                     }

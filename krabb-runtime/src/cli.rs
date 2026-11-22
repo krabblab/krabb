@@ -159,7 +159,7 @@ pub(crate) enum PluginCommand {
     List(ListOutput),
     #[command(visible_alias = "add", about = "Install and activate one or more plugins.")]
     Install(PluginInstall),
-    #[command(about = "Review available plugin updates; pass -y to apply them.")]
+    #[command(about = "Review available plugin updates, or apply them with -y.")]
     Update(PluginUpdate),
     #[command(about = "List the published versions of an official plugin.")]
     Versions(Id),
@@ -490,10 +490,7 @@ pub(crate) struct PluginInstall {
     pub(crate) revision: Option<String>,
     #[arg(long, help = "Link a local build instead of copying its executable.")]
     pub(crate) link: bool,
-    #[arg(
-        long,
-        help = "Install the newest version, pre-releases included; pre-releases are pinned."
-    )]
+    #[arg(long, help = "Install and pin the newest version, pre-releases included.")]
     pub(crate) unstable: bool,
     #[arg(short, long, help = "Skip replacement confirmation.")]
     pub(crate) yes: bool,

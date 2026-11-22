@@ -318,7 +318,7 @@ fn parse_index(bytes: &[u8], local: bool) -> Result<Index, Error> {
 
 fn validate(index: &Index, local: bool) -> Result<(), String> {
     if index.schema != SCHEMA {
-        return Err(format!("it uses schema {}; update Krabb to read it", index.schema));
+        return Err(format!("it uses schema {}, so update Krabb to read it", index.schema));
     }
 
     if !registry(&index.registry, local) {
@@ -419,15 +419,15 @@ fn select_for<'a>(
 ) -> Result<Choice<'a>, Error> {
     let (target, extension) = releases::target(os, arch).ok_or_else(|| {
         format!(
-            "Official plugins are not published for {os} ({arch}); install from a local build \
-             with --source."
+            "Official plugins are not published for {os} ({arch}), so install from a local build \
+            with --source."
         )
     })?;
 
     let releases = index.plugins.get(id).ok_or_else(|| {
         format!(
-            "Plugin {id} is not in the official plugin index; check the ID or install with \
-             --source."
+            "Plugin {id} is not in the official plugin index.\nCheck the ID or install with \
+            --source."
         )
     })?;
 
@@ -436,14 +436,15 @@ fn select_for<'a>(
             let release =
                 releases.iter().find(|release| release.version == version).ok_or_else(|| {
                     format!(
-                        "Plugin {id} has no version {version}; run `krabb plugin versions {id}`."
+                        "Plugin {id} has no version {version}.\nSee the available ones with \
+                        `krabb plugin versions {id}`"
                     )
                 })?;
 
             if !protocol.compatible(release.protocol) {
                 return Err(format!(
-                    "Plugin {id} {version} needs plugin protocol {}.{}, which this Krabb does not \
-                     support; run `krabb plugin versions {id}`.",
+                    "Plugin {id} {version} needs plugin protocol {}.{}, which this Krabb does \
+                    not support.\nChoose another with `krabb plugin versions {id}`",
                     release.protocol.major, release.protocol.minor
                 )
                 .into());
@@ -464,8 +465,8 @@ fn select_for<'a>(
 
             if supported.is_empty() {
                 return Err(format!(
-                    "No {}version of {id} supports plugin protocol {}.{}; run `krabb plugin \
-                     versions {id}` to choose one.",
+                    "No {}version of {id} supports plugin protocol {}.{}.\nChoose one with \
+                    `krabb plugin versions {id}`",
                     if unstable { "" } else { "stable " },
                     protocol.major,
                     protocol.minor
@@ -479,8 +480,8 @@ fn select_for<'a>(
                 .max_by(|left, right| releases::compare(&left.version, &right.version))
                 .ok_or_else(|| {
                     format!(
-                        "No published version of {id} has a build for {target}; install from a \
-                         local build with --source."
+                        "No published version of {id} has a build for {target}, so install from \
+                        a local build with --source."
                     )
                 })?
         }
@@ -488,7 +489,8 @@ fn select_for<'a>(
 
     let artifact = release.artifacts.get(target).ok_or_else(|| {
         format!(
-            "Plugin {id} {} has no build for {target}; install from a local build with --source.",
+            "Plugin {id} {} has no build for {target}, so install from a local build with \
+            --source.",
             release.version
         )
     })?;
@@ -597,21 +599,21 @@ fn pin(index: &Index, id: &str, version: &str) -> Option<String> {
     lines.push(if releases::stable(version) {
         match latest {
             Some(latest) if latest != version => format!(
-                "{id} is pinned to {version}; the latest supported version is {latest}, so this \
-                 one is used at your own risk. {follow} follow updates again."
+                "{id} is pinned to {version}, and the latest supported version is {latest}.\nThe \
+                pinned version is used at your own risk.\n{follow} follow updates again."
             ),
 
-            _ => format!("{id} is pinned to {version}. {follow} follow updates again."),
+            _ => format!("{id} is pinned to {version}.\n{follow} follow updates again."),
         }
     } else if let Some(stable) = latest.filter(|stable| newer(stable)) {
         format!(
-            "{id} is pinned to pre-release {version}; {stable} is newer. {follow} follow stable \
-             releases."
+            "{id} is pinned to pre-release {version}, and {stable} is newer.\n{follow} follow \
+            stable releases."
         )
     } else if newest_version(true).is_some_and(|candidate| newer(candidate)) {
         format!(
-            "{id} is pinned to pre-release {version}. Run `krabb plugin install {id} --unstable \
-             --yes` to move to a newer pre-release."
+            "{id} is pinned to pre-release {version}.\nRun `krabb plugin install {id} --unstable \
+            --yes` to move to a newer pre-release."
         )
     } else {
         format!("{id} is pinned to pre-release {version}.")
@@ -642,7 +644,7 @@ pub(crate) fn versions(home: &Path, id: &str, json: bool) -> Result<(), Error> {
         .iter()
         .map(|row| match notes(row) {
             notes if notes.is_empty() => format!("{} ({})", row.version, row.released),
-            notes => format!("{} ({}) {}", row.version, row.released, notes.join("; ")),
+            notes => format!("{} ({}) {}", row.version, row.released, notes.join(", ")),
         })
         .collect::<Vec<_>>();
 
@@ -697,10 +699,9 @@ fn notes(row: &Row) -> Vec<String> {
 }
 
 fn history<'a>(index: &'a Index, id: &str, installed: Option<&str>) -> Result<Vec<Row<'a>>, Error> {
-    let releases = index
-        .plugins
-        .get(id)
-        .ok_or_else(|| format!("Plugin {id} is not in the official plugin index; check the ID."))?;
+    let releases = index.plugins.get(id).ok_or_else(|| {
+        format!("Plugin {id} is not in the official plugin index, so check the ID.")
+    })?;
 
     let latest = select(index, id, None, Protocol::CURRENT).ok().map(|choice| choice.release);
     let target = releases::target(std::env::consts::OS, std::env::consts::ARCH).map(|(t, _)| t);

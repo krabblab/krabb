@@ -888,7 +888,7 @@ async fn hatch_keeps_the_files_when_the_draft_is_unusable() {
     let reply = send(&fixture, &text, "/hatch be brief").await;
 
     assert!(reply.starts_with("The draft is missing === KRAB.md ==="), "{reply}");
-    assert!(reply.ends_with("Nothing changed; send /hatch again to retry."));
+    assert!(reply.ends_with("Nothing changed, so send /hatch again to retry."));
     assert!(send(&fixture, &text, "/hatch undo").await.contains("no previous personality"));
     assert_eq!(crate::hatch::read(&directory).unwrap(), crate::hatch::Files::default());
 }

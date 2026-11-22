@@ -22,7 +22,7 @@ const POLL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Args)]
 pub(super) struct Options {
-    #[arg(value_name = "VERSION", help = "Release to install; defaults to the latest stable one.")]
+    #[arg(value_name = "VERSION", help = "Release to install, by default the latest stable one.")]
     version: Option<String>,
     #[arg(long, conflicts_with = "version", help = "Restore the retained recovery point.")]
     rollback: bool,
@@ -92,7 +92,7 @@ async fn update(
         && !point.accepted
     {
         return Err(format!(
-            "The update to {} did not finish; run `krabb update --rollback` to restore Krabb {}.",
+            "The update to {} did not finish.\nRun `krabb update --rollback` to restore Krabb {}.",
             point.to, point.from
         )
         .into());
@@ -107,8 +107,8 @@ async fn update(
     match releases::compare(&version, VERSION) {
         std::cmp::Ordering::Less => {
             return Err(format!(
-                "Krabb {VERSION} is newer than {version}; use `krabb update --rollback` to \
-                 return to the retained recovery point."
+                "Krabb {VERSION} is newer than {version}.\nUse `krabb update --rollback` to \
+                return to the retained recovery point."
             )
             .into());
         }
@@ -126,7 +126,7 @@ async fn update(
 
     if !running && control_at("plugin.active", serde_json::json!({}), root).await?.is_some() {
         return Err(
-            "A Krabb daemon is running outside the service; stop it before updating.".into()
+            "A Krabb daemon is running outside the service, so stop it before updating.".into()
         );
     }
 
@@ -248,7 +248,7 @@ async fn update(
     } else {
         println!(
             "Updated Krabb {VERSION} to {version}.\nRun `krabb update --rollback` to return to \
-             {VERSION}; the recovery point is kept until the next update."
+            {VERSION}.\nThe recovery point is kept until the next update."
         );
     }
 
@@ -377,7 +377,7 @@ fn preview(
             }
 
             (Some(pinned), None) => {
-                format!(" (pin to {pinned} removed; it cannot run on {version})")
+                format!(" (pin to {pinned} removed because it cannot run on {version})")
             }
 
             (None, None) => String::new(),
@@ -434,7 +434,7 @@ fn preview(
     }
 
     let interruption = if running {
-        "service: restarts; replies pause until it is ready"
+        "service: restarts, and replies pause until it is ready"
     } else if service.is_file() {
         "service: stays stopped"
     } else {
@@ -444,8 +444,8 @@ fn preview(
     rows.push(interruption.into());
 
     let text = format!(
-        "Update Krabb {VERSION} to {version}\n{}\n\nA recovery point is kept; \
-         `krabb update --rollback` restores {VERSION}.",
+        "Update Krabb {VERSION} to {version}\n{}\n\nA recovery point is kept.\n`krabb update \
+        --rollback` restores {VERSION}.",
         format_tree_list(&rows)
     );
 
@@ -474,7 +474,7 @@ fn change(label: &str, before: &[String], after: &[String]) -> Option<String> {
         .map(|(verb, values)| format!("{verb} {}", values.join(", ")))
         .collect::<Vec<_>>();
 
-    (!parts.is_empty()).then(|| format!("{label}: {}", parts.join("; ")))
+    (!parts.is_empty()).then(|| format!("{label}: {}", parts.join(", ")))
 }
 
 #[cfg(test)]

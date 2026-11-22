@@ -124,7 +124,8 @@ pub(crate) async fn tool_with_registry(
             "remove" if value["deleted"] == true => format!("Schedule {} cancelled.", args["id"]),
             "remove" => format!("Schedule {} was not found.", args["id"]),
             "pause" if value["pause_requested"] == true => format!(
-                "Pause requested for schedule {}. The current run will finish, then the schedule will stay paused.",
+                "Pause requested for schedule {}.\nThe current run will finish, then the \
+                schedule will stay paused.",
                 args["id"]
             ),
             _ => format!(
@@ -309,7 +310,10 @@ pub(crate) async fn tool_with_registry(
         info!(schedule = schedule_id, "Scheduled task activated.");
 
         return Ok(ToolResult::text(format!(
-            "Schedule {} ({schedule_id}) is active.\n\nNext run: {due}\nTools: {tools_note}\nShell: {shell_note}{frequency}\nAutomatic retries: {retries}. {retry_note} {failure_note}\n\nCheck it with /schedule list; pause it with /schedule pause {schedule_id}.",
+            "Schedule {} ({schedule_id}) is active.\n\nNext run: {due}\nTools: \
+            {tools_note}\nShell: {shell_note}{frequency}\nAutomatic retries: \
+            {retries}\n{retry_note}\n{failure_note}\n\nCheck it with /schedule list\nPause it \
+            with /schedule pause {schedule_id}",
             schedule["name"].as_str().unwrap_or("Scheduled task")
         )));
     }

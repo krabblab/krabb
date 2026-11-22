@@ -341,7 +341,7 @@ fn existing(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!(
-                        "{} is larger than {} KiB; shorten it by hand first.",
+                        "{} is larger than {} KiB, so shorten it by hand first.",
                         path.display(),
                         READ_LIMIT / 1024
                     ),
@@ -424,7 +424,7 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
     let directory = root.join("data/system");
 
     if !directory.is_dir() {
-        return Err("Krabb is not initialized. Run `krabb init` first.".into());
+        return Err("Krabb is not initialized.\nRun `krabb init` first.".into());
     }
 
     if args.undo {

@@ -75,7 +75,7 @@ pub(crate) fn format_plugin_list(items: &[Value], page: usize) -> Result<String,
 
         let binary = match health {
             "ready" => "Binary is present (credentials not checked)".into(),
-            "missing" => "Binary is missing; reinstall the plugin from its source".into(),
+            "missing" => "Binary is missing, so reinstall the plugin from its source".into(),
             _ => format!("Health is {health}"),
         };
 
@@ -231,7 +231,7 @@ pub(crate) fn page_bounds(
 
     if page > pages {
         return Err(format!(
-            "Page {page} is out of range. Choose a page from 1 to {pages} for {kind}."
+            "Page {page} is out of range for {kind}, which has pages 1 to {pages}."
         ));
     }
 

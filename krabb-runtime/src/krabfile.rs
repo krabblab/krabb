@@ -36,7 +36,8 @@ impl Krabfile {
         for plugin in &self.plugins {
             if !valid(&plugin.id) {
                 return Err(format!(
-                    "plugin {} has an invalid ID; use lowercase letters, digits, or hyphens",
+                    "plugin {} has an invalid ID, which must use lowercase letters, digits, or \
+                    hyphens",
                     plugin.id
                 ));
             }

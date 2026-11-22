@@ -148,12 +148,13 @@ fn fields(root: &Path, id: &str) -> Result<Vec<Field>, Error> {
         || manifest.variables != entry.variables
         || manifest.settings != entry.settings
     {
-        return Err("Plugin setup changed; review and reinstall the plugin before setup.".into());
+        return Err("Plugin setup changed, so review and reinstall the plugin before setup.".into());
     }
 
     if entry.variables.is_empty() && entry.settings.is_empty() {
         return Err(
-            "This plugin declares no secrets or settings; use its own authentication flow.".into(),
+            "This plugin declares no secrets or settings, so use its own authentication flow."
+                .into(),
         );
     }
 
@@ -239,14 +240,10 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
 
 async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Value {
     let (active, message) = if offline {
-        (false, "Activation skipped. Start or restart the runtime when ready.".to_owned())
+        (false, "Activation skipped.\nStart or restart the runtime when ready.".to_owned())
     } else {
-        match super::control_at(
-            "plugin.setup",
-            json!({"id": id, "credentials": destination}),
-            root,
-        )
-        .await
+        match super::control_at("plugin.setup", json!({"id": id, "credentials": destination}), root)
+            .await
         {
             Ok(Some(result)) if result["loaded"] == true => {
                 (true, "Plugin loaded in the running daemon.".to_owned())
@@ -254,11 +251,16 @@ async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Val
 
             Ok(None) => (false, "Start the runtime to activate the plugin.".to_owned()),
             // Plugin errors can contain provider responses. Never include them in setup output.
-            _ => (false, concat!(
-                "Credentials saved; activation is pending. Check that the daemon uses the same ",
-                "credential file and has no overriding setup environment variables. ",
-                "Restart an older daemon, then run krabb doctor."
-            ).to_owned()),
+            _ => (
+                false,
+                concat!(
+                    "Credentials saved, and activation is pending.\n",
+                    "Check that the daemon uses the same credential file and has no overriding ",
+                    "setup environment variables.\n",
+                    "Restart an older daemon, then run krabb doctor."
+                )
+                .to_owned(),
+            ),
         }
     };
 
@@ -379,7 +381,9 @@ impl Drop for Terminal {
 
 fn prompt(field: &Field, error: Option<&str>) -> Result<String, Error> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return Err("Setup requires an interactive terminal; secret input cannot be piped.".into());
+        return Err(
+            "Setup requires an interactive terminal, because secret input cannot be piped.".into(),
+        );
     }
 
     if let Some(error) = error {
@@ -421,7 +425,7 @@ fn hint(field: &Field) -> String {
     let clear = if field.prompt.required { "" } else { ", - clears" };
 
     if field.saved {
-        format!("{} [saved; Enter keeps{clear}]", field.label())
+        format!("{} [saved, Enter keeps{clear}]", field.label())
     } else if let Some(default) = &field.default {
         format!("{} [Enter uses {default}]", field.label())
     } else if field.secret && !field.prompt.required {
@@ -458,10 +462,13 @@ fn input(echo: bool, mut next: impl FnMut() -> io::Result<Event>) -> Result<Stri
 
             match key.code {
                 KeyCode::Enter => return Ok(value),
-                KeyCode::Esc => return Err("Setup cancelled; credentials were not saved.".into()),
+
+                KeyCode::Esc => {
+                    return Err("Setup cancelled, and credentials were not saved.".into());
+                }
 
                 KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Err("Setup cancelled; credentials were not saved.".into());
+                    return Err("Setup cancelled, and credentials were not saved.".into());
                 }
 
                 KeyCode::Backspace => {
@@ -495,7 +502,7 @@ pub(super) fn activation(root: &Path, id: &str, destination: &Path) -> Result<()
     let fields = fields(root, id)?;
 
     if fields.iter().any(|field| super::env_nonempty(&field.name)) {
-        return Err("The daemon has overriding setup environment variables; restart it.".into());
+        return Err("The daemon has overriding setup environment variables, so restart it.".into());
     }
 
     super::load_lock_at(root)?.plugins.remove(id).ok_or("Plugin is not installed.")?;

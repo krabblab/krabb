@@ -121,7 +121,7 @@ pub(crate) fn doctor_at(
 
     if fix {
         if repairs.is_empty() {
-            info!(healthy, "Doctor repair completed; no changes were needed.");
+            info!(healthy, "Doctor repair completed with no changes needed.");
         } else {
             info!(repair_count = repairs.len(), healthy, "Doctor applied repairs.");
         }

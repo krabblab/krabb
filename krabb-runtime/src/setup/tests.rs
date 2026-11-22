@@ -1196,11 +1196,11 @@ fn prompts_explain_fields_and_show_how_enter_behaves() {
 
     field.saved = true;
 
-    assert_eq!(hint(&field), "Bot token [saved; Enter keeps]");
+    assert_eq!(hint(&field), "Bot token [saved, Enter keeps]");
 
     field.prompt.required = false;
 
-    assert_eq!(hint(&field), "Bot token [saved; Enter keeps, - clears]");
+    assert_eq!(hint(&field), "Bot token [saved, Enter keeps, - clears]");
 
     field.saved = false;
 
