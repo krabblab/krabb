@@ -10842,6 +10842,7 @@ fn checks_plugin_readiness() {
         !super::ready_with("telegram", None, Path::new("unused"), |_| false)
             || std::env::var_os("KRABB_TELEGRAM_TOKEN").is_some_and(|token| !token.is_empty())
     );
+
     assert!(!super::codex_auth() || super::ready("codex"));
 }
 
