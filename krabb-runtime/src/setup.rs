@@ -206,7 +206,8 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     let saved = super::credentials::read(&destination, &key)?;
 
     for field in &mut fields {
-        field.saved = saved.get(&field.name).is_some_and(|value| !value.is_empty());
+        field.saved = saved.get(&field.name).is_some_and(|value| !value.is_empty())
+            && !options.defaults.contains_key(&field.name);
     }
 
     let answers = collect(&fields, prompt)?;

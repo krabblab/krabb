@@ -84,11 +84,11 @@ impl Store {
         let refusal = if !job.tools {
             Some(
                 "This conversation has no tool access, so actions that need approval cannot \
-                 run here. The owner can allow them with `tools = true` in this channel's \
-                 configuration.",
+                 run here.\nThe owner can allow them with `tools = true` and an approval mode \
+                 other than off in this conversation's section of config.toml.",
             )
         } else if job.approval.is_some() {
-            Some("Another approval is already waiting; wait for that decision first.")
+            Some("Another approval is already waiting, so wait for that decision first.")
         } else if job.uncertain {
             Some("The task stopped at an uncertain step and cannot request approval.")
         } else {

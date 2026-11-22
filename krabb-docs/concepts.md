@@ -82,8 +82,9 @@ documentation. Each turn also states the conversation's own effective settings: 
 configuration section, model, approval mode, and whether workspace tools, shell,
 schedules, and memory are on, with the setting each one needs. Krabb can then tell a
 misconfiguration from a bug and name the setting to change. It sees only its own
-section, never the settings of other channels or clients. Conversation history is a
-bounded transcript of up to 1,000 messages, counting tool calls and results. When the
+section and no secrets, never the settings of other channels or clients. Anyone in a
+group chat can ask it about these settings. Conversation history is a bounded
+transcript of up to 1,000 messages, counting tool calls and results. When the
 model's context fills up, older turns are summarized in what the model sees while the
 stored history stays intact; models with no known context window see a `/compact`
 summary or the opening request, plus the latest 100 messages. Krabb does not load

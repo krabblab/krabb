@@ -374,7 +374,9 @@ pub(crate) fn interview(
         "Let's hatch your Krabb.\nAnswer in your own words and in any language."
     };
 
-    writeln!(output, "{intro}\nPress Enter on any question to keep its current setting.")?;
+    let enter = if rerun { "keep its current setting" } else { "skip it" };
+
+    writeln!(output, "{intro}\nPress Enter on any question to {enter}.")?;
 
     let mut answers = Vec::with_capacity(QUESTIONS.len());
     let mut section = "";
@@ -525,15 +527,23 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
 
     if !args.yes {
         eprintln!("{}\n", draft.summary);
-        eprintln!("Save this personality?\n");
 
-        let choice = crate::choice::pick(&["Save it", "Discard it"], 0)?;
+        loop {
+            eprintln!("Save this personality?\n");
 
-        eprintln!();
+            let choice = crate::choice::pick(&["Save it", "Show the files", "Discard it"], 0)?;
 
-        if choice != Some(0) {
-            crate::agent::print_cancelled("Hatching", json);
-            return Ok(());
+            eprintln!();
+
+            match choice {
+                Some(0) => break,
+                Some(1) => eprintln!("{}\n{}", draft.files.krab, draft.files.klaw),
+
+                _ => {
+                    crate::agent::print_cancelled("Hatching", json);
+                    return Ok(());
+                }
+            }
         }
     }
 

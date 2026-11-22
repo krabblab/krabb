@@ -25,15 +25,17 @@ pub(crate) enum Step {
 
 const ALL: [Step; 5] = [Step::Home, Step::Provider, Step::Hatch, Step::Channel, Step::Service];
 
-/// An official plugin a step offers, with the label people choose it by.
+/// An official plugin a step offers, with the label people choose it by and the key a flag
+/// names it with.
 struct Offer {
     label: &'static str,
+    key: &'static str,
     id: &'static str,
     defaults: &'static [(&'static str, &'static str)],
 }
 
 const fn offer(label: &'static str, id: &'static str) -> Offer {
-    Offer { label, id, defaults: &[] }
+    Offer { label, key: id, id, defaults: &[] }
 }
 
 const PROVIDERS: [Offer; 7] = [
@@ -45,6 +47,7 @@ const PROVIDERS: [Offer; 7] = [
     offer("Ollama Cloud", "ollama"),
     Offer {
         label: "Ollama Local",
+        key: "ollama-local",
         id: "ollama",
         defaults: &[("KRABB_OLLAMA_HOST", "http://127.0.0.1:11434")],
     },
@@ -124,9 +127,12 @@ fn plan(args: &InitArgs, interactive: bool) -> Result<Vec<Step>, String> {
         steps.push(Step::Channel);
     }
 
-    if steps.is_empty() {
-        steps = if interactive { ALL.to_vec() } else { vec![Step::Home] };
+    if steps.is_empty() && interactive {
+        steps.extend(ALL);
+    }
 
+    if steps.is_empty() {
+        steps.push(Step::Home);
     }
 
     steps.sort();
@@ -159,11 +165,11 @@ fn plan(args: &InitArgs, interactive: bool) -> Result<Vec<Step>, String> {
     Ok(steps)
 }
 
-fn find<'a>(offers: &'a [Offer], id: &str) -> Result<&'a Offer, String> {
-    offers.iter().find(|offer| offer.id == id).ok_or_else(|| {
-        let ids = offers.iter().map(|offer| offer.id).collect::<Vec<_>>();
+fn find<'a>(offers: &'a [Offer], key: &str) -> Result<&'a Offer, String> {
+    offers.iter().find(|offer| offer.key == key).ok_or_else(|| {
+        let keys = offers.iter().map(|offer| offer.key).collect::<Vec<_>>();
 
-        format!("Unknown choice {id}, so use one of {}.", ids.join(", "))
+        format!("Unknown choice {key}, so use one of {}.", keys.join(", "))
     })
 }
 
@@ -243,7 +249,7 @@ impl Guide {
                 return Ok(Flow::Next);
             }
 
-            let question = format!("Your Krabb thinks with the {current} provider. Change it?");
+            let question = format!("Change the {current} provider your Krabb thinks with?");
 
             match self.ask(&question, &["Keep it", "Choose another"])? {
                 None => return Ok(Flow::Stop),
@@ -276,14 +282,17 @@ impl Guide {
 
         self.install(offer, "provider").await?;
 
-        let assignment = format!("provider={}", toml::Value::String(offer.id.into()));
+        let config = crate::load_config_at(&self.root)?;
 
-        crate::config_command(
-            ConfigCommand::Set(ConfigSet { assignment, force: false }),
-            &self.root,
-            false,
-        )
-        .await?;
+        if config.provider.as_deref() != Some(offer.id) {
+            let provider = toml::Value::String(offer.id.into());
+
+            for assignment in [format!("provider={provider}"), "model=\"default\"".to_owned()] {
+                let set = ConfigSet { assignment, force: false };
+
+                crate::config_command(ConfigCommand::Set(set), &self.root, false).await?;
+            }
+        }
 
         self.done(&format!("Your Krabb thinks with the {} provider.", offer.id));
         Ok(Flow::Next)
@@ -357,25 +366,42 @@ impl Guide {
         self.require_home()?;
         self.section("Service");
 
-        if crate::service::service_path().is_file() && !self.named(Step::Service) {
+        let installed = crate::service::service_path().is_file();
+
+        if installed && !self.named(Step::Service) {
             self.done("Your Krabb runs as a background service.");
             return Ok(Flow::Next);
         }
 
-        if self.interactive {
-            match self.ask("Keep your Krabb running in the background?", &YES_LATER)? {
+        let (question, options) = if installed {
+            ("Replace the background service that is already installed?", ["Keep it", "Replace it"])
+        } else {
+            ("Keep your Krabb running in the background?", YES_LATER)
+        };
+
+        let replace = if self.interactive {
+            match self.ask(question, &options)? {
                 None => return Ok(Flow::Stop),
+                Some(0) if !installed => false,
+                Some(0) => return Ok(Flow::Next),
 
-                Some(0) => {}
-
-                Some(_) => {
+                Some(_) if !installed => {
                     self.note("Start it later with `krabb init service`");
                     return Ok(Flow::Next);
                 }
+
+                Some(_) => true,
             }
+        } else {
+            false
+        };
+
+        if !installed || replace {
+            let install = ServiceInstall { force: replace };
+
+            crate::service::service(ServiceCommand::Install(install), false)?;
         }
 
-        crate::service::service(ServiceCommand::Install(ServiceInstall { force: true }), false)?;
         crate::service::service(ServiceCommand::Start, false)?;
         self.done("Your Krabb runs as a background service.");
         Ok(Flow::Next)
@@ -383,7 +409,7 @@ impl Guide {
 
     /// Installs OFFER unless it already is, then asks for its secrets and settings.
     async fn install(&self, offer: &Offer, kind: &str) -> Result<(), Error> {
-        if self.root.join("plugins").join(offer.id).exists() {
+        if crate::load_lock_at(&self.root)?.plugins.contains_key(offer.id) {
             self.done(&format!("The {} {kind} is already installed.", offer.id));
         } else {
             let install = PluginInstall {
@@ -405,9 +431,15 @@ impl Guide {
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect();
 
-        if crate::setup::needed(&self.root, offer.id)? {
+        if !crate::setup::needed(&self.root, offer.id)? {
+            return Ok(());
+        }
+
+        if self.interactive {
             crate::setup::run(crate::setup::Options::new(offer.id, defaults), &self.root, false)
                 .await?;
+        } else {
+            self.note(&format!("Set up its secrets with `krabb plugin setup {}`", offer.id));
         }
 
         Ok(())
@@ -422,7 +454,7 @@ impl Guide {
             println!("Your Krabb is set up, and it needs a provider to answer.");
         }
 
-        if self.root.join("plugins/tui").exists() {
+        if crate::load_lock_at(&self.root)?.plugins.contains_key("tui") {
             println!("Chat with it in the terminal with `krabb tui`");
         }
 

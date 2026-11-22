@@ -107,6 +107,10 @@ impl Drop for Raw {
 /// Shows OPTIONS under the current line and returns the chosen index, or `None` when the
 /// person cancels. The list is replaced by the chosen option once picked.
 pub(crate) fn pick(options: &[&str], selected: usize) -> std::io::Result<Option<usize>> {
+    if options.is_empty() {
+        return Ok(None);
+    }
+
     let mut picker = Picker { selected: selected.min(options.len() - 1), len: options.len() };
     let mut output = std::io::stderr();
     let color = colors();

@@ -46,6 +46,12 @@ fn without_a_terminal_each_question_needs_its_flag() {
 
     assert!(unknown.starts_with("Unknown choice skynet, so use one of openai, anthropic"));
     assert!(plan(&args(&["--channel", "carrier-pigeon"]), true).is_err());
+
+    let local = find(&PROVIDERS, "ollama-local").unwrap();
+
+    assert_eq!((local.label, local.id), ("Ollama Local", "ollama"));
+    assert_eq!(local.defaults, [("KRABB_OLLAMA_HOST", "http://127.0.0.1:11434")]);
+    assert_eq!(find(&PROVIDERS, "ollama").unwrap().label, "Ollama Cloud");
 }
 
 #[test]

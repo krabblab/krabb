@@ -1822,7 +1822,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
 
     if !layout_is_current {
         let (mut rows, messages) =
-            wrap_transcript_layout(&app.transcript, &app.name, transcript_width, None);
+            wrap_transcript_layout(&app.transcript, &app.name, transcript_width);
 
         if !app.theme_enabled {
             strip_transcript_colors(&mut rows);
@@ -2351,14 +2351,13 @@ fn save_preferences(
 
 #[cfg(test)]
 fn wrap_transcript(transcript: &str, name: &str, width: u16) -> Vec<Line<'static>> {
-    wrap_transcript_layout(transcript, name, width, None).0
+    wrap_transcript_layout(transcript, name, width).0
 }
 
 fn wrap_transcript_layout(
     transcript: &str,
     name: &str,
     width: u16,
-    hovered_message: Option<usize>,
 ) -> (Vec<Line<'static>>, Vec<MessageLayout>) {
     if width == 0 {
         return (Vec::new(), Vec::new());
@@ -2420,7 +2419,6 @@ fn wrap_transcript_layout(
                 body_end -= 1;
             }
 
-            let message_index = messages.len();
             let start = rows.len();
             rows.extend(wrap_rail_message(
                 title,
@@ -2429,7 +2427,7 @@ fn wrap_transcript_layout(
                 width,
                 is_user,
                 is_system,
-                hovered_message == Some(message_index),
+                false,
             ));
 
             let title = offset(line)..offset(line) + line.len();
@@ -4791,6 +4789,12 @@ mod tests {
         assert_eq!(super::message_timestamp("tui-compact-1792380000000000000"), None);
     }
 
+    fn hover_rows(transcript: &str, width: u16, index: usize) -> Vec<Line<'static>> {
+        let (_, messages) = super::wrap_transcript_layout(transcript, "Krabb", width);
+
+        super::wrap_message(transcript, "Krabb", width, &messages[index], true)
+    }
+
     #[test]
     fn scheduled_result_timestamp_uses_the_recorded_date_on_hover() {
         let timestamp = super::message_timestamp("schedule-notice-at-1700000000000-7-9").unwrap();
@@ -4799,16 +4803,12 @@ mod tests {
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
-        let hidden = super::wrap_transcript_layout(&transcript, "Krabb", 80, None)
+        let hidden = super::wrap_transcript_layout(&transcript, "Krabb", 80)
             .0
             .iter()
             .map(row_text)
             .collect::<String>();
-        let hovered = super::wrap_transcript_layout(&transcript, "Krabb", 80, Some(0))
-            .0
-            .iter()
-            .map(row_text)
-            .collect::<String>();
+        let hovered = hover_rows(&transcript, 80, 0).iter().map(row_text).collect::<String>();
 
         assert!(timestamp.starts_with("2023-"));
         assert!(!hidden.contains(&timestamp));
@@ -5106,7 +5106,7 @@ mod tests {
             "[Source](https://example.com)"
         );
 
-        let (mut rows, ranges) = super::wrap_transcript_layout(transcript, "Krabb", 80, None);
+        let (mut rows, ranges) = super::wrap_transcript_layout(transcript, "Krabb", 80);
         let rendered = |rows: &[Line<'_>]| {
             rows.iter()
                 .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
@@ -5152,7 +5152,7 @@ mod tests {
             "const speaker = \"System\";\nSystem\n",
             "const answer = 42;\n```\nAfter the example."
         );
-        let (rows, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60, None);
+        let (rows, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60);
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
         let rendered = rows.iter().map(row_text).collect::<Vec<_>>();
@@ -5229,7 +5229,7 @@ mod tests {
             "You | 2026-10-03 at 12:01\nNext turn."
         );
 
-        let (_, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60, None);
+        let (_, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60);
 
         assert_eq!(message_ranges.len(), 2);
     }
@@ -5240,21 +5240,20 @@ mod tests {
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
-        let rows = super::wrap_transcript_layout(transcript, "Krabb", 80, None).0;
+        let rows = super::wrap_transcript_layout(transcript, "Krabb", 80).0;
         let visible = rows.iter().map(row_text).collect::<String>();
 
         assert!(visible.contains("You"));
         assert!(visible.contains("Krabb"));
         assert!(!visible.contains("2026-10-01"));
 
-        let hovered = super::wrap_transcript_layout(transcript, "Krabb", 80, Some(1)).0;
+        let hovered = hover_rows(transcript, 80, 1);
         let hovered = hovered.iter().map(row_text).collect::<String>();
 
         assert!(!hovered.contains("You, 2026-10-01"));
         assert!(hovered.contains("Krabb, 2026-10-01 at 12:27"));
 
-        let header = super::wrap_transcript_layout(transcript, "Krabb", 80, Some(1))
-            .0
+        let header = hover_rows(transcript, 80, 1)
             .into_iter()
             .find(|row| row.spans.iter().any(|span| span.content == "Krabb"))
             .unwrap();
