@@ -235,6 +235,7 @@ struct App {
     generation_active: bool,
     compaction_active: bool,
     session_working: bool,
+    running_command: Option<(String, Instant)>,
     generation_started: Option<Instant>,
     compaction_started: Option<Instant>,
     generation_message: &'static str,
@@ -662,6 +663,18 @@ where
                         app.finish_compaction();
                     }
 
+                    Some(crate::EngineEvent::CommandStarted(name)) => {
+                        app.running_command = Some((name, Instant::now()));
+                    }
+
+                    Some(crate::EngineEvent::CommandFinished) => {
+                        app.running_command = None;
+                    }
+
+                    Some(crate::EngineEvent::UserSaved(line)) => {
+                        app.mark_user_line_saved(&line);
+                    }
+
                     Some(crate::EngineEvent::GenerationFinished { interrupted }) => {
                         app.finish_generation(interrupted);
                     }
@@ -827,9 +840,13 @@ where
 
                 crate::EngineEvent::Progress(text) => app.push_progress(&text),
 
+                crate::EngineEvent::UserSaved(line) => app.mark_user_line_saved(&line),
+
                 crate::EngineEvent::GenerationStarted => {}
 
                 crate::EngineEvent::CompactionStarted | crate::EngineEvent::CompactionFinished => {}
+
+                crate::EngineEvent::CommandStarted(_) | crate::EngineEvent::CommandFinished => {}
 
                 crate::EngineEvent::GenerationFinished { .. } => {}
             }
@@ -1758,7 +1775,6 @@ where
                             app.begin_compaction();
                         }
 
-                        app.mark_pending_user_message_persisted();
                         command_tx.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
                         command_tx.write_all(b"\n").await?;
 
@@ -1843,7 +1859,11 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         suggestions.as_ref().map_or(0, |items| items.len().min(7) as u16)
     };
 
-    let is_working = app.generation_active || app.compaction_active || app.session_working;
+    let is_working = app.generation_active
+        || app.compaction_active
+        || app.session_working
+        || app.running_command.is_some();
+
     let composer_gap = if is_working { 0 } else { COMPOSER_GAP_ROWS };
 
     let picker_gap = if popup_rows > 0 { COMPOSER_GAP_ROWS } else { 0 };
@@ -2008,29 +2028,29 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     );
 
     if is_working && content_height > 0 {
-        let text = if app.compaction_active {
-            let elapsed = app
-                .compaction_started
-                .map(|started| format_elapsed(started.elapsed()))
-                .unwrap_or_else(|| "0s".into());
+        let started = if app.compaction_active {
+            app.compaction_started
+        } else if app.generation_active {
+            app.generation_started
+        } else {
+            app.running_command.as_ref().map(|(_, started)| *started)
+        };
 
-            format!("{}  |  {elapsed}", app.compaction_message)
+        let elapsed_label =
+            started.map_or_else(|| "0s".into(), |started| format_elapsed(started.elapsed()));
+
+        let text = if app.compaction_active {
+            format!("{}  |  {elapsed_label}", app.compaction_message)
         } else if app.generation_active {
             let indicator =
                 if app.interrupt_requested { "Stopping…" } else { "Esc to interrupt" };
 
-            let elapsed = app
-                .generation_started
-                .map(|started| format_elapsed(started.elapsed()))
-                .unwrap_or_else(|| "0s".into());
-
-            format!("{}  |  {indicator}  |  {elapsed}", app.generation_message)
+            format!("{}  |  {indicator}  |  {elapsed_label}", app.generation_message)
+        } else if let Some((name, _)) = &app.running_command {
+            format!("Krabb is running {name}  |  {elapsed_label}")
         } else {
             "Krabb is working in this session  |  waiting for the turn to finish".into()
         };
-
-        let started =
-            if app.compaction_active { app.compaction_started } else { app.generation_started };
 
         let elapsed = started.map_or_else(
             || {
@@ -3295,8 +3315,14 @@ impl App {
         });
     }
 
-    fn mark_pending_user_message_persisted(&mut self) {
-        if let Some(interaction) = self.pending_interactions.back_mut() {
+    /// Marks the interaction whose line the engine saved with its turn. Commands answered
+    /// without a turn never get here, so their line is saved with the reply instead.
+    fn mark_user_line_saved(&mut self, line: &str) {
+        let interaction = self.pending_interactions.iter_mut().find(|interaction| {
+            !interaction.user_message_persisted && interaction.input.trim() == line
+        });
+
+        if let Some(interaction) = interaction {
             interaction.user_message_persisted = true;
         }
     }
@@ -4063,6 +4089,7 @@ mod tests {
         .await
         .unwrap();
 
+        app.mark_user_line_saved("ping");
         app.generation_active = true;
         app.push_request_failure("Request failed: The selected model plugin is not running.");
         app.finish_generation(false);
@@ -4514,6 +4541,93 @@ mod tests {
 
         assert!(!app.compaction_active);
         assert!(app.compaction_started.is_none());
+    }
+
+    #[tokio::test]
+    async fn saves_a_command_line_the_engine_did_not_save() {
+        let (mut command_tx, _command_rx) = tokio::io::duplex(1024);
+
+        let mut app = App {
+            name: "Krabb".into(),
+            session: "default".into(),
+            model_available: true,
+            input: "  /hatch be brief".chars().collect(),
+            cursor: 17,
+            ..App::default()
+        };
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let saved = app.push_assistant_output("I'm brief now.\n> ".into());
+
+        assert_eq!(saved.len(), 1);
+
+        let appended = std::sync::Mutex::new(Vec::new());
+
+        let host = |_home: String, method: String, params: serde_json::Value| {
+            appended.lock().unwrap().push((method, params));
+            async { Ok(serde_json::json!({})) }
+        };
+
+        for interaction in saved {
+            super::persist_interaction("home", interaction, host).await.unwrap();
+        }
+
+        let appended = appended.into_inner().unwrap();
+        let texts = appended
+            .iter()
+            .map(|(_, params)| params["message"]["content"][0]["text"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(appended.iter().all(|(method, _)| method == "session.append"));
+        assert_eq!(texts, ["  /hatch be brief", "I'm brief now."]);
+    }
+
+    #[test]
+    fn marks_only_the_interaction_whose_line_the_engine_saved() {
+        let mut app = App { session: "default".into(), ..App::default() };
+
+        app.begin_interaction("/approve abc");
+        app.begin_interaction(" hello ");
+        app.mark_user_line_saved("hello");
+        app.mark_user_line_saved("also do this");
+
+        let saved = app
+            .pending_interactions
+            .iter()
+            .map(|interaction| interaction.user_message_persisted)
+            .collect::<Vec<_>>();
+
+        assert_eq!(saved, [false, true]);
+    }
+
+    #[test]
+    fn shows_progress_while_a_shared_command_runs() {
+        let mut app = App {
+            name: "Krabb".into(),
+            running_command: Some(("/hatch".into(), std::time::Instant::now())),
+            ..App::default()
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Krabb is running /hatch"));
     }
 
     #[test]

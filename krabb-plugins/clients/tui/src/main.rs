@@ -159,6 +159,9 @@ enum EngineEvent {
     GenerationStarted,
     CompactionStarted,
     CompactionFinished,
+    CommandStarted(String),
+    CommandFinished,
+    UserSaved(String),
     AssistantText(String),
     SystemText(String),
     RequestFailed(String),
@@ -1234,11 +1237,23 @@ where
             let reply = reply_command(line);
 
             if line.starts_with('/') && reply.is_none() {
-                let text = if shared(line) {
-                    shared_command(&home, &session, line, host).await
-                } else {
-                    unknown_command(line)
-                };
+                if !shared(line) {
+                    output.write_all(format!("{}\n> ", unknown_command(line)).as_bytes()).await?;
+                    output.flush().await?;
+                    continue;
+                }
+
+                let name = line.split_whitespace().next().unwrap_or(line);
+
+                if let Some(events) = &engine_events {
+                    let _ = events.send(EngineEvent::CommandStarted(name.into()));
+                }
+
+                let text = shared_command(&home, &session, line, host).await;
+
+                if let Some(events) = &engine_events {
+                    let _ = events.send(EngineEvent::CommandFinished);
+                }
 
                 output.write_all(format!("{text}\n> ").as_bytes()).await?;
                 output.flush().await?;
@@ -1250,6 +1265,8 @@ where
                 output.flush().await?;
                 continue;
             }
+
+            let submitted = line;
 
             let (line, reply_to) = match reply {
                 Some(Some((target, text))) => (text, Some(target)),
@@ -1406,6 +1423,7 @@ where
             messages.push(user);
 
             if let Some(events) = &engine_events {
+                let _ = events.send(EngineEvent::UserSaved(submitted.into()));
                 let _ = events.send(EngineEvent::GenerationStarted);
             }
 
@@ -1475,6 +1493,7 @@ where
                                 &reservation.owner,
                                 command,
                                 &mut sequence,
+                                engine_events.as_ref(),
                                 host,
                             )
                             .await?;
@@ -2312,6 +2331,7 @@ async fn resolve_turn_approval<C, F>(
     owner: &str,
     command: &str,
     sequence: &mut u64,
+    events: Option<&mpsc::UnboundedSender<EngineEvent>>,
     host: C,
 ) -> krabb_core::Result<String>
 where
@@ -2389,6 +2409,10 @@ where
         serde_json::json!({"id": session, "owner": owner, "message": user}),
     )
     .await?;
+
+    if let Some(events) = events {
+        let _ = events.send(EngineEvent::UserSaved(command.into()));
+    }
 
     *sequence = sequence.saturating_add(1);
     let assistant = Message {
@@ -6863,6 +6887,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_pending_approvals_during_a_daemon_turn_and_saves_the_interaction() {
         let mut sequence = 0;
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
 
         let response = super::resolve_turn_approval(
             "/tmp/krabb",
@@ -6870,6 +6895,7 @@ mod tests {
             "reservation",
             "/approve",
             &mut sequence,
+            Some(&events),
             mock_control,
         )
         .await
@@ -6877,6 +6903,11 @@ mod tests {
 
         assert_eq!(response, "Approval accepted.\n");
         assert_eq!(sequence, 2);
+
+        assert_eq!(
+            received.try_recv().ok(),
+            Some(super::EngineEvent::UserSaved("/approve".into()))
+        );
     }
 
     #[tokio::test]
@@ -6890,6 +6921,7 @@ mod tests {
             "reservation",
             &command,
             &mut sequence,
+            None,
             mock_control,
         )
         .await
@@ -7598,6 +7630,13 @@ mod tests {
         ));
 
         input.write_all(b"prepare the report\n").await.unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::UserSaved("prepare the report".into()))
+        );
 
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
@@ -8400,6 +8439,13 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
             super::EngineEvents { engine: Some(engine_event_tx), ..super::EngineEvents::default() },
             interrupt_rx,
         ));
+
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), engine_event_rx.recv())
+                .await
+                .unwrap(),
+            Some(super::EngineEvent::UserSaved("hello".into()))
+        );
 
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(3), engine_event_rx.recv())
