@@ -1224,3 +1224,28 @@ async fn advance(seconds: u64) {
     tokio::task::yield_now().await;
     tokio::time::resume();
 }
+
+#[tokio::test]
+async fn a_stop_waits_for_steps_then_abandons_those_still_running() {
+    let mut workers = tokio::task::JoinSet::new();
+    let mut handles = HashMap::new();
+
+    for (id, delay) in [("quick", Duration::ZERO), ("stuck", Duration::from_secs(3600))] {
+        let handle = workers.spawn(async move {
+            tokio::time::sleep(delay).await;
+            id.to_owned()
+        });
+
+        handles.insert(handle.id(), id.to_owned());
+    }
+
+    let stuck = super::worker::drain(&mut workers, &mut handles, Duration::from_millis(50)).await;
+
+    assert_eq!(stuck, ["stuck"]);
+    assert!(workers.is_empty());
+    assert!(handles.is_empty());
+
+    let finished = super::worker::drain(&mut workers, &mut handles, Duration::from_secs(3600));
+
+    assert!(tokio::time::timeout(Duration::from_secs(1), finished).await.unwrap().is_empty());
+}

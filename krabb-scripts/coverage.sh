@@ -49,6 +49,7 @@ platform_packages=(
 )
 
 coverage_profile=${1:-full}
+selection=${KRABB_COVERAGE_PACKAGES:-}
 package_threshold=${KRABB_COVERAGE_PACKAGE_MIN:-}
 runtime_threshold=${KRABB_COVERAGE_RUNTIME_MIN:-}
 
@@ -76,6 +77,23 @@ for threshold in "$package_threshold" "$runtime_threshold"; do
         exit 2
     fi
 done
+
+if [[ -n "$selection" ]]; then
+    selected=()
+
+    for package in "${packages[@]}"; do
+        if [[ " $selection " == *" $package "* ]]; then
+            selected+=("$package")
+        fi
+    done
+
+    if (( ${#selected[@]} == 0 )); then
+        printf '[coverage] No selected package has a coverage gate in this profile.\n'
+        exit 0
+    fi
+
+    packages=("${selected[@]}")
+fi
 
 printf '[coverage] package line threshold: %s%%\n' "$package_threshold"
 printf '[coverage] runtime line threshold: %s%%\n' "$runtime_threshold"

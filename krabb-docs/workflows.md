@@ -87,6 +87,13 @@ Linux. The job installs MinGW for native dependencies before running the
 locked workspace check; release archives continue to use the supported MSVC
 targets.
 
+Pull requests test only what they can affect. `krabb-scripts/changes.py` maps the
+changed files to their workspace packages and every package that depends on them, and
+the crate tests, coverage, and plugin integrations run for those alone. Changes to only
+documentation or assets skip the Rust jobs. Shared files such as `Cargo.lock`,
+workflows, and scripts select every package, and pushes to `main` and manual runs
+always test everything before a release.
+
 Repository scripts keep their responsibilities separate and expose `--help`.
 Use `krabb-scripts/metrics.sh` for Rust, script, and test counts; use
 `krabb-scripts/check.sh ARCHIVE` to validate a release archive without

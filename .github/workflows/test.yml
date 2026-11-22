@@ -16,6 +16,12 @@ on:
         type: string
         default: ""
 
+      packages:
+        description: "JSON array of packages to test; empty tests every package"
+        required: false
+        type: string
+        default: ""
+
       local:
         required: false
         type: string
@@ -28,6 +34,9 @@ jobs:
   krabb:
     name: Krabb (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
+
+    env:
+      KRABB_COVERAGE_PACKAGES: ${{ join(fromJSON(inputs.packages || '[]'), ' ') }}
 
     strategy:
       fail-fast: false
@@ -128,7 +137,15 @@ jobs:
 
       - if: matrix.coverage == false
         name: Run Workspace Tests
-        run: cargo test --workspace --no-fail-fast --locked --target "${{ matrix.target }}"
+
+        run: |
+          $selection = @('--workspace')
+
+          if ($env:KRABB_COVERAGE_PACKAGES) {
+            $selection = $env:KRABB_COVERAGE_PACKAGES -split ' ' | ForEach-Object { '-p', $_ }
+          }
+
+          cargo test @selection --no-fail-fast --locked --target "${{ matrix.target }}"
 
       - name: Test Installer Integrity
         run: python -B krabb-scripts/tests/installers.py
@@ -164,6 +181,9 @@ jobs:
 
   sandbox:
     name: Sandbox
+    if: >-
+      inputs.packages == '' ||
+      contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-tools')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
