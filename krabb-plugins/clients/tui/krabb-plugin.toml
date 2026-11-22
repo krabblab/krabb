@@ -5,7 +5,7 @@ permissions = ["terminal"]
 
 [[commands]]
 name = "tui"
-description = "Open the TUI; the Krabb daemon must be running."
+description = "Open the TUI while the Krabb daemon is running."
 interactive = true
 
 [protocol]
