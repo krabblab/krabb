@@ -359,7 +359,7 @@ pub(crate) fn confirm_action(yes: bool, json: bool, question: &str) -> Result<bo
     }
 
     if json || !interactive() {
-        return Err(format!("{question} Use --yes to continue without a prompt.").into());
+        return Err(format!("{question}\nUse --yes to continue without a prompt.").into());
     }
 
     eprint!("{question} [y/N] ");

@@ -200,14 +200,16 @@ pub(crate) fn doctor_at(
 
         let health = if healthy { "healthy" } else { "unhealthy" };
 
-        println!("Krabb local installation is {health}. Its home directory is {}.", root.display());
+        println!("Krabb local installation is {health}.");
+        println!("Its home directory is {}.", root.display());
         println!("Runtime activation is checked separately with `krabb status`.");
         println!("\nThe configuration is {config_status}.");
         println!("The plugins directory is {plugins_status}.");
         println!("The workspace is {workspace_status}.");
         println!("KRAB.md instructions are {krab_status}.");
         println!("KLAW.md instructions are {klaw_status}.");
-        println!("\n{} plugins are installed. Plugin integrity checks passed.", lock.plugins.len());
+        println!("\n{} plugins are installed.", lock.plugins.len());
+        println!("Plugin integrity checks passed.");
 
         println!(
             "The protocol version is {}.{}.",

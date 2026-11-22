@@ -647,7 +647,7 @@ pub(crate) fn versions(home: &Path, id: &str, json: bool) -> Result<(), Error> {
         .collect::<Vec<_>>();
 
     println!(
-        "Versions of {id}\n{}\n\nInstall one with `krabb plugin install {id}@VERSION`; versions \
+        "Versions of {id}\n{}\n\nInstall one with `krabb plugin install {id}@VERSION`\nVersions \
          other than the latest are used at your own risk.",
         format_tree_list(&lines)
     );

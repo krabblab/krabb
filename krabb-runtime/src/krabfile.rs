@@ -276,7 +276,7 @@ pub(crate) fn import_krabfile_at_mode(
         let noun = if count == 1 { "plugin" } else { "plugins" };
 
         println!(
-            "Imported configuration from {} with {count} {noun}. Local credentials were preserved.",
+            "Imported configuration from {} with {count} {noun}.\nLocal credentials were preserved.",
             path.display(),
         );
     }

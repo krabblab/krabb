@@ -14,7 +14,8 @@ pub(super) async fn run(
         println!("Attached plugin {id}.");
     } else {
         println!(
-            "Detached plugin {id}. It remains installed; reattach with `krabb plugin attach {id}`."
+            "Detached plugin {id}.\nIt remains installed, so reattach it with \
+             `krabb plugin attach {id}`"
         );
     }
 

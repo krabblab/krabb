@@ -145,7 +145,8 @@ pub(crate) async fn schedule_command(
             let name = value["name"].as_str().unwrap_or("Scheduled task");
             println!("Schedule {name} ({id}) is active.\n");
             println!("Instruction: {instruction}");
-            println!("Provider: {provider}; model: {model}.");
+            println!("Provider: {provider}");
+            println!("Model: {model}");
             println!("Workspace: {}", workspace.display());
             println!("Tools: {}", if workspace_tools_enabled { "enabled" } else { "disabled" });
 
@@ -174,7 +175,7 @@ pub(crate) async fn schedule_command(
             }
 
             println!(
-                "\nCheck it with `krabb schedule list`; pause it with `krabb schedule pause {id}`."
+                "\nCheck it with `krabb schedule list`\nPause it with `krabb schedule pause {id}`"
             );
         }
 
@@ -358,7 +359,8 @@ pub(crate) async fn schedule_command(
         );
     } else if method == "pause" && value["pause_requested"] == true {
         println!(
-            "Pause requested for schedule {name} ({id}). The current run will finish, then the schedule will stay paused."
+            "Pause requested for schedule {name} ({id}).\nThe current run will finish, then the \
+             schedule will stay paused."
         );
     } else {
         println!("Schedule {name} ({id}) is now {}.", value["status"].as_str().unwrap_or(action));
