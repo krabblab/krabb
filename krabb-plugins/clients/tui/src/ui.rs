@@ -58,6 +58,8 @@ const MESSAGE_GAP_ROWS: usize = 2;
 const GENERATION_FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const TYPEWRITER_INTERVAL: Duration = Duration::from_millis(16);
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// Input events handled before the next redraw, so a burst of wheel ticks draws once.
+const EVENT_BATCH: usize = 64;
 const TYPEWRITER_BACKLOG: usize = 96;
 const TYPEWRITER_BURST: usize = 2;
 const TYPEWRITER_CATCHUP_BURST: usize = 12;
@@ -251,13 +253,23 @@ struct TranscriptLayout {
     generation: u64,
     width: u16,
     rows: Vec<Line<'static>>,
-    message_rows: Vec<Range<usize>>,
+    messages: Vec<MessageLayout>,
     hovered_message: Option<usize>,
     hovered_rows: Option<Vec<Line<'static>>>,
 }
 
+/// Where one message sits in the wrapped rows and in the transcript text, so hovering
+/// re-wraps only that message.
+struct MessageLayout {
+    rows: Range<usize>,
+    title: Range<usize>,
+    body: Range<usize>,
+    is_user: bool,
+    is_system: bool,
+}
+
 struct TranscriptViewport<'a> {
-    rows: &'a [Line<'static>],
+    rows: &'a [&'a Line<'static>],
 }
 
 impl Widget for TranscriptViewport<'_> {
@@ -508,7 +520,7 @@ where
     let mut quit = false;
     let mut session_refresh = tokio::time::interval(SESSION_REFRESH_INTERVAL);
     let mut generation_refresh = tokio::time::interval(GENERATION_FRAME_INTERVAL);
-    let mut statusline_refresh = tokio::time::interval(GENERATION_FRAME_INTERVAL);
+    let mut statusline_refresh = tokio::time::interval(STATUSLINE_SCROLL_INTERVAL);
     generation_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     statusline_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     session_refresh.tick().await;
@@ -520,7 +532,10 @@ where
 
         tokio::select! {
             event = event_rx.recv() => {
-                if let Some(event) = event {
+                let mut next = event;
+                let mut handled = 0;
+
+                while let Some(event) = next.take() {
                     if !interrupt_generation(&event, &mut app, &interrupt_tx) {
                         quit = handle_event(event, &mut app, &mut command_tx, engine_finished).await?;
                     }
@@ -535,6 +550,12 @@ where
                         )?;
 
                         app.statusline_changed = false;
+                    }
+
+                    handled += 1;
+
+                    if !quit && handled < EVENT_BATCH {
+                        next = event_rx.try_recv().ok();
                     }
                 }
             }
@@ -1796,7 +1817,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     });
 
     if !layout_is_current {
-        let (mut rows, message_rows) =
+        let (mut rows, messages) =
             wrap_transcript_layout(&app.transcript, &app.name, transcript_width, None);
 
         if !app.theme_enabled {
@@ -1807,7 +1828,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
             generation: app.transcript_generation,
             width: transcript_width,
             rows,
-            message_rows,
+            messages,
             hovered_message: None,
             hovered_rows: None,
         });
@@ -1822,13 +1843,18 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         app.mouse_position,
         Rect::new(areas[0].x, areas[0].y, areas[0].width, transcript_height as u16),
         app.transcript_scroll.offset,
-        &layout.message_rows,
+        layout.messages.iter().map(|message| &message.rows),
     );
 
     if layout.hovered_message != hovered_message {
-        layout.hovered_rows = hovered_message.map(|message| {
-            let (mut rows, _) =
-                wrap_transcript_layout(&app.transcript, &app.name, transcript_width, Some(message));
+        layout.hovered_rows = hovered_message.map(|index| {
+            let mut rows = wrap_message(
+                &app.transcript,
+                &app.name,
+                transcript_width,
+                &layout.messages[index],
+                true,
+            );
 
             if !app.theme_enabled {
                 strip_transcript_colors(&mut rows);
@@ -1840,12 +1866,29 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         layout.hovered_message = hovered_message;
     }
 
-    let rows = layout.hovered_rows.as_deref().unwrap_or(&layout.rows);
-    app.transcript_scroll.set_extent(rows.len(), transcript_height);
+    let (before, hovered, after) = match (layout.hovered_message, &layout.hovered_rows) {
+        (Some(index), Some(hovered)) => {
+            let range = &layout.messages[index].rows;
+
+            (&layout.rows[..range.start], hovered.as_slice(), &layout.rows[range.end..])
+        }
+
+        _ => (layout.rows.as_slice(), &[][..], &[][..]),
+    };
+
+    let total_rows = before.len() + hovered.len() + after.len();
+    app.transcript_scroll.set_extent(total_rows, transcript_height);
     let start = app.transcript_scroll.offset;
-    let end = start.saturating_add(transcript_height).min(rows.len());
-    let visible_rows = &rows[start..end];
-    let transcript = TranscriptViewport { rows: visible_rows };
+
+    let visible_rows = before
+        .iter()
+        .chain(hovered)
+        .chain(after)
+        .skip(start)
+        .take(transcript_height)
+        .collect::<Vec<_>>();
+
+    let transcript = TranscriptViewport { rows: &visible_rows };
 
     let input = Paragraph::new(padded_input)
         .scroll((input_scroll, 0))
@@ -2312,7 +2355,7 @@ fn wrap_transcript_layout(
     name: &str,
     width: u16,
     hovered_message: Option<usize>,
-) -> (Vec<Line<'static>>, Vec<Range<usize>>) {
+) -> (Vec<Line<'static>>, Vec<MessageLayout>) {
     if width == 0 {
         return (Vec::new(), Vec::new());
     }
@@ -2329,8 +2372,9 @@ fn wrap_transcript_layout(
 
     let width = width as usize;
     let mut rows = Vec::new();
-    let mut message_rows = Vec::new();
+    let mut messages = Vec::new();
     let lines = transcript.lines().collect::<Vec<_>>();
+    let offset = |line: &str| line.as_ptr() as usize - transcript.as_ptr() as usize;
     let mut index = 0;
 
     while index < lines.len() {
@@ -2372,7 +2416,7 @@ fn wrap_transcript_layout(
                 body_end -= 1;
             }
 
-            let message_index = message_rows.len();
+            let message_index = messages.len();
             let start = rows.len();
             rows.extend(wrap_rail_message(
                 title,
@@ -2384,7 +2428,23 @@ fn wrap_transcript_layout(
                 hovered_message == Some(message_index),
             ));
 
-            message_rows.push(start..rows.len());
+            let title = offset(line)..offset(line) + line.len();
+
+            let body = if body_end > body_start {
+                let last = lines[body_end - 1];
+
+                offset(lines[body_start])..offset(last) + last.len()
+            } else {
+                title.end..title.end
+            };
+
+            messages.push(MessageLayout {
+                rows: start..rows.len(),
+                title,
+                body,
+                is_user,
+                is_system,
+            });
 
             if index < lines.len() {
                 rows.extend((0..MESSAGE_GAP_ROWS).map(|_| Line::raw("")));
@@ -2401,14 +2461,35 @@ fn wrap_transcript_layout(
         index += 1;
     }
 
-    (rows, message_rows)
+    (rows, messages)
 }
 
-fn hovered_message_at(
+/// Wraps one message from the transcript on its own, as `wrap_transcript_layout` would.
+fn wrap_message(
+    transcript: &str,
+    name: &str,
+    width: u16,
+    message: &MessageLayout,
+    show_timestamp: bool,
+) -> Vec<Line<'static>> {
+    let body = transcript[message.body.clone()].lines().collect::<Vec<_>>();
+
+    wrap_rail_message(
+        &transcript[message.title.clone()],
+        &body,
+        name,
+        usize::from(width),
+        message.is_user,
+        message.is_system,
+        show_timestamp,
+    )
+}
+
+fn hovered_message_at<'a>(
     position: Option<(u16, u16)>,
     area: Rect,
     scroll_offset: usize,
-    message_rows: &[Range<usize>],
+    message_rows: impl IntoIterator<Item = &'a Range<usize>>,
 ) -> Option<usize> {
     let (column, row) = position?;
 
@@ -2418,7 +2499,7 @@ fn hovered_message_at(
 
     let transcript_row = scroll_offset.saturating_add(usize::from(row.saturating_sub(area.y)));
 
-    message_rows.iter().position(|rows| rows.contains(&transcript_row))
+    message_rows.into_iter().position(|rows| rows.contains(&transcript_row))
 }
 
 fn strip_transcript_colors(rows: &mut [Line<'static>]) {
