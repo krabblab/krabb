@@ -5650,6 +5650,7 @@ mod tests {
 
         let manifest: serde_json::Value =
             toml::from_str(include_str!("../krabb-plugin.toml")).unwrap();
+
         let commands: Vec<krabb_core::types::CommandSpec> =
             serde_json::from_value(manifest["commands"].clone()).unwrap();
 
