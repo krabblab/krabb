@@ -16,6 +16,8 @@ How to write them:
 
 - Follow the wishes faithfully and in their spirit. Keep everything in the current files
   that the wishes do not change, including details the owner wrote by hand.
+- Skip any wish that carries no meaning, such as repeated letters or random keystrokes, and
+  keep what the current files say on that point; mention it in the summary.
 - Address the Krabb as "you". Turn each wish into behavior it can follow, with a short
   example where that helps; avoid vague adjectives on their own.
 - Use short "##" sections. Keep each file under 3,000 bytes of UTF-8: about 2,500

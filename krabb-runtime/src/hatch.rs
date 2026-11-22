@@ -16,7 +16,6 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 /// Each file stays well inside its share of the instruction context.
 const FILE_LIMIT: usize = crate::CONTEXT_LIMIT / 2 - 128;
 const SUMMARY_LIMIT: usize = 600;
-const ANSWER_LIMIT: usize = 400;
 pub(crate) const WISH_LIMIT: usize = 2000;
 /// Hand-edited files larger than this are refused rather than sent to the model.
 const READ_LIMIT: u64 = 16 * 1024;
@@ -28,52 +27,78 @@ const MARKERS: [&str; 3] = ["=== KRAB.md ===", "=== KLAW.md ===", "=== SUMMARY =
 pub(crate) fn no_provider(directory: &Path) -> String {
     format!(
         "Hatching needs an intelligence provider, because your Krabb's model writes its \
-         personality from your answers. Set one up first with `krabb plugin install openai` \
-         and `krabb plugin setup openai`, or use `ollama` for a local model. Meanwhile, you can \
-         edit your Krabb by hand in {}: KRAB.md says who it is, and KLAW.md says how it works.",
+         personality from your answers.\nSet one up with `krabb plugin install openai` and \
+         `krabb plugin setup openai`, or use `ollama` for a local model.\nMeanwhile, edit your \
+         Krabb by hand in {}: KRAB.md says who it is, and KLAW.md says how it works.",
         directory.display(),
     )
 }
 
-/// One interview question, labelled for the model.
+/// One interview question, labelled for the model and grouped under a section.
 struct Question {
+    section: &'static str,
     label: &'static str,
     prompt: &'static str,
     example: &'static str,
+    limit: usize,
 }
 
 const QUESTIONS: [Question; 8] = [
-    Question { label: "Name", prompt: "What should your Krabb be called?", example: "Pinch" },
-    Question { label: "Call the owner", prompt: "What should it call you?", example: "Sam" },
     Question {
+        section: "Identity",
+        label: "Name",
+        prompt: "What should your Krabb be called?",
+        example: "Pinch",
+        limit: 40,
+    },
+    Question {
+        section: "Identity",
+        label: "Call the owner",
+        prompt: "What should it call you?",
+        example: "Sam",
+        limit: 40,
+    },
+    Question {
+        section: "Identity",
         label: "Personality",
         prompt: "Describe its personality.",
         example: "warm, curious, a little playful, never sarcastic",
+        limit: 200,
     },
     Question {
+        section: "Voice",
         label: "Tone of voice",
         prompt: "How should it sound?",
         example: "plain and direct, like a trusted colleague",
+        limit: 200,
     },
     Question {
+        section: "Voice",
         label: "Writing",
         prompt: "How should it write replies?",
         example: "lead with the answer, short paragraphs, no emoji",
+        limit: 200,
     },
     Question {
-        label: "Way of working",
-        prompt: "How should it get things done?",
-        example: "act on clear requests, ask before anything irreversible",
-    },
-    Question {
+        section: "Voice",
         label: "Language",
         prompt: "Which language should it use?",
         example: "reply in the language I write in",
+        limit: 100,
     },
     Question {
+        section: "Work",
+        label: "Way of working",
+        prompt: "How should it get things done?",
+        example: "act on clear requests, ask before anything irreversible",
+        limit: 300,
+    },
+    Question {
+        section: "Work",
         label: "Anything else",
         prompt: "Anything else it should know about itself or you?",
         example: "I build embedded firmware and prefer Rust examples",
+        limit: 400,
     },
 ];
 
@@ -110,7 +135,7 @@ fn clean(value: &str, limit: usize) -> Result<Option<String>, String> {
     }
 
     if value.chars().count() > limit {
-        return Err(format!("Each answer must be at most {limit} characters."));
+        return Err(format!("Keep this answer to {limit} characters or fewer."));
     }
 
     Ok(Some(value.to_owned()))
@@ -240,8 +265,8 @@ pub(crate) fn save(directory: &Path, expected: &Files, files: &Files) -> std::io
 
     if read(directory)? != *expected {
         return Err(std::io::Error::other(
-            "The personality changed while the new one was being written; nothing was saved. \
-             Run hatch again to build on the latest version.",
+            "The personality changed while the new one was being written, so nothing was \
+             saved.\nRun hatch again to build on the latest version.",
         ));
     }
 
@@ -336,28 +361,34 @@ fn hatched(current: &Files) -> bool {
     current.krab != crate::templates::KRAB || current.klaw != crate::templates::KLAW
 }
 
-/// Asks each question on OUTPUT, reading replies from INPUT. An empty reply skips a question,
-/// and closed input cancels the interview with an `UnexpectedEof` error.
+/// Asks each question on OUTPUT, reading replies from INPUT. An empty reply keeps the current
+/// setting, and closed input cancels the interview with an `UnexpectedEof` error.
 pub(crate) fn interview(
     input: &mut impl BufRead,
     output: &mut impl Write,
     rerun: bool,
 ) -> std::io::Result<Vec<Option<String>>> {
     let intro = if rerun {
-        "Your Krabb already has a personality. Answer only what you want to change; press \
-         Enter to keep the rest as it is."
+        "Your Krabb already has a personality.\nAnswer only what you want to change."
     } else {
-        "Let's hatch your Krabb. Answer in your own words and in any language; press Enter to \
-         skip a question."
+        "Let's hatch your Krabb.\nAnswer in your own words and in any language."
     };
 
-    writeln!(output, "{intro}\n")?;
+    writeln!(output, "{intro}\nPress Enter on any question to keep its current setting.")?;
 
     let mut answers = Vec::with_capacity(QUESTIONS.len());
+    let mut section = "";
 
-    for question in &QUESTIONS {
-        answers.push(ask(input, output, question)?);
+    for (index, question) in QUESTIONS.iter().enumerate() {
+        if question.section != section {
+            section = question.section;
+            writeln!(output, "\n{section}")?;
+        }
+
+        answers.push(ask(input, output, index + 1, question)?);
     }
+
+    writeln!(output)?;
 
     Ok(answers)
 }
@@ -365,10 +396,14 @@ pub(crate) fn interview(
 fn ask(
     input: &mut impl BufRead,
     output: &mut impl Write,
+    number: usize,
     question: &Question,
 ) -> std::io::Result<Option<String>> {
+    writeln!(output, "\n{number}. {}", question.prompt)?;
+    writeln!(output, "   Up to {} characters, for example: {}", question.limit, question.example)?;
+
     loop {
-        write!(output, "{} (for example: {})\n> ", question.prompt, question.example)?;
+        write!(output, "   > ")?;
         output.flush()?;
 
         let mut line = String::new();
@@ -378,13 +413,9 @@ fn ask(
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
 
-        match clean(&line, ANSWER_LIMIT) {
-            Ok(answer) => {
-                writeln!(output)?;
-                return Ok(answer);
-            }
-
-            Err(problem) => writeln!(output, "{problem} Please try again.")?,
+        match clean(&line, question.limit) {
+            Ok(answer) => return Ok(answer),
+            Err(problem) => writeln!(output, "   {problem}")?,
         }
     }
 }
@@ -400,6 +431,34 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
         return restore(&directory, args.yes, json);
     }
 
+    let given = [
+        &args.name,
+        &args.call,
+        &args.personality,
+        &args.voice,
+        &args.writing,
+        &args.language,
+        &args.work,
+        &args.notes,
+    ];
+
+    let mut answers = given
+        .iter()
+        .zip(&QUESTIONS)
+        .map(|(value, question)| {
+            value.as_deref().map_or(Ok(None), |value| {
+                clean(value, question.limit)
+                    .map_err(|problem| format!("{}: {problem}", question.label))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let free = args.wishes.join(" ");
+
+    if free.chars().count() > WISH_LIMIT {
+        return Err(format!("Wishes must be at most {WISH_LIMIT} characters.").into());
+    }
+
     let config = crate::load_config_at(root)?;
 
     config.validate()?;
@@ -410,32 +469,10 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
         return Err(no_provider(&directory).into());
     };
 
-    let given = [
-        &args.name,
-        &args.call,
-        &args.personality,
-        &args.voice,
-        &args.writing,
-        &args.work,
-        &args.language,
-        &args.notes,
-    ];
-
-    let mut answers = given
-        .iter()
-        .map(|value| value.as_deref().map_or(Ok(None), |value| clean(value, ANSWER_LIMIT)))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let free = args.wishes.join(" ");
-
-    if free.chars().count() > WISH_LIMIT {
-        return Err(format!("Wishes must be at most {WISH_LIMIT} characters.").into());
-    }
-
     let interactive = !json && crate::agent::interactive();
 
     if !args.yes && !interactive {
-        return Err("Hatching asks before saving. Use --yes to save without a prompt.".into());
+        return Err("Hatching asks before saving.\nUse --yes to save without a prompt.".into());
     }
 
     let current = read(&directory)?;
@@ -460,7 +497,7 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
             println!("{}", serde_json::json!({"status": "unchanged"}));
         } else {
             println!(
-                "Nothing to change. Answer at least one question, or describe the change: \
+                "Nothing to change.\nAnswer at least one question, or describe the change: \
                  `krabb hatch be more concise`."
             );
         }
@@ -475,19 +512,19 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
 
     let draft = parse(&reply?.text).map_err(|problem| {
         format!(
-            "{problem} Nothing was changed. Run `krabb hatch` again, or edit the files in {} \
+            "{problem}\nNothing was changed.\nRun `krabb hatch` again, or edit the files in {} \
              by hand.",
             directory.display()
         )
     })?;
 
     if draft.files == current {
-        report(json, "unchanged", &draft.summary);
+        report(json, "unchanged", &draft.summary, &directory);
         return Ok(());
     }
 
     if !json && !args.yes {
-        eprintln!("{}\n{}\n{}\n", draft.files.krab, draft.files.klaw, draft.summary);
+        eprintln!("{}\n", draft.summary);
     }
 
     if !crate::agent::confirm_action(args.yes, json, "Save this personality?")? {
@@ -496,12 +533,16 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
     }
 
     save(&directory, &current, &draft.files)?;
-    report(json, "hatched", &draft.summary);
+
+    let summary = if args.yes { draft.summary.as_str() } else { "" };
+
+    report(json, "hatched", summary, &directory);
 
     Ok(())
 }
 
-fn report(json: bool, status: &str, summary: &str) {
+/// Prints the outcome; an empty summary was already shown before the confirmation.
+fn report(json: bool, status: &str, summary: &str, directory: &Path) {
     if json {
         let report = serde_json::json!({"status": status, "summary": summary});
 
@@ -509,10 +550,19 @@ fn report(json: bool, status: &str, summary: &str) {
         return;
     }
 
-    println!("{summary}");
+    if !summary.is_empty() {
+        println!("{summary}");
+    }
 
     if status == "hatched" {
-        println!("It applies from your Krabb's next reply. Undo with `krabb hatch --undo`.");
+        let show = if cfg!(windows) { "type" } else { "cat" };
+
+        let [krab, klaw] = FILES.map(|(name, _)| directory.join(name).display().to_string());
+
+        println!("Saved your Krabb's personality.");
+        println!("Read it with `{show} \"{krab}\" \"{klaw}\"`");
+        println!("It applies from your Krabb's next reply.");
+        println!("Undo with `krabb hatch --undo`");
     }
 }
 
@@ -529,7 +579,8 @@ fn restore(directory: &Path, yes: bool, json: bool) -> Result<(), Error> {
     } else if restored.is_empty() {
         println!("There is no previous personality to restore.");
     } else {
-        println!("Restored the previous {}. Undo again to switch back.", restored.join(" and "));
+        println!("Restored the previous {}.", restored.join(" and "));
+        println!("Undo again to switch back.");
     }
 
     Ok(())
@@ -625,7 +676,7 @@ mod tests {
         assert_eq!(wishes(&answers, "  "), None);
 
         answers[0] = Some("Pinch".into());
-        answers[6] = Some("italiano".into());
+        answers[5] = Some("italiano".into());
 
         assert_eq!(
             wishes(&answers, "be brief").unwrap(),
@@ -636,7 +687,8 @@ mod tests {
     #[test]
     fn the_interview_keeps_answers_in_order_and_retries_invalid_ones() {
         let skipped = "\n".repeat(QUESTIONS.len() - 3);
-        let replies = format!("Pinch\n\n{}\nplayful\n{skipped}", "x".repeat(ANSWER_LIMIT + 1));
+        let long = "x".repeat(QUESTIONS[1].limit + 1);
+        let replies = format!("Pinch\n{long}\n\nplayful\n{skipped}");
         let mut output = Vec::new();
 
         let answers = interview(&mut replies.as_bytes(), &mut output, true).unwrap();
@@ -647,8 +699,14 @@ mod tests {
         assert_eq!(answers[1], None);
         assert_eq!(answers[2].as_deref(), Some("playful"));
         assert!(answers[3..].iter().all(Option::is_none));
-        assert!(output.starts_with("Your Krabb already has a personality."));
-        assert!(output.contains("at most 400 characters. Please try again."));
+
+        assert!(output.starts_with("Your Krabb already has a personality.\n"));
+        assert!(output.contains("Press Enter on any question to keep its current setting."));
+        assert!(output.contains("\nIdentity\n\n1. What should your Krabb be called?\n"));
+        assert!(output.contains("   Up to 40 characters, for example: Pinch\n"));
+        assert!(output.contains("   Keep this answer to 40 characters or fewer.\n"));
+        assert!(output.contains("\nWork\n\n7. How should it get things done?"));
+        assert_eq!(output.matches("\nVoice\n").count(), 1);
     }
 
     #[test]
@@ -746,6 +804,11 @@ mod tests {
         assert!(error.to_string().contains("krabb init"));
 
         crate::init_at(&root).unwrap();
+
+        let long = "x".repeat(QUESTIONS[0].limit + 1);
+        let error = run(parse_args(&["--name", &long, "--yes"]), &root, true).await.unwrap_err();
+
+        assert_eq!(error.to_string(), "Name: Keep this answer to 40 characters or fewer.");
 
         let error = run(parse_args(&["--name", "Pinch", "--yes"]), &root, true).await.unwrap_err();
         let message = error.to_string();

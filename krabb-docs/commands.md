@@ -554,18 +554,20 @@ instructions. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
 safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
 
-`krabb hatch` personalizes your Krabb. Run it without arguments and it asks for a
-name, what to call you, and its personality, tone of voice, writing style, way of
-working, and language; press Enter to skip a question. Answer in your own words and in
-any language. Your Krabb's model then rewrites `data/system/KRAB.md` (who it is) and
+`krabb hatch` personalizes your Krabb. Run it without arguments and it asks eight
+numbered questions in three sections: identity (name, what to call you, personality),
+voice (tone, writing style, language), and work (way of working, anything else). Each
+question shows its character limit and an example; press Enter to keep the current
+setting. Answer in your own words and in any language; the model ignores answers that
+carry no meaning. Your Krabb's model then rewrites `data/system/KRAB.md` (who it is) and
 `KLAW.md` (how it works) from your answers. The model is asked to keep everything you
-did not ask to change, including your own edits; check the preview of both files and the
-summary before you confirm.
+did not ask to change, including your own edits; check its summary before you confirm,
+and read the saved files with the command hatching prints.
 
 Run it again to change something: the questions then keep whatever you skip. You can
 also describe the change directly, as in `krabb hatch be more concise and call me Sam`,
 or answer with flags such as `--name Pinch --voice "warm and brief"`; `--yes` saves
-without the preview, and is required with `--json` or without a terminal. `krabb hatch
+without asking, and is required with `--json` or without a terminal. `krabb hatch
 --undo` restores the files as they were before the latest change, and running it again
 switches back. Hatching refuses to save when the files changed while the model was writing,
 and refuses hand-edited files over 16 KiB. Changes apply from the next reply,
