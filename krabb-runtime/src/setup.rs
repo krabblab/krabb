@@ -210,7 +210,22 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
             && !options.defaults.contains_key(&field.name);
     }
 
-    let answers = collect(&fields, prompt)?;
+    if !fields.is_empty() {
+        interactive()?;
+        eprintln!("Let's set up the {} plugin.", options.id);
+        eprintln!("Nothing is saved until the last answer, and Esc cancels.");
+    }
+
+    let color = crate::choice::colors();
+    let mut number = 0;
+
+    let answers = collect(&fields, |field, error| {
+        if error.is_none() {
+            number += 1;
+        }
+
+        prompt(field, number, color, error)
+    })?;
     let changes = summary(&fields, &answers);
 
     let backend = super::credentials::update(
@@ -236,11 +251,8 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     if json {
         println!("{}", serde_json::to_string(&result)?);
     } else {
-        println!(
-            "Saved encrypted secrets and settings for {} in {} (key: {backend}).",
-            options.id,
-            destination.display()
-        );
+        println!("\n✓ Saved the {} settings.", options.id);
+
         let rows = changes
             .iter()
             .map(|(_, label, change)| format!("{label}: {change}"))
@@ -256,9 +268,9 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
 
         println!("{}", result["message"].as_str().unwrap_or_default());
 
-        if let Some(path) = result["key_path"].as_str() {
-            println!("Encryption key file: {path}");
-        }
+        let key = result["key_path"].as_str().unwrap_or("the system keyring");
+
+        println!("They are encrypted in {}, with the key in {key}.", destination.display());
     }
 
     Ok(())
@@ -405,17 +417,23 @@ impl Drop for Terminal {
     }
 }
 
-fn prompt(field: &Field, error: Option<&str>) -> Result<String, Error> {
+fn interactive() -> Result<(), Error> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(
             "Setup requires an interactive terminal, because secret input cannot be piped.".into(),
         );
     }
 
+    Ok(())
+}
+
+fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Result<String, Error> {
+    interactive()?;
+
     if let Some(error) = error {
-        eprintln!("{error} Try again, or press Esc to cancel.");
+        eprintln!("   {error}\n   Try again, or press Esc to cancel.");
     } else {
-        eprint!("{}", heading(field));
+        eprint!("{}", heading(field, number, color));
     }
 
     crossterm::terminal::enable_raw_mode()?;
@@ -423,41 +441,57 @@ fn prompt(field: &Field, error: Option<&str>) -> Result<String, Error> {
     let _terminal = Terminal;
 
     crossterm::execute!(io::stderr(), crossterm::event::EnableBracketedPaste)?;
-    eprint!("{}: ", hint(field));
+    eprint!("   > ");
     io::stderr().flush()?;
 
     input(!field.secret, crossterm::event::read)
 }
 
-/// Explanation shown once per field; it names the variable but never a saved value.
-fn heading(field: &Field) -> String {
+/// What the person sets and how to answer, shown once per field; never a saved value.
+fn heading(field: &Field, number: usize, color: bool) -> String {
     let prompt = &field.prompt;
-    let need = if prompt.required { "required" } else { "optional" };
+    let mut title = crate::choice::accent(&format!("{number}. {}", field.label()), color);
 
-    let mut heading = format!("\n{} ({need}, {})\n", field.label(), field.name);
+    if field.label() != field.name {
+        title.push_str(&crate::choice::dim(&format!("  {}", field.name), color));
+    }
 
-    for (label, value) in
-        [("", &prompt.help), ("Get it: ", &prompt.url), ("Example: ", &prompt.example)]
-    {
-        if let Some(value) = value {
-            heading.push_str(&format!("  {label}{value}\n"));
-        }
+    let mut heading = format!("\n{title}\n");
+
+    if let Some(help) = &prompt.help {
+        heading.push_str(&format!("   {help}\n"));
+    }
+
+    let hints = [
+        prompt.url.as_ref().map(|url| format!("Get it at {url}")),
+        prompt.example.as_ref().map(|example| format!("For example: {example}")),
+        hint(field),
+        field.secret.then(|| "Your typing stays hidden.".to_owned()),
+    ];
+
+    for line in hints.into_iter().flatten() {
+        heading.push_str(&format!("   {}\n", crate::choice::dim(&line, color)));
     }
 
     heading
 }
 
-fn hint(field: &Field) -> String {
-    let clear = if field.prompt.required { "" } else { ", - clears" };
+/// What Enter does, when it does something other than submit the typed value.
+fn hint(field: &Field) -> Option<String> {
+    let required = field.prompt.required;
 
     if field.saved {
-        format!("{} [saved, Enter keeps{clear}]", field.label())
+        let clear = if required { "" } else { ", or type - to clear it" };
+
+        Some(format!("Press Enter to keep the saved value{clear}."))
     } else if let Some(default) = &field.default {
-        format!("{} [Enter uses {default}]", field.label())
-    } else if field.secret && !field.prompt.required {
-        format!("{} [Enter skips]", field.label())
+        Some(format!("Press Enter to use {default}."))
+    } else if field.secret && !required {
+        Some("Press Enter to skip it.".to_owned())
+    } else if required {
+        Some("This one is required.".to_owned())
     } else {
-        field.label().to_owned()
+        None
     }
 }
 

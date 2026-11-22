@@ -367,6 +367,7 @@ pub(crate) fn interview(
     input: &mut impl BufRead,
     output: &mut impl Write,
     rerun: bool,
+    color: bool,
 ) -> std::io::Result<Vec<Option<String>>> {
     let intro = if rerun {
         "Your Krabb already has a personality.\nAnswer only what you want to change."
@@ -384,10 +385,10 @@ pub(crate) fn interview(
     for (index, question) in QUESTIONS.iter().enumerate() {
         if question.section != section {
             section = question.section;
-            writeln!(output, "\n{section}")?;
+            writeln!(output, "\n{}", crate::choice::accent(section, color))?;
         }
 
-        answers.push(ask(input, output, index + 1, question)?);
+        answers.push(ask(input, output, index + 1, question, color)?);
     }
 
     writeln!(output)?;
@@ -400,9 +401,16 @@ fn ask(
     output: &mut impl Write,
     number: usize,
     question: &Question,
+    color: bool,
 ) -> std::io::Result<Option<String>> {
-    writeln!(output, "\n{number}. {}", question.prompt)?;
-    writeln!(output, "   Up to {} characters, for example: {}", question.limit, question.example)?;
+    let limit = format!("Up to {} characters, for example: {}", question.limit, question.example);
+
+    writeln!(
+        output,
+        "\n{}",
+        crate::choice::accent(&format!("{number}. {}", question.prompt), color)
+    )?;
+    writeln!(output, "   {}", crate::choice::dim(&limit, color))?;
 
     loop {
         write!(output, "   > ")?;
@@ -482,7 +490,12 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
     if interactive && answers.iter().all(Option::is_none) && free.trim().is_empty() {
         let mut input = std::io::stdin().lock();
 
-        answers = match interview(&mut input, &mut std::io::stderr(), hatched(&current)) {
+        answers = match interview(
+            &mut input,
+            &mut std::io::stderr(),
+            hatched(&current),
+            crate::choice::colors(),
+        ) {
             Ok(answers) => answers,
 
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -706,7 +719,7 @@ mod tests {
         let replies = format!("Pinch\n{long}\n\nplayful\n{skipped}");
         let mut output = Vec::new();
 
-        let answers = interview(&mut replies.as_bytes(), &mut output, true).unwrap();
+        let answers = interview(&mut replies.as_bytes(), &mut output, true, false).unwrap();
         let output = String::from_utf8(output).unwrap();
 
         assert_eq!(answers.len(), QUESTIONS.len());
@@ -726,7 +739,8 @@ mod tests {
 
     #[test]
     fn closing_the_input_cancels_the_interview() {
-        let error = interview(&mut "Pinch\n".as_bytes(), &mut Vec::new(), false).unwrap_err();
+        let error =
+            interview(&mut "Pinch\n".as_bytes(), &mut Vec::new(), false, false).unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
     }

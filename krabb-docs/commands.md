@@ -99,8 +99,10 @@ the same secure prompt and credential-file workflow. Existing plugin commands,
 such as `krabb codex login`, keep their provider-specific behavior. The generic
 `krabb plugin setup <id>` command also works when the plugin ID cannot be exposed
 as a shortcut. Setup requires a terminal and accepts no token argument or piped
-secret. Press Enter at any secret prompt to clear its saved value. Settings remain
-required unless they declare a default. See
+secret. It asks one numbered question per secret or setting, says what each is for
+and where to get it, and hides secrets as you type. Press Enter to keep a saved
+value, or type `-` to clear an optional one. Settings remain required unless they
+declare a default. See
 [Plugin Setup](authentication.md#plugin-setup) for storage and activation details.
 
 `krabb whatsapp setup` also collects the phone number ID, Graph API base URL,

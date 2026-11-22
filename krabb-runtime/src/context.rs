@@ -98,8 +98,8 @@ impl Setup<'_> {
              approval mode other than off, and a sender that section allows.\n\
              - Shell: {shell}. It needs `shell = true` and workspace tools.\n\
              - Schedules: {schedules}. They need `tools = true` in that section, a sender it \
-             allows, and the scheduler plugin, which is {scheduler}. Background tasks and isolated workspaces \
-             cannot schedule.\n\
+             allows, and the scheduler plugin, which is {scheduler}. Background tasks and \
+             isolated workspaces cannot schedule.\n\
              - Memory: {memory}. It needs workspace tools and a memory plugin.\n\
              The owner can check the installation with `krabb doctor` and read settings with \
              `krabb config get`.\n\

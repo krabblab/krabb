@@ -44,7 +44,12 @@ const PROVIDERS: [Offer; 7] = [
     offer("Gemini", "gemini"),
     offer("OpenRouter", "openrouter"),
     offer("Codex", "codex"),
-    offer("Ollama Cloud", "ollama"),
+    Offer {
+        label: "Ollama Cloud",
+        key: "ollama",
+        id: "ollama",
+        defaults: &[("KRABB_OLLAMA_HOST", "https://ollama.com")],
+    },
     Offer {
         label: "Ollama Local",
         key: "ollama-local",
@@ -92,7 +97,6 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
 
     if interactive {
         println!("Let's set up your Krabb.");
-        println!("Use the arrow keys to choose, and press Enter to confirm.");
     }
 
     for step in steps {
@@ -203,7 +207,7 @@ impl Guide {
     /// Asks a numbered question with a vertical picker, or `None` when the person stops.
     fn ask(&mut self, question: &str, options: &[&str]) -> std::io::Result<Option<usize>> {
         self.number += 1;
-        eprintln!("{}. {question}\n", self.number);
+        eprintln!("{}\n", accent(&format!("{}. {question}", self.number), self.color));
 
         let answer = crate::choice::pick(options, 0)?;
 
@@ -282,16 +286,12 @@ impl Guide {
 
         self.install(offer, "provider").await?;
 
-        let config = crate::load_config_at(&self.root)?;
+        let provider = toml::Value::String(offer.id.into());
 
-        if config.provider.as_deref() != Some(offer.id) {
-            let provider = toml::Value::String(offer.id.into());
+        for assignment in [format!("provider={provider}"), "model=\"default\"".to_owned()] {
+            let set = ConfigSet { assignment, force: false };
 
-            for assignment in [format!("provider={provider}"), "model=\"default\"".to_owned()] {
-                let set = ConfigSet { assignment, force: false };
-
-                crate::config_command(ConfigCommand::Set(set), &self.root, false).await?;
-            }
+            crate::config_command(ConfigCommand::Set(set), &self.root, false).await?;
         }
 
         self.done(&format!("Your Krabb thinks with the {} provider.", offer.id));
@@ -379,11 +379,10 @@ impl Guide {
             ("Keep your Krabb running in the background?", YES_LATER)
         };
 
-        let replace = if self.interactive {
+        let write = if self.interactive {
             match self.ask(question, &options)? {
                 None => return Ok(Flow::Stop),
-                Some(0) if !installed => false,
-                Some(0) => return Ok(Flow::Next),
+                Some(0) => !installed,
 
                 Some(_) if !installed => {
                     self.note("Start it later with `krabb init service`");
@@ -393,11 +392,11 @@ impl Guide {
                 Some(_) => true,
             }
         } else {
-            false
+            !installed
         };
 
-        if !installed || replace {
-            let install = ServiceInstall { force: replace };
+        if write {
+            let install = ServiceInstall { force: installed };
 
             crate::service::service(ServiceCommand::Install(install), false)?;
         }
@@ -425,17 +424,17 @@ impl Guide {
             self.done(&format!("Installed {} {kind}.", offer.id));
         }
 
-        let defaults = offer
-            .defaults
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect();
-
         if !crate::setup::needed(&self.root, offer.id)? {
             return Ok(());
         }
 
         if self.interactive {
+            let defaults = offer
+                .defaults
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect();
+
             crate::setup::run(crate::setup::Options::new(offer.id, defaults), &self.root, false)
                 .await?;
         } else {

@@ -103,7 +103,7 @@ Intelligence
 
    › OpenAI
      Anthropic
-     Ollama, local
+     Ollama Local
      Skip
 
    ↑/↓ to move, Enter to choose

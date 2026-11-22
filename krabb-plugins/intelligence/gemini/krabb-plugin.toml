@@ -11,5 +11,6 @@ minor = 1
 
 [setup.KRABB_GEMINI_KEY]
 label = "API key"
+help = "Create a key in Google AI Studio and paste it here."
 url = "https://aistudio.google.com/app/apikey"
 required = true
