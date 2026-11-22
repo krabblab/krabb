@@ -2036,18 +2036,18 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
             app.running_command.as_ref().map(|(_, started)| *started)
         };
 
-        let elapsed_text =
+        let elapsed_label =
             started.map_or_else(|| "0s".into(), |started| format_elapsed(started.elapsed()));
 
         let text = if app.compaction_active {
-            format!("{}  |  {elapsed_text}", app.compaction_message)
+            format!("{}  |  {elapsed_label}", app.compaction_message)
         } else if app.generation_active {
             let indicator =
                 if app.interrupt_requested { "Stopping…" } else { "Esc to interrupt" };
 
-            format!("{}  |  {indicator}  |  {elapsed_text}", app.generation_message)
+            format!("{}  |  {indicator}  |  {elapsed_label}", app.generation_message)
         } else if let Some((name, _)) = &app.running_command {
-            format!("Krabb is running {name}  |  {elapsed_text}")
+            format!("Krabb is running {name}  |  {elapsed_label}")
         } else {
             "Krabb is working in this session  |  waiting for the turn to finish".into()
         };

@@ -1493,6 +1493,7 @@ where
                                 &reservation.owner,
                                 command,
                                 &mut sequence,
+                                engine_events.as_ref(),
                                 host,
                             )
                             .await?;
@@ -2330,6 +2331,7 @@ async fn resolve_turn_approval<C, F>(
     owner: &str,
     command: &str,
     sequence: &mut u64,
+    events: Option<&mpsc::UnboundedSender<EngineEvent>>,
     host: C,
 ) -> krabb_core::Result<String>
 where
@@ -2407,6 +2409,10 @@ where
         serde_json::json!({"id": session, "owner": owner, "message": user}),
     )
     .await?;
+
+    if let Some(events) = events {
+        let _ = events.send(EngineEvent::UserSaved(command.into()));
+    }
 
     *sequence = sequence.saturating_add(1);
     let assistant = Message {
@@ -6881,6 +6887,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_pending_approvals_during_a_daemon_turn_and_saves_the_interaction() {
         let mut sequence = 0;
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
 
         let response = super::resolve_turn_approval(
             "/tmp/krabb",
@@ -6888,6 +6895,7 @@ mod tests {
             "reservation",
             "/approve",
             &mut sequence,
+            Some(&events),
             mock_control,
         )
         .await
@@ -6895,6 +6903,11 @@ mod tests {
 
         assert_eq!(response, "Approval accepted.\n");
         assert_eq!(sequence, 2);
+
+        assert_eq!(
+            received.try_recv().ok(),
+            Some(super::EngineEvent::UserSaved("/approve".into()))
+        );
     }
 
     #[tokio::test]
@@ -6908,6 +6921,7 @@ mod tests {
             "reservation",
             &command,
             &mut sequence,
+            None,
             mock_control,
         )
         .await
