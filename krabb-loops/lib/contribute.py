@@ -191,6 +191,9 @@ class Contribution:
         self.branch = ''
         self.sequence = 0
         self.attempt = 0
+        self.commits = []
+        self.recoveries = []
+        self.number = None
         self.state = ROOT / '.krabb/loops/contrib' / time.strftime('%Y%m%dT%H%M%S')
 
         self.state.mkdir(parents=True, exist_ok=False)
@@ -318,6 +321,7 @@ class Contribution:
     def recover(self, reason, evidence=None):
         self.stable()
         self.attempt += 1
+        self.recoveries.append(reason)
         self.limit(self.attempt)
 
         print(f'[INFO] Recovery {self.attempt}: {reason}; retrying toward a verified PR',
@@ -478,6 +482,8 @@ class Contribution:
 
             self.sha = git('rev-parse', 'HEAD')
 
+            self.commits.append(f'{self.sha[:12]} {message}')
+
         if git('status', '--porcelain') or git('rev-parse', 'HEAD^{tree}') != tree:
             raise Reverify('commit hooks changed verified content')
 
@@ -579,7 +585,29 @@ class Contribution:
 
         raise RuntimeError('CI did not become green before the deadline; PR remains a draft')
 
+    def report(self):
+        """Print everything the loop did on the user's behalf, whether or not it finished."""
+
+        lines = ['[INFO] Contribution summary:']
+
+        if self.number is not None:
+            lines.append(f'  Pull request: https://github.com/{self.repo}/pull/{self.number}')
+
+        lines.append(f'  Commits made by contribloop: {len(self.commits)}')
+        lines += [f'    {commit}' for commit in self.commits]
+        lines.append(f'  Recoveries: {len(self.recoveries)}')
+        lines += [f'    {index}. {reason}' for index, reason in enumerate(self.recoveries, 1)]
+        lines.append(f'  Evidence: {self.state}')
+
+        print('\n'.join(lines), flush=True)
+
     def execute(self):
+        try:
+            self.run()
+        finally:
+            self.report()
+
+    def run(self):
         self.prepare()
 
         published = False
@@ -588,15 +616,15 @@ class Contribution:
             try:
                 verified = self.verify()
                 title, body, label = self.describe()
-                number = self.publish(title, body, label, verified, published)
+                self.number = self.publish(title, body, label, verified, published)
                 published = True
-                failure = self.wait(number)
+                failure = self.wait(self.number)
             except Reverify as error:
                 self.recover(str(error), error.evidence)
                 continue
 
             if failure is None:
-                print(f'[INFO] Ready for review: https://github.com/{self.repo}/pull/{number}',
+                print(f'[INFO] Ready for review: https://github.com/{self.repo}/pull/{self.number}',
                       flush=True)
 
                 return

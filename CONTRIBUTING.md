@@ -184,6 +184,12 @@ for repository maintenance.
 
 ## Pull Requests
 
+If you work with a coding agent (Claude or Codex CLI), the
+[engineering loops](krabb-docs/loops.md) help you meet these standards before opening a PR.
+They are optional: CI and review apply the same rules either way. `make revloop` reviews
+and repairs your change for correctness, `make secloop` for security, and `make testloop`
+for test coverage and flaky tests.
+
 Run `make contribloop` to verify all current changes, create a feature branch,
 commit conventionally without a scope, push to `origin`, and prepare a PR using
 the template and recent merged PR conventions. It empties `PLAN.md` and
@@ -191,7 +197,8 @@ the template and recent merged PR conventions. It empties `PLAN.md` and
 durable implementation details to the relevant documentation first. It assigns the
 authenticated GitHub user and adds the relevant existing label. The PR remains a draft while
 CI runs; failed checks trigger repairs, verification, another commit and push.
-Success means the current PR commit has green CI and is ready for review.
+Success means the current PR commit has green CI and is ready for review. It ends with a
+summary of every commit it made and every recovery; review those before asking for review.
 See [Contribution Loop](krabb-docs/loops.md#contribution-loop) for prerequisites,
 resuming, limits, and publication authorization.
 

@@ -1,5 +1,12 @@
 # Engineering Loops
 
+The loops are optional helpers for contributors who use a coding agent. They need the
+Claude or Codex CLI and run for a long time; CI, the pull request template and AGENTS.md
+remain the gate every change must pass. The loops enforce no standards of their own: their
+prompts point the agent at AGENTS.md, DESIGN.md and the
+[test organization](architecture.md#test-organization), so the loops and the docs cannot
+disagree.
+
 The review loops alternate a fresh independent reviewer with a worker that investigates,
 fixes, and tests findings. Only independent reviews and host verification establish success.
 
@@ -91,6 +98,10 @@ with that feedback and the original evidence, using the same repair budget. No-c
 responses cannot mark the PR ready. These recovery cycles share the optional repair budget
 with local test and CI repairs. Branch changes, external commits and agent index mutations remain
 blockers; recovery never bypasses verification or publishes stale content.
+
+Every run ends with a summary, including runs that stop early: the PR link, each commit
+the loop made with its subject, each recovery with its reason, and the evidence directory.
+Repair commits are titled `fix: repair contribution checks`; review them before merging.
 
 When Agentskill is installed, local verification first runs
 `agentskill validate . --signature auto`. Contribution workers may correct factual paths,

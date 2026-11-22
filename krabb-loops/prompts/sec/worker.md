@@ -8,8 +8,8 @@ Stay within the selected scope and directly related equivalent paths.
 For each valid issue: safely reproduce or establish the failure, identify the root
 cause, implement the smallest robust mitigation, add a focused security regression,
 verify rejection of the unsafe behavior and preservation of legitimate behavior,
-and inspect equivalent weaknesses in directly related paths. Keep provider-specific
-logic out of the capability-free core. Never weaken security gates for convergence.
+and inspect equivalent weaknesses in directly related paths. Place each mitigation where
+AGENTS.md assigns ownership. Never weaken security gates for convergence.
 
 Tests must use controlled local fixtures/disposable state/isolated processes. Do not
 probe external infrastructure, production systems or real accounts, build uncontrolled

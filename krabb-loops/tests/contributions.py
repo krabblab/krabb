@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -126,6 +127,10 @@ class Contributions(unittest.TestCase):
         loop.sha = 'abc'
         loop.sequence = 0
         loop.attempt = 0
+        loop.commits = []
+        loop.recoveries = []
+        loop.number = None
+        loop.state = Path('/evidence')
         loop.args = argparse.Namespace(max_repairs=0, ci_timeout=1, ci_interval=300)
 
         return loop
@@ -147,6 +152,38 @@ class Contributions(unittest.TestCase):
                                   ('repair', 'failed.log'), 'verify', ('publish', True)])
 
         self.assertEqual(loop.wait.call_count, 2)
+
+    def test_the_summary_lists_commits_and_recoveries_even_on_failure(self):
+        loop = self.contribution()
+        loop.stable = Mock()
+        loop.prepare = Mock()
+        loop.verify = Mock(return_value='verified')
+        loop.describe = Mock(return_value=('feat: contribution', 'body', 'feature'))
+        loop.repair = Mock()
+        loop.args.max_repairs = 1
+
+        def publish(*args):
+            message = 'fix: repair contribution checks' if args[-1] else 'feat: contribution'
+
+            loop.commits.append(f'abc123 {message}')
+
+            return '42'
+
+        loop.publish = publish
+        loop.wait = Mock(return_value='failed.log')
+
+        with patch('sys.stdout', new_callable=io.StringIO) as output:
+            with self.assertRaises(RuntimeError):
+                loop.execute()
+
+        summary = output.getvalue()
+
+        self.assertIn('Pull request: https://github.com/owner/repo/pull/42', summary)
+        self.assertIn('Commits made by contribloop: 2', summary)
+        self.assertIn('abc123 fix: repair contribution checks', summary)
+        self.assertIn('Recoveries: 2', summary)
+        self.assertIn('1. CI checks failed', summary)
+        self.assertIn('Evidence: /evidence', summary)
 
     def test_no_change_repair_retries_with_feedback(self):
         loop = self.contribution()

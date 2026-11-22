@@ -30,6 +30,9 @@ class Recovery(unittest.TestCase):
         self.loop.branch = 'feature'
         self.loop.sequence = 0
         self.loop.attempt = 0
+        self.loop.commits = []
+        self.loop.recoveries = []
+        self.loop.number = None
         self.loop.args = argparse.Namespace(max_repairs=0, ci_timeout=1)
         self.loop.state = self.root / '.git/evidence'
 
