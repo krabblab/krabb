@@ -441,7 +441,7 @@ fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Res
     interactive()?;
 
     if let Some(error) = error {
-        eprintln!("   {error}\n   Try again, or press Esc to cancel.");
+        eprintln!("{error}\nTry again, or press Esc to cancel.");
     } else {
         eprint!("{}", heading(field, number, color));
     }
@@ -451,7 +451,7 @@ fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Res
     let _terminal = Terminal;
 
     crossterm::execute!(io::stderr(), crossterm::event::EnableBracketedPaste)?;
-    eprint!("   > ");
+    eprint!("|> ");
     io::stderr().flush()?;
 
     input(!field.secret, crossterm::event::read)
@@ -469,30 +469,26 @@ fn heading(field: &Field, number: usize, color: bool) -> String {
     let mut heading = format!("\n{title}\n");
 
     if let Some(help) = &prompt.help {
-        heading.push_str(&format!("   {help}\n"));
+        heading.push_str(&format!("{help}\n"));
     }
 
     let dim = |text: &str| crate::style::dim(text, color);
 
     if let Some(url) = &prompt.url {
-        heading.push_str(&format!(
-            "   {} {}\n",
-            dim("Get it at"),
-            crate::style::strong(url, color)
-        ));
+        heading.push_str(&format!("{} {}\n", dim("Get it at"), crate::style::strong(url, color)));
     }
 
     if let Some(example) = &prompt.example {
         let example = crate::style::example(example, color);
 
-        heading.push_str(&format!("   {} {example}\n", dim("For example:")));
+        heading.push_str(&format!("{} {example}\n", dim("For example:")));
     }
 
     for line in [hint(field), field.secret.then(|| "Your typing stays hidden.".to_owned())]
         .into_iter()
         .flatten()
     {
-        heading.push_str(&format!("   {}\n", dim(&line)));
+        heading.push_str(&format!("{}\n", dim(&line)));
     }
 
     heading

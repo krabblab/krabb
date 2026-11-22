@@ -336,7 +336,7 @@ async fn denial_continues_without_the_action_and_other_conversations_cannot_deci
 
     assert_eq!(
         reply(&fixture, "deny-1", "deny"),
-        "Denied. The saved action will not run; the task continues without it."
+        "Denied, so the saved action will not run, and the task continues without it."
     );
 
     let worker = fixture.start();

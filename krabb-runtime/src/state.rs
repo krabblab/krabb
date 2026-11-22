@@ -789,7 +789,7 @@ impl Store {
             (
                 self.user_session_count(),
                 LIMIT,
-                "Session limit reached; remove an old session first.",
+                "Session limit reached, so remove an old session first.",
             )
         };
 
@@ -2246,7 +2246,7 @@ impl Store {
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Session is working; cancel it and wait before deleting it.",
+                "Session is working, so cancel it and wait before deleting it.",
             ));
         }
 
@@ -2280,7 +2280,7 @@ impl Store {
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "A session is working; cancel it and wait before purging sessions.",
+                "A session is working, so cancel it and wait before purging sessions.",
             ));
         }
 
@@ -2909,7 +2909,7 @@ fn migrate_delivery_routes(
                 delivery.status = DeliveryStatus::Uncertain;
 
                 delivery.last_error = Some(
-                    "The legacy delivery route could not be matched to exactly one session; verify the channel before retrying.".into(),
+                    "The legacy delivery route could not be matched to exactly one session, so verify the channel before retrying.".into(),
                 );
 
                 changed = true;
@@ -2921,7 +2921,7 @@ fn migrate_delivery_routes(
                 delivery.status = DeliveryStatus::Uncertain;
 
                 delivery.last_error = Some(
-                    "The legacy delivery route could not be matched to exactly one session; verify the channel before retrying.".into(),
+                    "The legacy delivery route could not be matched to exactly one session, so verify the channel before retrying.".into(),
                 );
 
                 changed = true;

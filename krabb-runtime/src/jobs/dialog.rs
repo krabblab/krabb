@@ -105,10 +105,10 @@ fn list(
         .map(|item| {
             let approval = item["approval"]
                 .as_str()
-                .map_or(String::new(), |tool| format!("; waiting for approval to run {tool}"));
+                .map_or(String::new(), |tool| format!(", waiting for approval to run {tool}"));
             let resume = serde_json::from_value(item["resume"].clone())
                 .map_or(String::new(), |when| {
-                    format!("; resumes no earlier than {}", super::defer::describe(&when))
+                    format!(", resumes no earlier than {}", super::defer::describe(&when))
                 });
 
             format!(

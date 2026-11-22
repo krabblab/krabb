@@ -588,7 +588,8 @@ Personalities shape how your Krabb speaks; they cannot change its built-in chart
 host policy.
 
 In a chat, the channel's configured `owner` can send `/hatch` followed by the change,
-such as `/hatch be playful but brief, and reply in Italian`; the TUI can too. Krabb applies it and replies with a summary; `/hatch undo` goes back. Only a
+such as `/hatch be playful but brief, and reply in Italian`, and so can the TUI. Krabb
+applies it and replies with a summary, and `/hatch undo` goes back. Only a
 message the owner types can change the personality. The model cannot run `/hatch` itself,
 so content it reads cannot rewrite who it is.
 

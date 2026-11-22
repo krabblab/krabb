@@ -28,7 +28,7 @@ pub(crate) fn default_plugin_source(
     }
 
     Err(format!(
-        "Plugin {id} was not found under {}; pass a source path or Git URL.",
+        "Plugin {id} was not found under {}, so pass a source path or Git URL.",
         plugins_root.display()
     )
     .into())
@@ -94,7 +94,7 @@ pub(crate) fn link_recorded(
 
     if linked && root.temp.is_some() {
         return Err(
-            "--link requires a stable local plugin source; install remote plugins without --link."
+            "--link requires a stable local plugin source, so install remote plugins without --link."
                 .into(),
         );
     }
@@ -122,13 +122,15 @@ pub(crate) fn link_recorded(
     }
 
     if dest.exists() && !source.yes {
-        return Err(format!("Plugin {} already exists; use --yes to replace it.", source.id).into());
+        return Err(
+            format!("Plugin {} already exists, so use --yes to replace it.", source.id).into()
+        );
     }
 
     let name = plugin_name(&source.id);
 
     let Some(binary) = plugin_binary(&root_path, &source.id, default_source) else {
-        return Err(format!("Binary {name} was not found; build the plugin first.").into());
+        return Err(format!("Binary {name} was not found, so build the plugin first.").into());
     };
 
     let plugins = home_root.join("plugins");

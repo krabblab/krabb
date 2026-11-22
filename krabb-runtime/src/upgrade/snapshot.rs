@@ -146,8 +146,8 @@ pub(super) async fn rollback(
 
     let question = if point.accepted {
         format!(
-            "Restore Krabb {} from the recovery point taken before updating to {}? \
-             Conversations, tasks, settings, and plugins changed since then will be replaced; \
+            "Restore Krabb {} from the recovery point taken before updating to {}?\n\
+             Conversations, tasks, settings, and plugins changed since then will be replaced, and \
              saved credentials are kept.",
             point.from, point.to
         )

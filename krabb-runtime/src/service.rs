@@ -674,7 +674,7 @@ pub(crate) fn windows_service_install(
             Ok(()) => Err(error),
 
             Err(rollback_error) => {
-                Err(format!("{error}; service rollback failed: {rollback_error}").into())
+                Err(format!("{error}, and service rollback failed: {rollback_error}").into())
             }
         };
     }
@@ -1237,7 +1237,7 @@ pub(crate) fn service_action_text(
         (ServiceAction::Start, Some(ServiceState::NotInstalled)) => "The service is not installed.",
 
         (ServiceAction::Stop, Some(ServiceState::Failed)) => {
-            "The service has failed; there is nothing to stop."
+            "The service has failed, so there is nothing to stop."
         }
 
         (ServiceAction::Stop, Some(ServiceState::NotInstalled)) => "The service is not installed.",

@@ -260,7 +260,7 @@ impl Drop for Call {
                     // Retain the request lock and turn until detached commands are gone.
                     while let Err(error) = containers.clear().await {
                         tracing::warn!(error = %super::diagnostic(error.to_string()),
-                            "Cancelled tool container cleanup failed; retrying.");
+                            "Cancelled tool container cleanup failed, retrying.");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }

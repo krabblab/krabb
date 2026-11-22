@@ -101,18 +101,28 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
   in faint italics, and values that must stand out, such as links, in bold.
 - Keep every line readable without color, because `NO_COLOR`, `TERM=dumb`, and pipes
   print plain text.
+- Start every line at the left edge. Don't indent hints, choices, or answers to line up
+  under a question, and don't justify text into columns. Blank lines and color carry the
+  grouping instead.
+- Mark where the person types with `|> `.
 
 ```text
+Identity
+
+1. What should your Krabb be called?
+Up to 40 characters, for example: Pinch
+|> Pinch
+
 Intelligence
 
-1. Which provider should your Krabb think with?
+2. Which provider should your Krabb think with?
 
-   › OpenAI
-     Anthropic
-     Ollama Local
-     Skip
+› OpenAI
+  Anthropic
+  Ollama Local
+  Skip
 
-   ↑/↓ to move, Enter to choose
+↑/↓ to move, Enter to choose
 
 ✓ Installed openai provider.
 

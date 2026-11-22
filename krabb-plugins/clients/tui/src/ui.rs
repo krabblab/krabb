@@ -203,6 +203,8 @@ struct App {
     history_draft: String,
     transcript_scroll: ScrollState,
     mouse_position: Option<(u16, u16)>,
+    /// Where the last frame drew the transcript, so mouse movement can skip unneeded redraws.
+    transcript_area: Option<Rect>,
     input_scroll: ScrollState,
     input_cursor_needs_visibility: bool,
     input_area: Option<Rect>,
@@ -214,6 +216,8 @@ struct App {
     model: String,
     completed_system_messages: Vec<SavedSystemMessage>,
     pending_snapshot_messages: Vec<(String, String)>,
+    /// The session and revision of the last snapshot applied, so polling skips unchanged ones.
+    session_revision: Option<(String, String)>,
     model_available: bool,
     context_usage: Option<krabb_core::types::ContextUsage>,
     workspace: String,
@@ -527,15 +531,29 @@ where
     generation_refresh.tick().await;
     statusline_refresh.tick().await;
 
+    let mut redraw = true;
+
     while !quit {
-        terminal.draw(|frame| draw(frame, &mut app))?;
+        if redraw {
+            execute!(terminal.backend_mut(), terminal::BeginSynchronizedUpdate)?;
+
+            let drawn = terminal.draw(|frame| draw(frame, &mut app)).map(|_| ());
+
+            execute!(terminal.backend_mut(), terminal::EndSynchronizedUpdate)?;
+            drawn?;
+        }
+
+        redraw = true;
 
         tokio::select! {
             event = event_rx.recv() => {
                 let mut next = event;
                 let mut handled = 0;
+                let mut moved_only = true;
 
                 while let Some(event) = next.take() {
+                    moved_only &= is_mouse_motion(&event);
+
                     if !interrupt_generation(&event, &mut app, &interrupt_tx) {
                         quit = handle_event(event, &mut app, &mut command_tx, engine_finished).await?;
                     }
@@ -558,6 +576,8 @@ where
                         next = event_rx.try_recv().ok();
                     }
                 }
+
+                redraw = !moved_only || app.hover_changed();
             }
 
             session = session_rx.recv(), if session_events_open => {
@@ -611,8 +631,17 @@ where
             _ = session_refresh.tick(), if !app.generation_active && !app.compaction_active => {
                 let session_id = app.session.clone();
 
-                if let Ok(session) = load_session_snapshot(&home, &session_id, host).await {
-                    app.refresh_session(session);
+                let known = app
+                    .session_revision
+                    .as_ref()
+                    .filter(|(id, _)| *id == session_id)
+                    .map(|(_, revision)| revision.clone());
+
+                if let Ok(Some((session, revision))) =
+                    poll_session(&home, &session_id, known, host).await
+                    && app.refresh_session(session)
+                {
+                    app.session_revision = revision.map(|revision| (session_id, revision));
                 }
             }
 
@@ -845,6 +874,33 @@ where
 {
     let value = host(home.to_owned(), "session.get".into(), serde_json::json!({"id": id})).await?;
 
+    session_view(id, &value)
+}
+
+/// Fetches the session only when it changed since KNOWN, returning it with its new revision.
+async fn poll_session<C, F>(
+    home: &str,
+    id: &str,
+    known: Option<String>,
+    host: C,
+) -> Result<Option<(SessionView, Option<String>)>>
+where
+    C: Fn(String, String, serde_json::Value) -> F,
+    F: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    let params = serde_json::json!({"id": id, "revision": known});
+    let value = host(home.to_owned(), "session.get".into(), params).await?;
+
+    if value["unchanged"] == true {
+        return Ok(None);
+    }
+
+    let revision = value["revision"].as_str().map(str::to_owned);
+
+    Ok(Some((session_view(id, &value)?, revision)))
+}
+
+fn session_view(id: &str, value: &serde_json::Value) -> Result<SessionView> {
     let model = value["model"]
         .as_str()
         .filter(|model| !model.trim().is_empty())
@@ -1182,6 +1238,7 @@ fn command_options(home: &str, has_model: bool) -> Vec<(&'static str, &'static s
     if has_model {
         commands.push(("/model <help|list|show|set>", "Manage the selected model."));
         commands.push(("/compact", "Summarize older turns and keep recent conversation."));
+        commands.push(crate::HATCH_COMMAND);
     }
 
     if crate::has_capability(home, "tool") {
@@ -1842,10 +1899,15 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let footer_style =
         if app.theme_enabled { Style::default().fg(Color::DarkGray) } else { Style::default() };
 
+    let transcript_area =
+        Rect::new(areas[0].x, areas[0].y, areas[0].width, transcript_height as u16);
+
+    app.transcript_area = Some(transcript_area);
+
     let layout = app.transcript_layout.as_mut().expect("layout was refreshed");
     let hovered_message = hovered_message_at(
         app.mouse_position,
-        Rect::new(areas[0].x, areas[0].y, areas[0].width, transcript_height as u16),
+        transcript_area,
         app.transcript_scroll.offset,
         layout.messages.iter().map(|message| &message.rows),
     );
@@ -3136,7 +3198,31 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Whether EVENT only moves the pointer, which changes the frame only by what it hovers.
+fn is_mouse_motion(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_))
+    )
+}
+
 impl App {
+    /// Whether the pointer now hovers a different message than the last frame drew.
+    fn hover_changed(&self) -> bool {
+        let (Some(area), Some(layout)) = (self.transcript_area, &self.transcript_layout) else {
+            return true;
+        };
+
+        let hovered = hovered_message_at(
+            self.mouse_position,
+            area,
+            self.transcript_scroll.offset,
+            layout.messages.iter().map(|message| &message.rows),
+        );
+
+        hovered != layout.hovered_message
+    }
+
     fn begin_compaction(&mut self) {
         self.compaction_active = true;
         self.compaction_started = Some(Instant::now());
@@ -3319,7 +3405,8 @@ impl App {
         self.transcript_scroll.follow_latest();
     }
 
-    fn refresh_session(&mut self, session: SessionView) {
+    /// Applies a polled snapshot, and returns whether it was applied rather than deferred.
+    fn refresh_session(&mut self, session: SessionView) -> bool {
         // A snapshot can lag behind locally streamed output until its delimiter is saved.
         if self.generation_active
             || self.reply_pending
@@ -3328,7 +3415,7 @@ impl App {
             || !self.completed_system_messages.is_empty()
             || !self.reveal_queue.is_empty()
         {
-            return;
+            return false;
         }
 
         let transcript = render_messages(&session.messages, &self.name);
@@ -3346,7 +3433,7 @@ impl App {
         if pending_message_missing {
             self.model = model;
             self.workspace = workspace;
-            return;
+            return false;
         }
 
         self.pending_snapshot_messages.retain(|(id, _)| id != &session.id);
@@ -3365,6 +3452,8 @@ impl App {
                 working: session.working,
             });
         }
+
+        true
     }
 
     fn observe_context_output(&mut self, value: &str) {
@@ -3799,6 +3888,46 @@ mod tests {
 
         assert_eq!(app.input.iter().collect::<String>(), "first\nanother question");
         assert_eq!(app.cursor, 8);
+    }
+
+    #[tokio::test]
+    async fn polling_fetches_the_session_only_after_its_revision_changes() {
+        let host = |_: String, _: String, params: serde_json::Value| async move {
+            if params["revision"] == "seen" {
+                Ok(serde_json::json!({"id": "main", "revision": "seen", "unchanged": true}))
+            } else {
+                Ok(
+                    serde_json::json!({"id": "main", "model": "gpt", "messages": [], "revision": "seen"}),
+                )
+            }
+        };
+
+        let fresh = super::poll_session("home", "main", None, host).await.unwrap();
+        let (view, revision) = fresh.unwrap();
+
+        assert_eq!((view.model.as_str(), revision.as_deref()), ("gpt", Some("seen")));
+
+        let unchanged = super::poll_session("home", "main", Some("seen".into()), host).await;
+
+        assert!(unchanged.unwrap().is_none());
+    }
+
+    #[test]
+    fn a_deferred_snapshot_is_not_counted_as_applied() {
+        let snapshot = || super::SessionView {
+            id: "main".into(),
+            model: "gpt".into(),
+            workspace: None,
+            context_usage: None,
+            messages: Vec::new(),
+            working: false,
+        };
+
+        let mut busy = App { generation_active: true, ..Default::default() };
+        let mut idle = App::default();
+
+        assert!(!busy.refresh_session(snapshot()));
+        assert!(idle.refresh_session(snapshot()));
     }
 
     #[tokio::test]
@@ -4669,6 +4798,46 @@ mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Color, text::Line};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+    #[test]
+    fn pointer_motion_redraws_only_when_the_hovered_message_changes() {
+        let motion = |kind| {
+            Event::Mouse(MouseEvent { kind, column: 4, row: 1, modifiers: KeyModifiers::NONE })
+        };
+
+        assert!(super::is_mouse_motion(&motion(MouseEventKind::Moved)));
+        assert!(!super::is_mouse_motion(&motion(MouseEventKind::ScrollUp)));
+        assert!(!super::is_mouse_motion(&Event::Key(KeyEvent::from(KeyCode::Enter))));
+
+        let mut app = App { transcript: "Krabb\nhello\n\nYou\nthere".into(), ..Default::default() };
+
+        assert!(app.hover_changed());
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+
+        let area = app.transcript_area.unwrap();
+        let layout = app.transcript_layout.as_ref().unwrap();
+        let offset = app.transcript_scroll.offset;
+
+        let row = |index: usize| {
+            let rows = &layout.messages[index].rows;
+
+            (area.x + 2, area.y + (rows.start - offset) as u16)
+        };
+
+        let (first, second) = (row(0), row(1));
+
+        app.mouse_position = Some(first);
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+
+        assert!(!app.hover_changed());
+
+        app.mouse_position = Some(second);
+
+        assert!(app.hover_changed());
+    }
 
     #[test]
     fn hides_models_when_no_intelligence_plugin_is_installed() {

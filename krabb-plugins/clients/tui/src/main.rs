@@ -1234,11 +1234,13 @@ where
             let reply = reply_command(line);
 
             if line.starts_with('/') && reply.is_none() {
-                output
-                    .write_all(format!("Unknown TUI command: {}.\nUse /help to see available \
-                                       commands.\n> ", line.split_whitespace().next().unwrap_or(line)).as_bytes())
-                    .await?;
+                let text = if shared(line) {
+                    shared_command(&home, &session, line, host).await
+                } else {
+                    unknown_command(line)
+                };
 
+                output.write_all(format!("{text}\n> ").as_bytes()).await?;
                 output.flush().await?;
                 continue;
             }
@@ -2105,6 +2107,10 @@ fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
     if has_model {
         conditional.push(("/model <help|list|show|set>", "Manage the selected model."));
         conditional.push(("/compact", "Summarize older turns and keep recent conversation."));
+    }
+
+    if daemon && has_model {
+        conditional.push(HATCH_COMMAND);
     }
 
     if daemon && has_capability(home, "tool") {
@@ -4531,7 +4537,7 @@ async fn control_with_stream(
 
     let wait = if streaming_turn {
         STREAMING_TURN_TIMEOUT
-    } else if method == "session.compact" {
+    } else if matches!(method, "session.compact" | "command.run") {
         COMPACTION_TIMEOUT
     } else {
         CONTROL_TIMEOUT
@@ -5180,6 +5186,48 @@ fn sentence(value: String) -> String {
     }
 }
 
+/// Runs a command shared with every conversation, such as `/hatch`, through the runtime, and
+/// names the command as unknown when the runtime does not handle it or is not running. Shared
+/// commands such as `/hatch` can wait on the model, so they get the compaction deadline.
+async fn shared_command<C, F>(home: &str, session: &str, line: &str, host: C) -> String
+where
+    C: Fn(String, String, Value) -> F + Copy,
+    F: Future<Output = krabb_core::Result<Value>>,
+{
+    let params = serde_json::json!({"client": "tui", "session": session, "text": line});
+
+    match host(home.into(), "command.run".into(), params).await {
+        Ok(result) if result["handled"] == true => {
+            result["text"].as_str().unwrap_or_default().to_owned()
+        }
+
+        Err(error @ krabb_core::Error::Io(_)) if daemon_unavailable(&error) => {
+            unknown_command(line)
+        }
+
+        Err(error) => format!("{}.", sentence(error.to_string())),
+
+        _ => unknown_command(line),
+    }
+}
+
+/// Whether LINE names a command the runtime shares with every conversation. Others stay
+/// local, because the TUI gives commands such as `/session` and `/help` its own meaning.
+fn shared(line: &str) -> bool {
+    line.split_whitespace().next() == Some("/hatch")
+}
+
+fn unknown_command(line: &str) -> String {
+    format!(
+        "Unknown TUI command: {}.\nUse /help to see available commands.",
+        line.split_whitespace().next().unwrap_or(line)
+    )
+}
+
+/// Changes the Krabb's personality through the runtime's shared `/hatch` command.
+pub(crate) const HATCH_COMMAND: (&str, &str) =
+    ("/hatch [<what to change> | undo]", "Change my name, personality, and writing style.");
+
 /// Reads `/reply <target> <message>`: `None` for other input, and `Some(None)` when the command
 /// lacks its target or message.
 fn reply_command(line: &str) -> Option<Option<(&str, &str)>> {
@@ -5200,12 +5248,14 @@ fn reply_command(line: &str) -> Option<Option<(&str, &str)>> {
 #[cfg(test)]
 mod tests {
     mod replies;
+
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn stores_values_through_the_session_scoped_sqlite_capability() {
         let calls = std::sync::Mutex::new(Vec::new());
+
         let host = |_: String, method: String, params: serde_json::Value| {
             let calls = &calls;
 
@@ -5257,6 +5307,7 @@ mod tests {
     #[tokio::test]
     async fn manages_structured_data_in_the_active_tui_scope() {
         let calls = std::sync::Mutex::new(Vec::new());
+
         let host = |_: String, method: String, params: serde_json::Value| {
             let calls = &calls;
             async move {
@@ -5350,6 +5401,7 @@ mod tests {
         .await;
 
         assert!(response.contains("Stored session value."));
+
         let calls = calls.lock().unwrap();
 
         assert_eq!(calls[0]["service"], "sqlite");
@@ -5385,11 +5437,13 @@ mod tests {
 
         let databases =
             super::data_command("/tmp/krabb".into(), "default".into(), "database list", host).await;
+
         assert!(databases.contains("Databases:\n├─ foo\n└─ bar\n> "));
 
         let tables =
             super::data_command("/tmp/krabb".into(), "default".into(), "table list foo", host)
                 .await;
+
         assert!(tables.contains("Tables in foo:\n├─ people\n└─ notes\n> "));
 
         let columns = super::data_command(
@@ -5405,6 +5459,7 @@ mod tests {
         let records =
             super::data_command("/tmp/krabb".into(), "default".into(), "query foo people", host)
                 .await;
+
         assert!(
             records.contains("Records in foo.people:\n└─ #1\n   └─ name=Ada\nShowing 1 record(s).")
         );
@@ -5413,6 +5468,7 @@ mod tests {
     #[tokio::test]
     async fn forgets_matching_session_memories_from_both_scopes() {
         let legacy_called = std::sync::atomic::AtomicBool::new(false);
+
         let host = |_: String, method: String, params: serde_json::Value| {
             let legacy_called = &legacy_called;
 
@@ -5457,6 +5513,7 @@ mod tests {
     #[tokio::test]
     async fn forgets_a_unique_global_memory_by_its_listed_key() {
         let global_deleted = std::sync::atomic::AtomicBool::new(false);
+
         let host = |_: String, method: String, params: serde_json::Value| {
             let global_deleted = &global_deleted;
 
@@ -5498,6 +5555,7 @@ mod tests {
     #[tokio::test]
     async fn asks_for_scope_when_a_memory_key_is_ambiguous() {
         let deleted = std::sync::atomic::AtomicBool::new(false);
+
         let host = |_: String, method: String, params: serde_json::Value| {
             let deleted = &deleted;
 
@@ -5538,6 +5596,7 @@ mod tests {
     #[tokio::test]
     async fn saves_session_memories_outside_the_global_scope() {
         let scoped = std::sync::atomic::AtomicBool::new(false);
+
         let host = |_: String, method: String, params: serde_json::Value| {
             let scoped = &scoped;
 
@@ -5570,6 +5629,7 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
 
         let id = super::message_id("user", 4);
+
         let after =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
 
@@ -5673,6 +5733,7 @@ mod tests {
     fn suggests_model_selection_only_for_model_errors() {
         assert!(super::invalid_model_error("Invalid model: gpt-missing"));
         assert!(super::invalid_model_error("model not found"));
+
         assert!(!super::invalid_model_error(
             "runtimeWorkspaceRoots requires experimentalApi capability"
         ));
@@ -5690,6 +5751,7 @@ mod tests {
 
         assert!(targets.all);
         assert!(targets.confirmed);
+
         let targets = super::parse_session_targets("one --deep --yes", true).unwrap();
 
         assert!(targets.deep);
@@ -5704,6 +5766,7 @@ mod tests {
     #[tokio::test]
     async fn bulk_session_actions_preserve_the_active_session() {
         let targets = super::parse_session_targets("--all", false).unwrap();
+
         let result =
             super::apply_session_action("/tmp", "archive", targets, "tui-other", mock_control)
                 .await;
@@ -5711,6 +5774,7 @@ mod tests {
         assert_eq!(result, "Archived session saved.");
 
         let targets = super::parse_session_targets("--all -y", true).unwrap();
+
         let result =
             super::apply_session_action("/tmp", "delete", targets, "tui-saved", mock_control).await;
 
@@ -5734,11 +5798,13 @@ mod tests {
             .unwrap();
 
         let targets = super::parse_session_targets("first --deep -y", true).unwrap();
+
         let result =
             super::apply_session_action(&home, "delete", targets, "tui-active", mock_deep_delete)
                 .await;
 
         assert_eq!(result, "Deleted session first.");
+
         assert!(
             super::offline::control(&home, "session.get", json!({"id": "tui-first"}))
                 .await
@@ -5752,10 +5818,12 @@ mod tests {
         );
 
         let targets = super::parse_session_targets("second -y", true).unwrap();
+
         let result =
             super::apply_session_action(&home, "delete", targets, "tui-active", mock_control).await;
 
         assert_eq!(result, "Deleted session second.");
+
         assert!(
             super::offline::control(&home, "session.get", json!({"id": "tui-second"}))
                 .await
@@ -5990,9 +6058,11 @@ mod tests {
 
         assert!(serialized.len() > 512);
         assert!(serialized.len() <= 1_024);
+
         let pending = super::format_approvals(&json!({"items": [{
             "id": "fixture", "target": {"tool": "schedule_propose", "args": args}
         }]}));
+
         let live = super::format_approval_notice(
             "fixture",
             "schedule_propose",
@@ -6186,12 +6256,14 @@ mod tests {
     #[test]
     fn reports_session_archive_transitions_and_noops_clearly() {
         assert_eq!(super::format_session_archive("one", true, true), "Archived session one.");
+
         assert_eq!(
             super::format_session_archive("one", true, false),
             "Session one is already archived."
         );
 
         assert_eq!(super::format_session_archive("one", false, true), "Unarchived session one.");
+
         assert_eq!(
             super::format_session_archive("one", false, false),
             "Session one is already unarchived."
@@ -6310,13 +6382,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn shared_commands_run_through_the_runtime_and_unknown_ones_say_so() {
+        let host = |_: String, method: String, params: serde_json::Value| async move {
+            assert_eq!(method, "command.run");
+            assert_eq!(params["client"], "tui");
+
+            if params["text"] == "/hatch be brief" {
+                Ok(json!({"handled": true, "text": "I'm brief now.\nSend /hatch undo to go back."}))
+            } else if params["text"] == "/offline" {
+                Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused).into())
+            } else if params["text"] == "/slow" {
+                Err(krabb_core::Error::Denied("The daemon did not respond in time.".into()))
+            } else if params["text"] == "/busy" {
+                Err(krabb_core::Error::Denied("all work slots are busy".into()))
+            } else {
+                Ok(json!({"handled": false}))
+            }
+        };
+
+        let hatched = super::shared_command("home", "tui-main", "/hatch be brief", host).await;
+
+        assert_eq!(hatched, "I'm brief now.\nSend /hatch undo to go back.");
+
+        let busy = super::shared_command("home", "tui-main", "/busy", host).await;
+
+        assert!(busy.ends_with("All work slots are busy."), "{busy}");
+
+        let slow = super::shared_command("home", "tui-main", "/slow", host).await;
+
+        assert!(slow.ends_with("The daemon did not respond in time."), "{slow}");
+        assert!(super::shared("/hatch undo") && !super::shared("/hatchet"));
+        assert!(!super::shared("/help session"));
+
+        for line in ["/nonsense now", "/offline"] {
+            let unknown = super::shared_command("home", "tui-main", line, host).await;
+            let name = line.split_whitespace().next().unwrap();
+
+            assert_eq!(
+                unknown,
+                format!("Unknown TUI command: {name}.\nUse /help to see available commands.")
+            );
+        }
+    }
+
     #[test]
     fn tui_schedule_history_paginates_five_runs() {
         let root =
             std::env::temp_dir().join(format!("krabb-tui-schedule-history-{}", std::process::id()));
+
         let directory = root.join("logs/schedules");
+
         std::fs::create_dir_all(&directory).unwrap();
+
         let path = directory.join("morning-check-42.jsonl");
+
         let records = (1..=12)
             .map(|run_id| {
                 json!({
@@ -6328,6 +6448,7 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
+
         std::fs::write(
             &path,
             records.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"),
@@ -6336,12 +6457,14 @@ mod tests {
 
         let (page, total, found_path) =
             super::read_schedule_history(root.to_str().unwrap(), 42, 2).unwrap();
+
         let output =
             super::format_schedule_history(&page, total, 42, "morning-check", 2, &found_path);
 
         assert_eq!(page.len(), 5);
         assert_eq!(total, 12);
         assert!(output.contains("Schedule history: morning-check | 6–10 of 12 | page 2/3:"));
+
         assert!(
             output.find("Run 7 | completed successfully").unwrap()
                 < output.find("Run 3 | completed successfully").unwrap()
@@ -6522,6 +6645,7 @@ mod tests {
             "/missing-krabb-home",
         )
         .unwrap();
+
         let expected_at = u64::try_from(
             "2030-10-20T09:00:00+02:00".parse::<jiff::Timestamp>().unwrap().as_second(),
         )
@@ -6585,6 +6709,7 @@ mod tests {
         assert!(super::schedule_destinations(&["--clear".into()]).unwrap().is_empty());
         assert!(super::schedule_destinations(&[]).is_err());
         assert!(super::schedule_destinations(&["--bad".into(), "x".into()]).is_err());
+
         assert_eq!(
             super::schedule_destinations(&["--to".into(), "tui:group:tui-default".into()])
                 .unwrap()
@@ -6612,6 +6737,7 @@ mod tests {
         assert_eq!(params["cron"], "0 9 * * 1-5");
         assert_eq!(params["zone"], "Europe/Rome");
         assert_eq!(instruction, "Send the weekday report");
+
         assert!(
             super::parse_schedule_add("--every 300 --cron '* * * * *' --timezone UTC Run", "/tmp")
                 .unwrap_err()
@@ -6649,6 +6775,7 @@ mod tests {
             host,
         )
         .await;
+
         let retry = super::schedule_command(
             "/tmp/krabb".into(),
             "retry 8",
@@ -6659,6 +6786,7 @@ mod tests {
             host,
         )
         .await;
+
         let remove_host = |_: String, _: String, params: serde_json::Value| async move {
             if params["method"] == "list" {
                 Ok(json!({
@@ -6691,7 +6819,9 @@ mod tests {
     fn scheduled_tui_tasks_capture_the_configured_shell_setting() {
         let root =
             std::env::temp_dir().join(format!("krabb-tui-schedule-shell-{}", std::process::id()));
+
         std::fs::create_dir_all(&root).unwrap();
+
         let config = root.join("config.toml");
 
         std::fs::write(&config, "[clients.tui]\nshell = true\n").unwrap();
@@ -6725,6 +6855,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_pending_approvals_during_a_daemon_turn_and_saves_the_interaction() {
         let mut sequence = 0;
+
         let response = super::resolve_turn_approval(
             "/tmp/krabb",
             "telegram-7",
@@ -6744,6 +6875,7 @@ mod tests {
     async fn resolves_an_id_specific_approval_from_live_turn_input() {
         let mut sequence = 0;
         let command = super::decode_terminal_input(r#""/approve 0123456789abcdef01234567""#);
+
         let response = super::resolve_turn_approval(
             "/tmp/krabb",
             "telegram-7",
@@ -6938,6 +7070,7 @@ mod tests {
     ) -> krabb_core::Result<serde_json::Value> {
         if method == "session.answer" {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
             return Ok(json!({"text": "Delayed reply"}));
         }
 
@@ -6996,6 +7129,7 @@ mod tests {
         if method == "session.enqueue" {
             assert_eq!(params["text"], "Explain the second dataset");
             assert_eq!(params["client"], krabb_core::client::TUI);
+
             return Ok(json!({"task":"job-queued", "status":"queued"}));
         }
 
@@ -7010,6 +7144,7 @@ mod tests {
             }
 
             assert_eq!(params["text"], "/task pause job-42");
+
             return Ok(
                 json!({"handled":true, "text":"Pause requested. The current step is stopping \
                     safely."}),
@@ -7037,13 +7172,17 @@ mod tests {
         }
 
         use tokio::io::duplex;
+
         let root =
             std::env::temp_dir().join(format!("krabb-tui-busy-reply-{}", super::schedule_id()));
+
         std::fs::create_dir_all(&root).unwrap();
+
         let (mut input, receiver) = duplex(4096);
         let (output, _rendered) = duplex(16 * 1024);
         let (_interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
         let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+
         let engine = tokio::spawn(super::run_with(
             receiver,
             output,
@@ -7077,6 +7216,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -7114,6 +7254,7 @@ mod tests {
 
             if method == "task.message" {
                 assert_eq!(params["text"], "/task");
+
                 return Ok(json!({"handled":true,"text":"The report is paused."}));
             }
 
@@ -7146,7 +7287,9 @@ mod tests {
 
             if method == "session.answer" {
                 assert!(!root.join("generated").exists());
+
                 let request = params["request"].as_str().unwrap();
+
                 std::fs::write(root.join("request"), request).unwrap();
                 std::fs::write(root.join("generated"), "1").unwrap();
                 return Err(krabb_core::Error::Denied("The connection was lost.".into()));
@@ -7157,6 +7300,7 @@ mod tests {
                     params["request"],
                     std::fs::read_to_string(root.join("request")).unwrap()
                 );
+
                 let state = std::fs::read_to_string(root.join("state")).unwrap();
                 let text = (state == "completed").then_some("The exact saved report.");
 
@@ -7170,8 +7314,10 @@ mod tests {
 
         for state in ["completed", "running", "blocked"] {
             let home = root.join(state);
+
             std::fs::create_dir_all(&home).unwrap();
             std::fs::write(home.join("state"), state).unwrap();
+
             let reply = super::run_once(
                 home.display().to_string(),
                 "codex".into(),
@@ -7229,7 +7375,9 @@ mod tests {
 
         let root =
             std::env::temp_dir().join(format!("krabb-tui-stream-recover-{}", super::schedule_id()));
+
         std::fs::create_dir_all(&root).unwrap();
+
         let (mut input, receiver) = tokio::io::duplex(4096);
         let (output, _rendered) = tokio::io::duplex(16 * 1024);
         let (_interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
@@ -7269,7 +7417,9 @@ mod tests {
 
         input.write_all(b"/quit\n").await.unwrap();
         drop(input);
+
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), engine).await;
+
         std::fs::remove_dir_all(root).unwrap();
 
         assert!(recovered.is_ok(), "the recovered answer must be shown");
@@ -7299,6 +7449,7 @@ mod tests {
                 }
 
                 assert_eq!(params["request"], "stable-1");
+
                 return Ok(
                     json!({"found":true,"task":{"id":"job-42","state":"waiting"},"text":null}),
                 );
@@ -7309,11 +7460,14 @@ mod tests {
 
         let root =
             std::env::temp_dir().join(format!("krabb-tui-reconnect-{}", super::schedule_id()));
+
         std::fs::create_dir_all(&root).unwrap();
+
         let (mut input, reader) = tokio::io::duplex(1024);
         let (output, _rendered) = tokio::io::duplex(4096);
         let (_interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
         let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+
         let engine = tokio::spawn(super::run_with(
             reader,
             output,
@@ -7333,8 +7487,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+
         assert!(matches!(notice, super::EngineEvent::ControlNotice(text)
             if text.contains("job-42") && text.contains("waiting")));
+
         input.write_all(b"/quit\n").await.unwrap();
         engine.await.unwrap().unwrap();
         std::fs::remove_dir_all(root).unwrap();
@@ -7343,12 +7499,16 @@ mod tests {
     #[tokio::test]
     async fn plain_output_prints_task_control_notices_while_inference_is_busy() {
         use tokio::io::duplex;
+
         let root =
             std::env::temp_dir().join(format!("krabb-tui-plain-control-{}", super::schedule_id()));
+
         std::fs::create_dir_all(&root).unwrap();
+
         let (mut input, receiver) = duplex(4096);
         let (output, mut rendered) = duplex(16 * 1024);
         let (interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+
         let engine = tokio::spawn(super::run_with(
             receiver,
             output,
@@ -7403,13 +7563,17 @@ mod tests {
     #[tokio::test]
     async fn exact_task_commands_are_received_while_inference_is_busy() {
         use tokio::io::duplex;
+
         let root =
             std::env::temp_dir().join(format!("krabb-tui-task-control-{}", super::schedule_id()));
+
         std::fs::create_dir_all(&root).unwrap();
+
         let (mut input, receiver) = duplex(4096);
         let (output, mut rendered) = duplex(16 * 1024);
         let (interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
         let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+
         let engine = tokio::spawn(super::run_with(
             receiver,
             output,
@@ -7424,6 +7588,7 @@ mod tests {
             super::EngineEvents { engine: Some(events), ..Default::default() },
             interrupts,
         ));
+
         input.write_all(b"prepare the report\n").await.unwrap();
 
         assert_eq!(
@@ -7485,15 +7650,19 @@ mod tests {
         }
 
         input.write_all(b"/quit\n").await.unwrap();
+
         tokio::time::timeout(std::time::Duration::from_secs(2), engine)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
+
         let mut text = String::new();
+
         rendered.read_to_string(&mut text).await.unwrap();
 
         assert!(!text.contains("A turn is still running"));
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -7506,6 +7675,7 @@ mod tests {
         };
 
         assert_eq!(super::stream_text(event), Some("part".into()));
+
         assert!(
             super::stream_text(krabb_core::types::Request::call(1, "event", serde_json::json!({})))
                 .is_none()
@@ -7523,8 +7693,10 @@ mod tests {
         ));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
         std::fs::create_dir_all(root.join("run")).unwrap();
         std::fs::write(root.join("run/ipc.token"), "fixture-token").unwrap();
+
         std::fs::write(
             root.join("run/ipc.port"),
             listener.local_addr().unwrap().port().to_string(),
@@ -7555,6 +7727,7 @@ mod tests {
         });
 
         let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
         super::control_with_stream(
             root.to_str().unwrap(),
             "session.answer",
@@ -7563,6 +7736,7 @@ mod tests {
         )
         .await
         .unwrap_or_else(|_| panic!("stream control failed"));
+
         server.await.unwrap();
 
         assert_eq!(
@@ -7589,12 +7763,14 @@ mod tests {
     fn final_reply_keeps_answers_after_a_different_progress_prefix() {
         assert_eq!(super::final_reply_suffix("Hello", "Hello world"), " world");
         assert_eq!(super::final_reply_suffix("Hello world", "Hello world"), "");
+
         assert_eq!(
             super::final_reply_suffix("Hello", "A duplicated final reply"),
             "\n\nA duplicated final reply"
         );
 
         assert_eq!(super::final_reply_suffix("", "Non-streamed reply"), "Non-streamed reply");
+
         let clipped = format!("Hello…{}", krabb_core::types::CLIP_NOTICE);
 
         assert_eq!(
@@ -7627,6 +7803,7 @@ mod tests {
     fn relative_workspace_paths_resolve_against_the_tui_launch_directory() {
         let root = std::env::temp_dir().join(format!("krabb-tui-workspace-{}", std::process::id()));
         let project = root.join("project");
+
         std::fs::create_dir_all(&project).unwrap();
 
         assert_eq!(
@@ -7721,6 +7898,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("krabb-tui-tools-{nonce}"));
         let codex = root.join("plugins/codex/bin/krabb-plugin-codex");
         let tools = root.join("plugins/tools/bin/krabb-plugin-tools");
+
         fs::create_dir_all(codex.parent().unwrap()).unwrap();
         fs::create_dir_all(tools.parent().unwrap()).unwrap();
 

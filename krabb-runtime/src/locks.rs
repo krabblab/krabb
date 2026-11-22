@@ -32,7 +32,7 @@ pub(crate) fn offline_lock(root: &Path) -> std::io::Result<DaemonLock> {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
             std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "The daemon owns the state; use the IPC client instead of opening state directly.",
+                "The daemon owns the state, so use the IPC client instead of opening state directly.",
             )
         } else {
             error

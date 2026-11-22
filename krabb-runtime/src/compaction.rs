@@ -230,7 +230,7 @@ impl Context {
             if !truncate(&mut input.messages) {
                 return Err(Error::Limit(
                     "System instructions, tools, and the current turn exceed the model's input \
-                     budget; shorten the input, disable unused tools, or increase its context."
+                     budget, so shorten the input, disable unused tools, or increase its context."
                         .into(),
                 ));
             }

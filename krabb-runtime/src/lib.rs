@@ -2041,7 +2041,7 @@ async fn generate_at(
     if let Err(error) = append_installed_memory_context(root, &mut messages, "global").await {
         warn!(
             error = %diagnostic(sentence(error.to_string())),
-            "Memory context unavailable for one-shot request; continuing without it."
+            "Memory context unavailable for one-shot request, continuing without it."
         );
     }
 
@@ -2349,7 +2349,7 @@ async fn restart_daemon(root: &Path) -> Result<bool, PluginError> {
     }
 
     if !stopped {
-        return Err("The daemon did not stop; refusing to start a second instance.".into());
+        return Err("The daemon did not stop, refusing to start a second instance.".into());
     }
 
     let executable = daemon_executable()?;

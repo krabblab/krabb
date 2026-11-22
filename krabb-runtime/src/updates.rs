@@ -58,7 +58,7 @@ pub(super) async fn apply(
     for (id, candidate) in &snapshot.candidates {
         let _progress = terminal::progress(
             format!(
-                "Updating {id}: switching over after its current request; everything else keeps running..."
+                "Updating {id}: switching over after its current request, and everything else keeps running..."
             ),
             json,
         );
@@ -76,7 +76,7 @@ pub(super) async fn apply(
             Err(error) => rows.push(serde_json::json!({
                 "id": id, "version": candidate.base_version, "status": "failed",
                 "error": if error.to_string() == "Method not found." {
-                    "The running daemon does not support live updates; upgrade it and run `krabb service restart` once, then retry.".into()
+                    "The running daemon does not support live updates, so upgrade it and run `krabb service restart` once, then retry.".into()
                 } else { diagnostic(error.to_string()) },
             })),
         }
@@ -185,7 +185,7 @@ async fn replace_with_commit(
             }
 
             let candidate = load_update_candidate_at(&directory, &prepare_id, entry)?
-                .ok_or("Plugin update snapshot disappeared; preview updates again.")?;
+                .ok_or("Plugin update snapshot disappeared, so preview updates again.")?;
 
             // Staging hashes its own copy against this confirmed hash.
             check_update_candidate(&prepare_root, &prepare_id, entry, &candidate)?;
@@ -229,7 +229,7 @@ async fn replace_with_commit(
     let deadline = tokio::time::Instant::now() + HANDOFF_WAIT;
     let deferred = |_| {
         PluginError::from(format!(
-            "Plugin update deferred: {id} is still handling a request; it keeps running."
+            "Plugin update deferred: {id} is still handling a request, and it keeps running."
         ))
     };
 
@@ -314,7 +314,7 @@ async fn replace_with_commit(
 const HANDOFF_WAIT: Duration = Duration::from_secs(310);
 
 fn superseded(id: &str) -> PluginError {
-    format!("Plugin {id} was reloaded or removed during the update; preview again.").into()
+    format!("Plugin {id} was reloaded or removed during the update, so preview again.").into()
 }
 
 /// Records a promoted manifest's reviewed declarations in its lock entry.
@@ -360,7 +360,7 @@ async fn restore(
             warn!(
                 plugin = %id,
                 error = %diagnostic(restart.to_string()),
-                "Previous plugin version could not restart; it is unloaded."
+                "Previous plugin version could not restart, and it is unloaded."
             );
 
             if let Some(process) = slot.take() {
@@ -370,7 +370,7 @@ async fn restore(
             plugins.remove(id).await;
 
             format!(
-                "{} The previous version could not restart either, so {id} is stopped; run \
+                "{} The previous version could not restart either, so {id} is stopped.\nRun \
                  `krabb service restart` to load it again.",
                 sentence(error.to_string())
             )

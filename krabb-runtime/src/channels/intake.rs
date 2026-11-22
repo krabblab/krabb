@@ -174,7 +174,7 @@ async fn pause(context: &Context, stop: &Stop, step: &str, error: &str) -> bool 
         channel = %context.id,
         step,
         error = %diagnostic(sentence(error.to_owned())),
-        "Channel intake failed during a turn; retrying."
+        "Channel intake failed during a turn, retrying."
     );
 
     tokio::select! {

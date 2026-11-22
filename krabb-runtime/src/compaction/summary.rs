@@ -73,7 +73,7 @@ pub(super) async fn summarize(
 
             if text.is_none() {
                 native = false;
-                tracing::debug!("Native compaction unavailable; using portable summarization.");
+                tracing::debug!("Native compaction unavailable, using portable summarization.");
             }
 
             text
@@ -228,14 +228,14 @@ pub(super) fn batches(messages: &[Message], tokens: u64) -> Result<Vec<String>> 
                     if batches.len() == BATCHES {
                         if messages.len() > 1 {
                             return Err(Error::Limit(
-                                "Manual compaction exceeds the bounded workload; continue the \
+                                "Manual compaction exceeds the bounded workload, so continue the \
                                  conversation to compact history incrementally."
                                     .into(),
                             ));
                         }
 
                         tracing::warn!(
-                            "Oversized history entry exceeded compaction capacity; \
+                            "Oversized history entry exceeded compaction capacity, and \
                              its remaining text was omitted from summarization input."
                         );
                         return Ok(batches);

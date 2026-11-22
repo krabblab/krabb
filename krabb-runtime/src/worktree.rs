@@ -203,7 +203,9 @@ fn git(root: &Path, args: &[&str]) -> Result<String, PluginError> {
     let output = super::command_output(super::worktree_command(root).args(args))?;
 
     if !output.status.success() {
-        return Err(format!("Git {} failed; the channel setting was not changed.", args[0]).into());
+        return Err(
+            format!("Git {} failed, and the channel setting was not changed.", args[0]).into()
+        );
     }
 
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())

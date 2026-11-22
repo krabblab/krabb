@@ -88,7 +88,7 @@ fn assert_rollback_and_retry(existing: bool, failure: Failure) {
     match failure {
         Failure::MissingBinary => assert_eq!(
             error,
-            format!("Binary {} was not found; build the plugin first.", plugin_name("memory"))
+            format!("Binary {} was not found, so build the plugin first.", plugin_name("memory"))
         ),
 
         Failure::Version | Failure::Capabilities => {

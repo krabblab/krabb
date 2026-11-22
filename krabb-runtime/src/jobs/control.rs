@@ -76,7 +76,8 @@ pub(crate) fn control(
         && job.approval.as_ref().is_some_and(|approval| approval.decision.is_none())
     {
         return Err(format!(
-            "The task is paused. Send `/task resume {id}` first; it then waits for this decision."
+            "The task is paused, so send `/task resume {id}` first, and it then waits for this \
+             decision."
         )
         .into());
     }
@@ -152,7 +153,7 @@ fn act(
         JobStatus::Cancelled => "Task cancelled. Already completed effects are preserved.",
 
         JobStatus::Reporting | JobStatus::Completed => {
-            "The task has already completed; its result is preserved."
+            "The task has already completed, and its result is preserved."
         }
 
         JobStatus::Queued if action == "approve" => {
@@ -160,7 +161,7 @@ fn act(
         }
 
         JobStatus::Queued if action == "deny" => {
-            "Denied. The saved action will not run; the task continues without it."
+            "Denied, so the saved action will not run, and the task continues without it."
         }
 
         JobStatus::Queued | JobStatus::Waiting | JobStatus::Running
@@ -169,7 +170,7 @@ fn act(
             "Task resumed from its saved checkpoint."
         }
 
-        _ => "Task instruction updated; its current state is preserved.",
+        _ => "Task instruction updated, and its current state is preserved.",
     };
 
     let text = if current == JobStatus::Blocked && waiting {
@@ -226,7 +227,7 @@ fn defer(
         "Resume is saved for {}. {}",
         super::defer::describe(&deferred.command.when),
         if job.status == JobStatus::Pausing {
-            "The current step is still stopping; work resumes only after it settles."
+            "The current step is still stopping, and work resumes only after it settles."
         } else {
             "The task is paused until then."
         }

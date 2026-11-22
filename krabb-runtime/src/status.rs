@@ -266,7 +266,7 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
         let state = if value["recovery"]["accepted"] == true {
             "kept"
         } else {
-            "update unfinished; run `krabb update --rollback`"
+            "update unfinished, so run `krabb update --rollback`"
         };
 
         output.push_str(&format!("\n{:<20}Krabb {from} ({state})", "Recovery point:"));

@@ -114,7 +114,9 @@ pub(super) fn find<'a>(
     let first = matches.next();
 
     if matches.next().is_some() {
-        return Err(invalid("Several saved tasks share this request identity; inspect task.list."));
+        return Err(invalid(
+            "Several saved tasks share this request identity, so inspect task.list.",
+        ));
     }
 
     Ok(first)

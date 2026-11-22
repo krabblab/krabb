@@ -94,7 +94,7 @@ pub async fn serve(listener: TcpListener, state: Arc<State>) -> io::Result<()> {
             result = listener.accept() => {
                 let (stream, _) = result?;
                 let Ok(slot) = Arc::clone(&connections).try_acquire_owned() else {
-                    warn!("IPC client limit reached; connection rejected.");
+                    warn!("IPC client limit reached, connection rejected.");
                     continue;
                 };
 
@@ -178,7 +178,7 @@ async fn handle(
                 IpcResponse::fail(
                     request.id,
                     -32000,
-                    "All work slots are busy; task controls remain available.",
+                    "All work slots are busy, but task controls remain available.",
                 ),
             )
             .await;
@@ -2123,7 +2123,16 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let session =
                 sessions.sessions.get(id).ok_or_else(|| not_found("Session was not found."))?;
 
-            detail(session)
+            let revision = revision(session);
+
+            if request.params["revision"].as_str() == Some(revision.as_str()) {
+                json!({"id": id, "revision": revision, "unchanged": true})
+            } else {
+                let mut value = detail(session);
+
+                value["revision"] = Value::String(revision);
+                value
+            }
         }
 
         "session.ensure" => {
@@ -2296,7 +2305,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             if let Err(error) = super::state::rename_worktree(&state.home, source, target) {
                 if let Err(rollback) = sessions.rename_session(target, source) {
                     return Err(io::Error::other(format!(
-                        "Could not rename the session worktree ({error}); session rollback failed ({rollback})."
+                        "Could not rename the session worktree ({error}), and session rollback failed ({rollback})."
                     )));
                 }
 
@@ -2407,6 +2416,30 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
     };
 
     Ok(IpcResponse::ok(request.id, result))
+}
+
+/// A fingerprint of the saved session, so a client that polls `session.get` with the
+/// revision it last saw receives the conversation again only after it changes.
+fn revision(session: &super::state::Session) -> String {
+    use std::hash::Hasher as _;
+
+    struct Fingerprint(std::collections::hash_map::DefaultHasher);
+
+    impl std::io::Write for Fingerprint {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut fingerprint = Fingerprint(std::collections::hash_map::DefaultHasher::new());
+    let _ = serde_json::to_writer(&mut fingerprint, session);
+
+    format!("{:016x}", fingerprint.0.finish())
 }
 
 pub(crate) fn summary(session: &super::state::Session) -> Value {
@@ -5360,6 +5393,37 @@ for line in sys.stdin:
         .unwrap();
 
         assert_eq!(model.result.unwrap()["model"], "test-model");
+
+        let get = |id, params| {
+            dispatch(&IpcRequest::call(id, "secret", "session.get", params), &state)
+                .unwrap()
+                .result
+                .unwrap()
+        };
+
+        let full = get(40, json!({"id": "one"}));
+        let revision = full["revision"].as_str().unwrap().to_owned();
+
+        assert_eq!(full["model"], "test-model");
+
+        let unchanged = get(41, json!({"id": "one", "revision": revision}));
+
+        assert_eq!(unchanged["unchanged"], true);
+        assert!(unchanged.get("messages").is_none());
+
+        let stale = get(42, json!({"id": "one", "revision": "0000000000000000"}));
+
+        assert!(stale["messages"].is_array());
+        assert_eq!(stale["revision"], full["revision"]);
+
+        state.sessions.lock().unwrap().set_status("one", "working").unwrap();
+
+        let changed = get(43, json!({"id": "one", "revision": revision}));
+
+        assert!(changed["messages"].is_array());
+        assert_ne!(changed["revision"], full["revision"]);
+
+        state.sessions.lock().unwrap().set_status("one", "idle").unwrap();
 
         let fork = dispatch(
             &IpcRequest::call(

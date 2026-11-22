@@ -96,7 +96,7 @@ pub(crate) async fn plugin(
                             }
 
                             Err(error) if plugin_activation_is_deferred(&error.to_string()) => {
-                                debug!(plugin = %id, "Plugin installed; activation is deferred.");
+                                debug!(plugin = %id, "Plugin installed, and activation is deferred.");
                                 waiting_for_credentials = true;
                                 credentials_deferred = true;
                                 "deferred"
