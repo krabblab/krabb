@@ -60,6 +60,7 @@ mod dispatch;
 mod doctor;
 mod external;
 mod failure;
+mod hatch;
 mod home;
 mod inbound;
 mod index;
@@ -1721,6 +1722,7 @@ async fn main_with_log(cli: Cli, log_path: Option<PathBuf>) -> ExitCode {
 fn command_label(command: &Command) -> &'static str {
     match command {
         Command::Init(_) => "init",
+        Command::Hatch(_) => "hatch",
         Command::Doctor(_) => "doctor",
         Command::Config(_) => "config",
         Command::Worktree { .. } => "worktree",
@@ -1770,6 +1772,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match cli.command {
         Command::Init(args) => init(args.force, args.yes, json)?,
+        Command::Hatch(args) => hatch::run(args, &home(), json)?,
         Command::Doctor(args) => doctor(args.fix, json)?,
         Command::Config(args) => config_command(args.command, &home(), json).await?,
         Command::Worktree { command } => worktree::run(command, &home(), json).await?,
@@ -2027,7 +2030,9 @@ async fn generate_at(
         message.content = quote(std::mem::take(&mut message.content), &reply);
     }
 
-    let mut messages = context_at("cli", &root.join("data/system"));
+    let mut messages = vec![charter("cli")];
+
+    messages.extend(context_at("cli", &root.join("data/system")));
     messages.push(message);
 
     if let Err(error) = append_installed_memory_context(root, &mut messages, "global").await {
@@ -2413,11 +2418,23 @@ fn purge_offline_state(
 }
 
 fn turn_messages(session: &str, home_root: &Path, history: Vec<Message>) -> Vec<Message> {
-    let mut messages = vec![runtime_context(session)];
+    let mut messages = vec![charter(session), runtime_context(session)];
 
     messages.extend(context_at(session, &home_root.join("data/system")));
     messages.extend(history);
     messages
+}
+
+/// Krabb's built-in charter. It is compiled in, so personalizing KRAB.md or KLAW.md cannot
+/// remove it; host policy still enforces every permission in code.
+fn charter(session: &str) -> Message {
+    Message {
+        id: format!("{}charter", state::SYSTEM_CONTEXT),
+        session: session.into(),
+        role: Role::System,
+        sender: None,
+        content: vec![Content::Text { text: templates::CHARTER.into() }],
+    }
 }
 
 /// Describes the running host from its own constants, so the model can explain Krabb accurately.
@@ -2438,6 +2455,8 @@ fn runtime_context(session: &str) -> Message {
          see, while the stored history stays intact. Users can also send /compact. Models with \
          no known context window see a /compact summary or the opening request, plus the \
          latest {} messages.\n\
+         - Users personalize your name, personality, tone, and writing style with `krabb \
+         hatch`, which rewrites KRAB.md.\n\
          - Users steer conversations with slash commands: {commands}. /help lists the ones \
          available in the current chat.\n\
          When this is not enough and you have a web tool, read Krabb's documentation and \

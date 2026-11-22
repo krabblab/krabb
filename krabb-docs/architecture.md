@@ -328,8 +328,9 @@ and adapter chunking, preserving completion notifications. Terminal clients reta
 separate contextual progress from the final answer. Provider-independent research guidance requires
 checking the exact supplied URL and reporting actual tool results.
 
-The host reads `KRABB_HOME/data/system/KRAB.md` and `KLAW.md` as bounded system
-context at the start of each turn. It appends the session's bounded transcript
+The host starts each turn with its built-in charter and a description of itself, then
+reads `KRABB_HOME/data/system/KRAB.md` and `KLAW.md` as bounded system context. The
+charter is compiled in and is never written to disk. It appends the session's bounded transcript
 after that context; the instruction text is not stored in the transcript, so
 file edits take effect on the next turn. The host does not inject `AGENTS.md`
 into general Krabb requests.

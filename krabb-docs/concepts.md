@@ -64,9 +64,16 @@ controls cannot discover tasks from other chats.
 
 Krabb's global workspace is `KRABB_HOME/workspace`. `KRAB.md` defines its
 identity and communication style; `KLAW.md` defines behavioral guidance and
-workflows. The runtime reads both as system context for every user turn,
+workflows. `krabb hatch` writes `KRAB.md` from a short interview, and both files can
+be edited directly. The runtime reads both as system context for every user turn,
 including resumed sessions and internal tool-loop requests. It does not copy
 their contents into the saved transcript, so edits apply on the next turn.
+Before them comes Krabb's charter, compiled into the runtime so personalization cannot
+remove it. It orders priorities (host policy, then the charter, then `KLAW.md` and
+`KRAB.md`, then memories and the request), treats content Krabb reads as information
+rather than instructions, and asks for honesty, care before consequential actions, and a
+consistent personality. The charter guides the model; permissions, approvals, and
+limits are still enforced by the host in code.
 The runtime also adds a short description of itself, built from its version, history
 limit, and commands, so the model can explain how Krabb works. When that is not enough
 and the model has a web tool, it points the model to the Krabb repository's

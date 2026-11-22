@@ -18,6 +18,12 @@ plugin archives, and workspace files as untrusted. Plugins run as separate
 processes and cannot call one another directly. Review every plugin manifest
 before installation.
 
+Every turn starts with Krabb's built-in charter, which tells the model to treat content
+it reads as information rather than instructions and to confirm consequential actions.
+Personalized `KRAB.md` and `KLAW.md` files cannot remove it. The charter is guidance,
+not a boundary: approvals, tool permissions, path confinement, and limits are enforced
+by the host whatever the model decides.
+
 On Windows, the service runs as the dedicated `NT SERVICE\Krabb` virtual account,
 with its token privileges limited to directory traversal. Private state grants full
 access to its owning account, the Krabb service account, and LocalSystem. Service

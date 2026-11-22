@@ -6,6 +6,7 @@ Use this reference to find CLI, daemon, plugin, and terminal commands.
 krabb help
 krabb --version
 krabb init [--force] [-y|--yes] [--json]
+krabb hatch [--name <text>] [--call <text>] [--personality <text>] [--voice <text>] [--writing <text>] [--work <text>] [--language <text>] [--notes <text>] [-y|--yes] [--json]
 krabb doctor [--fix] [--json]
 krabb config get [<key>] [--json]
 krabb config set <key=value> [--force] [--json]
@@ -539,6 +540,7 @@ First run:
 
 ```sh
 krabb init
+krabb hatch
 krabb plugin list
 krabb doctor
 krabb status
@@ -549,6 +551,16 @@ krabb-daemon
 instructions. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
 safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
+
+`krabb hatch` personalizes your Krabb. It asks for a name, what to call you, and its
+personality, tone of voice, writing style, way of working, and language, then shows the
+result and asks before saving it as `data/system/KRAB.md`. Answer in your own words and
+in any language; the model reads them as written. Press Enter to keep a default or skip
+a question. Flags answer questions without asking them, and `--yes` saves without the
+preview, so `krabb hatch --name Pinch --voice "warm and brief" --yes` works in scripts.
+A different previous personality is kept as `data/system/KRAB.previous.md`. The change
+applies from the next reply, including in a running daemon. Personalities shape how your
+Krabb speaks; they cannot change its built-in charter or host policy.
 
 Manage the background service with
 `krabb service install|uninstall|status|start|stop|restart`. Installing does

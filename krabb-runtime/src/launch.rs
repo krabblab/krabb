@@ -370,6 +370,7 @@ pub(crate) fn native_command(name: &str) -> bool {
         name,
         "help"
             | "init"
+            | "hatch"
             | "config"
             | "worktree"
             | "workspace"
