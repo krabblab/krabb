@@ -892,3 +892,26 @@ async fn hatch_keeps_the_files_when_the_draft_is_unusable() {
     assert!(send(&fixture, &text, "/hatch undo").await.contains("no previous personality"));
     assert_eq!(crate::hatch::read(&directory).unwrap(), crate::hatch::Files::default());
 }
+
+#[tokio::test]
+async fn hatch_answers_file_problems_without_showing_host_paths() {
+    let fixture = Fixture::new("slash-hatch-files");
+    let directory = fixture.root.join("data/system");
+    let owner = hatch_caller("telegram-7", Origin::Text);
+    let local = Caller { integration: "tui", ..hatch_caller("tui-main", Origin::Text) };
+
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("KLAW.md"), "x".repeat(32 * 1024)).unwrap();
+    with_model(&fixture).await;
+
+    let reply = send(&fixture, &owner, "/hatch call me Pinch").await;
+
+    assert!(reply.contains("couldn't be read or saved"), "{reply}");
+    assert!(!reply.contains(&fixture.root.display().to_string()));
+
+    let reply = send(&fixture, &local, "/hatch call me Pinch").await;
+
+    assert!(reply.contains("shorten it by hand"), "{reply}");
+    assert!(reply.ends_with("Nothing changed."), "{reply}");
+    assert!(!directory.join("KRAB.md").exists());
+}

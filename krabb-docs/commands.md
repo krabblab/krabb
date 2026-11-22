@@ -279,7 +279,7 @@ reply is running or the provider is unavailable. `/compact`, `/again`, and `/hat
 the exceptions: they need the model, so send them again once the current reply finishes.
 Channel users never gain local operator authority. Commands act only on the sender's own
 conversation: `/memory` and `/data` need the conversation's tool access, and `/schedule` is
-limited to local clients. `/hatch` changes Krabb everywhere, so only local clients and the
+limited to local clients. `/hatch` changes Krabb everywhere, so only the CLI, the TUI, and the
 channel's configured `owner` can use it. `/model <model>` affects only this conversation.
 `/session new` archives the earlier messages. `/session clear` deletes history only
 after the same sender repeats it with the four-digit code it returns, within two
@@ -578,8 +578,7 @@ Personalities shape how your Krabb speaks; they cannot change its built-in chart
 host policy.
 
 In a chat, the channel's configured `owner` can send `/hatch` followed by the change,
-such as `/hatch be playful but brief, and reply in Italian`; local clients such as the TUI
-can too. Krabb applies it and replies with a summary; `/hatch undo` goes back. Only a
+such as `/hatch be playful but brief, and reply in Italian`; the TUI can too. Krabb applies it and replies with a summary; `/hatch undo` goes back. Only a
 message the owner types can change the personality. The model cannot run `/hatch` itself,
 so content it reads cannot rewrite who it is.
 

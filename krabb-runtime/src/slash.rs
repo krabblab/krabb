@@ -698,7 +698,10 @@ async fn hatch(
     let _hatching = HATCHING.lock().await;
 
     if wishes.eq_ignore_ascii_case("undo") {
-        let restored = hatch::undo(&directory)?;
+        let restored = match hatch::undo(&directory) {
+            Ok(restored) => restored,
+            Err(error) => return Ok(unsaved(caller, &error)),
+        };
 
         if restored.is_empty() {
             return Ok("There is no previous personality to go back to.".into());
@@ -724,7 +727,11 @@ async fn hatch(
         });
     };
 
-    let current = hatch::read(&directory)?;
+    let current = match hatch::read(&directory) {
+        Ok(current) => current,
+        Err(error) => return Ok(unsaved(caller, &error)),
+    };
+
     let request = hatch::request(caller.session, &current, wishes);
 
     let text = match complete(host, &provider, host.model, None, &request).await {
@@ -755,10 +762,31 @@ async fn hatch(
         return Ok(format!("{} Nothing needed to change.", draft.summary));
     }
 
-    hatch::save(&directory, &current, &draft.files)?;
+    if let Err(error) = hatch::save(&directory, &current, &draft.files) {
+        return Ok(unsaved(caller, &error));
+    }
+
     info!(session = caller.session, "Personality changed by command.");
 
     Ok(format!("{}\nSend /hatch undo to go back.", draft.summary))
+}
+
+/// Answers a failed read or save of the personality files. Channel users never see the
+/// host's paths, so they get a general reply and the details go to the log.
+fn unsaved(caller: &Caller<'_>, error: &std::io::Error) -> String {
+    warn!(
+        session = caller.session,
+        error = %diagnostic(sentence(error.to_string())),
+        "Personality files could not be read or saved."
+    );
+
+    if caller.channel() {
+        "My personality files couldn't be read or saved, so nothing changed. Check KRAB.md and \
+         KLAW.md on the Krabb host."
+            .into()
+    } else {
+        format!("{} Nothing changed.", sentence(error.to_string()))
+    }
 }
 
 /// Asks the model for one reply, stopping early when the daemon shuts down. Returns the
