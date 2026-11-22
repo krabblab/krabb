@@ -81,8 +81,22 @@ impl Store {
         self.check_job_step(&run.id, run.generation)?;
         let job = &self.jobs[&run.id];
 
-        if job.approval.is_some() || job.uncertain || !job.tools {
-            return Err(std::io::Error::other("The task cannot request another approval."));
+        let refusal = if !job.tools {
+            Some(
+                "This conversation has no tool access, so actions that need approval cannot \
+                 run here. The owner can allow them with `tools = true` in this channel's \
+                 configuration.",
+            )
+        } else if job.approval.is_some() {
+            Some("Another approval is already waiting; wait for that decision first.")
+        } else if job.uncertain {
+            Some("The task stopped at an uncertain step and cannot request approval.")
+        } else {
+            None
+        };
+
+        if let Some(refusal) = refusal {
+            return Err(std::io::Error::other(refusal));
         }
 
         let approval = Approval {

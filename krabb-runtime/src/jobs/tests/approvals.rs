@@ -859,3 +859,34 @@ fn approval_steps_only_change_the_current_saved_proposal() {
 
     assert!(store.jobs[&run.id].approval.is_none());
 }
+
+#[test]
+fn refused_approvals_say_why() {
+    let fixture = Fixture::new(Principal::Client("desktop".into()));
+    let mut store = fixture.context.sessions.lock().unwrap();
+
+    let job = store.claim_job(&fixture.id, unix_seconds()).unwrap();
+    let run = krabb_core::task::Run { id: job.id, generation: job.step };
+    let args = json!({"path":"note.txt"});
+
+    let refusal = |store: &mut crate::state::Store, call| {
+        store
+            .propose_approval(&run, call, "write", &args, "Write note.txt")
+            .unwrap_err()
+            .to_string()
+    };
+
+    store.jobs.get_mut(&run.id).unwrap().tools = false;
+
+    assert!(refusal(&mut store, 1).contains("`tools = true`"));
+
+    store.jobs.get_mut(&run.id).unwrap().tools = true;
+    store.propose_approval(&run, 2, "write", &args, "Write note.txt").unwrap();
+
+    assert!(refusal(&mut store, 3).contains("already waiting"));
+
+    store.withdraw_approval(&run, 2).unwrap();
+    store.jobs.get_mut(&run.id).unwrap().uncertain = true;
+
+    assert!(refusal(&mut store, 4).contains("uncertain step"));
+}
