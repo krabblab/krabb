@@ -1234,7 +1234,11 @@ where
             let reply = reply_command(line);
 
             if line.starts_with('/') && reply.is_none() {
-                let text = shared_command(&home, &session, line, host).await;
+                let text = if shared(line) {
+                    shared_command(&home, &session, line, host).await
+                } else {
+                    unknown_command(line)
+                };
 
                 output.write_all(format!("{text}\n> ").as_bytes()).await?;
                 output.flush().await?;
@@ -4533,7 +4537,7 @@ async fn control_with_stream(
 
     let wait = if streaming_turn {
         STREAMING_TURN_TIMEOUT
-    } else if method == "session.compact" {
+    } else if matches!(method, "session.compact" | "command.run") {
         COMPACTION_TIMEOUT
     } else {
         CONTROL_TIMEOUT
@@ -5182,10 +5186,9 @@ fn sentence(value: String) -> String {
     }
 }
 
-/// Reads `/reply <target> <message>`: `None` for other input, and `Some(None)` when the command
-/// lacks its target or message.
 /// Runs a command shared with every conversation, such as `/hatch`, through the runtime, and
-/// names the command as unknown when the runtime does not handle it or is not running.
+/// names the command as unknown when the runtime does not handle it or is not running. Shared
+/// commands such as `/hatch` can wait on the model, so they get the compaction deadline.
 async fn shared_command<C, F>(home: &str, session: &str, line: &str, host: C) -> String
 where
     C: Fn(String, String, Value) -> F + Copy,
@@ -5198,17 +5201,31 @@ where
             result["text"].as_str().unwrap_or_default().to_owned()
         }
 
-        _ => format!(
-            "Unknown TUI command: {}.\nUse /help to see available commands.",
-            line.split_whitespace().next().unwrap_or(line)
-        ),
+        Err(error) if !daemon_unavailable(&error) => format!("{}.", sentence(error.to_string())),
+
+        _ => unknown_command(line),
     }
+}
+
+/// Whether LINE names a command the runtime shares with every conversation. Others stay
+/// local, because the TUI gives commands such as `/session` and `/help` its own meaning.
+fn shared(line: &str) -> bool {
+    line.split_whitespace().next() == Some("/hatch")
+}
+
+fn unknown_command(line: &str) -> String {
+    format!(
+        "Unknown TUI command: {}.\nUse /help to see available commands.",
+        line.split_whitespace().next().unwrap_or(line)
+    )
 }
 
 /// Changes the Krabb's personality through the runtime's shared `/hatch` command.
 pub(crate) const HATCH_COMMAND: (&str, &str) =
     ("/hatch [<what to change> | undo]", "Change my name, personality, and writing style.");
 
+/// Reads `/reply <target> <message>`: `None` for other input, and `Some(None)` when the command
+/// lacks its target or message.
 fn reply_command(line: &str) -> Option<Option<(&str, &str)>> {
     let rest = line.strip_prefix("/reply")?;
 
@@ -6370,7 +6387,9 @@ mod tests {
             if params["text"] == "/hatch be brief" {
                 Ok(json!({"handled": true, "text": "I'm brief now.\nSend /hatch undo to go back."}))
             } else if params["text"] == "/offline" {
-                Err(krabb_core::Error::Denied("The runtime is not running.".into()))
+                Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused).into())
+            } else if params["text"] == "/busy" {
+                Err(krabb_core::Error::Denied("all work slots are busy".into()))
             } else {
                 Ok(json!({"handled": false}))
             }
@@ -6379,6 +6398,12 @@ mod tests {
         let hatched = super::shared_command("home", "tui-main", "/hatch be brief", host).await;
 
         assert_eq!(hatched, "I'm brief now.\nSend /hatch undo to go back.");
+
+        let busy = super::shared_command("home", "tui-main", "/busy", host).await;
+
+        assert!(busy.ends_with("All work slots are busy."), "{busy}");
+        assert!(super::shared("/hatch undo") && !super::shared("/hatchet"));
+        assert!(!super::shared("/help session"));
 
         for line in ["/nonsense now", "/offline"] {
             let unknown = super::shared_command("home", "tui-main", line, host).await;

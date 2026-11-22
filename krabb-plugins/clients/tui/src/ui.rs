@@ -536,8 +536,11 @@ where
     while !quit {
         if redraw {
             execute!(terminal.backend_mut(), terminal::BeginSynchronizedUpdate)?;
-            terminal.draw(|frame| draw(frame, &mut app))?;
+
+            let drawn = terminal.draw(|frame| draw(frame, &mut app)).map(|_| ());
+
             execute!(terminal.backend_mut(), terminal::EndSynchronizedUpdate)?;
+            drawn?;
         }
 
         redraw = true;
@@ -4812,18 +4815,28 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
 
-        app.mouse_position = Some((70, 11));
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+
+        let area = app.transcript_area.unwrap();
+        let layout = app.transcript_layout.as_ref().unwrap();
+        let offset = app.transcript_scroll.offset;
+
+        let row = |index: usize| {
+            let rows = &layout.messages[index].rows;
+
+            (area.x + 2, area.y + (rows.start - offset) as u16)
+        };
+
+        let (first, second) = (row(0), row(1));
+
+        app.mouse_position = Some(first);
         terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
 
         assert!(!app.hover_changed());
 
-        app.mouse_position = Some((70, 10));
+        app.mouse_position = Some(second);
 
-        let moved = app.hover_changed();
-
-        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
-
-        assert!(!app.hover_changed(), "{moved}");
+        assert!(app.hover_changed());
     }
 
     #[test]
