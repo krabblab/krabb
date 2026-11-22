@@ -22,13 +22,12 @@ release and `KRABB_PREFIX` to choose another location.
 
 ```sh
 krabb init
-krabb plugin install <intelligence> <channel>
-krabb plugin setup <id>
 krabb status
-krabb-daemon
 ```
 
-`krabb plugin install` downloads the newest compatible version of each official
+`krabb init` installs and sets up a provider and a channel, then the background service.
+To do the same by hand, run `krabb plugin install <intelligence> <channel>`, `krabb
+plugin setup <id>`, and `krabb-daemon`. `krabb plugin install` downloads the newest compatible version of each official
 plugin from the plugin index and verifies it. `krabb plugin setup` explains each field and checks values before
 saving them. Choose a hosted provider such as `openai`, `anthropic`, `gemini`, or
 `openrouter` for remote inference, or `ollama` for a local model; local inference

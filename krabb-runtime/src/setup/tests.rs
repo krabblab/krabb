@@ -506,8 +506,13 @@ async fn nonterminal_setup_fails_before_writing() {
 
     let root = fixture("telegram", &["KRABB_SETUP_A"], vec![]);
 
-    let error =
-        run(Options { id: "telegram".into(), no_activate: true }, &root, false).await.unwrap_err();
+    let error = run(
+        Options { id: "telegram".into(), no_activate: true, defaults: BTreeMap::new() },
+        &root,
+        false,
+    )
+    .await
+    .unwrap_err();
 
     assert!(error.to_string().contains("interactive terminal"));
     assert!(!root.join("credentials.json").exists());

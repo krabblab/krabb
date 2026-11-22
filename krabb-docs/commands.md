@@ -5,7 +5,8 @@ Use this reference to find CLI, daemon, plugin, and terminal commands.
 ```text
 krabb help
 krabb --version
-krabb init [--force] [-y|--yes] [--json]
+krabb init [home] [provider] [hatch] [channel] [service] [--provider <id>] [--channel <id>|none]
+krabb init --force [-y|--yes] [--json]
 krabb hatch [<what to change>...] [--name <text>] [--call <text>] [--personality <text>] [--voice <text>] [--writing <text>] [--work <text>] [--language <text>] [--notes <text>] [-y|--yes] [--json]
 krabb hatch --undo [-y|--yes] [--json]
 krabb doctor [--fix] [--json]
@@ -543,14 +544,19 @@ First run:
 
 ```sh
 krabb init
-krabb plugin list
-krabb doctor
 krabb status
-krabb-daemon
 ```
 
-`krabb init` creates the home directory, starter configuration, and workspace
-instructions. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
+In a terminal, `krabb init` guides you through five steps, always in this order: `home`
+creates the home directory, starter configuration, and workspace instructions;
+`provider` installs, sets up, and selects an intelligence provider; `hatch` gives your
+Krabb a personality; `channel` installs the terminal client or a chat channel and sets
+it up; and `service` installs and starts the background service. Choices use a list
+moved with the arrow keys, and Esc stops the guide, so `krabb init` continues later.
+Name steps to run only those, such as `krabb init home provider`. A finished step is
+skipped when you run every step, and offers a change when you name it. Without a
+terminal, `krabb init` creates only the home, and `--provider` and `--channel` answer
+their steps, as in `krabb init --provider ollama --channel none service`. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
 safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
 

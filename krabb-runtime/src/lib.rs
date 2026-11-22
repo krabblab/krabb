@@ -46,6 +46,7 @@ pub(crate) mod approval;
 mod archive;
 mod bridge;
 mod channels;
+mod choice;
 mod cli;
 mod clients;
 mod compaction;
@@ -75,6 +76,7 @@ mod locks;
 pub(crate) mod logging;
 mod media;
 mod messaging;
+mod onboard;
 mod operations;
 mod origin;
 mod outbound;
@@ -1771,7 +1773,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     match cli.command {
-        Command::Init(args) => init(args.force, args.yes, json)?,
+        Command::Init(args) => onboard::run(args, json).await?,
         Command::Hatch(args) => hatch::run(args, &home(), json).await?,
         Command::Doctor(args) => doctor(args.fix, json)?,
         Command::Config(args) => config_command(args.command, &home(), json).await?,

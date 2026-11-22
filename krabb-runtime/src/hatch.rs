@@ -357,7 +357,7 @@ fn existing(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
 }
 
 /// Whether CURRENT is a personality other than the one `init` writes.
-fn hatched(current: &Files) -> bool {
+pub(crate) fn hatched(current: &Files) -> bool {
     current.krab != crate::templates::KRAB || current.klaw != crate::templates::KLAW
 }
 
@@ -523,13 +523,18 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
         return Ok(());
     }
 
-    if !json && !args.yes {
+    if !args.yes {
         eprintln!("{}\n", draft.summary);
-    }
+        eprintln!("Save this personality?\n");
 
-    if !crate::agent::confirm_action(args.yes, json, "Save this personality?")? {
-        crate::agent::print_cancelled("Hatching", json);
-        return Ok(());
+        let choice = crate::choice::pick(&["Save it", "Discard it"], 0)?;
+
+        eprintln!();
+
+        if choice != Some(0) {
+            crate::agent::print_cancelled("Hatching", json);
+            return Ok(());
+        }
     }
 
     save(&directory, &current, &draft.files)?;

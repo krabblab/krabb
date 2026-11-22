@@ -1804,7 +1804,16 @@ fn covers_runtime_helpers() {
     assert_eq!(super::ApprovalMode::Off, super::ApprovalMode::Off);
     assert!(super::plugin_name("memory").contains("memory"));
 
-    assert_eq!(super::command_label(&Command::Init(InitArgs { force: false, yes: false })), "init");
+    assert_eq!(
+        super::command_label(&Command::Init(InitArgs {
+            steps: Vec::new(),
+            provider: None,
+            channel: None,
+            force: false,
+            yes: false,
+        })),
+        "init"
+    );
 
     assert_eq!(super::command_label(&Command::Doctor(DoctorArgs { fix: false })), "doctor");
     assert_eq!(super::command_label(&Command::Status(Output { json: false })), "status");
@@ -6724,7 +6733,7 @@ fn cli_parses_completion_shells_and_generates_commands() {
 
     let cli = Cli::try_parse_from(["krabb", "init", "--force", "--yes"]).unwrap();
 
-    assert!(matches!(cli.command, Command::Init(InitArgs { force: true, yes: true })));
+    assert!(matches!(cli.command, Command::Init(InitArgs { force: true, yes: true, .. })));
     assert!(Cli::try_parse_from(["krabb", "init", "--yes"]).is_ok());
     assert!(super::validate_init_flags(false, true).is_err());
     assert!(super::validate_init_flags(true, true).is_ok());

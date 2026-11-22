@@ -79,6 +79,15 @@ pub(super) struct Options {
     /// Save credentials without contacting the running daemon.
     #[arg(long)]
     no_activate: bool,
+    /// Suggested values that replace a setting's declared default, such as a local host.
+    #[arg(skip)]
+    defaults: BTreeMap<String, String>,
+}
+
+impl Options {
+    pub(super) fn new(id: &str, defaults: BTreeMap<String, String>) -> Self {
+        Self { id: id.into(), no_activate: false, defaults }
+    }
 }
 
 #[derive(Parser)]
@@ -128,11 +137,20 @@ pub(super) async fn command(
 
     let SetupCommand::Setup { no_activate } = cli.command;
 
-    run(Options { id: id.into(), no_activate }, root, json || cli.json).await
+    run(Options { id: id.into(), no_activate, defaults: BTreeMap::new() }, root, json || cli.json)
+        .await
 }
 
 pub(super) fn path(root: &Path) -> PathBuf {
     super::credentials::path(root)
+}
+
+/// Whether installed plugin ID declares secrets or settings for setup to ask about.
+pub(super) fn needed(root: &Path, id: &str) -> Result<bool, Error> {
+    let lock = super::load_lock_at(root)?;
+    let entry = lock.plugins.get(id).ok_or("Install the plugin before running setup.")?;
+
+    Ok(!entry.variables.is_empty() || !entry.settings.is_empty())
 }
 
 fn fields(root: &Path, id: &str) -> Result<Vec<Field>, Error> {
@@ -173,6 +191,13 @@ fn fields(root: &Path, id: &str) -> Result<Vec<Field>, Error> {
 
 pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(), Error> {
     let mut fields = fields(root, &options.id)?;
+
+    for field in &mut fields {
+        if let Some(default) = options.defaults.get(&field.name) {
+            field.default = Some(default.clone());
+        }
+    }
+
     let destination = path(root);
     let key = super::credentials::key_path(root);
     let preference = super::credentials::preference()?;
