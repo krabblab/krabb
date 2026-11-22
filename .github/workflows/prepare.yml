@@ -50,7 +50,7 @@ jobs:
 
           if answer=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" --silent 2>&1); then
             release=false
-            echo "::warning title=Krabb release skipped::Krabb $version is already released, so this run publishes no new Krabb release."
+            echo "::notice title=Krabb release skipped::Krabb $version is already released, so this run publishes no new Krabb release."
           elif [[ "$answer" != *"HTTP 404"* ]]; then
             echo "$answer" >&2
             exit 1

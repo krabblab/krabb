@@ -254,6 +254,10 @@ jobs:
     runs-on: ubuntu-latest
     container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
 
+    # Set for the whole job so the Cargo cache key includes it.
+    env:
+      RUSTFLAGS: -D warnings
+
     defaults:
       run:
         shell: bash

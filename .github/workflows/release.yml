@@ -2,7 +2,7 @@ name: Release
 
 # Publishes what the head of main declares once CI passes for it: Krabb at its workspace
 # version, and each plugin at the version in its manifest. Versions that are already
-# published are skipped with a warning.
+# published are skipped with a notice.
 
 on:
   workflow_run:
@@ -72,7 +72,7 @@ jobs:
           set -euo pipefail
           refuse() { echo "::error title=Release refused::$*"; exit 1; }
           skip() {
-            echo "::warning title=Release skipped::$*"
+            echo "::notice title=Release skipped::$*"
             echo "release=false" >> "$GITHUB_OUTPUT"
             exit 0
           }
@@ -147,7 +147,7 @@ jobs:
           echo "names=$names" >> "$GITHUB_OUTPUT"
 
           if [[ -z "$names" ]]; then
-            echo "::warning title=Plugin release skipped::Every plugin version is already" \
+            echo "::notice title=Plugin release skipped::Every plugin version is already" \
               "published, so this run releases no plugin."
           else
             echo "Unpublished plugins: $names."

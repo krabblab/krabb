@@ -20,7 +20,9 @@ allow = [
 ]
 
 [bans]
-multiple-versions = "warn"
+# Duplicates come from dependencies that lag behind ours (reqwest, ring, the native capture
+# stack) and clear as they update; reporting them on every run only adds noise.
+multiple-versions = "allow"
 wildcards = "allow"
 
 [sources]

@@ -273,7 +273,7 @@ pub(super) fn tool(name: &str) -> bool {
     matches!(name, "read" | "write" | "list" | "search")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn initialize(root: &Path) -> Result<(), PluginError> {
     prepare(&inspect(root)?)
 }

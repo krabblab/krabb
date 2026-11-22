@@ -3,6 +3,9 @@
 mod context;
 mod search;
 
+#[cfg(test)]
+use krabb_log as _;
+
 use krabb_core::plugin::Emitter;
 
 mod streaming;

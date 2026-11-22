@@ -1119,6 +1119,8 @@ fn workspace(value: Option<&str>) -> krabb_core::Result<PathBuf> {
 }
 
 #[cfg(test)]
+// Some fixtures here serve only Unix tests.
+#[cfg_attr(not(unix), allow(unused_imports, dead_code))]
 mod tests {
     use super::{
         Server, check_version, command_with, context_usage, dynamic_tools, final_text,

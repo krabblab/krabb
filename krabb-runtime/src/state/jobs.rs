@@ -605,7 +605,7 @@ impl Store {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn resume_job(&mut self, id: &str, instruction: &str) -> std::io::Result<()> {
         self.control_job(
             id,

@@ -2657,6 +2657,8 @@ fn lock<T>(_: std::sync::PoisonError<T>) -> io::Error {
 }
 
 #[cfg(test)]
+// Some fixtures here serve only Unix tests.
+#[cfg_attr(not(unix), allow(unused_imports, dead_code))]
 mod tests {
     use super::super::{Stop, state::Store};
     use super::{

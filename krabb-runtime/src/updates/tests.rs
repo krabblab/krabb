@@ -1,3 +1,6 @@
+// Some fixtures here serve only Unix tests.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
+
 use super::*;
 use std::fs;
 

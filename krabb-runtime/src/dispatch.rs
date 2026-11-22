@@ -446,7 +446,7 @@ pub(crate) async fn tool_with_registry(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) async fn tool(
     plugins: &Plugins,
     id: u64,
@@ -1499,7 +1499,7 @@ pub(crate) fn approval_params(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) async fn host_tool(
     request: Request,
     plugins: &Plugins,

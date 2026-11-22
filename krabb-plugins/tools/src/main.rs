@@ -1000,7 +1000,7 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
     }
 
     #[cfg(windows)]
-    let _ = process_id;
+    let _ = (process_id, group);
 
     let _ = child.kill().await;
     let _ = child.wait().await;
@@ -2065,6 +2065,8 @@ fn read_text(file: std::fs::File) -> std::io::Result<String> {
 }
 
 #[cfg(test)]
+// Some fixtures here serve only Unix tests.
+#[cfg_attr(not(unix), allow(unused_imports, dead_code))]
 mod tests {
     #[cfg(all(test, any(target_os = "linux", windows)))]
     mod git;
