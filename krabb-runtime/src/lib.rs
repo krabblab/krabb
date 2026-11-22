@@ -87,6 +87,7 @@ mod releases;
 mod revoke;
 mod schedules;
 mod sessions;
+mod style;
 mod tools;
 use agent::*;
 use answer::*;

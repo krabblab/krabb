@@ -385,7 +385,7 @@ pub(crate) fn interview(
     for (index, question) in QUESTIONS.iter().enumerate() {
         if question.section != section {
             section = question.section;
-            writeln!(output, "\n{}", crate::choice::accent(section, color))?;
+            writeln!(output, "\n{}", crate::style::accent(section, color))?;
         }
 
         answers.push(ask(input, output, index + 1, question, color)?);
@@ -403,14 +403,19 @@ fn ask(
     question: &Question,
     color: bool,
 ) -> std::io::Result<Option<String>> {
-    let limit = format!("Up to {} characters, for example: {}", question.limit, question.example);
+    let limit = format!("Up to {} characters, for example:", question.limit);
 
     writeln!(
         output,
         "\n{}",
-        crate::choice::accent(&format!("{number}. {}", question.prompt), color)
+        crate::style::accent(&format!("{number}. {}", question.prompt), color)
     )?;
-    writeln!(output, "   {}", crate::choice::dim(&limit, color))?;
+    writeln!(
+        output,
+        "   {} {}",
+        crate::style::dim(&limit, color),
+        crate::style::example(question.example, color)
+    )?;
 
     loop {
         write!(output, "   > ")?;
@@ -494,7 +499,7 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
             &mut input,
             &mut std::io::stderr(),
             hatched(&current),
-            crate::choice::colors(),
+            crate::style::colors(),
         ) {
             Ok(answers) => answers,
 

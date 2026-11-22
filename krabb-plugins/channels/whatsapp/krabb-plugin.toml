@@ -20,7 +20,7 @@ minor = 1
 
 [setup.KRABB_WHATSAPP_TOKEN]
 label = "Access token"
-help = "The access token for your Meta app. Temporary test tokens expire."
+help = "The access token for your Meta app, since temporary test tokens expire."
 url = "https://developers.facebook.com/apps"
 required = true
 
@@ -32,7 +32,7 @@ required = true
 
 [setup.KRABB_WHATSAPP_VERIFY]
 label = "Webhook verify token"
-help = "A string you choose; enter the same value in Meta's webhook settings."
+help = "A string you choose and enter again in Meta's webhook settings."
 required = true
 
 [setup.KRABB_WHATSAPP_PHONE]

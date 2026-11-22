@@ -68,8 +68,10 @@ exports losslessly before adding them.
 - The TUI accent is `ACCENT_COLOR = Color::Rgb(255, 111, 44)`, the Coral value, in
   `krabb-plugins/clients/tui/src/ui.rs`. It marks headers, borders, prompts, and inline
   code.
-- CLI help uses the same Coral for section headers and usage, set in
-  `krabb-runtime/src/external.rs`.
+- CLI help and guided commands use bold Coral for headers, usage, and prompts, from
+  `krabb-runtime/src/style.rs`. On a light terminal they switch to Coral Deep, because
+  Coral is too light for small text there. The background comes from `COLORFGBG`, or
+  else from asking the terminal once, and an unknown background counts as dark.
 - Animated glows stay in the Coral range: vary green within about 111 to 150 and blue
   within about 44 to 90. They must never drift toward yellow-orange, which reads as a
   warning rather than the brand.
@@ -94,7 +96,10 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
 - End with the next action as a runnable command, with no period after the command.
 - Mark finished steps with `✓` and a full sentence that names the kind of thing, such as
   `✓ Installed openai provider.`
-- Set headers and prompts in Coral, and set hints and examples in the terminal's gray.
+- Set headers, prompts, and the selection in bold Coral, hints in faint text, examples
+  in faint italics, and values that must stand out, such as links, in bold.
+- Keep every line readable without color, because `NO_COLOR`, `TERM=dumb`, and pipes
+  print plain text.
 
 ```text
 Intelligence

@@ -18,6 +18,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 const LIMIT: usize = 16 * 1024;
 const ATTEMPTS: usize = 3;
 const CLEAR: &str = "-";
+pub(super) const CANCELLED: &str = "Setup cancelled, and credentials were not saved.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -82,11 +83,14 @@ pub(super) struct Options {
     /// Suggested values that replace a setting's declared default, such as a local host.
     #[arg(skip)]
     defaults: BTreeMap<String, String>,
+    /// How many questions came before, so a guide that runs setup keeps one numbering.
+    #[arg(skip)]
+    asked: usize,
 }
 
 impl Options {
-    pub(super) fn new(id: &str, defaults: BTreeMap<String, String>) -> Self {
-        Self { id: id.into(), no_activate: false, defaults }
+    pub(super) fn new(id: &str, defaults: BTreeMap<String, String>, asked: usize) -> Self {
+        Self { id: id.into(), no_activate: false, defaults, asked }
     }
 }
 
@@ -137,8 +141,10 @@ pub(super) async fn command(
 
     let SetupCommand::Setup { no_activate } = cli.command;
 
-    run(Options { id: id.into(), no_activate, defaults: BTreeMap::new() }, root, json || cli.json)
-        .await
+    let options = Options { no_activate, ..Options::new(id, BTreeMap::new(), 0) };
+
+    run(options, root, json || cli.json).await?;
+    Ok(())
 }
 
 pub(super) fn path(root: &Path) -> PathBuf {
@@ -189,7 +195,8 @@ fn fields(root: &Path, id: &str) -> Result<Vec<Field>, Error> {
         .collect())
 }
 
-pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(), Error> {
+/// Asks for and saves the plugin's secrets and settings, and returns the last question number.
+pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<usize, Error> {
     let mut fields = fields(root, &options.id)?;
 
     for field in &mut fields {
@@ -216,8 +223,8 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
         eprintln!("Nothing is saved until the last answer, and Esc cancels.");
     }
 
-    let color = crate::choice::colors();
-    let mut number = 0;
+    let color = crate::style::colors();
+    let mut number = options.asked;
 
     let answers = collect(&fields, |field, error| {
         if error.is_none() {
@@ -270,10 +277,13 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
 
         let key = result["key_path"].as_str().unwrap_or("the system keyring");
 
-        println!("They are encrypted in {}, with the key in {key}.", destination.display());
+        println!(
+            "Krabb keeps these settings encrypted in {}, with the key in {key}.",
+            destination.display()
+        );
     }
 
-    Ok(())
+    Ok(number)
 }
 
 async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Value {
@@ -450,10 +460,10 @@ fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Res
 /// What the person sets and how to answer, shown once per field; never a saved value.
 fn heading(field: &Field, number: usize, color: bool) -> String {
     let prompt = &field.prompt;
-    let mut title = crate::choice::accent(&format!("{number}. {}", field.label()), color);
+    let mut title = crate::style::accent(&format!("{number}. {}", field.label()), color);
 
     if field.label() != field.name {
-        title.push_str(&crate::choice::dim(&format!("  {}", field.name), color));
+        title.push_str(&crate::style::dim(&format!("  {}", field.name), color));
     }
 
     let mut heading = format!("\n{title}\n");
@@ -462,15 +472,27 @@ fn heading(field: &Field, number: usize, color: bool) -> String {
         heading.push_str(&format!("   {help}\n"));
     }
 
-    let hints = [
-        prompt.url.as_ref().map(|url| format!("Get it at {url}")),
-        prompt.example.as_ref().map(|example| format!("For example: {example}")),
-        hint(field),
-        field.secret.then(|| "Your typing stays hidden.".to_owned()),
-    ];
+    let dim = |text: &str| crate::style::dim(text, color);
 
-    for line in hints.into_iter().flatten() {
-        heading.push_str(&format!("   {}\n", crate::choice::dim(&line, color)));
+    if let Some(url) = &prompt.url {
+        heading.push_str(&format!(
+            "   {} {}\n",
+            dim("Get it at"),
+            crate::style::strong(url, color)
+        ));
+    }
+
+    if let Some(example) = &prompt.example {
+        let example = crate::style::example(example, color);
+
+        heading.push_str(&format!("   {} {example}\n", dim("For example:")));
+    }
+
+    for line in [hint(field), field.secret.then(|| "Your typing stays hidden.".to_owned())]
+        .into_iter()
+        .flatten()
+    {
+        heading.push_str(&format!("   {}\n", dim(&line)));
     }
 
     heading
@@ -524,11 +546,11 @@ fn input(echo: bool, mut next: impl FnMut() -> io::Result<Event>) -> Result<Stri
                 KeyCode::Enter => return Ok(value),
 
                 KeyCode::Esc => {
-                    return Err("Setup cancelled, and credentials were not saved.".into());
+                    return Err(CANCELLED.into());
                 }
 
                 KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Err("Setup cancelled, and credentials were not saved.".into());
+                    return Err(CANCELLED.into());
                 }
 
                 KeyCode::Backspace => {

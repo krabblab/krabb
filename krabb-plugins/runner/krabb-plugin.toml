@@ -10,4 +10,4 @@ minor = 1
 
 [setup.KRABB_RUNNER_TOKEN]
 label = "Bearer token"
-help = "Only if the runner requires one; discovery never receives it."
+help = "Only if the runner requires one, and discovery never receives it."

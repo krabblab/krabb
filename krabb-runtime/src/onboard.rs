@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::choice::{accent, dim};
+use crate::style::{accent, dim};
 
 use crate::cli::{
     ConfigCommand, ConfigSet, HatchArgs, InitArgs, PluginCommand, PluginInstall, ServiceCommand,
@@ -89,7 +89,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
 
     let mut guide = Guide {
         root: crate::home(),
-        color: crate::choice::colors(),
+        color: crate::style::colors(),
         number: 0,
         named: args.steps.clone(),
         interactive,
@@ -284,7 +284,9 @@ impl Guide {
             }
         };
 
-        self.install(offer, "provider").await?;
+        if let Flow::Stop = self.install(offer, "provider").await? {
+            return Ok(Flow::Stop);
+        }
 
         let provider = toml::Value::String(offer.id.into());
 
@@ -358,8 +360,7 @@ impl Guide {
 
         let kind = if offer.id == "tui" { "client" } else { "channel" };
 
-        self.install(offer, kind).await?;
-        Ok(Flow::Next)
+        self.install(offer, kind).await
     }
 
     fn service(&mut self) -> Result<Flow, Error> {
@@ -406,8 +407,9 @@ impl Guide {
         Ok(Flow::Next)
     }
 
-    /// Installs OFFER unless it already is, then asks for its secrets and settings.
-    async fn install(&self, offer: &Offer, kind: &str) -> Result<(), Error> {
+    /// Installs OFFER unless it already is, then asks for its secrets and settings. Cancelling
+    /// those questions stops the guide, as cancelling a choice does.
+    async fn install(&mut self, offer: &Offer, kind: &str) -> Result<Flow, Error> {
         if crate::load_lock_at(&self.root)?.plugins.contains_key(offer.id) {
             self.done(&format!("The {} {kind} is already installed.", offer.id));
         } else {
@@ -425,23 +427,36 @@ impl Guide {
         }
 
         if !crate::setup::needed(&self.root, offer.id)? {
-            return Ok(());
+            return Ok(Flow::Next);
         }
 
-        if self.interactive {
-            let defaults = offer
-                .defaults
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect();
+        let later = format!("Set it up later with `krabb plugin setup {}`", offer.id);
 
-            crate::setup::run(crate::setup::Options::new(offer.id, defaults), &self.root, false)
-                .await?;
-        } else {
-            self.note(&format!("Set up its secrets with `krabb plugin setup {}`", offer.id));
+        if !self.interactive {
+            self.note(&later);
+            return Ok(Flow::Next);
         }
 
-        Ok(())
+        let defaults = offer
+            .defaults
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+
+        let options = crate::setup::Options::new(offer.id, defaults, self.number);
+
+        match crate::setup::run(options, &self.root, false).await {
+            Ok(number) => self.number = number,
+
+            Err(error) if error.to_string() == crate::setup::CANCELLED => {
+                self.note(&later);
+                return Ok(Flow::Stop);
+            }
+
+            Err(error) => return Err(error),
+        }
+
+        Ok(Flow::Next)
     }
 
     fn finish(&self) -> Result<(), Error> {

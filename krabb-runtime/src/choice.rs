@@ -2,24 +2,10 @@
 
 use std::io::Write;
 
+use crate::style::{accent, colors, dim};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 const HINT: &str = "↑/↓ to move, Enter to choose";
-
-/// Text in the brand's Coral, or plain when the terminal shows no color.
-pub(crate) fn accent(text: &str, color: bool) -> String {
-    if color { format!("\x1b[38;2;255;111;44m{text}\x1b[0m") } else { text.to_owned() }
-}
-
-/// Secondary text in the terminal's own gray, or plain when it shows no color.
-pub(crate) fn dim(text: &str, color: bool) -> String {
-    if color { format!("\x1b[2m{text}\x1b[0m") } else { text.to_owned() }
-}
-
-/// Whether output may use color: a terminal that allows it, as for CLI help.
-pub(crate) fn colors() -> bool {
-    crate::external::cli_colors_enabled()
-}
 
 /// What a key press did to the selection.
 #[derive(Debug, PartialEq, Eq)]
@@ -81,7 +67,7 @@ impl Picker {
             .enumerate()
             .map(|(index, option)| {
                 if index == self.selected {
-                    format!("   {} {option}", accent("›", color))
+                    format!("   {}", accent(&format!("› {option}"), color))
                 } else {
                     format!("     {option}")
                 }
@@ -134,7 +120,7 @@ pub(crate) fn pick(options: &[&str], selected: usize) -> std::io::Result<Option<
 
             Outcome::Chosen(index) => {
                 clear(&mut output, options.len() + 2)?;
-                write!(output, "   {} {}\r\n", accent("›", color), options[index])?;
+                write!(output, "   {}\r\n", accent(&format!("› {}", options[index]), color))?;
                 output.flush()?;
                 return Ok(Some(index));
             }
@@ -218,7 +204,7 @@ mod tests {
 
         let colored = picker.lines(&["OpenAI", "Skip"], true);
 
-        assert_eq!(colored[1], "   \x1b[38;2;255;111;44m›\x1b[0m Skip");
+        assert_eq!(colored[1], format!("   {}› Skip\x1b[0m", crate::style::accent_code()));
         assert_eq!(colored[3], format!("   \x1b[2m{HINT}\x1b[0m"));
     }
 

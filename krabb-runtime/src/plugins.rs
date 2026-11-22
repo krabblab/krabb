@@ -7,7 +7,10 @@ pub(crate) async fn plugin(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match command {
-        PluginCommand::Setup(options) => setup::run(options, &home(), json).await?,
+        PluginCommand::Setup(options) => {
+            setup::run(options, &home(), json).await?;
+        }
+
         PluginCommand::List(output) => list(output.page, output.json || json)?,
         PluginCommand::Detach(args) => lifecycle::run(&home(), &args.id, false, json).await?,
         PluginCommand::Attach(args) => lifecycle::run(&home(), &args.id, true, json).await?,
