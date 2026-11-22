@@ -24,6 +24,7 @@ pub(crate) struct Context {
     pub plugins: Plugins,
     pub cancels: Arc<Mutex<BTreeMap<String, Arc<Cancellation>>>>,
     pub provider: String,
+    pub home: PathBuf,
 }
 
 pub(crate) struct Intake {
@@ -218,6 +219,7 @@ async fn receive(context: &mut Context, events: Vec<Value>) -> Result<(), Plugin
                 model: &context.model,
                 call,
                 answering: true,
+                home: Some(&context.home),
             };
 
             blocked = !queue_during_turn(
@@ -405,6 +407,7 @@ done
             plugins: Plugins::default(),
             cancels: Arc::default(),
             provider: "test".into(),
+            home: home.clone(),
         };
 
         let events = vec![
@@ -467,6 +470,7 @@ done
             plugins: Plugins::default(),
             cancels: Arc::default(),
             provider: "test".into(),
+            home: root.clone(),
         });
 
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -529,6 +533,7 @@ done
             plugins: Plugins::default(),
             cancels: Arc::default(),
             provider: "test".into(),
+            home: root.clone(),
         });
 
         tokio::time::timeout(Duration::from_secs(5), async {

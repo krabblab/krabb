@@ -6,6 +6,8 @@ Use this reference to find CLI, daemon, plugin, and terminal commands.
 krabb help
 krabb --version
 krabb init [--force] [-y|--yes] [--json]
+krabb hatch [<what to change>...] [--name <text>] [--call <text>] [--personality <text>] [--voice <text>] [--writing <text>] [--work <text>] [--language <text>] [--notes <text>] [-y|--yes] [--json]
+krabb hatch --undo [-y|--yes] [--json]
 krabb doctor [--fix] [--json]
 krabb config get [<key>] [--json]
 krabb config set <key=value> [--force] [--json]
@@ -263,6 +265,7 @@ WhatsApp have no menu; typed commands work the same way.
 | `/session [new \| cancel \| clear]` | Start fresh, stop the current reply, or delete history. |
 | `/again` | Answer the latest question again when its reply used no tools. |
 | `/compact` | Summarize older messages to free the model's context. |
+| `/hatch [<what to change> \| undo]` | Change Krabb's name, personality, and writing style. |
 | `/task ...` | List or control background tasks. |
 | `/workspace` | Show whether this conversation has its own workspace. |
 | `/approvals` | List actions waiting for approval here. |
@@ -272,11 +275,12 @@ WhatsApp have no menu; typed commands work the same way.
 | `/schedule` | List scheduled work (local clients only). |
 
 Krabb answers these itself, without an intelligence turn, so they also work while a
-reply is running or the provider is unavailable. `/compact` and `/again` are the
-exceptions: they need the model, so send them again once the current reply finishes. Each acts
-only on the sender's own conversation, and channel users never gain local operator
-authority: `/memory` and `/data` need the conversation's tool access, and `/schedule`
-is limited to local clients. `/model <model>` affects only this conversation.
+reply is running or the provider is unavailable. `/compact`, `/again`, and `/hatch` are
+the exceptions: they need the model, so send them again once the current reply finishes.
+Channel users never gain local operator authority. Commands act only on the sender's own
+conversation: `/memory` and `/data` need the conversation's tool access, and `/schedule` is
+limited to local clients. `/hatch` changes Krabb everywhere, so only the CLI, the TUI, and the
+channel's configured `owner` can use it. `/model <model>` affects only this conversation.
 `/session new` archives the earlier messages. `/session clear` deletes history only
 after the same sender repeats it with the four-digit code it returns, within two
 minutes.
@@ -291,9 +295,9 @@ attachments, or when a task or schedule notice arrived after the reply.
 
 You can also ask in your own words and any language, such as "start a new
 conversation" or "which model are you using?". The model then uses the same commands
-through a host tool. It cannot cancel its own reply, compact, answer again, confirm
-`/session clear`, or approve or deny a task's saved action; it relays the exact command
-to send instead. A new conversation it starts begins after its current reply.
+through a host tool. It cannot cancel its own reply, compact, answer again, change its own
+personality, confirm `/session clear`, or approve or deny a task's saved action; it relays
+the exact command to send instead. A new conversation it starts begins after its current reply.
 
 Text that only looks like a command, such as `/usr/bin/env`, stays an ordinary
 message. In Telegram groups, `/status@your_bot` is answered only by the bot it names.
@@ -549,6 +553,34 @@ krabb-daemon
 instructions. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
 safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
+
+`krabb hatch` personalizes your Krabb. Run it without arguments and it asks for a
+name, what to call you, and its personality, tone of voice, writing style, way of
+working, and language; press Enter to skip a question. Answer in your own words and in
+any language. Your Krabb's model then rewrites `data/system/KRAB.md` (who it is) and
+`KLAW.md` (how it works) from your answers. The model is asked to keep everything you
+did not ask to change, including your own edits; check the preview of both files and the
+summary before you confirm.
+
+Run it again to change something: the questions then keep whatever you skip. You can
+also describe the change directly, as in `krabb hatch be more concise and call me Sam`,
+or answer with flags such as `--name Pinch --voice "warm and brief"`; `--yes` saves
+without the preview, and is required with `--json` or without a terminal. `krabb hatch
+--undo` restores the files as they were before the latest change, and running it again
+switches back. Hatching refuses to save when the files changed while the model was writing,
+and refuses hand-edited files over 16 KiB. Changes apply from the next reply,
+including in a running daemon.
+
+Hatching needs an intelligence provider. Without one, `krabb hatch` explains how to set
+one up; meanwhile you can edit `KRAB.md` and `KLAW.md` by hand. The model's draft must
+keep both files' headings and stay within the instruction budget, or nothing is saved.
+Personalities shape how your Krabb speaks; they cannot change its built-in charter or
+host policy.
+
+In a chat, the channel's configured `owner` can send `/hatch` followed by the change,
+such as `/hatch be playful but brief, and reply in Italian`; the TUI can too. Krabb applies it and replies with a summary; `/hatch undo` goes back. Only a
+message the owner types can change the personality. The model cannot run `/hatch` itself,
+so content it reads cannot rewrite who it is.
 
 Manage the background service with
 `krabb service install|uninstall|status|start|stop|restart`. Installing does

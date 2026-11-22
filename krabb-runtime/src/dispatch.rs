@@ -1158,6 +1158,7 @@ pub(crate) async fn execute_tool_with_registry(
             model,
             call: id.saturating_add(1),
             answering: false,
+            home: None,
         };
 
         let caller = slash::Caller {
@@ -1167,6 +1168,7 @@ pub(crate) async fn execute_tool_with_registry(
             session,
             sender: None,
             tools: tools_enabled,
+            owner: false,
             origin: slash::Origin::Tool,
         };
 

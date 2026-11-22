@@ -289,6 +289,7 @@ async fn command(request: &IpcRequest, state: &State) -> IpcResponse {
         model: &model,
         call: request.id,
         answering: false,
+        home: Some(&state.home),
     };
 
     let tools = state
@@ -302,6 +303,7 @@ async fn command(request: &IpcRequest, state: &State) -> IpcResponse {
         session,
         sender: Some(client),
         tools,
+        owner: false,
         origin: super::slash::Origin::Text,
     };
 
@@ -983,7 +985,7 @@ async fn compact_reserved(
 
         result = tokio::time::timeout_at(
             deadline,
-            compact_summary(
+            complete(
                 provider,
                 &model,
                 workspace.as_deref(),
@@ -1057,7 +1059,8 @@ pub(crate) fn compaction_boundary(messages: &[Message]) -> Option<usize> {
     (users.len() > COMPACT_RETAIN_TURNS).then(|| users[users.len() - COMPACT_RETAIN_TURNS])
 }
 
-pub(crate) async fn compact_summary(
+/// Asks the model for one complete reply, without streaming or tools.
+pub(crate) async fn complete(
     provider: &super::Live,
     model: &str,
     workspace: Option<&str>,

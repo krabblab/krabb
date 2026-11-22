@@ -154,9 +154,11 @@ their model is explicitly pinned; their history is preserved.
   channel filtering, with one confirmation and a durable batch update. Terminal dropped
   history does not block uninstall.
 - `KRABB_HOME/data/system/KRAB.md` defines Krabb's identity and communication
-  style; `KLAW.md` defines behavioral guidance and workflows. Both are loaded
-  into every model turn alongside the bounded session transcript. Krabb does
-  not load `AGENTS.md` itself; delegated coding agents may use it.
+  style; `KLAW.md` defines behavioral guidance and workflows. `krabb hatch` and
+  `/hatch` have the model rewrite both from the owner's own words, with undo. Both
+  are loaded into every model turn after Krabb's built-in charter and alongside the
+  bounded session transcript. Krabb does not load `AGENTS.md` itself; delegated
+  coding agents may use it.
 - Telegram uses long polling by default; Discord uses Gateway. Support DMs,
   allowlisted Telegram topics, Discord channels/threads, mention-only groups,
   owner/admin/member roles, and signed expiring approvals.

@@ -45,6 +45,8 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     #[command(about = "Initialize Krabb configuration and its global workspace.")]
     Init(InitArgs),
+    #[command(about = "Give your Krabb a name, a personality, and a way of writing.")]
+    Hatch(HatchArgs),
     #[command(about = "Check configuration, plugins, credentials, and local state.")]
     Doctor(DoctorArgs),
     #[command(about = "Read or update Krabb configuration.")]
@@ -418,6 +420,39 @@ pub(crate) struct InitArgs {
     #[arg(long, help = "Reset all Krabb home data and recreate its defaults.")]
     pub(crate) force: bool,
     #[arg(short, long, help = "Skip the confirmation prompt.")]
+    pub(crate) yes: bool,
+}
+
+/// Wishes come as free text or flags; with neither, a terminal asks for them.
+#[derive(Debug, Default, Args)]
+pub(crate) struct HatchArgs {
+    #[arg(help = "The change you want, in your own words.")]
+    pub(crate) wishes: Vec<String>,
+    #[arg(long, help = "Name your Krabb uses for itself.")]
+    pub(crate) name: Option<String>,
+    #[arg(long, help = "What your Krabb should call you.")]
+    pub(crate) call: Option<String>,
+    #[arg(long, help = "Its personality, in your own words.")]
+    pub(crate) personality: Option<String>,
+    #[arg(long, help = "Its tone of voice.")]
+    pub(crate) voice: Option<String>,
+    #[arg(long, help = "How it writes replies.")]
+    pub(crate) writing: Option<String>,
+    #[arg(long, help = "How it gets things done.")]
+    pub(crate) work: Option<String>,
+    #[arg(long, help = "Which language it uses.")]
+    pub(crate) language: Option<String>,
+    #[arg(long, help = "Anything else it should know about itself or you.")]
+    pub(crate) notes: Option<String>,
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "wishes", "name", "call", "personality", "voice", "writing", "work", "language", "notes"
+        ],
+        help = "Restore the previous personality."
+    )]
+    pub(crate) undo: bool,
+    #[arg(short, long, help = "Save without the preview and confirmation.")]
     pub(crate) yes: bool,
 }
 

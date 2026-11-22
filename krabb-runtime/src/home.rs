@@ -101,6 +101,10 @@ pub(crate) fn init(
         );
     } else {
         println!("Krabb initialized at {}.", root.display());
+        println!(
+            "Once an intelligence provider is set up, run `krabb hatch` to give your Krabb a \
+             name and a personality."
+        );
     }
 
     info!(reset_existing, "Krabb home initialized.");

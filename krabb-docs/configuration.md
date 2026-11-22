@@ -288,7 +288,9 @@ memory plugin is installed, it lazily creates `data/memories/` on its first save
 record or learning-mode setting; no memory directory is created when the
 plugin is absent or unused.
 `init` creates
-`data/system/KRAB.md` and `data/system/KLAW.md`; Krabb injects their current
+`data/system/KRAB.md` and `data/system/KLAW.md`, which `krabb hatch` and `/hatch`
+rewrite from your own words, keeping the previous versions as `KRAB.previous.md` and
+`KLAW.previous.md`; Krabb injects their current
 contents into each model turn alongside the persisted, bounded conversation.
 Changes to either file apply on the next turn. These files guide model behavior
 but cannot grant capabilities or override host policy.
