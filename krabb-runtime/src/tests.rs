@@ -6264,6 +6264,7 @@ fn cli_exposes_global_modes_and_aliases() {
                 link: true,
                 unstable: false,
                 yes: true,
+                quiet: false,
             })
         } if ids == ["tui", "codex", "tools"]
     ));
@@ -6290,6 +6291,7 @@ fn cli_exposes_global_modes_and_aliases() {
                 link: false,
                 unstable: false,
                 yes: false,
+                quiet: false,
             })
         } if ids == ["custom"] && source == "./plugin" && revision == "abc123"
     ));
@@ -6487,6 +6489,7 @@ fn plugin_install_accepts_multiple_ids_and_limits_explicit_sources() {
         link: true,
         unstable: false,
         yes: true,
+        quiet: false,
     })
     .unwrap();
 
@@ -6526,6 +6529,7 @@ fn install_sources(ids: &[&str], source: Option<&str>, link: bool, unstable: boo
         link,
         unstable,
         yes: false,
+        quiet: false,
     })
 }
 
@@ -9100,6 +9104,7 @@ async fn manages_local_sessions_and_plugins() {
                 link: false,
                 unstable: false,
                 yes: true,
+                quiet: false,
             }),
             false,
         )

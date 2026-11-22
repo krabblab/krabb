@@ -433,7 +433,8 @@ where
 
     if text.trim().is_empty() && events.is_empty() {
         return Err(krabb_core::Error::Denied(
-            "Ollama stream contained no text or tools; check context and thinking settings.".into(),
+            "Ollama stream contained no text or tools, so check the context and thinking settings."
+                .into(),
         ));
     }
 
@@ -562,7 +563,7 @@ fn validate_host(host: &str, authenticated: bool) -> krabb_core::Result<String> 
         || url.fragment().is_some()
         || authenticated && url.scheme() != "https" && !local
     {
-        return Err(krabb_core::Error::Denied("Ollama credentials require HTTPS outside loopback; embedded credentials, query, and fragment are not allowed.".into()));
+        return Err(krabb_core::Error::Denied("Ollama credentials require HTTPS outside loopback, and the host cannot embed credentials, a query, or a fragment.".into()));
     }
 
     Ok(url.as_str().trim_end_matches('/').into())

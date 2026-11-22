@@ -122,7 +122,7 @@ impl Store {
         if self.outbox.len().saturating_add(deliveries.len()) > LIMIT {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Delivery outbox is full; the run remains pending.",
+                "Delivery outbox is full, so the run remains pending.",
             ));
         }
 

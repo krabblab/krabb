@@ -509,6 +509,9 @@ pub(crate) struct PluginInstall {
     pub(crate) unstable: bool,
     #[arg(short, long, help = "Skip replacement confirmation.")]
     pub(crate) yes: bool,
+    /// Prints nothing on success, for guides that report the result in their own words.
+    #[arg(skip)]
+    pub(crate) quiet: bool,
 }
 
 pub(crate) struct SourceRoot {

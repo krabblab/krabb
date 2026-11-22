@@ -460,7 +460,7 @@ pub(crate) fn cli_styles() -> clap::builder::Styles {
         return clap::builder::Styles::plain();
     }
 
-    let (red, green, blue) = crate::style::coral_from_environment();
+    let (red, green, blue) = crate::style::CORAL;
     let accent = Style::new().fg_color(Some(RgbColor(red, green, blue).into())).bold();
 
     clap::builder::Styles::styled().header(accent).usage(accent).literal(Style::new().bold())
@@ -491,11 +491,11 @@ pub(crate) fn style_cli_help(help: &str) -> String {
                 | "Conditional Commands:"
                 | "Plugin Commands:"
         ) {
-            output.push_str(&crate::style::accent_code());
+            output.push_str(crate::style::accent_code());
             output.push_str(content);
             output.push_str("\x1b[0m");
         } else if let Some(usage) = content.strip_prefix("Usage: ") {
-            output.push_str(&crate::style::accent_code());
+            output.push_str(crate::style::accent_code());
             output.push_str("Usage:\x1b[0m \x1b[1m");
             output.push_str(usage);
             output.push_str("\x1b[0m");

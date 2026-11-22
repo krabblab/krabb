@@ -420,6 +420,7 @@ impl Guide {
                 link: false,
                 unstable: false,
                 yes: true,
+                quiet: true,
             };
 
             crate::plugins::plugin(PluginCommand::Install(install), false).await?;

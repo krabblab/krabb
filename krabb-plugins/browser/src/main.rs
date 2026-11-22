@@ -190,7 +190,7 @@ impl Worker {
                 .map(|error| error.to_string())
                 .unwrap_or_else(|| "executable remained busy".into());
             denied(format!(
-                "Could not start the Playwright worker. Check Node.js installation: {error}"
+                "Could not start the Playwright worker, so check the Node.js installation: {error}"
             ))
         })?;
 

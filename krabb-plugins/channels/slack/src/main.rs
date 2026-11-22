@@ -641,7 +641,7 @@ async fn api_at(
                 }
 
                 return Err(krabb_core::Error::Denied(format!(
-                    "Slack request rate limited; retry_after={retry_after}."
+                    "Slack rate limited the request, retry_after={retry_after}."
                 )));
             }
 
@@ -668,7 +668,7 @@ async fn api_at(
             }
 
             return Err(krabb_core::Error::Denied(format!(
-                "Slack request rate limited; retry_after={retry_after}."
+                "Slack rate limited the request, retry_after={retry_after}."
             )));
         }
 

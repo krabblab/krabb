@@ -80,6 +80,7 @@ async fn progress_precedes_lifecycle_waits_and_keeps_json_silent() {
             link: false,
             unstable: false,
             yes: true,
+            quiet: false,
         }),
         json,
     )

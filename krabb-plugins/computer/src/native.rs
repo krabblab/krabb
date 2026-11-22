@@ -11,7 +11,7 @@ use crate::{IMAGE_LIMIT, denied};
 fn input() -> krabb_core::Result<Enigo> {
     Enigo::new(&Settings::default()).map_err(|error| {
         denied(format!(
-            "Could not access desktop input. Grant the required OS accessibility permission: {error}"
+            "Could not access desktop input, so grant the OS accessibility permission: {error}"
         ))
     })
 }
@@ -97,7 +97,9 @@ pub(super) fn capture_screen(format: &str) -> krabb_core::Result<Value> {
         .height()
         .map_err(|error| denied(format!("Could not read display height: {error}")))?;
     let image = monitor.capture_image().map_err(|error| {
-        denied(format!("Screen capture failed. Check OS screen-recording permissions: {error}"))
+        denied(format!(
+            "Screen capture failed, so check the OS screen-recording permission: {error}"
+        ))
     })?;
     let mut output = Cursor::new(Vec::new());
 

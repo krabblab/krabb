@@ -69,9 +69,10 @@ exports losslessly before adding them.
   `krabb-plugins/clients/tui/src/ui.rs`. It marks headers, borders, prompts, and inline
   code.
 - CLI help and guided commands use bold Coral for headers, usage, and prompts, from
-  `krabb-runtime/src/style.rs`. On a light terminal they switch to Coral Deep, because
-  Coral is too light for small text there. The background comes from `COLORFGBG`, or
-  else from asking the terminal once, and an unknown background counts as dark.
+  `krabb-runtime/src/style.rs`.
+- Coral looks right on dark and light terminals alike, so nothing detects the theme.
+  Body text, including code, keeps the terminal's own foreground, which is light on dark
+  themes and dark on light ones. Never set text to white, black, or a light gray.
 - Animated glows stay in the Coral range: vary green within about 111 to 150 and blue
   within about 44 to 90. They must never drift toward yellow-orange, which reads as a
   warning rather than the brand.
@@ -130,7 +131,7 @@ Chat with it with `krabb tui`
 
 ## Known Gaps
 
-- The terminal can't tell a light background from a dark one, so the TUI and CLI always
-  use Coral, which is below 4.5:1 for small text on light terminal themes.
+- The TUI and CLI always use Coral, which is below 4.5:1 for small text on light terminal
+  themes, so they set it in bold.
 - The social previews use tints outside the palette for their large background K:
   `#F2621F` on Coral and `#262D32` on Slate. Keep these tints to the covers.

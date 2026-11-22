@@ -387,7 +387,7 @@ async fn open_with_config(
 
     let mut server = server_command.spawn().map_err(|_| {
         let _ = fs::remove_dir_all(&auth_dir);
-        denied("Could not start Xvfb. Check the configured Xvfb installation.")
+        denied("Could not start Xvfb, so check the configured Xvfb installation.")
     })?;
 
     let server_group = server.id();

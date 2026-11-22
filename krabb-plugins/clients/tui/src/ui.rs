@@ -2747,7 +2747,7 @@ fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Vec<Line<'st
 
     let border_style = Style::default().fg(ACCENT_COLOR);
     let header_style = Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD);
-    let code_style = Style::default().fg(Color::Gray);
+    let code_style = Style::default().fg(Color::Reset);
     let inner_width = width.saturating_sub(4);
     let language = truncate_display_width(language, width.saturating_sub(5));
     let header = format!("┌─ {language} ");
@@ -5194,7 +5194,7 @@ mod tests {
             .iter()
             .flat_map(|row| &row.spans)
             .filter(|span| {
-                span.style.fg == Some(Color::Gray)
+                span.style.fg == Some(Color::Reset)
                     && !span.content.trim().is_empty()
                     && !span.content.contains('│')
             })
