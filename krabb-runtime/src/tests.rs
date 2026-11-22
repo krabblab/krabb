@@ -10838,7 +10838,10 @@ async fn asks_a_local_plugin() {
 fn checks_plugin_readiness() {
     assert!(super::ready("ollama"));
     assert!(!super::ready("unknown"));
-    assert!(!super::ready("telegram") || std::env::var_os("KRABB_TELEGRAM_TOKEN").is_some());
+    assert!(
+        !super::ready_with("telegram", None, Path::new("unused"), |_| false)
+            || std::env::var_os("KRABB_TELEGRAM_TOKEN").is_some_and(|token| !token.is_empty())
+    );
     assert!(!super::codex_auth() || super::ready("codex"));
 }
 
