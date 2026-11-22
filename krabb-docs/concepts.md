@@ -78,12 +78,17 @@ limits are still enforced by the host in code.
 The runtime also adds a short description of itself, built from its version, history
 limit, and commands, so the model can explain how Krabb works. When that is not enough
 and the model has a web tool, it points the model to the Krabb repository's
-documentation. Conversation history is a bounded transcript of up to 1,000 messages,
-counting tool calls and results. When the model's context fills up, older turns are
-summarized in what the model sees while the stored history stays intact; models with no
-known context window see a `/compact` summary or the opening request, plus the latest
-100 messages. Krabb does not load `AGENTS.md`
-for itself; coding agents it delegates to may use workspace `AGENTS.md` instructions.
+documentation. Each turn also states the conversation's own effective settings: its
+configuration section, model, approval mode, and whether workspace tools, shell,
+schedules, and memory are on, with the setting each one needs. Krabb can then tell a
+misconfiguration from a bug and name the setting to change. It sees only its own
+section, never the settings of other channels or clients. Conversation history is a
+bounded transcript of up to 1,000 messages, counting tool calls and results. When the
+model's context fills up, older turns are summarized in what the model sees while the
+stored history stays intact; models with no known context window see a `/compact`
+summary or the opening request, plus the latest 100 messages. Krabb does not load
+`AGENTS.md` for itself; coding agents it delegates to may use workspace `AGENTS.md`
+instructions.
 
 These Markdown files guide the model but do not grant capabilities. The host
 continues to enforce workspace confinement, channel tool settings, approvals,

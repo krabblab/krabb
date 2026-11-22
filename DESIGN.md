@@ -75,6 +75,45 @@ exports losslessly before adding them.
   warning rather than the brand.
 - Use the terminal's own grays for secondary text; they follow the user's theme.
 
+## Writing
+
+These rules cover everything a person reads: CLI output and errors, chat replies to slash
+commands, and TUI messages. Model-facing prompts and tool results are exempt.
+
+- Put one sentence on each line. Merge two short sentences into one rather than sharing
+  a line.
+- Use no semicolons. Join clauses with "and", "so", or "because", or start a new line.
+- Group related lines under a short title, with a blank line before and after each
+  group and none inside it.
+- Number questions and steps, and state each one's limits and an example, such as
+  `Up to 40 characters, for example: Pinch`.
+- Offer choices as a vertical list with a `›` marker on the selection, moved with the
+  arrow keys. Without a terminal, take the choice from a flag instead.
+- Say each thing once. Instead of repeating a summary or printing a file's contents,
+  print the command that shows them.
+- End with the next action as a runnable command, with no period after the command.
+- Mark finished steps with `✓` and a full sentence that names the kind of thing, such as
+  `✓ Installed openai provider.`
+- Set headers and prompts in Coral, and set hints and examples in the terminal's gray.
+
+```text
+Intelligence
+
+1. Which provider should your Krabb think with?
+
+   › OpenAI
+     Anthropic
+     Ollama, local
+     Skip
+
+   ↑/↓ to move, Enter to choose
+
+✓ Installed openai provider.
+
+Your Krabb is ready.
+Chat with it with `krabb tui`
+```
+
 ## Don't
 
 - Don't recolor, stretch, rotate, or outline the mark; it is recognized by its exact shape.

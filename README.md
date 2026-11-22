@@ -64,6 +64,7 @@ locations, backups, upgrades, and uninstalling; the
 
 | Capability | Description | Plugins |
 | --- | --- | --- |
+| Intelligence | Connects Krabb to the models it thinks with. | OpenAI, Anthropic, Gemini, OpenRouter, Codex, Ollama |
 | Channels | Connects Krabb to chat channels for receiving and sending messages. | Telegram, Discord, WhatsApp, Signal, Slack |
 | Agent Interoperability | Connects external agents and local agent clients. | ACP, A2A, AG-UI |
 | Tools | Provides filesystem, Git, shell, browser, and desktop operations under host policy. | Tools, Browser, Computer |

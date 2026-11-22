@@ -399,11 +399,28 @@ pub(crate) async fn answer_with_registry(
         specs.extend(memory_tools());
     }
 
-    if plugins.find(Capability::Scheduler).await.is_some()
-        && registry.execution.interactive()
-        && !isolated
-        && schedule_enabled
-    {
+    let scheduler = plugins.find(Capability::Scheduler).await.is_some();
+    let schedules = scheduler && registry.execution.interactive() && !isolated && schedule_enabled;
+
+    if let Some(source) = &registry.source {
+        let setup = context::Setup {
+            source,
+            provider: &provider.hello.id,
+            model,
+            approval: approval_mode,
+            tools: tools_enabled,
+            shell: shell_enabled,
+            schedules,
+            scheduler,
+            memory: memory_plugin.is_some() && tools_enabled,
+        };
+
+        if let Some(message) = setup.message(session) {
+            messages.insert(0, message);
+        }
+    }
+
+    if schedules {
         let channels = plugins
             .all()
             .await
