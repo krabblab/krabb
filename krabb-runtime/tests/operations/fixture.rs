@@ -178,6 +178,7 @@ impl Fixture {
         let mut command = self.command("host");
 
         command
+            .env("KRABB_LOG", "info,krabb_runtime::daemon=debug")
             .stdout(Stdio::null())
             .stderr(Stdio::from(fs::File::create(self.root.join("host.stderr")).unwrap()));
 
@@ -299,6 +300,23 @@ impl Fixture {
             .unwrap()
     }
 
+    /// The last lines of the daemon's logs, to show where a stuck shutdown stopped.
+    fn log_tail(&self, lines: usize) -> String {
+        let Ok(entries) = fs::read_dir(self.home.join("logs")) else {
+            return "(no logs)".into();
+        };
+
+        let mut text = String::new();
+
+        for entry in entries.flatten() {
+            text.push_str(&fs::read_to_string(entry.path()).unwrap_or_default());
+        }
+
+        let all = text.lines().collect::<Vec<_>>();
+
+        all[all.len().saturating_sub(lines)..].join("\n")
+    }
+
     pub async fn kill(child: &mut Option<Child>) {
         if let Some(mut child) = child.take() {
             child.kill().await.unwrap();
@@ -312,8 +330,9 @@ impl Fixture {
         if let Some(mut host) = self.host.take() {
             let Ok(status) = tokio::time::timeout(slow(15), host.wait()).await else {
                 panic!(
-                    "Host did not stop after shutdown {shutdown:?}: {}",
-                    fs::read_to_string(self.root.join("host.stderr")).unwrap_or_default()
+                    "Host did not stop after shutdown {shutdown:?}: {}\nDaemon log:\n{}",
+                    fs::read_to_string(self.root.join("host.stderr")).unwrap_or_default(),
+                    self.log_tail(80)
                 );
             };
 

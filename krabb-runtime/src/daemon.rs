@@ -167,10 +167,15 @@ pub(crate) async fn serve_inner(
     };
 
     stop.signal();
+    debug!("Stopping storage maintenance.");
     let _ = storage_task.await;
+    debug!("Stopping the scheduler.");
     let _ = scheduler_task.await;
+    debug!("Stopping background jobs.");
     let _ = jobs_task.await;
+    debug!("Stopping local IPC.");
     let _ = ipc_task.await;
+    debug!("Stopping plugins.");
     let _ = std::fs::remove_file(root.join("run/ipc.token"));
     let _ = std::fs::remove_file(root.join("run/ipc.port"));
     let mut cleanup = None;
@@ -180,7 +185,12 @@ pub(crate) async fn serve_inner(
         .all()
         .await
         .into_iter()
-        .map(|(_, process)| async move { process.stop().await })
+        .map(|(id, process)| async move {
+            debug!(plugin = %id, "Stopping plugin.");
+            let stopped = process.stop().await;
+            debug!(plugin = %id, "Plugin stopped.");
+            stopped
+        })
         .collect();
 
     // A panicking stop must not abort the others halfway, so it is raised once all finish.
@@ -201,6 +211,8 @@ pub(crate) async fn serve_inner(
             Err(_) => {}
         }
     }
+
+    debug!("Plugins stopped.");
 
     if let Some(panic) = panic {
         std::panic::resume_unwind(panic);

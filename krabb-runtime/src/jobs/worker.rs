@@ -2,6 +2,8 @@ use super::*;
 
 const CONCURRENCY: usize = 2;
 const POLL_SECONDS: u64 = 60;
+/// How long a stopping daemon waits for running steps before abandoning them.
+const STOP_GRACE: Duration = Duration::from_secs(10);
 /// Recent operation results replayed into each background step.
 const OPERATION_HISTORY: usize = 8;
 
@@ -168,7 +170,12 @@ pub(crate) async fn run(context: Context) {
             }
         }
 
-        if context.stop.is_signaled() && workers.is_empty() {
+        if context.stop.is_signaled() {
+            for id in drain(&mut workers, &mut handles, STOP_GRACE).await {
+                warn!(job = %id, "Background step did not stop in time; it resumes from its \
+                    checkpoint on the next start.");
+            }
+
             return;
         }
 
@@ -236,6 +243,45 @@ pub(crate) async fn run(context: Context) {
             _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
         }
     }
+}
+
+/// Waits up to GRACE for running steps after a stop, then aborts the rest and returns their
+/// jobs. An aborted step is recovered from its checkpoint on the next start, as after a crash.
+pub(super) async fn drain(
+    workers: &mut tokio::task::JoinSet<String>,
+    handles: &mut HashMap<tokio::task::Id, String>,
+    grace: Duration,
+) -> Vec<String> {
+    let deadline = tokio::time::sleep(grace);
+
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            joined = workers.join_next_with_id() => match joined {
+                Some(Ok((handle, _))) => {
+                    handles.remove(&handle);
+                }
+
+                Some(Err(error)) => {
+                    handles.remove(&error.id());
+                }
+
+                None => return Vec::new(),
+            },
+
+            _ = &mut deadline => break,
+        }
+    }
+
+    workers.abort_all();
+
+    while workers.join_next().await.is_some() {}
+
+    let mut stuck: Vec<_> = handles.drain().map(|(_, id)| id).collect();
+
+    stuck.sort();
+    stuck
 }
 
 async fn step(context: &Context, job: Job) -> Result<(), PluginError> {
