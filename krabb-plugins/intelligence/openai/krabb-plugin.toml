@@ -15,6 +15,7 @@ minor = 1
 
 [setup.KRABB_OPENAI_KEY]
 label = "API key"
+help = "Create a key in the OpenAI dashboard and paste it here."
 url = "https://platform.openai.com/api-keys"
 example = "sk-..."
 required = true

@@ -405,7 +405,7 @@ pub(crate) fn load_update_previews_at(
 
     if !preview_root.join("preview.json").is_file() {
         return Err(
-            "No saved plugin update preview was found; run `krabb plugin update` first.".into()
+            "No saved plugin update preview was found, so run `krabb plugin update` first.".into(),
         );
     }
 
@@ -431,7 +431,7 @@ pub(crate) fn load_update_preview_snapshot_at(
 
     if !preview_root.join("preview.json").is_file() {
         return Err(
-            "No saved plugin update preview was found; run `krabb plugin update` first.".into()
+            "No saved plugin update preview was found, so run `krabb plugin update` first.".into(),
         );
     }
 
@@ -567,7 +567,7 @@ pub(crate) fn inspect_update(
     let name = plugin_name(id);
 
     let Some(binary) = plugin_binary(&source.path, id, entry.default) else {
-        return Err(format!("Binary {name} was not found; build the plugin first.").into());
+        return Err(format!("Binary {name} was not found, so build the plugin first.").into());
     };
 
     Ok(UpdateCandidate {
@@ -645,9 +645,10 @@ pub(crate) fn load_update_candidate_at(
         || record.base_revision != entry.revision
         || record.base_version != entry.version
     {
-        return Err(
-            format!("The saved update preview for {id} is stale; preview updates again.").into()
-        );
+        return Err(format!(
+            "The saved update preview for {id} is stale, so preview updates again."
+        )
+        .into());
     }
 
     let binary = root.join("bin").join(plugin_name(id));
@@ -679,7 +680,9 @@ pub(crate) fn validate_update_candidate(
     if digest(&candidate.source_path.join("krabb-plugin.toml"), &candidate.binary)?
         != candidate.hash
     {
-        return Err(format!("Saved update preview for {id} changed; preview updates again.").into());
+        return Err(
+            format!("Saved update preview for {id} changed, so preview updates again.").into()
+        );
     }
 
     Ok(candidate.clone())
@@ -700,9 +703,10 @@ pub(crate) fn check_update_candidate(
         || candidate.base_revision != entry.revision
         || candidate.base_version != entry.version
     {
-        return Err(
-            format!("The saved update preview for {id} is stale; preview updates again.").into()
-        );
+        return Err(format!(
+            "The saved update preview for {id} is stale, so preview updates again."
+        )
+        .into());
     }
 
     if manifest.id != id || !Protocol::CURRENT.compatible(manifest.protocol) {
@@ -712,7 +716,9 @@ pub(crate) fn check_update_candidate(
     validate_commands(home_root, id, &manifest.commands)?;
 
     if !candidate.binary.is_file() {
-        return Err(format!("Saved update preview for {id} changed; preview updates again.").into());
+        return Err(
+            format!("Saved update preview for {id} changed, so preview updates again.").into()
+        );
     }
 
     Ok(())
@@ -782,7 +788,7 @@ pub(crate) fn prepare_update(
         }
 
         let binary = plugin_binary(&source.path, id, entry.default).ok_or_else(|| {
-            format!("Binary {} was not found; build the plugin first.", plugin_name(id))
+            format!("Binary {} was not found, so build the plugin first.", plugin_name(id))
         })?;
 
         let matches_preview = match preview {
@@ -805,7 +811,7 @@ pub(crate) fn prepare_update(
         .or_else(|| plugin_binary(source_path, id, entry.default));
 
     let Some(binary) = binary else {
-        return Err(format!("Binary {name} was not found; build the plugin first.").into());
+        return Err(format!("Binary {name} was not found, so build the plugin first.").into());
     };
 
     let source_revision =

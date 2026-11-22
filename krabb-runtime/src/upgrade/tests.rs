@@ -161,7 +161,7 @@ fn changes_list_additions_and_removals() {
 
     assert_eq!(
         change("permissions", &before, &after).as_deref(),
-        Some("permissions: adds memory; removes filesystem")
+        Some("permissions: adds memory, removes filesystem")
     );
 
     assert_eq!(change("secrets", &before, &before), None);
@@ -248,8 +248,8 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
 
     for row in [
         update.as_str(),
-        "echo: 0.1.0 → 0.2.0 (pin to 0.1.0 removed; it cannot run on 0.2.0)",
-        "echo permissions: adds network; removes filesystem",
+        "echo: 0.1.0 → 0.2.0 (pin to 0.1.0 removed because it cannot run on 0.2.0)",
+        "echo permissions: adds network, removes filesystem",
         "echo secrets: adds KRABB_ECHO_KEY",
         "tui: stays at 0.1.0 (linked development build)",
         "codex: stays at 0.1.0 (supported)",

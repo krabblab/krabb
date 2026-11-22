@@ -104,7 +104,7 @@ fn hello() -> Hello {
         capabilities: vec![Capability::Client],
         commands: vec![CommandSpec {
             name: client::TUI.into(),
-            description: "Open the TUI; the Krabb daemon must be running.".into(),
+            description: "Open the TUI while the Krabb daemon is running.".into(),
             interactive: true,
         }],
     }
@@ -247,7 +247,7 @@ fn parse_options(args: &[String]) -> krabb_core::Result<TuiOptions> {
 
             _ => {
                 return Err(krabb_core::Error::Denied(format!(
-                    "Unknown TUI option {name}. Use `krabb tui --help` for usage."
+                    "Unknown TUI option {name}.\nUse `krabb tui --help` for usage."
                 )));
             }
         };
@@ -601,7 +601,7 @@ where
         output.write_all(b"> ").await?;
     } else {
         output
-            .write_all(format!("{bot_name} terminal. Type /help for commands.\n> ").as_bytes())
+            .write_all(format!("{bot_name} terminal.\nType /help for commands.\n> ").as_bytes())
             .await?;
     }
 
@@ -609,7 +609,8 @@ where
 
     if !model_plugin_available {
         let message = format!(
-            "No intelligence plugin is installed at {plugin}. Install one to send prompts; session commands remain available."
+            "No intelligence plugin is installed at {plugin}.\nInstall one to send prompts, \
+            while session commands remain available."
         );
 
         if let Some(events) = &engine_events {
@@ -734,7 +735,7 @@ where
                     Ok(value) => format_status(&value),
 
                     Err(error) if daemon_unavailable(&error) => {
-                        "Background runtime: stopped. Start it with `krabb service start`.\n> ".into()
+                        "Background runtime: stopped.\nStart it with `krabb service start`.\n> ".into()
                     }
 
                     Err(error) => format!("Daemon status unavailable: {}.\n> ", sentence(error.to_string())),
@@ -823,7 +824,8 @@ where
                 let target = value.trim();
 
                 if !valid_session(target) {
-                    output.write_all(b"Session ID is invalid. Use lowercase letters, numbers, and hyphens.\n> ").await?;
+                    output.write_all(b"Session ID is invalid.\nUse lowercase letters, numbers, \
+                                      and hyphens.\n> ").await?;
                 } else if tui_session_name(&session) == Some(target) {
                     output.write_all(b"Session ID is unchanged.\n> ").await?;
                 } else {
@@ -879,7 +881,8 @@ where
 
                 match parse_session_targets(value, allow_confirmation) {
                     Ok(targets) if action == "delete" && !targets.confirmed => {
-                        output.write_all(b"Deleting sessions permanently removes their history. Re-run with -y to confirm.\n> ").await?;
+                        output.write_all(b"Deleting sessions permanently removes their \
+                                          history.\nRe-run with -y to confirm.\n> ").await?;
                     }
 
                     Ok(targets) => {
@@ -1023,7 +1026,8 @@ where
                         output
                             .write_all(
                                 format!(
-                                    "Compacted {removed} older messages into a summary; kept {retained} recent messages.\n> "
+                                    "Compacted {removed} older messages into a summary and kept \
+                                    {retained} recent messages.\n> "
                                 )
                                 .as_bytes(),
                             )
@@ -1031,7 +1035,8 @@ where
                     }
 
                     Ok((None, Some(reason), _)) if reason == "already_compacted" => {
-                        output.write_all(b"This conversation was just compacted; skipping another compaction.\n> ").await?;
+                        output.write_all(b"This conversation was just compacted, so another \
+                                          compaction is skipped.\n> ").await?;
                     }
 
                     Ok((None, _, _)) => {
@@ -1089,7 +1094,8 @@ where
             }
 
             if line == "/model set" {
-                output.write_all(b"Usage: /model set <id>. Use /model list to see Codex models.\n> ").await?;
+                output.write_all(b"Usage: /model set <id>\nUse /model list to see Codex \
+                                  models.\n> ").await?;
                 output.flush().await?;
                 continue;
             }
@@ -1101,7 +1107,8 @@ where
                 let value = value.trim();
 
                 if !valid_model(value) {
-                    output.write_all(b"Model ID is invalid. Use letters, numbers, and . _ : / -.\n> ").await?;
+                    output.write_all(b"Model ID is invalid.\nUse letters, numbers, and . _ : / \
+                                      -\n> ").await?;
                 } else {
                     host(
                         home.clone(),
@@ -1228,7 +1235,8 @@ where
 
             if line.starts_with('/') && reply.is_none() {
                 output
-                    .write_all(format!("Unknown TUI command: {}. Use /help to see available commands.\n> ", line.split_whitespace().next().unwrap_or(line)).as_bytes())
+                    .write_all(format!("Unknown TUI command: {}.\nUse /help to see available \
+                                       commands.\n> ", line.split_whitespace().next().unwrap_or(line)).as_bytes())
                     .await?;
 
                 output.flush().await?;
@@ -1290,7 +1298,8 @@ where
                     }
 
                     let message = if error.to_string().contains(krabb_core::types::SESSION_BUSY) {
-                        "Krabb is already working in this session. Wait for the current turn to finish."
+                        "Krabb is already working in this session.\nWait for the current turn to \
+                        finish."
                             .to_owned()
                     } else {
                         sentence(error.to_string())
@@ -1331,7 +1340,8 @@ where
             let reply = if let Some(target) = reply_to {
                 let Some(reply) = krabb_core::reply::Reply::select(&messages, target) else {
                     reservation.release().await?;
-                    output.write_all(b"That message is unavailable in this session. Choose another message or use /reply last.\n> ").await?;
+                    output.write_all(b"That message is unavailable in this session.\nChoose \
+                                      another message or use /reply last.\n> ").await?;
                     output.flush().await?;
                     continue;
                 };
@@ -1504,7 +1514,8 @@ where
                             continue;
                         }
 
-                        output.write_all(b"A turn is still running. Use /approvals, /approve <id>, /deny <id>, or Esc to cancel.\n").await?;
+                        output.write_all(b"A turn is still running.\nUse /approvals, /approve \
+                                          <id>, /deny <id>, or Esc to cancel.\n").await?;
                         output.flush().await?;
                     }
 
@@ -1880,18 +1891,18 @@ where
     };
 
     if !already.is_empty() {
-        summary.push_str(&format!(". Already in that state: {}", already.join(", ")));
+        summary.push_str(&format!(".\nAlready in that state: {}", already.join(", ")));
     }
 
     if active_skipped {
         summary.push_str(&format!(
-            ". Kept active session {}",
+            ".\nKept active session {}",
             tui_session_name(active).unwrap_or(active)
         ));
     }
 
     if !failures.is_empty() {
-        summary.push_str(&format!(". Failed: {}", failures.join("; ")));
+        summary.push_str(&format!(".\nFailed: {}", failures.join(", ")));
     }
 
     summary.push('.');
@@ -2133,7 +2144,10 @@ fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
     }
 
     sections.push(
-        "Plugin commands run in the CLI: krabb <command>.\nPage Up/Down scroll the conversation; the mouse wheel scrolls the pane under the pointer. Hold Shift while dragging to select and copy text.\nCtrl+O adds a message line.".into(),
+        "Plugin commands run in the CLI: krabb <command>.\nPage Up/Down scroll the conversation, \
+        and the mouse wheel scrolls the pane under the pointer.\nHold Shift while dragging to \
+        select and copy text.\nCtrl+O adds a message line."
+            .into(),
     );
 
     format!("{}\n> ", sections.join("\n\n"))
@@ -2151,7 +2165,7 @@ fn format_help_rows(rows: &[(&str, &str)]) -> String {
 fn session_help() -> String {
     let commands = [
         ("/session help", "Show these commands."),
-        ("/session list [page]", "List sessions, 10 per page; active first, then recent."),
+        ("/session list [page]", "List sessions, 10 per page, active first, then recent."),
         ("/session create <id>", "Create and switch to a session."),
         ("/session switch <id>", "Switch to a saved session."),
         ("/session rename <new-id>", "Rename the active session."),
@@ -2159,7 +2173,7 @@ fn session_help() -> String {
         ("/session unarchive <id>...|--all", "Restore archived sessions."),
         (
             "/session delete <id>...|--all [-y] [--deep]",
-            "Permanently delete sessions; --deep also removes local and shared session data.",
+            "Permanently delete sessions, and --deep also removes local and shared session data.",
         ),
         ("/new <id>", "Create and switch to a session (shortcut)."),
     ];
@@ -2333,9 +2347,10 @@ where
 
     let Some(item) = (candidates.len() == 1).then(|| candidates[0]) else {
         return Ok(if candidates.is_empty() {
-            "No matching pending approval. Use /approvals to see the current requests.\n".into()
+            "No matching pending approval.\nUse /approvals to see the current requests.\n".into()
         } else {
-            "More than one approval is pending for this session; use /approve <id> or /deny <id>.\n"
+            "More than one approval is pending for this session, so use /approve <id> or /deny \
+            <id>.\n"
                 .into()
         });
     };
@@ -2514,51 +2529,46 @@ where
                     params["context"]["destinations"] = destinations;
                 }
 
-                capability(home.clone(), "scheduler", "add", params, host)
-                    .await
-                    .map(|value| {
-                        let next_run = value["due"]
-                            .as_u64()
-                            .map(|due| {
-                                krabb_date::format_datetime_in_timezone(
-                                    due,
-                                    value["zone"].as_str().unwrap_or("UTC"),
-                                )
-                            })
-                            .unwrap_or_else(|| "unknown time".into());
-                        let name = value["name"].as_str().unwrap_or("Scheduled task");
-                        let tools_access = if value["context"]["tools"] == true {
-                            "enabled"
-                        } else {
-                            "disabled"
-                        };
-
-                        let shell_access = if value["context"]["tools"] == true
-                            && value["context"]["shell"] == true
-                        {
-                            "enabled"
-                        } else {
-                            "disabled"
-                        };
-
-                        let frequency = if let Some(repeat) =
-                            value["repeat"].as_u64().filter(|repeat| *repeat > 0)
-                        {
-                            format!("\nFrequency: every {}", krabb_date::format_duration(repeat))
-                        } else if let Some(cron) = value["cron"].as_str() {
-                            format!(
-                                "\nFrequency: {cron} ({})",
-                                value["zone"].as_str().unwrap_or("UTC")
+                capability(home.clone(), "scheduler", "add", params, host).await.map(|value| {
+                    let next_run = value["due"]
+                        .as_u64()
+                        .map(|due| {
+                            krabb_date::format_datetime_in_timezone(
+                                due,
+                                value["zone"].as_str().unwrap_or("UTC"),
                             )
+                        })
+                        .unwrap_or_else(|| "unknown time".into());
+                    let name = value["name"].as_str().unwrap_or("Scheduled task");
+                    let tools_access =
+                        if value["context"]["tools"] == true { "enabled" } else { "disabled" };
+
+                    let shell_access =
+                        if value["context"]["tools"] == true && value["context"]["shell"] == true {
+                            "enabled"
                         } else {
-                            String::new()
+                            "disabled"
                         };
 
-                        format!(
-                            "Schedule {name} ({id}) is active.\n\nInstruction: {instruction}\nProvider: {provider}; model: {model}.\nWorkspace: {}\nTools: {tools_access}\nShell: {shell_access}\nNext run: {next_run}{frequency}\n\nCheck it with /schedule list; pause it with /schedule pause {id}.\n> ",
-                            workspace.as_deref().unwrap_or("configured workspace")
-                        )
-                    })
+                    let frequency = if let Some(repeat) =
+                        value["repeat"].as_u64().filter(|repeat| *repeat > 0)
+                    {
+                        format!("\nFrequency: every {}", krabb_date::format_duration(repeat))
+                    } else if let Some(cron) = value["cron"].as_str() {
+                        format!("\nFrequency: {cron} ({})", value["zone"].as_str().unwrap_or("UTC"))
+                    } else {
+                        String::new()
+                    };
+
+                    format!(
+                        "Schedule {name} ({id}) is active.\n\nInstruction: \
+                            {instruction}\nProvider: {provider}\nModel: {model}\nWorkspace: \
+                            {}\nTools: {tools_access}\nShell: {shell_access}\nNext run: \
+                            {next_run}{frequency}\n\nCheck it with /schedule list\nPause it with \
+                            /schedule pause {id}\n> ",
+                        workspace.as_deref().unwrap_or("configured workspace")
+                    )
+                })
             }
 
             Err(error) => Ok(format!("{error}\n> ")),
@@ -2615,7 +2625,8 @@ where
                         .map(|(records, total, path)| {
                             if page > total.div_ceil(SCHEDULE_HISTORY_PAGE_SIZE).max(1) {
                                 return format!(
-                                    "Schedule history page {page} is out of range. There are {} page(s).\n> ",
+                                    "Schedule history has {} page(s), so page {page} is out of \
+                                    range.\n> ",
                                     total.div_ceil(SCHEDULE_HISTORY_PAGE_SIZE).max(1)
                                 );
                             }
@@ -2636,7 +2647,11 @@ where
                             .await
                             .map(|value| {
                                 if value["cancel_requested"] == true {
-                                    format!("Cancellation requested for schedule {name} ({id}). Its current action will be interrupted; a side effect may already have happened.\n> ")
+                                    format!(
+                                        "Cancellation requested for schedule {name} \
+                                            ({id}).\nIts current action will be interrupted, and \
+                                            a side effect may already have happened.\n> "
+                                    )
                                 } else if value["deleted"] == true {
                                     format!("Schedule {name} ({id}) was removed.\n> ")
                                 } else {
@@ -2661,24 +2676,29 @@ where
                 let selector = selector.unwrap_or_default();
 
                 match schedule_selector(&home, selector, host).await {
-                    Ok((id, name)) => capability(home, "scheduler", action, serde_json::json!({"id": id}), host)
-                        .await
-                        .map(|value| match action {
-                            "run" => format!("Schedule {name} ({id}) queued to run now. Check its result with /schedule list.\n> "),
-                            "retry" => format!("Schedule {name} ({id}) retry queued.\n> "),
+                    Ok((id, name)) => {
+                        capability(home, "scheduler", action, serde_json::json!({"id": id}), host)
+                            .await
+                            .map(|value| match action {
+                                "run" => format!(
+                                    "Schedule {name} ({id}) queued to run now.\nCheck \
+                                             its result with /schedule list.\n> "
+                                ),
+                                "retry" => format!("Schedule {name} ({id}) retry queued.\n> "),
 
-                            _ => {
-                                let status = value["status"].as_str().unwrap_or(action);
-                                format!("Schedule {name} ({id}) is {status}.\n> ")
-                            }
-                        }),
+                                _ => {
+                                    let status = value["status"].as_str().unwrap_or(action);
+                                    format!("Schedule {name} ({id}) is {status}.\n> ")
+                                }
+                            })
+                    }
 
                     Err(error) => Ok(format!("{error}\n> ")),
                 }
             }
         }
 
-        _ => Ok("Unknown schedule command. Run /schedule help for usage.\n> ".into()),
+        _ => Ok("Unknown schedule command.\nRun /schedule help for usage.\n> ".into()),
     };
 
     result.unwrap_or_else(|error| {
@@ -3001,11 +3021,11 @@ fn format_schedule_history(
 fn schedule_outcome_label(outcome: &str) -> &'static str {
     match outcome {
         "completed" => "completed successfully",
-        "retrying" => "failed; retry queued",
-        "continuing" => "failed; next occurrence remains scheduled",
+        "retrying" => "failed, retry queued",
+        "continuing" => "failed, next occurrence remains scheduled",
         "cancelled" => "cancelled",
         "skipped" => "skipped",
-        _ => "failed; task paused",
+        _ => "failed, task paused",
     }
 }
 
@@ -3098,7 +3118,7 @@ fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String
 
     if tokens.is_empty() {
         return Err(
-            "Usage: /schedule add --after DURATION INSTRUCTION. Run /schedule help for details."
+            "Usage: /schedule add --after DURATION INSTRUCTION\nRun /schedule help for details."
                 .into(),
         );
     }
@@ -3181,7 +3201,7 @@ fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String
 
             "--on-failure" => return Err("--on-failure must be pause or continue.".into()),
             "--name" => schedule_name = Some(value),
-            _ => return Err(format!("Unknown schedule option {name}. Run /schedule help.")),
+            _ => return Err(format!("Unknown schedule option {name}.\nRun /schedule help.")),
         }
     }
 
@@ -3208,7 +3228,8 @@ fn parse_schedule_add(input: &str, home: &str) -> Result<(Value, String), String
 
     if selected_times != 1 {
         return Err(
-            "Choose one schedule time: --after, --at, or --cron; --every controls repetition."
+            "Choose one schedule time with --after, --at, or --cron, and set repetition with \
+            --every."
                 .into(),
         );
     }
@@ -3428,7 +3449,7 @@ where
             .await
             .map(|_| "Stored session value.\n> ".into()),
 
-            _ => Ok("Usage: /store put KEY=VALUE. Run /store help for details.\n> ".into()),
+            _ => Ok("Usage: /store put KEY=VALUE\nRun /store help for details.\n> ".into()),
         }
     } else if let Some(key) = command.strip_prefix("get ") {
         store_value(home, session, "get", key.trim(), None, host).await.map(|value| {
@@ -3455,7 +3476,7 @@ where
             }
         })
     } else {
-        Ok("Unknown store command. Run /store help for usage.\n> ".into())
+        Ok("Unknown store command.\nRun /store help for usage.\n> ".into())
     };
 
     result.unwrap_or_else(|error| {
@@ -3541,7 +3562,7 @@ where
         ["query", _, _] | ["query", _, _, ..] => "query",
         ["update", _, _, _, ..] => "update",
         ["delete", _, _, _] => "delete",
-        _ => return "Unknown data command. Run /data help for usage.\n> ".into(),
+        _ => return "Unknown data command.\nRun /data help for usage.\n> ".into(),
     };
 
     params["operation"] = Value::String(operation.into());
@@ -3671,7 +3692,7 @@ where
             };
         }
 
-        _ => return "Unknown data command. Run /data help for usage.\n> ".into(),
+        _ => return "Unknown data command.\nRun /data help for usage.\n> ".into(),
     }
 
     match capability(home, "sqlite", "data", params, host).await {
@@ -3978,11 +3999,11 @@ where
             .await
             .map(|_| "Memory saved for this session.\n> ".into()),
 
-            _ => Ok("Usage: /memory remember KEY=VALUE. Run /memory help for details.\n> ".into()),
+            _ => Ok("Usage: /memory remember KEY=VALUE\nRun /memory help for details.\n> ".into()),
         }
     } else if let Some(key) = command.strip_prefix("forget ") {
         if key.trim().is_empty() {
-            Ok("Usage: /memory forget [global|session] KEY. Run /memory help for details.\n> "
+            Ok("Usage: /memory forget [global|session] KEY\nRun /memory help for details.\n> "
                 .into())
         } else {
             let (requested_scope, key) = key
@@ -4004,11 +4025,9 @@ where
                         let mut found_session = false;
                         let mut found_global = false;
 
-                        for scope in [
-                            local_scope.clone(),
-                            legacy_scope.clone(),
-                            "global".to_owned(),
-                        ] {
+                        for scope in
+                            [local_scope.clone(), legacy_scope.clone(), "global".to_owned()]
+                        {
                             let recalled = capability(
                                 home.clone(),
                                 "memory",
@@ -4030,7 +4049,9 @@ where
                         match (found_session, found_global) {
                             (true, true) => {
                                 return Err(krabb_core::Error::Denied(
-                                    "This key exists in global and session memory. Choose `/memory forget global KEY` or `/memory forget session KEY`.".into(),
+                                    "This key exists in global and session memory.\nChoose \
+                                    `/memory forget global KEY` or `/memory forget session KEY`."
+                                        .into(),
                                 ));
                             }
 
@@ -4041,12 +4062,13 @@ where
                     }
                 };
 
-                let resolved_scope =
-                    if target_scopes.iter().any(|scope| scope == "global") && target_scopes.len() == 1 {
-                        "global"
-                    } else {
-                        "session"
-                    };
+                let resolved_scope = if target_scopes.iter().any(|scope| scope == "global")
+                    && target_scopes.len() == 1
+                {
+                    "global"
+                } else {
+                    "session"
+                };
 
                 let mut deleted = false;
 
@@ -4076,7 +4098,7 @@ where
             })
         }
     } else {
-        Ok("Unknown memory command. Run /memory help for usage.\n> ".into())
+        Ok("Unknown memory command.\nRun /memory help for usage.\n> ".into())
     };
 
     result.unwrap_or_else(|error| {
@@ -4212,15 +4234,15 @@ fn format_schedules(value: &Value) -> String {
             if let Some(outcome) = item["last_outcome"].as_str() {
                 let label = match outcome {
                     "completed" => "completed successfully",
-                    "retrying" => "failed; retry queued",
-                    "continuing" => "failed; next occurrence remains scheduled",
+                    "retrying" => "failed, retry queued",
+                    "continuing" => "failed, next occurrence remains scheduled",
                     "cancelled" => "cancelled",
                     "skipped" => "skipped",
-                    _ => "failed; task paused",
+                    _ => "failed, task paused",
                 };
 
                 details.push(format!(
-                    "Last result: {label}. Details: krabb schedule history {}",
+                    "Last result: {label}, details in krabb schedule history {}",
                     item["name"].as_str().unwrap_or("Scheduled task")
                 ));
             }
@@ -4325,8 +4347,8 @@ where
 
         Ok(_) => EngineEvent::InputRejected {
             input: input.into(),
-            reason: "The daemon returned an invalid admission receipt. Check task status before \
-                retrying."
+            reason: "The daemon returned an invalid admission receipt.\nCheck task status before \
+                    retrying."
                 .into(),
         },
 
@@ -4398,7 +4420,7 @@ where
 
 fn control_text(result: krabb_core::Result<String>) -> String {
     result.unwrap_or_else(|error| {
-        format!("Could not confirm the task control: {error}. Check the task status.")
+        format!("Could not confirm the task control: {error}\nCheck the task status.")
     })
 }
 
@@ -4734,7 +4756,7 @@ fn format_status(value: &Value) -> String {
     let running = value["running"].as_bool().unwrap_or(false);
     let sessions = value["sessions"].as_u64().unwrap_or(0);
     format!(
-        "Background runtime: {}. Sessions: {sessions}.\n> ",
+        "Background runtime: {}\nSessions: {sessions}\n> ",
         if running { "running" } else { "stopped" }
     )
 }
@@ -4873,7 +4895,7 @@ fn format_sessions(
     let pages = total.div_ceil(SESSION_LIST_PAGE_SIZE);
 
     if page > pages {
-        return format!("Page {page} is out of range; sessions have {pages} pages.\n> ");
+        return format!("Page {page} is out of range, because sessions have {pages} pages.\n> ");
     }
 
     let start = (page - 1) * SESSION_LIST_PAGE_SIZE;
@@ -4994,7 +5016,7 @@ fn format_plugins(value: &Value, page: usize) -> String {
     let pages = total.div_ceil(PLUGIN_LIST_PAGE_SIZE);
 
     if page == 0 || page > pages {
-        return format!("Page {page} is out of range; plugins have {pages} pages.");
+        return format!("Page {page} is out of range, because plugins have {pages} pages.");
     }
 
     let start = (page - 1) * PLUGIN_LIST_PAGE_SIZE;
@@ -5564,7 +5586,7 @@ mod tests {
         assert_eq!(hello.id, "tui");
         assert_eq!(hello.capabilities, vec![krabb_core::types::Capability::Client]);
         assert_eq!(hello.commands[0].name, "tui");
-        assert!(hello.commands[0].description.contains("daemon must be running"));
+        assert!(hello.commands[0].description.contains("while the Krabb daemon is running"));
     }
 
     #[test]
@@ -5692,7 +5714,7 @@ mod tests {
         let result =
             super::apply_session_action("/tmp", "delete", targets, "tui-saved", mock_control).await;
 
-        assert_eq!(result, "No sessions were deleted. Kept active session saved.");
+        assert_eq!(result, "No sessions were deleted.\nKept active session saved.");
     }
 
     #[tokio::test]
@@ -5806,8 +5828,8 @@ mod tests {
         assert!(!sessions.contains("/sessions"));
 
         let aligned_columns = [
-            "List sessions, 10 per page; active first, then recent.",
-            "Permanently delete sessions; --deep also removes local and shared session data.",
+            "List sessions, 10 per page, active first, then recent.",
+            "Permanently delete sessions, and --deep also removes local and shared session data.",
         ]
         .map(|description| sessions.lines().find_map(|line| line.find(description)).unwrap());
 
@@ -5905,11 +5927,11 @@ mod tests {
     fn formats_status() {
         let text = super::format_status(&serde_json::json!({"running": true, "sessions": 2}));
 
-        assert_eq!(text, "Background runtime: running. Sessions: 2.\n> ");
+        assert_eq!(text, "Background runtime: running\nSessions: 2\n> ");
 
         let text = super::format_status(&serde_json::json!({"running": false}));
 
-        assert_eq!(text, "Background runtime: stopped. Sessions: 0.\n> ");
+        assert_eq!(text, "Background runtime: stopped\nSessions: 0\n> ");
     }
 
     #[test]
@@ -6359,7 +6381,7 @@ mod tests {
         assert!(output.contains(") is active.\n\nInstruction: Review the report"));
         assert!(output.contains("\nTools: disabled\nShell: disabled\n"));
         assert!(output.contains("Frequency: every 5 minutes"));
-        assert!(output.contains("\n\nCheck it with /schedule list;"));
+        assert!(output.contains("\n\nCheck it with /schedule list\nPause it with"));
     }
 
     #[tokio::test]
@@ -6400,7 +6422,7 @@ mod tests {
         }));
 
         assert!(output.contains("Repeats every 5 minutes"));
-        assert!(output.contains("Last result: failed; task paused."));
+        assert!(output.contains("Last result: failed, task paused, details in"));
         assert!(output.contains("krabb schedule history send-report"));
         assert!(!output.contains("The channel is not available"));
     }
@@ -7044,7 +7066,7 @@ mod tests {
                 .await
                 .unwrap(),
             Some(super::EngineEvent::SystemNotice(
-                "Krabb is already working in this session. Wait for the current turn to finish."
+                "Krabb is already working in this session.\nWait for the current turn to finish."
                     .into()
             ))
         );

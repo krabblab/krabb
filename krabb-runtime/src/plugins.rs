@@ -7,13 +7,17 @@ pub(crate) async fn plugin(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match command {
-        PluginCommand::Setup(options) => setup::run(options, &home(), json).await?,
+        PluginCommand::Setup(options) => {
+            setup::run(options, &home(), json).await?;
+        }
+
         PluginCommand::List(output) => list(output.page, output.json || json)?,
         PluginCommand::Detach(args) => lifecycle::run(&home(), &args.id, false, json).await?,
         PluginCommand::Attach(args) => lifecycle::run(&home(), &args.id, true, json).await?,
 
         PluginCommand::Install(install) => {
             let unstable = install.unstable;
+            let quiet = install.quiet;
             let (linked, mut sources) = plugin_sources(install)?;
             let working_dir = std::env::current_dir()?;
 
@@ -165,8 +169,11 @@ pub(crate) async fn plugin(
                 }
             } else {
                 let total = installed.len() + errors.len();
+                let failed = !errors.is_empty() || !activation_errors.is_empty();
 
-                println!("{}", plugin_install_output(&outcomes, linked));
+                if !quiet || failed {
+                    println!("{}", plugin_install_output(&outcomes, linked));
+                }
 
                 for notice in &notices {
                     println!("\n{notice}");
@@ -187,17 +194,15 @@ pub(crate) async fn plugin(
                     }
 
                     println!("\n{}", plugin_log_hint("failed activation"));
-                } else if installed.len() == total && !waiting_for_credentials {
+                } else if installed.len() == total && !waiting_for_credentials && !quiet {
                     println!("\n{}", plugin_service_guidance(service_path().is_file()));
                 }
             }
 
             if !activation_errors.is_empty() {
-                return Err(
-                    "Plugins were installed, but activation failed; inspect the errors above. \
-                    If the daemon was upgraded, restart it with `krabb service restart`."
-                        .into(),
-                );
+                return Err("Plugins were installed, but activation failed, as shown above.\n\
+                    If the daemon was upgraded, restart it with `krabb service restart`"
+                    .into());
             }
         }
 
@@ -407,13 +412,13 @@ pub(crate) fn plugin_install_output(outcomes: &[serde_json::Value], linked: bool
             let result = match (item["status"].as_str(), item["activation"].as_str()) {
                 (Some("failed"), _) if linked => "link failed",
                 (Some("failed"), _) => "installation failed",
-                (Some("activation_failed"), _) => "successfully installed; activation failed",
+                (Some("activation_failed"), _) => "installed, but activation failed",
 
                 (_, _) if item["waiting_for_credentials"] == true => {
-                    "successfully installed; waiting for credentials"
+                    "installed and waiting for credentials"
                 }
 
-                (_, Some("deferred")) => "successfully installed; activation deferred",
+                (_, Some("deferred")) => "installed, with activation deferred",
                 _ if linked => "successfully linked",
                 _ => "successfully installed",
             };

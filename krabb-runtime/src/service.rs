@@ -309,7 +309,7 @@ pub(crate) fn service_at_with_status(
 
                 Ok(_) if !args.force => {
                     return Err(format!(
-                        "A service definition already exists at {}. Use `--force` to replace it.",
+                        "A service definition already exists at {}.\nUse `--force` to replace it.",
                         path.display()
                     )
                     .into());
@@ -476,7 +476,7 @@ pub(crate) fn service_status_text(
             ServiceState::NotInstalled => "not installed",
         };
 
-        format!("The {name} service is {state}. Its definition is at {}.", path.display())
+        format!("The {name} service is {state}.\nIts definition is at {}.", path.display())
     } else {
         format!("The {name} service is not installed.")
     }
@@ -1002,7 +1002,7 @@ pub(crate) fn windows_service_rollback(
         }
     }
 
-    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ").into()) }
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n").into()) }
 }
 
 #[cfg(target_os = "windows")]

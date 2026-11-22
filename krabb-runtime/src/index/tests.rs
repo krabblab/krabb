@@ -331,7 +331,9 @@ fn pins_explain_their_risk_and_how_to_follow_updates() {
     if target == Some(LINUX) {
         let notice = pin(&released, "echo", "0.1.0-rc.1").unwrap();
 
-        assert!(notice.starts_with("echo is pinned to pre-release 0.1.0-rc.1; 0.1.0 is newer."));
+        let newer = "echo is pinned to pre-release 0.1.0-rc.1, and 0.1.0 is newer.\n";
+
+        assert!(notice.starts_with(newer), "{notice}");
         assert!(notice.ends_with("to follow stable releases."), "{notice}");
 
         let notice = pin(&candidates, "echo", "0.1.0-rc.1").unwrap();

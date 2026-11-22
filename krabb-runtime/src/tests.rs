@@ -1413,7 +1413,7 @@ fn formats_status_health_details_only_when_present() {
     let text = super::status_text(&value, 3);
 
     assert!(text.ends_with(
-            "Plugins:            3 installed\nHealth details:     configuration is invalid; plugin commands have name conflicts"
+            "Plugins:            3 installed\nHealth details:     configuration is invalid, plugin commands have name conflicts"
         ));
 
     value["health_details"] = serde_json::json!([]);
@@ -1804,7 +1804,16 @@ fn covers_runtime_helpers() {
     assert_eq!(super::ApprovalMode::Off, super::ApprovalMode::Off);
     assert!(super::plugin_name("memory").contains("memory"));
 
-    assert_eq!(super::command_label(&Command::Init(InitArgs { force: false, yes: false })), "init");
+    assert_eq!(
+        super::command_label(&Command::Init(InitArgs {
+            steps: Vec::new(),
+            provider: None,
+            channel: None,
+            force: false,
+            yes: false,
+        })),
+        "init"
+    );
 
     assert_eq!(super::command_label(&Command::Doctor(DoctorArgs { fix: false })), "doctor");
     assert_eq!(super::command_label(&Command::Status(Output { json: false })), "status");
@@ -2011,12 +2020,14 @@ fn schedule_list_shows_retry_progress_and_manual_runs() {
     assert!(output.contains("A manual run is queued"));
 
     assert!(
-        output.contains("Pause requested; the current run will finish before the schedule pauses")
+        output.contains(
+            "Pause requested, and the current run will finish before the schedule pauses"
+        )
     );
 
     assert!(output.contains("Automatic retries: 1 of 3 used"));
     assert!(output.contains("Next retry: 2023-11-14 22:13:30 UTC"));
-    assert!(output.contains("Last result: failed; retry queued."));
+    assert!(output.contains("Last result: failed, retry queued, details in"));
     assert!(output.contains("krabb schedule history send-report"));
     assert!(!output.contains("Provider is temporarily unavailable"));
 }
@@ -5284,7 +5295,7 @@ fn service_status_uses_clear_sentences() {
             Path::new("/home/user/krabb.service"),
             true
         ),
-        "The Krabb service is running. Its definition is at /home/user/krabb.service."
+        "The Krabb service is running.\nIts definition is at /home/user/krabb.service."
     );
 
     assert_eq!(
@@ -6253,6 +6264,7 @@ fn cli_exposes_global_modes_and_aliases() {
                 link: true,
                 unstable: false,
                 yes: true,
+                quiet: false,
             })
         } if ids == ["tui", "codex", "tools"]
     ));
@@ -6279,6 +6291,7 @@ fn cli_exposes_global_modes_and_aliases() {
                 link: false,
                 unstable: false,
                 yes: false,
+                quiet: false,
             })
         } if ids == ["custom"] && source == "./plugin" && revision == "abc123"
     ));
@@ -6476,6 +6489,7 @@ fn plugin_install_accepts_multiple_ids_and_limits_explicit_sources() {
         link: true,
         unstable: false,
         yes: true,
+        quiet: false,
     })
     .unwrap();
 
@@ -6515,6 +6529,7 @@ fn install_sources(ids: &[&str], source: Option<&str>, link: bool, unstable: boo
         link,
         unstable,
         yes: false,
+        quiet: false,
     })
 }
 
@@ -6722,7 +6737,7 @@ fn cli_parses_completion_shells_and_generates_commands() {
 
     let cli = Cli::try_parse_from(["krabb", "init", "--force", "--yes"]).unwrap();
 
-    assert!(matches!(cli.command, Command::Init(InitArgs { force: true, yes: true })));
+    assert!(matches!(cli.command, Command::Init(InitArgs { force: true, yes: true, .. })));
     assert!(Cli::try_parse_from(["krabb", "init", "--yes"]).is_ok());
     assert!(super::validate_init_flags(false, true).is_err());
     assert!(super::validate_init_flags(true, true).is_ok());
@@ -6973,7 +6988,7 @@ fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
     let item = super::plugin_summary(&manifest, "missing");
     let output = super::format_plugin_list(&[item], 1).unwrap();
 
-    assert!(output.contains("Binary is missing; reinstall the plugin from its source"));
+    assert!(output.contains("Binary is missing, so reinstall the plugin from its source"));
 }
 
 #[test]
@@ -9089,6 +9104,7 @@ async fn manages_local_sessions_and_plugins() {
                 link: false,
                 unstable: false,
                 yes: true,
+                quiet: false,
             }),
             false,
         )

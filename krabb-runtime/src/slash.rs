@@ -11,16 +11,16 @@ use std::time::Instant;
 const CONFIRM: Duration = Duration::from_secs(120);
 const PENDING: usize = 256;
 const LIST: usize = 20;
-const WORKING: &str = "A reply is in progress; send /session cancel first.";
+const WORKING: &str = "A reply is in progress, so send /session cancel first.";
 const SHORT: &str = "There is not enough history to compact yet.";
 const NO_REPLY: &str = "There is no reply to answer again yet.";
 const AGAIN_WORKING: &str = "Send /again when the current reply finishes.";
 
-const HATCH_HELP: &str = "Tell me how you'd like me to be, in your own words, after /hatch. For \
-                          example: /hatch call me Sam, be playful but brief, and reply in \
-                          Italian. You can change my name, how I address you, my personality, \
-                          tone of voice, writing style, way of working, and language. Send \
-                          /hatch undo to go back to the previous version.";
+const HATCH_HELP: &str = "Tell me how you'd like me to be, in your own words, after /hatch.\nFor \
+                         example: /hatch call me Sam, be playful but brief, and reply in \
+                         Italian.\nYou can change my name, how I address you, my personality, \
+                         tone of voice, writing style, way of working, and language.\nSend \
+                         /hatch undo to go back to the previous version.";
 
 /// Serializes personality changes, so each one edits the result of the one before.
 static HATCHING: std::sync::LazyLock<AsyncMutex<()>> =
@@ -266,16 +266,16 @@ fn last_exchange(messages: &[Message]) -> Result<(usize, String), &'static str> 
         message.role == Role::Assistant
             && message.sender.as_deref().is_some_and(|sender| sender != krabb_core::types::SYSTEM)
     }) {
-        return Err("Something else was posted after that reply, so it can no longer be \
-                    answered again. Ask again in your own words instead.");
+        return Err("Something else was posted after that reply, so it can no longer be answered \
+                   again.\nAsk again in your own words instead.");
     }
 
     if reply.iter().any(|message| {
         message.role != Role::Assistant
             || message.content.iter().any(|content| !matches!(content, Content::Text { .. }))
     }) {
-        return Err("The latest reply used tools, so answering again could repeat what they did. \
-                    Ask again in your own words instead.");
+        return Err("The latest reply used tools, so answering again could repeat what they \
+                   did.\nAsk again in your own words instead.");
     }
 
     let mut parts = Vec::new();
@@ -287,8 +287,10 @@ fn last_exchange(messages: &[Message]) -> Result<(usize, String), &'static str> 
             Content::Context { .. } => {}
 
             _ => {
-                return Err("/again only works for text messages; send the question again with \
-                            its attachments.");
+                return Err(
+                    "/again only works for text messages, so send the question again with \
+                           its attachments.",
+                );
             }
         }
     }
@@ -357,7 +359,7 @@ pub(crate) async fn channel(
 }
 
 fn unavailable(spec: &Spec) -> String {
-    format!("/{} is not available here. Send /help to see what is.", spec.name)
+    format!("/{} is not available here.\nSend /help to see what is.", spec.name)
 }
 
 pub(crate) async fn run(
@@ -374,7 +376,7 @@ pub(crate) async fn run(
 
     if host.answering && spec.lengthy() {
         return Ok(format!(
-            "Krabb is busy with another message on this channel; send /{} once it finishes.",
+            "Krabb is busy with another message on this channel, so send /{} once it finishes.",
             spec.name
         ));
     }
@@ -618,7 +620,7 @@ async fn compact(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginE
     let Some(provider) =
         host.plugins.get(host.provider).await.filter(|plugin| plugin.supports(Capability::Model))
     else {
-        return Ok("The model is not running; try again in a moment.".into());
+        return Ok("The model is not running, so try again in a moment.".into());
     };
 
     let summary =
@@ -636,7 +638,7 @@ async fn compact(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginE
             );
 
             return Ok(
-                "Summarizing failed, so the conversation is unchanged. Try again later.".into()
+                "Summarizing failed, so the conversation is unchanged.\nTry again later.".into()
             );
         }
     };
@@ -655,14 +657,14 @@ async fn compact(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginE
     )?;
 
     if !saved {
-        return Ok("The conversation changed while summarizing; send /compact again.".into());
+        return Ok("The conversation changed while summarizing, so send /compact again.".into());
     }
 
     info!(session = caller.session, summarized = boundary, "Conversation compacted by command.");
 
     Ok(format!(
-        "Summarized {boundary} earlier {} for the model; the latest exchanges stay as they are \
-         and the full history is kept.",
+        "Summarized {boundary} earlier {} for the model.\nThe latest exchanges stay as they are, \
+        and the full history is kept.",
         messages(boundary)
     ))
 }
@@ -710,7 +712,7 @@ async fn hatch(
         info!(session = caller.session, "Personality restored by command.");
 
         return Ok(
-            "I'm back to my previous personality. Send /hatch undo again to switch back.".into()
+            "I'm back to my previous personality.\nSend /hatch undo again to switch back.".into()
         );
     }
 
@@ -719,8 +721,8 @@ async fn hatch(
     else {
         // Channel users never see the host's paths.
         return Ok(if caller.channel() {
-            "Hatching needs an intelligence provider, and none is running. Set one up on the \
-             Krabb host, or edit KRAB.md and KLAW.md there by hand."
+            "Hatching needs an intelligence provider, and none is running.\nSet one up on the \
+            Krabb host, or edit KRAB.md and KLAW.md there by hand."
                 .into()
         } else {
             hatch::no_provider(&directory)
@@ -744,7 +746,7 @@ async fn hatch(
                 "Hatching failed."
             );
 
-            return Ok("I couldn't reach the model, so nothing changed. Try again later.".into());
+            return Ok("I couldn't reach the model, so nothing changed.\nTry again later.".into());
         }
     };
 
@@ -754,7 +756,7 @@ async fn hatch(
         Err(problem) => {
             warn!(session = caller.session, %problem, "Hatching draft was rejected.");
 
-            return Ok(format!("{problem} Nothing changed; send /hatch again to retry."));
+            return Ok(format!("{problem}\nNothing changed, so send /hatch again to retry."));
         }
     };
 
@@ -781,8 +783,8 @@ fn unsaved(caller: &Caller<'_>, error: &std::io::Error) -> String {
     );
 
     if caller.channel() {
-        "My personality files couldn't be read or saved, so nothing changed. Check KRAB.md and \
-         KLAW.md on the Krabb host."
+        "My personality files couldn't be read or saved, so nothing changed.\nCheck KRAB.md and \
+        KLAW.md on the Krabb host."
             .into()
     } else {
         format!("{} Nothing changed.", sentence(error.to_string()))
@@ -846,8 +848,8 @@ async fn model(
 
     match arguments {
         "" => Ok(format!(
-            "This conversation uses {} / {current}. Send /model list to see the options or \
-             /model <name> to switch.",
+            "This conversation uses {} / {current}.\nSend /model list to see the options or \
+            /model <name> to switch.",
             host.provider
         )),
 
@@ -901,7 +903,7 @@ async fn models(host: &Host<'_>) -> Result<String, PluginError> {
 
     if !plugin.hello.commands.iter().any(|command| command.name == host.provider) {
         return Ok(format!(
-            "{} cannot list its models; send /model <name> to switch.",
+            "{} cannot list its models, so send /model <name> to switch.",
             host.provider
         ));
     }
@@ -938,8 +940,8 @@ fn session(
 
     match action {
         "" => Ok(format!(
-            "This conversation has {count} {}. Send /session new to start fresh, \
-             /session cancel to stop the current reply, or /session clear to delete its history.",
+            "This conversation has {count} {}.\nSend /session new to start fresh, /session \
+            cancel to stop the current reply, or /session clear to delete its history.",
             messages(count)
         )),
 
@@ -952,7 +954,8 @@ fn session(
         "new" if caller.origin == Origin::Tool => {
             FRESH.lock().map_err(|_| state::POISONED)?.insert(caller.session.to_owned());
 
-            Ok("A new conversation starts after this reply; earlier messages are archived.".into())
+            Ok("A new conversation starts after this reply, and earlier messages are archived."
+                .into())
         }
 
         "new" if working => Ok(WORKING.into()),
@@ -960,7 +963,7 @@ fn session(
         "new" => {
             restart(&mut store, caller.session)?;
 
-            Ok("Started a new conversation. Earlier messages are archived.".into())
+            Ok("Started a new conversation, and earlier messages are archived.".into())
         }
 
         "cancel" if caller.origin == Origin::Tool => {
@@ -1008,7 +1011,7 @@ fn clear(store: &mut state::Store, caller: &Caller<'_>, code: &str) -> Result<St
     }
 
     if pending.len() >= PENDING {
-        return Ok("Too many confirmations are pending; try again in a few minutes.".into());
+        return Ok("Too many confirmations are pending, so try again in a few minutes.".into());
     }
 
     let mut bytes = [0_u8; 4];
@@ -1020,8 +1023,8 @@ fn clear(store: &mut state::Store, caller: &Caller<'_>, code: &str) -> Result<St
     pending.insert(key, (code.clone(), now + CONFIRM));
 
     Ok(format!(
-        "This deletes this conversation's history and cannot be undone. To confirm, send \
-         /session clear {code} within two minutes."
+        "This deletes this conversation's history and cannot be undone.\nTo confirm, send \
+        /session clear {code} within two minutes."
     ))
 }
 

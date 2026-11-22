@@ -14,7 +14,8 @@ pub(super) async fn run(
         println!("Attached plugin {id}.");
     } else {
         println!(
-            "Detached plugin {id}. It remains installed; reattach with `krabb plugin attach {id}`."
+            "Detached plugin {id}.\nIt remains installed, so reattach it with \
+             `krabb plugin attach {id}`"
         );
     }
 
@@ -39,7 +40,7 @@ pub(super) async fn change(root: &Path, id: &str, attach: bool) -> Result<Value,
     let _offline = offline_lock(root)?;
 
     if attach {
-        return Err("The daemon is not running. Start it before attaching a plugin.".into());
+        return Err("The daemon is not running.\nStart it before attaching a plugin.".into());
     }
 
     Ok(serde_json::json!({"id": id, "unloaded": false}))

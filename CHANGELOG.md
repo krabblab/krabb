@@ -20,6 +20,8 @@ Semantic Versioning.
 - Use shared slash commands in every channel and client.
 - Compact a conversation with `/compact` and answer again in chat channels with `/again`.
 - Show context use in `/status` and let Krabb explain how it works.
+- Let Krabb see its own conversation settings and name the one to change.
+- Set up Krabb in one guided command with `krabb init`, or run only the steps you name.
 - Show each plugin's state and next step in `krabb status`.
 - Approve or deny a saved task's pending action after restarts.
 - Retry throttled or unavailable intelligence providers automatically.

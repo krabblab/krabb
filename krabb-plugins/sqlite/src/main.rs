@@ -648,7 +648,7 @@ fn data(db: &mut Connection, params: &serde_json::Value) -> krabb_core::Result<s
                 .map_err(|error| denied(format!("SQLite record count failed: {error}.")))?;
 
             if count >= 10_000 {
-                return Err(denied("SQLite table is full; no record was discarded."));
+                return Err(denied("SQLite table is full, and no record was discarded."));
             }
 
             transaction
@@ -704,7 +704,7 @@ fn data(db: &mut Connection, params: &serde_json::Value) -> krabb_core::Result<s
                     if items.len() == limit as usize || result_size + item_size > QUERY_LIMIT {
                         if items.is_empty() {
                             return Err(denied(
-                                "Stored record exceeds the query size limit; reduce it with data update.",
+                                "Stored record exceeds the query size limit, so reduce it with data update.",
                             ));
                         }
 
@@ -1226,7 +1226,7 @@ fn enqueue(db: &Connection, params: &serde_json::Value) -> krabb_core::Result<se
 
     if count >= LIMIT {
         return Err(krabb_core::Error::Denied(
-            "SQLite outbox is full; no message was discarded.".into(),
+            "SQLite outbox is full, and no message was discarded.".into(),
         ));
     }
 

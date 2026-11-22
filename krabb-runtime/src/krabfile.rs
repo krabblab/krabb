@@ -36,7 +36,8 @@ impl Krabfile {
         for plugin in &self.plugins {
             if !valid(&plugin.id) {
                 return Err(format!(
-                    "plugin {} has an invalid ID; use lowercase letters, digits, or hyphens",
+                    "plugin {} has an invalid ID, which must use lowercase letters, digits, or \
+                    hyphens",
                     plugin.id
                 ));
             }
@@ -276,7 +277,7 @@ pub(crate) fn import_krabfile_at_mode(
         let noun = if count == 1 { "plugin" } else { "plugins" };
 
         println!(
-            "Imported configuration from {} with {count} {noun}. Local credentials were preserved.",
+            "Imported configuration from {} with {count} {noun}.\nLocal credentials were preserved.",
             path.display(),
         );
     }

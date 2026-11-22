@@ -595,7 +595,9 @@ async fn send(
 ) -> krabb_core::Result<serde_json::Value> {
     for attempt in 0..=2 {
         let response = client.post(url).json(&body).send().await.map_err(|_| {
-            krabb_core::Error::Denied("Telegram request failed; delivery may be uncertain.".into())
+            krabb_core::Error::Denied(
+                "Telegram request failed, so delivery may be uncertain.".into(),
+            )
         })?;
         let status = response.status();
         let response_text = read(response).await?;

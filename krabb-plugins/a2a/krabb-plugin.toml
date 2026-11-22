@@ -15,4 +15,4 @@ minor = 1
 
 [setup.KRABB_A2A_TOKEN]
 label = "Bearer token"
-help = "Only if the remote agent requires one; it is sent only to the agent card's origin."
+help = "Only if the remote agent requires one, and it is sent only to the agent card's origin."

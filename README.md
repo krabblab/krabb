@@ -39,23 +39,17 @@ On Windows, in PowerShell:
 irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 ```
 
-Then create the home, add one intelligence provider and one channel, and check them:
+Then set it up:
 
 ```sh
 krabb init
-krabb plugin install openai telegram
-krabb plugin setup openai
-krabb hatch
-krabb plugin setup telegram
-krabb status
-krabb service install
-krabb service start
 ```
 
-After adding a provider, `krabb hatch` gives your Krabb a name, a personality, and a way
-of writing; until then you can edit `KRAB.md` and `KLAW.md` in `data/system/` by hand.
-`krabb status` lists each plugin's state and the next command to run. Use
-`ollama` instead of a hosted provider for local inference. The
+`krabb init` guides you through five steps: the home, an intelligence provider, a
+personality, where you talk to your Krabb, and the background service. Run only the
+steps you need, such as `krabb init provider`, and run it again any time to continue
+or change one. `krabb status` lists each plugin's state and the next command to run.
+Choose Ollama Local instead of a hosted provider for local inference. The
 [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice, data
 locations, backups, upgrades, and uninstalling; the
 [channel setup guides](krabb-docs/providers.md#channels) cover each platform.
@@ -64,6 +58,7 @@ locations, backups, upgrades, and uninstalling; the
 
 | Capability | Description | Plugins |
 | --- | --- | --- |
+| Intelligence | Connects Krabb to the models it thinks with. | OpenAI, Anthropic, Gemini, OpenRouter, Codex, Ollama |
 | Channels | Connects Krabb to chat channels for receiving and sending messages. | Telegram, Discord, WhatsApp, Signal, Slack |
 | Agent Interoperability | Connects external agents and local agent clients. | ACP, A2A, AG-UI |
 | Tools | Provides filesystem, Git, shell, browser, and desktop operations under host policy. | Tools, Browser, Computer |

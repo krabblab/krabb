@@ -506,8 +506,13 @@ async fn nonterminal_setup_fails_before_writing() {
 
     let root = fixture("telegram", &["KRABB_SETUP_A"], vec![]);
 
-    let error =
-        run(Options { id: "telegram".into(), no_activate: true }, &root, false).await.unwrap_err();
+    let error = run(
+        Options { id: "telegram".into(), no_activate: true, defaults: BTreeMap::new(), asked: 0 },
+        &root,
+        false,
+    )
+    .await
+    .unwrap_err();
 
     assert!(error.to_string().contains("interactive terminal"));
     assert!(!root.join("credentials.json").exists());
@@ -1183,33 +1188,44 @@ fn prompts_explain_fields_and_show_how_enter_behaves() {
     field.secret = true;
 
     assert_eq!(
-        heading(&field),
+        heading(&field, 1, false),
         concat!(
-            "\nBot token (required, KRABB_SETUP_TOKEN)\n",
-            "  Ask @BotFather.\n",
-            "  Get it: https://t.me/BotFather\n",
-            "  Example: 123:abc\n"
+            "\n1. Bot token  KRABB_SETUP_TOKEN\n",
+            "   Ask @BotFather.\n",
+            "   Get it at https://t.me/BotFather\n",
+            "   For example: 123:abc\n",
+            "   This one is required.\n",
+            "   Your typing stays hidden.\n"
         )
     );
 
-    assert_eq!(hint(&field), "Bot token");
-
     field.saved = true;
 
-    assert_eq!(hint(&field), "Bot token [saved; Enter keeps]");
+    assert_eq!(hint(&field).unwrap(), "Press Enter to keep the saved value.");
 
     field.prompt.required = false;
 
-    assert_eq!(hint(&field), "Bot token [saved; Enter keeps, - clears]");
+    assert_eq!(
+        hint(&field).unwrap(),
+        "Press Enter to keep the saved value, or type - to clear it."
+    );
 
     field.saved = false;
 
-    assert_eq!(hint(&field), "Bot token [Enter skips]");
+    assert_eq!(hint(&field).unwrap(), "Press Enter to skip it.");
 
     let host = described("KRABB_SETUP_HOST", Prompt::default(), false, Some("https://ollama.com"));
 
-    assert_eq!(hint(&host), "KRABB_SETUP_HOST [Enter uses https://ollama.com]");
-    assert_eq!(heading(&host), "\nKRABB_SETUP_HOST (optional, KRABB_SETUP_HOST)\n");
+    assert_eq!(
+        heading(&host, 2, false),
+        "\n2. KRABB_SETUP_HOST\n   Press Enter to use https://ollama.com.\n"
+    );
+
+    let mut plain = host;
+
+    plain.default = None;
+
+    assert_eq!(hint(&plain), None);
 
     let mut events = [
         key(KeyCode::Char('a')),

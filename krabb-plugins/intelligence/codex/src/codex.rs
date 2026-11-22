@@ -277,7 +277,7 @@ async fn generate_on(
     let account = server.call("account/read", json!({})).await?;
 
     if account["account"].is_null() {
-        return Err(denied("Codex is not signed in. Run krabb codex login first."));
+        return Err(denied("Codex is not signed in, so run `krabb codex login` first."));
     }
 
     let summary = input.generation.is_some_and(|value| value.summary);
@@ -848,7 +848,7 @@ impl Server {
 
         if tool_call_failed(&self.failed_tool_calls, name, args)? {
             return Err(denied(
-                "Codex stopped because the same tool call failed earlier in this turn. Check the tool error and workspace before retrying.",
+                "Codex stopped because the same tool call failed earlier in this turn, so check the tool error and workspace before retrying.",
             ));
         }
 
@@ -1008,7 +1008,7 @@ async fn check_version(
         .map_err(|_| denied("Codex version check timed out."))?
         .map_err(|error| {
             denied(&format!(
-                "Codex CLI could not be started ({error}). Install Codex CLI and ensure `codex` is on PATH, or set KRABB_CODEX_BINARY."
+                "Codex CLI could not be started ({error}), so install it with `codex` on PATH or set KRABB_CODEX_BINARY."
             ))
         })?;
 
@@ -1016,7 +1016,7 @@ async fn check_version(
 
     if !version_reported(output.status.success(), &version) {
         return Err(denied(
-            "Codex CLI could not report its version. Reinstall it using the official setup guide or set KRABB_CODEX_BINARY.",
+            "Codex CLI could not report its version, so reinstall it from the official setup guide or set KRABB_CODEX_BINARY.",
         ));
     }
 
@@ -1455,7 +1455,7 @@ mod tests {
 
         let error = check_version(path.as_os_str(), None).await.unwrap_err().to_string();
 
-        assert!(error.contains("Install Codex CLI"));
+        assert!(error.contains("so install it with `codex` on PATH"));
         assert!(error.contains("KRABB_CODEX_BINARY"));
     }
 

@@ -746,7 +746,7 @@ fn list_memories(
 
     if page > pages {
         return Err(krabb_core::Error::Denied(format!(
-            "Page {page} is out of range. Choose a page from 1 to {pages} for memories."
+            "Page {page} is out of range, so choose a memory page from 1 to {pages}."
         )));
     }
 
@@ -1391,7 +1391,7 @@ fn command_text(command: &str, result: &serde_json::Value) -> String {
                 .join("\n\n---\n\n");
 
             let truncation = if result["truncated"] == true {
-                "\n\nAdditional conflicts were omitted. Narrow the scope or review the memory list."
+                "\n\nAdditional conflicts were omitted.\nNarrow the scope or review the memory list."
             } else {
                 ""
             };

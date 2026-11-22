@@ -19,7 +19,7 @@ minor = 1
 
 [setup.KRABB_CODEX_KEY]
 label = "API key"
-help = "An OpenAI API key. Skip it to sign in with `krabb codex login` instead."
+help = "An OpenAI API key, or skip it to sign in with `krabb codex login` instead."
 url = "https://platform.openai.com/api-keys"
 example = "sk-..."
 

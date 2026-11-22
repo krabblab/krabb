@@ -273,8 +273,8 @@ pub(crate) fn approval_arguments(
 
     if arguments.len() > limit {
         return Err(format!(
-            "Tool arguments exceed the approval display limit of {limit} JSON bytes. \
-             Shorten the request so it can be reviewed in full."
+            "Tool arguments exceed the approval display limit of {limit} JSON bytes.\nShorten \
+            the request so it can be reviewed in full."
         )
         .into());
     }
@@ -324,7 +324,7 @@ pub(crate) async fn agent_tool_request(
             };
 
             let question =
-                format!("Krabb requests approval to run {name:?} with {arguments}. Approve?");
+                format!("Krabb requests approval to run {name:?} with {arguments}.\nApprove?");
 
             if question.len() > APPROVAL_TEXT_LIMIT {
                 return Ok(Response::fail(
@@ -359,7 +359,7 @@ pub(crate) fn confirm_action(yes: bool, json: bool, question: &str) -> Result<bo
     }
 
     if json || !interactive() {
-        return Err(format!("{question} Use --yes to continue without a prompt.").into());
+        return Err(format!("{question}\nUse --yes to continue without a prompt.").into());
     }
 
     eprint!("{question} [y/N] ");

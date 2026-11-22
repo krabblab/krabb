@@ -120,12 +120,12 @@ pub(super) fn notice(value: &Value) -> Option<String> {
 
     if value["expired"] == true {
         return Some(format!(
-            "Task {id} finished as {state}, but its saved result has expired. Send the request \
-                again to run it anew."
+            "Task {id} finished as {state}, but its saved result has expired.\nSend the request \
+            again to run it anew."
         ));
     }
 
-    Some(format!("Task {id} is {state}. The saved request has been recovered."))
+    Some(format!("Task {id} is {state}.\nThe saved request has been recovered."))
 }
 
 pub(super) async fn cleanup<C, F>(home: &str, session: &str, host: C) -> Option<String>
@@ -141,19 +141,19 @@ where
     match result {
         Ok(value) if value["id"] == session && value["deleted"] == true => {
             if value["worktree"]["status"] == "pending" {
-                Some("The conversation was deleted; workspace cleanup is pending.".into())
+                Some("The conversation was deleted, and workspace cleanup is pending.".into())
             } else {
                 None
             }
         }
 
         Ok(value) if value["id"] == session && value["deleted"] == false => {
-            Some(format!("Conversation retained. Reopen it with `krabb tui --session {name}`."))
+            Some(format!("Conversation retained.\nReopen it with `krabb tui --session {name}`"))
         }
 
         _ => Some(format!(
-            "Conversation cleanup could not be confirmed. If it is still present, reopen it with \
-                `krabb tui --session {name}`."
+            "Conversation cleanup could not be confirmed.\nIf it is still present, reopen it \
+            with `krabb tui --session {name}`"
         )),
     }
 }

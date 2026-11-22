@@ -11,6 +11,7 @@ minor = 1
 
 [setup.KRABB_ANTHROPIC_KEY]
 label = "API key"
+help = "Create a key in the Claude Console and paste it here."
 url = "https://platform.claude.com/settings/keys"
 example = "sk-ant-..."
 required = true

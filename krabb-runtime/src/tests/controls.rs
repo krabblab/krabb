@@ -82,7 +82,7 @@ fn parses_explicit_cleanup_and_plugin_controls() {
             Cli::try_parse_from(["krabb", "plugin", action, "telegram", "--link", "-y"])
                 .unwrap().command,
             Command::Plugin { command: PluginCommand::Install(crate::PluginInstall {
-                ids, link: true, yes: true, ..
+                ids, link: true, yes: true, quiet: false, ..
             }) } if ids == ["telegram"]
         ));
     }

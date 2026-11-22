@@ -46,6 +46,7 @@ pub(crate) mod approval;
 mod archive;
 mod bridge;
 mod channels;
+mod choice;
 mod cli;
 mod clients;
 mod compaction;
@@ -75,6 +76,7 @@ mod locks;
 pub(crate) mod logging;
 mod media;
 mod messaging;
+mod onboard;
 mod operations;
 mod origin;
 mod outbound;
@@ -85,6 +87,7 @@ mod releases;
 mod revoke;
 mod schedules;
 mod sessions;
+mod style;
 mod tools;
 use agent::*;
 use answer::*;
@@ -1771,7 +1774,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     match cli.command {
-        Command::Init(args) => init(args.force, args.yes, json)?,
+        Command::Init(args) => onboard::run(args, json).await?,
         Command::Hatch(args) => hatch::run(args, &home(), json).await?,
         Command::Doctor(args) => doctor(args.fix, json)?,
         Command::Config(args) => config_command(args.command, &home(), json).await?,
@@ -2284,15 +2287,16 @@ async fn config_command(
                     }))?
                 );
             } else if applied {
-                println!("Updated {key}; the running daemon will use it for new turns.");
+                println!("Updated {key}, and the running daemon will use it for new turns.");
             } else if restarted {
-                println!("Updated {key}; the daemon was restarted to apply it.");
+                println!("Updated {key}, and the daemon was restarted to apply it.");
             } else if hot {
-                println!("Updated {key}; it will apply when the daemon starts.");
+                println!("Updated {key}, which will apply when the daemon starts.");
             } else if next_launch {
-                println!("Updated {key}; it will apply the next time you run `krabb tui`.");
+                println!("Updated {key}, which will apply the next time you run `krabb tui`.");
             } else {
-                println!("Updated {key}; restart the daemon to apply this setting.");
+                println!("Updated {key}.");
+                println!("Restart the daemon to apply this setting.");
             }
         }
     }

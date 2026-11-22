@@ -68,12 +68,57 @@ exports losslessly before adding them.
 - The TUI accent is `ACCENT_COLOR = Color::Rgb(255, 111, 44)`, the Coral value, in
   `krabb-plugins/clients/tui/src/ui.rs`. It marks headers, borders, prompts, and inline
   code.
-- CLI help uses the same Coral for section headers and usage, set in
-  `krabb-runtime/src/external.rs`.
+- CLI help and guided commands use bold Coral for headers, usage, and prompts, from
+  `krabb-runtime/src/style.rs`.
+- Coral looks right on dark and light terminals alike, so nothing detects the theme.
+  Body text, including code, keeps the terminal's own foreground, which is light on dark
+  themes and dark on light ones. Never set text to white, black, or a light gray.
 - Animated glows stay in the Coral range: vary green within about 111 to 150 and blue
   within about 44 to 90. They must never drift toward yellow-orange, which reads as a
   warning rather than the brand.
 - Use the terminal's own grays for secondary text; they follow the user's theme.
+
+## Writing
+
+These rules cover everything a person reads: CLI output and errors, chat replies to slash
+commands, and TUI messages. Model-facing prompts and tool results are exempt.
+
+- Put one sentence on each line. Merge two short sentences into one rather than sharing
+  a line.
+- Use no semicolons. Join clauses with "and", "so", or "because", or start a new line.
+- Group related lines under a short title, with a blank line before and after each
+  group and none inside it.
+- Number questions and steps, and state each one's limits and an example, such as
+  `Up to 40 characters, for example: Pinch`.
+- Offer choices as a vertical list with a `›` marker on the selection, moved with the
+  arrow keys. Without a terminal, take the choice from a flag instead.
+- Say each thing once. Instead of repeating a summary or printing a file's contents,
+  print the command that shows them.
+- End with the next action as a runnable command, with no period after the command.
+- Mark finished steps with `✓` and a full sentence that names the kind of thing, such as
+  `✓ Installed openai provider.`
+- Set headers, prompts, and the selection in bold Coral, hints in faint text, examples
+  in faint italics, and values that must stand out, such as links, in bold.
+- Keep every line readable without color, because `NO_COLOR`, `TERM=dumb`, and pipes
+  print plain text.
+
+```text
+Intelligence
+
+1. Which provider should your Krabb think with?
+
+   › OpenAI
+     Anthropic
+     Ollama Local
+     Skip
+
+   ↑/↓ to move, Enter to choose
+
+✓ Installed openai provider.
+
+Your Krabb is ready.
+Chat with it with `krabb tui`
+```
 
 ## Don't
 
@@ -86,7 +131,7 @@ exports losslessly before adding them.
 
 ## Known Gaps
 
-- The terminal can't tell a light background from a dark one, so the TUI and CLI always
-  use Coral, which is below 4.5:1 for small text on light terminal themes.
+- The TUI and CLI always use Coral, which is below 4.5:1 for small text on light terminal
+  themes, so they set it in bold.
 - The social previews use tints outside the palette for their large background K:
   `#F2621F` on Coral and `#262D32` on Slate. Keep these tints to the covers.

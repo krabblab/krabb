@@ -58,6 +58,8 @@ const MESSAGE_GAP_ROWS: usize = 2;
 const GENERATION_FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const TYPEWRITER_INTERVAL: Duration = Duration::from_millis(16);
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// Input events handled before the next redraw, so a burst of wheel ticks draws once.
+const EVENT_BATCH: usize = 64;
 const TYPEWRITER_BACKLOG: usize = 96;
 const TYPEWRITER_BURST: usize = 2;
 const TYPEWRITER_CATCHUP_BURST: usize = 12;
@@ -251,13 +253,23 @@ struct TranscriptLayout {
     generation: u64,
     width: u16,
     rows: Vec<Line<'static>>,
-    message_rows: Vec<Range<usize>>,
+    messages: Vec<MessageLayout>,
     hovered_message: Option<usize>,
     hovered_rows: Option<Vec<Line<'static>>>,
 }
 
+/// Where one message sits in the wrapped rows and in the transcript text, so hovering
+/// re-wraps only that message.
+struct MessageLayout {
+    rows: Range<usize>,
+    title: Range<usize>,
+    body: Range<usize>,
+    is_user: bool,
+    is_system: bool,
+}
+
 struct TranscriptViewport<'a> {
-    rows: &'a [Line<'static>],
+    rows: &'a [&'a Line<'static>],
 }
 
 impl Widget for TranscriptViewport<'_> {
@@ -508,7 +520,7 @@ where
     let mut quit = false;
     let mut session_refresh = tokio::time::interval(SESSION_REFRESH_INTERVAL);
     let mut generation_refresh = tokio::time::interval(GENERATION_FRAME_INTERVAL);
-    let mut statusline_refresh = tokio::time::interval(GENERATION_FRAME_INTERVAL);
+    let mut statusline_refresh = tokio::time::interval(STATUSLINE_SCROLL_INTERVAL);
     generation_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     statusline_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     session_refresh.tick().await;
@@ -520,7 +532,10 @@ where
 
         tokio::select! {
             event = event_rx.recv() => {
-                if let Some(event) = event {
+                let mut next = event;
+                let mut handled = 0;
+
+                while let Some(event) = next.take() {
                     if !interrupt_generation(&event, &mut app, &interrupt_tx) {
                         quit = handle_event(event, &mut app, &mut command_tx, engine_finished).await?;
                     }
@@ -535,6 +550,12 @@ where
                         )?;
 
                         app.statusline_changed = false;
+                    }
+
+                    handled += 1;
+
+                    if !quit && handled < EVENT_BATCH {
+                        next = event_rx.try_recv().ok();
                     }
                 }
             }
@@ -1135,25 +1156,22 @@ const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/history clear", "Clear saved TUI input history."),
     ("/history help", "Show input history commands."),
     ("/status", "Show whether the background runtime is running."),
-    ("/task", "List saved tasks; optionally pause, resume, cancel, approve, or deny one by ID."),
+    ("/task", "List saved tasks, or pause, resume, cancel, approve, or deny one by ID."),
     ("/task steer|defer|extend", "Redirect, delay, or extend a task: <id> <value>."),
-    ("/plugin", "Browse installed plugins; optionally choose a page."),
+    ("/plugin", "Browse installed plugins, optionally by page."),
     ("/session help", "Show session commands."),
-    ("/session list", "List saved sessions; optionally choose a page."),
+    ("/session list", "List saved sessions, optionally by page."),
     ("/session create <id>", "Create and switch to a session."),
     ("/session switch <id>", "Switch to a saved session."),
     ("/session rename <new-id>", "Rename the active session."),
     ("/session archive <id>...|--all", "Archive saved sessions."),
     ("/session unarchive <id>...|--all", "Restore archived sessions."),
-    ("/session delete <id>...|--all", "Permanently delete sessions; optionally pass -y or --deep."),
+    ("/session delete <id>...|--all", "Permanently delete sessions, optionally with -y or --deep."),
     ("/new <id>", "Create and switch to a session."),
-    (
-        "/workspace",
-        "Show or change this session's filesystem root; optionally set a path or reset it.",
-    ),
+    ("/workspace", "Show, set, or reset this session's filesystem root."),
     ("/clear", "Clear this session's conversation."),
-    ("/statusline", "Choose which details appear in the statusline; optionally reset it."),
-    ("/animation", "Show or configure typewriter animation; optionally turn it on or off."),
+    ("/statusline", "Choose which details appear in the statusline, or reset them."),
+    ("/animation", "Show typewriter animation, or turn it on or off."),
     ("/quit", "Leave the TUI."),
     ("/exit", "Leave the TUI."),
 ];
@@ -1436,11 +1454,12 @@ where
                         && character != '/' =>
                 {
                     app.status = if app.generation_active {
-                        "A response is running; use approval commands or Esc to interrupt.".into()
+                        "A response is running, so use approval commands or Esc to interrupt."
+                            .into()
                     } else if app.compaction_active {
-                        "Krabb is compacting this conversation. Wait for it to finish.".into()
+                        "Krabb is compacting this conversation, so wait for it to finish.".into()
                     } else {
-                        "This session is busy; wait for Krabb's turn to finish.".into()
+                        "This session is busy until Krabb's turn finishes.".into()
                     };
                 }
 
@@ -1531,12 +1550,15 @@ where
                         && !is_live_control
                     {
                         app.status = if app.generation_active {
-                            "A response is still running. Use /approvals, /approve, /deny, or Esc."
+                            "A response is still running, so use /approvals, /approve, /deny, or \
+                            Esc."
                                 .into()
                         } else if app.compaction_active {
-                            "Krabb is compacting this conversation. Wait for it to finish.".into()
+                            "Krabb is compacting this conversation, so wait for it to finish."
+                                .into()
                         } else {
-                            "Krabb is working in this session. Wait for the turn to finish.".into()
+                            "Krabb is working in this session, so wait for the turn to finish."
+                                .into()
                         };
 
                         if !app.generation_active && !app.compaction_active {
@@ -1635,7 +1657,10 @@ where
                     if line == "/animation" {
                         let state = if app.typewriter { "on" } else { "off" };
 
-                        app.push_bot(format!("Typewriter animation is {state}. Use /animation on or /animation off.\n"));
+                        app.push_bot(format!(
+                            "Typewriter animation is {state}.\nUse /animation \
+                                             on or /animation off.\n"
+                        ));
                         app.complete_local_interaction(format!("Typewriter animation is {state}."));
                         return Ok(false);
                     }
@@ -1796,8 +1821,8 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     });
 
     if !layout_is_current {
-        let (mut rows, message_rows) =
-            wrap_transcript_layout(&app.transcript, &app.name, transcript_width, None);
+        let (mut rows, messages) =
+            wrap_transcript_layout(&app.transcript, &app.name, transcript_width);
 
         if !app.theme_enabled {
             strip_transcript_colors(&mut rows);
@@ -1807,7 +1832,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
             generation: app.transcript_generation,
             width: transcript_width,
             rows,
-            message_rows,
+            messages,
             hovered_message: None,
             hovered_rows: None,
         });
@@ -1822,13 +1847,18 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         app.mouse_position,
         Rect::new(areas[0].x, areas[0].y, areas[0].width, transcript_height as u16),
         app.transcript_scroll.offset,
-        &layout.message_rows,
+        layout.messages.iter().map(|message| &message.rows),
     );
 
     if layout.hovered_message != hovered_message {
-        layout.hovered_rows = hovered_message.map(|message| {
-            let (mut rows, _) =
-                wrap_transcript_layout(&app.transcript, &app.name, transcript_width, Some(message));
+        layout.hovered_rows = hovered_message.map(|index| {
+            let mut rows = wrap_message(
+                &app.transcript,
+                &app.name,
+                transcript_width,
+                &layout.messages[index],
+                true,
+            );
 
             if !app.theme_enabled {
                 strip_transcript_colors(&mut rows);
@@ -1840,12 +1870,29 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         layout.hovered_message = hovered_message;
     }
 
-    let rows = layout.hovered_rows.as_deref().unwrap_or(&layout.rows);
-    app.transcript_scroll.set_extent(rows.len(), transcript_height);
+    let (before, hovered, after) = match (layout.hovered_message, &layout.hovered_rows) {
+        (Some(index), Some(hovered)) => {
+            let range = &layout.messages[index].rows;
+
+            (&layout.rows[..range.start], hovered.as_slice(), &layout.rows[range.end..])
+        }
+
+        _ => (layout.rows.as_slice(), &[][..], &[][..]),
+    };
+
+    let total_rows = before.len() + hovered.len() + after.len();
+    app.transcript_scroll.set_extent(total_rows, transcript_height);
     let start = app.transcript_scroll.offset;
-    let end = start.saturating_add(transcript_height).min(rows.len());
-    let visible_rows = &rows[start..end];
-    let transcript = TranscriptViewport { rows: visible_rows };
+
+    let visible_rows = before
+        .iter()
+        .chain(hovered)
+        .chain(after)
+        .skip(start)
+        .take(transcript_height)
+        .collect::<Vec<_>>();
+
+    let transcript = TranscriptViewport { rows: &visible_rows };
 
     let input = Paragraph::new(padded_input)
         .scroll((input_scroll, 0))
@@ -2304,15 +2351,14 @@ fn save_preferences(
 
 #[cfg(test)]
 fn wrap_transcript(transcript: &str, name: &str, width: u16) -> Vec<Line<'static>> {
-    wrap_transcript_layout(transcript, name, width, None).0
+    wrap_transcript_layout(transcript, name, width).0
 }
 
 fn wrap_transcript_layout(
     transcript: &str,
     name: &str,
     width: u16,
-    hovered_message: Option<usize>,
-) -> (Vec<Line<'static>>, Vec<Range<usize>>) {
+) -> (Vec<Line<'static>>, Vec<MessageLayout>) {
     if width == 0 {
         return (Vec::new(), Vec::new());
     }
@@ -2329,8 +2375,9 @@ fn wrap_transcript_layout(
 
     let width = width as usize;
     let mut rows = Vec::new();
-    let mut message_rows = Vec::new();
+    let mut messages = Vec::new();
     let lines = transcript.lines().collect::<Vec<_>>();
+    let offset = |line: &str| line.as_ptr() as usize - transcript.as_ptr() as usize;
     let mut index = 0;
 
     while index < lines.len() {
@@ -2372,7 +2419,6 @@ fn wrap_transcript_layout(
                 body_end -= 1;
             }
 
-            let message_index = message_rows.len();
             let start = rows.len();
             rows.extend(wrap_rail_message(
                 title,
@@ -2381,10 +2427,26 @@ fn wrap_transcript_layout(
                 width,
                 is_user,
                 is_system,
-                hovered_message == Some(message_index),
+                false,
             ));
 
-            message_rows.push(start..rows.len());
+            let title = offset(line)..offset(line) + line.len();
+
+            let body = if body_end > body_start {
+                let last = lines[body_end - 1];
+
+                offset(lines[body_start])..offset(last) + last.len()
+            } else {
+                title.end..title.end
+            };
+
+            messages.push(MessageLayout {
+                rows: start..rows.len(),
+                title,
+                body,
+                is_user,
+                is_system,
+            });
 
             if index < lines.len() {
                 rows.extend((0..MESSAGE_GAP_ROWS).map(|_| Line::raw("")));
@@ -2401,14 +2463,35 @@ fn wrap_transcript_layout(
         index += 1;
     }
 
-    (rows, message_rows)
+    (rows, messages)
 }
 
-fn hovered_message_at(
+/// Wraps one message from the transcript on its own, as `wrap_transcript_layout` would.
+fn wrap_message(
+    transcript: &str,
+    name: &str,
+    width: u16,
+    message: &MessageLayout,
+    show_timestamp: bool,
+) -> Vec<Line<'static>> {
+    let body = transcript[message.body.clone()].lines().collect::<Vec<_>>();
+
+    wrap_rail_message(
+        &transcript[message.title.clone()],
+        &body,
+        name,
+        usize::from(width),
+        message.is_user,
+        message.is_system,
+        show_timestamp,
+    )
+}
+
+fn hovered_message_at<'a>(
     position: Option<(u16, u16)>,
     area: Rect,
     scroll_offset: usize,
-    message_rows: &[Range<usize>],
+    message_rows: impl IntoIterator<Item = &'a Range<usize>>,
 ) -> Option<usize> {
     let (column, row) = position?;
 
@@ -2418,7 +2501,7 @@ fn hovered_message_at(
 
     let transcript_row = scroll_offset.saturating_add(usize::from(row.saturating_sub(area.y)));
 
-    message_rows.iter().position(|rows| rows.contains(&transcript_row))
+    message_rows.into_iter().position(|rows| rows.contains(&transcript_row))
 }
 
 fn strip_transcript_colors(rows: &mut [Line<'static>]) {
@@ -2664,7 +2747,7 @@ fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Vec<Line<'st
 
     let border_style = Style::default().fg(ACCENT_COLOR);
     let header_style = Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD);
-    let code_style = Style::default().fg(Color::Gray);
+    let code_style = Style::default().fg(Color::Reset);
     let inner_width = width.saturating_sub(4);
     let language = truncate_display_width(language, width.saturating_sub(5));
     let header = format!("┌─ {language} ");
@@ -4706,6 +4789,12 @@ mod tests {
         assert_eq!(super::message_timestamp("tui-compact-1792380000000000000"), None);
     }
 
+    fn hover_rows(transcript: &str, width: u16, index: usize) -> Vec<Line<'static>> {
+        let (_, messages) = super::wrap_transcript_layout(transcript, "Krabb", width);
+
+        super::wrap_message(transcript, "Krabb", width, &messages[index], true)
+    }
+
     #[test]
     fn scheduled_result_timestamp_uses_the_recorded_date_on_hover() {
         let timestamp = super::message_timestamp("schedule-notice-at-1700000000000-7-9").unwrap();
@@ -4714,16 +4803,12 @@ mod tests {
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
-        let hidden = super::wrap_transcript_layout(&transcript, "Krabb", 80, None)
+        let hidden = super::wrap_transcript_layout(&transcript, "Krabb", 80)
             .0
             .iter()
             .map(row_text)
             .collect::<String>();
-        let hovered = super::wrap_transcript_layout(&transcript, "Krabb", 80, Some(0))
-            .0
-            .iter()
-            .map(row_text)
-            .collect::<String>();
+        let hovered = hover_rows(&transcript, 80, 0).iter().map(row_text).collect::<String>();
 
         assert!(timestamp.starts_with("2023-"));
         assert!(!hidden.contains(&timestamp));
@@ -5021,7 +5106,7 @@ mod tests {
             "[Source](https://example.com)"
         );
 
-        let (mut rows, ranges) = super::wrap_transcript_layout(transcript, "Krabb", 80, None);
+        let (mut rows, ranges) = super::wrap_transcript_layout(transcript, "Krabb", 80);
         let rendered = |rows: &[Line<'_>]| {
             rows.iter()
                 .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
@@ -5067,7 +5152,7 @@ mod tests {
             "const speaker = \"System\";\nSystem\n",
             "const answer = 42;\n```\nAfter the example."
         );
-        let (rows, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60, None);
+        let (rows, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60);
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
         let rendered = rows.iter().map(row_text).collect::<Vec<_>>();
@@ -5109,7 +5194,7 @@ mod tests {
             .iter()
             .flat_map(|row| &row.spans)
             .filter(|span| {
-                span.style.fg == Some(Color::Gray)
+                span.style.fg == Some(Color::Reset)
                     && !span.content.trim().is_empty()
                     && !span.content.contains('│')
             })
@@ -5144,7 +5229,7 @@ mod tests {
             "You | 2026-10-03 at 12:01\nNext turn."
         );
 
-        let (_, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60, None);
+        let (_, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60);
 
         assert_eq!(message_ranges.len(), 2);
     }
@@ -5155,21 +5240,20 @@ mod tests {
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
-        let rows = super::wrap_transcript_layout(transcript, "Krabb", 80, None).0;
+        let rows = super::wrap_transcript_layout(transcript, "Krabb", 80).0;
         let visible = rows.iter().map(row_text).collect::<String>();
 
         assert!(visible.contains("You"));
         assert!(visible.contains("Krabb"));
         assert!(!visible.contains("2026-10-01"));
 
-        let hovered = super::wrap_transcript_layout(transcript, "Krabb", 80, Some(1)).0;
+        let hovered = hover_rows(transcript, 80, 1);
         let hovered = hovered.iter().map(row_text).collect::<String>();
 
         assert!(!hovered.contains("You, 2026-10-01"));
         assert!(hovered.contains("Krabb, 2026-10-01 at 12:27"));
 
-        let header = super::wrap_transcript_layout(transcript, "Krabb", 80, Some(1))
-            .0
+        let header = hover_rows(transcript, 80, 1)
             .into_iter()
             .find(|row| row.spans.iter().any(|span| span.content == "Krabb"))
             .unwrap();

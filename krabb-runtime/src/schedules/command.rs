@@ -91,7 +91,7 @@ pub(crate) async fn schedule_command(
 
             if page > total.div_ceil(SCHEDULE_HISTORY_PAGE_SIZE).max(1) {
                 return Err(format!(
-                    "Schedule history page {page} is out of range. There are {} page(s).",
+                    "Schedule history has {} page(s), so page {page} is out of range.",
                     total.div_ceil(SCHEDULE_HISTORY_PAGE_SIZE).max(1)
                 )
                 .into());
@@ -145,7 +145,8 @@ pub(crate) async fn schedule_command(
             let name = value["name"].as_str().unwrap_or("Scheduled task");
             println!("Schedule {name} ({id}) is active.\n");
             println!("Instruction: {instruction}");
-            println!("Provider: {provider}; model: {model}.");
+            println!("Provider: {provider}");
+            println!("Model: {model}");
             println!("Workspace: {}", workspace.display());
             println!("Tools: {}", if workspace_tools_enabled { "enabled" } else { "disabled" });
 
@@ -174,7 +175,7 @@ pub(crate) async fn schedule_command(
             }
 
             println!(
-                "\nCheck it with `krabb schedule list`; pause it with `krabb schedule pause {id}`."
+                "\nCheck it with `krabb schedule list`\nPause it with `krabb schedule pause {id}`"
             );
         }
 
@@ -348,7 +349,8 @@ pub(crate) async fn schedule_command(
             "{}",
             if value["cancel_requested"] == true {
                 format!(
-                    "Cancellation requested for schedule {name} ({id}). Its current action will be interrupted; a side effect may already have happened."
+                    "Cancellation requested for schedule {name} ({id}).\nIts current action will \
+                    be interrupted, and a side effect may already have happened."
                 )
             } else if value["deleted"] == true {
                 format!("Schedule {name} ({id}) cancelled.")
@@ -358,7 +360,8 @@ pub(crate) async fn schedule_command(
         );
     } else if method == "pause" && value["pause_requested"] == true {
         println!(
-            "Pause requested for schedule {name} ({id}). The current run will finish, then the schedule will stay paused."
+            "Pause requested for schedule {name} ({id}).\nThe current run will finish, then the \
+             schedule will stay paused."
         );
     } else {
         println!("Schedule {name} ({id}) is now {}.", value["status"].as_str().unwrap_or(action));
@@ -368,7 +371,7 @@ pub(crate) async fn schedule_command(
 }
 
 pub(crate) fn schedule_help() -> &'static str {
-    r#"Schedule autonomous agent work. Tasks become active immediately.
+    r#"Schedule autonomous agent work that becomes active immediately.
 
 Usage: krabb schedule <COMMAND>
 
@@ -427,7 +430,7 @@ Notes:
 }
 
 pub(crate) fn schedule_usage(action: &str) -> String {
-    format!("Unknown schedule command {action}. Run `krabb schedule help` for usage.")
+    format!("Unknown schedule command {action}.\nRun `krabb schedule help` for usage.")
 }
 
 pub(crate) fn parse_schedule_add(
@@ -632,7 +635,8 @@ pub(crate) fn parse_schedule_add(
 
         _ => {
             return Err(
-                "Set --message-channel, --message-chat, and --message-kind together; --message-thread is optional."
+                "Set --message-channel, --message-chat, and --message-kind together, with an \
+                optional --message-thread."
                     .into(),
             );
         }
@@ -685,7 +689,9 @@ pub(crate) fn parse_schedule_add(
     }
 
     if cron.is_some() && timezone.is_none() {
-        return Err("Cron schedules need a timezone. Set scheduler.timezone in config.toml or pass --timezone.".into());
+        return Err("Cron schedules need a timezone.\nSet scheduler.timezone in config.toml or \
+                   pass --timezone."
+            .into());
     }
 
     if missed.as_deref().is_some_and(|value| !matches!(value, "skip" | "coalesce" | "replay")) {
@@ -701,7 +707,9 @@ pub(crate) fn parse_schedule_add(
     }
 
     if cron.is_some() && missed.is_none() && config.scheduler.missed == "replay" {
-        return Err("The global missed-run policy cannot be replay; choose it per schedule with --missed replay.".into());
+        return Err("The global missed-run policy cannot be replay, so choose it per schedule \
+                   with --missed replay."
+            .into());
     }
 
     let mut value = serde_json::json!({
@@ -824,7 +832,7 @@ pub(crate) async fn schedule_call(
         if error.kind() == std::io::ErrorKind::ConnectionRefused
             || error.kind() == std::io::ErrorKind::NotFound
         {
-            "The daemon is not running. Start it with `krabb service start` to manage schedules."
+            "The daemon is not running.\nStart it with `krabb service start` to manage schedules."
                 .into()
         } else {
             error.into()
@@ -953,14 +961,14 @@ pub(crate) fn format_schedule_list(value: &serde_json::Value) -> String {
 
             if item["pause_requested"] == true {
                 details.push(
-                    "Pause requested; the current run will finish before the schedule pauses"
+                    "Pause requested, and the current run will finish before the schedule pauses"
                         .into(),
                 );
             }
 
             if let Some(outcome) = item["last_outcome"].as_str() {
                 details.push(format!(
-                    "Last result: {}. Details: krabb schedule history {}",
+                    "Last result: {}, details in krabb schedule history {}",
                     schedule_outcome_label(outcome),
                     item["name"].as_str().unwrap_or("Scheduled task")
                 ));
@@ -980,8 +988,8 @@ pub(crate) fn format_schedule_list(value: &serde_json::Value) -> String {
 pub(crate) fn schedule_outcome_label(outcome: &str) -> &'static str {
     match outcome {
         "completed" => "completed successfully",
-        "retrying" => "failed; retry queued",
-        "continuing" => "failed; next occurrence remains scheduled",
+        "retrying" => "failed, retry queued",
+        "continuing" => "failed, next occurrence remains scheduled",
         "cancelled" => "cancelled",
         "skipped" => "skipped",
         _ => "failed; task paused",

@@ -5,7 +5,8 @@ Use this reference to find CLI, daemon, plugin, and terminal commands.
 ```text
 krabb help
 krabb --version
-krabb init [--force] [-y|--yes] [--json]
+krabb init [home] [provider] [hatch] [channel] [service] [--provider <id>] [--channel <id>|none]
+krabb init --force [-y|--yes] [--json]
 krabb hatch [<what to change>...] [--name <text>] [--call <text>] [--personality <text>] [--voice <text>] [--writing <text>] [--work <text>] [--language <text>] [--notes <text>] [-y|--yes] [--json]
 krabb hatch --undo [-y|--yes] [--json]
 krabb doctor [--fix] [--json]
@@ -98,8 +99,10 @@ the same secure prompt and credential-file workflow. Existing plugin commands,
 such as `krabb codex login`, keep their provider-specific behavior. The generic
 `krabb plugin setup <id>` command also works when the plugin ID cannot be exposed
 as a shortcut. Setup requires a terminal and accepts no token argument or piped
-secret. Press Enter at any secret prompt to clear its saved value. Settings remain
-required unless they declare a default. See
+secret. It asks one numbered question per secret or setting, says what each is for
+and where to get it, and hides secrets as you type. Press Enter to keep a saved
+value, or type `-` to clear an optional one. Settings remain required unless they
+declare a default. See
 [Plugin Setup](authentication.md#plugin-setup) for storage and activation details.
 
 `krabb whatsapp setup` also collects the phone number ID, Graph API base URL,
@@ -543,29 +546,36 @@ First run:
 
 ```sh
 krabb init
-krabb plugin list
-krabb doctor
 krabb status
-krabb-daemon
 ```
 
-`krabb init` creates the home directory, starter configuration, and workspace
-instructions. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
+In a terminal, `krabb init` guides you through five steps, always in this order: `home`
+creates the home directory, starter configuration, and workspace instructions;
+`provider` installs, sets up, and selects an intelligence provider; `hatch` gives your
+Krabb a personality; `channel` installs the terminal client or a chat channel and sets
+it up; and `service` installs and starts the background service. Choices use a list
+moved with the arrow keys, and Esc stops the guide, so `krabb init` continues later.
+Name steps to run only those, such as `krabb init home provider`. A finished step is
+skipped when you run every step, and offers a change when you name it. Without a
+terminal, `krabb init` creates only the home, and `--provider` and `--channel` answer
+their steps, as in `krabb init --provider ollama --channel none service`. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
 safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
 
-`krabb hatch` personalizes your Krabb. Run it without arguments and it asks for a
-name, what to call you, and its personality, tone of voice, writing style, way of
-working, and language; press Enter to skip a question. Answer in your own words and in
-any language. Your Krabb's model then rewrites `data/system/KRAB.md` (who it is) and
+`krabb hatch` personalizes your Krabb. Run it without arguments and it asks eight
+numbered questions in three sections: identity (name, what to call you, personality),
+voice (tone, writing style, language), and work (way of working, anything else). Each
+question shows its character limit and an example; press Enter to keep the current
+setting. Answer in your own words and in any language; the model ignores answers that
+carry no meaning. Your Krabb's model then rewrites `data/system/KRAB.md` (who it is) and
 `KLAW.md` (how it works) from your answers. The model is asked to keep everything you
-did not ask to change, including your own edits; check the preview of both files and the
-summary before you confirm.
+did not ask to change, including your own edits; check its summary before you confirm,
+and read the saved files with the command hatching prints.
 
 Run it again to change something: the questions then keep whatever you skip. You can
 also describe the change directly, as in `krabb hatch be more concise and call me Sam`,
 or answer with flags such as `--name Pinch --voice "warm and brief"`; `--yes` saves
-without the preview, and is required with `--json` or without a terminal. `krabb hatch
+without asking, and is required with `--json` or without a terminal. `krabb hatch
 --undo` restores the files as they were before the latest change, and running it again
 switches back. Hatching refuses to save when the files changed while the model was writing,
 and refuses hand-edited files over 16 KiB. Changes apply from the next reply,

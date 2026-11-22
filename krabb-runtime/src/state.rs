@@ -1170,7 +1170,7 @@ impl Store {
         if self.outbox.len() >= LIMIT {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Delivery outbox is full; no message was discarded.",
+                "Delivery outbox is full, and no message was discarded.",
             ));
         }
 
@@ -1434,7 +1434,7 @@ impl Store {
         }) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Session queue is full; no message was discarded.",
+                "Session queue is full, and no message was discarded.",
             ));
         }
 
@@ -1686,7 +1686,7 @@ impl Store {
         if !self.outbox.iter().any(|delivery| delivery.id == id) && self.outbox.len() >= LIMIT {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Delivery outbox is full; no message was discarded.",
+                "Delivery outbox is full, and no message was discarded.",
             ));
         }
 

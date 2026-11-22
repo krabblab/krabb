@@ -358,7 +358,7 @@ async fn call_at(
                 params["zone"].as_str().or(configured_zone.as_deref()).unwrap_or("UTC").to_owned();
 
             if cron.is_some() && params["zone"].as_str().is_none() && configured_zone.is_none() {
-                return Err(krabb_core::Error::Denied("A timezone is required for cron schedules; ask the user or configure scheduler.timezone.".into()));
+                return Err(krabb_core::Error::Denied("A timezone is required for cron schedules, so ask the user or configure scheduler.timezone.".into()));
             }
 
             validate_zone(&zone)?;
@@ -417,7 +417,7 @@ async fn call_at(
 
                 if tasks.len() >= LIMIT {
                     return Err(krabb_core::Error::Denied(format!(
-                        "The scheduler already has {LIMIT} tasks. Remove a task before adding another."
+                        "The scheduler already has {LIMIT} tasks, so remove one before adding another."
                     )));
                 }
 
@@ -1086,7 +1086,7 @@ async fn call_at(
                     task.cancel_requested = false;
                     task.pause_requested = false;
                     task.last_result =
-                        Some("Execution was interrupted; review before resuming.".into());
+                        Some("Execution was interrupted, so review it before resuming.".into());
                     task.last_outcome = Some("failed".into());
                     let run_id = task.run_id.take().unwrap_or(*id);
                     task.finished_run_id = Some(run_id);
@@ -1234,7 +1234,7 @@ fn load_with_legacy_at(
     if let Some(marker) = marker {
         if marker != b"1" {
             return Err(krabb_core::Error::Denied(format!(
-                "Timer migration marker {} is corrupt; repair it before restarting the scheduler.",
+                "Timer migration marker {} is corrupt, so repair it before restarting the scheduler.",
                 migration_marker.display()
             )));
         }
@@ -1248,7 +1248,7 @@ fn load_with_legacy_at(
     let mut tasks: Tasks = match schedule {
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
             krabb_core::Error::Denied(format!(
-                "Scheduler state {} is corrupt; repair it before restarting the scheduler.",
+                "Scheduler state {} is corrupt, so repair it before restarting the scheduler.",
                 schedule_path.display()
             ))
         })?,
@@ -1257,21 +1257,21 @@ fn load_with_legacy_at(
 
     let text = String::from_utf8(bytes).map_err(|_| {
         krabb_core::Error::Denied(format!(
-            "Legacy timer state {} is not valid UTF-8; repair it before restarting the scheduler.",
+            "Legacy timer state {} is not valid UTF-8, so repair it before restarting the scheduler.",
             legacy_path.display()
         ))
     })?;
 
     let legacy_tasks: Tasks = serde_json::from_str(&text).map_err(|_| {
         krabb_core::Error::Denied(format!(
-            "Legacy timer state {} is corrupt; repair it before restarting the scheduler.",
+            "Legacy timer state {} is corrupt, so repair it before restarting the scheduler.",
             legacy_path.display()
         ))
     })?;
 
     if legacy_tasks.len() > LIMIT {
         return Err(krabb_core::Error::Denied(format!(
-            "Legacy timer state {} exceeds the scheduler task limit; remove excess timers before restarting.",
+            "Legacy timer state {} exceeds the scheduler task limit, so remove excess timers before restarting.",
             legacy_path.display()
         )));
     }
@@ -1332,14 +1332,14 @@ fn load_with_legacy_at(
 fn load_bytes(path: &std::path::Path, bytes: Vec<u8>) -> krabb_core::Result<Arc<Mutex<Tasks>>> {
     let text = String::from_utf8(bytes).map_err(|_| {
         krabb_core::Error::Denied(format!(
-            "Scheduler state {} is not valid UTF-8; repair it before restarting the scheduler.",
+            "Scheduler state {} is not valid UTF-8, so repair it before restarting the scheduler.",
             path.display()
         ))
     })?;
 
     let mut tasks = serde_json::from_str(&text).map_err(|_| {
         krabb_core::Error::Denied(format!(
-            "Scheduler state {} is corrupt; repair it before restarting the scheduler.",
+            "Scheduler state {} is corrupt, so repair it before restarting the scheduler.",
             path.display()
         ))
     })?;
@@ -1370,14 +1370,14 @@ fn load_at(path: Option<&std::path::Path>) -> krabb_core::Result<Arc<Mutex<Tasks
 
     let text = String::from_utf8(bytes).map_err(|_| {
         krabb_core::Error::Denied(format!(
-            "Scheduler state {} is not valid UTF-8; repair it before restarting the scheduler.",
+            "Scheduler state {} is not valid UTF-8, so repair it before restarting the scheduler.",
             path.display()
         ))
     })?;
 
     let mut tasks = serde_json::from_str(&text).map_err(|_| {
         krabb_core::Error::Denied(format!(
-            "Scheduler state {} is corrupt; repair it before restarting the scheduler.",
+            "Scheduler state {} is corrupt, so repair it before restarting the scheduler.",
             path.display()
         ))
     })?;
@@ -2047,7 +2047,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.to_string().contains("Remove a task before adding another"));
+        assert!(error.to_string().contains("so remove one before adding another"));
         assert_eq!(tasks.lock().unwrap().len(), LIMIT);
         assert_eq!(tasks.lock().unwrap()[&1].text.as_ref(), "task 1");
 

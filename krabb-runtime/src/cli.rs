@@ -159,7 +159,7 @@ pub(crate) enum PluginCommand {
     List(ListOutput),
     #[command(visible_alias = "add", about = "Install and activate one or more plugins.")]
     Install(PluginInstall),
-    #[command(about = "Review available plugin updates; pass -y to apply them.")]
+    #[command(about = "Review available plugin updates, or apply them with -y.")]
     Update(PluginUpdate),
     #[command(about = "List the published versions of an official plugin.")]
     Versions(Id),
@@ -417,7 +417,22 @@ pub(crate) struct PluginUpdate {
 
 #[derive(Debug, Args)]
 pub(crate) struct InitArgs {
-    #[arg(long, help = "Reset all Krabb home data and recreate its defaults.")]
+    #[arg(
+        value_enum,
+        value_name = "STEP",
+        help = "Steps to run, always in this order: home, provider, hatch, channel, service. \
+                Without steps, a terminal guides you through all of them."
+    )]
+    pub(crate) steps: Vec<crate::onboard::Step>,
+    #[arg(long, value_name = "ID", help = "Intelligence provider to install and select.")]
+    pub(crate) provider: Option<String>,
+    #[arg(long, value_name = "ID", help = "Channel or client to talk through, or none.")]
+    pub(crate) channel: Option<String>,
+    #[arg(
+        long,
+        conflicts_with_all = ["steps", "provider", "channel"],
+        help = "Reset all Krabb home data and recreate its defaults."
+    )]
     pub(crate) force: bool,
     #[arg(short, long, help = "Skip the confirmation prompt.")]
     pub(crate) yes: bool,
@@ -490,13 +505,13 @@ pub(crate) struct PluginInstall {
     pub(crate) revision: Option<String>,
     #[arg(long, help = "Link a local build instead of copying its executable.")]
     pub(crate) link: bool,
-    #[arg(
-        long,
-        help = "Install the newest version, pre-releases included; pre-releases are pinned."
-    )]
+    #[arg(long, help = "Install and pin the newest version, pre-releases included.")]
     pub(crate) unstable: bool,
     #[arg(short, long, help = "Skip replacement confirmation.")]
     pub(crate) yes: bool,
+    /// Prints nothing on success, for guides that report the result in their own words.
+    #[arg(skip)]
+    pub(crate) quiet: bool,
 }
 
 pub(crate) struct SourceRoot {
