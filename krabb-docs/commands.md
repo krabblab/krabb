@@ -275,11 +275,12 @@ WhatsApp have no menu; typed commands work the same way.
 | `/schedule` | List scheduled work (local clients only). |
 
 Krabb answers these itself, without an intelligence turn, so they also work while a
-reply is running or the provider is unavailable. `/compact`, `/again`, and `/hatch` are the
-exceptions: they need the model, so send them again once the current reply finishes. Each acts
-only on the sender's own conversation, except `/hatch`, which changes Krabb everywhere, and
-channel users never gain local operator authority: `/memory`, `/data`, and `/hatch` need the
-conversation's tool access, and `/schedule` is limited to local clients. `/model <model>` affects only this conversation.
+reply is running or the provider is unavailable. `/compact`, `/again`, and `/hatch` are
+the exceptions: they need the model, so send them again once the current reply finishes.
+Channel users never gain local operator authority. Commands act only on the sender's own
+conversation: `/memory` and `/data` need the conversation's tool access, and `/schedule` is
+limited to local clients. `/hatch` changes Krabb everywhere, so only local clients and the
+channel's configured `owner` can use it. `/model <model>` affects only this conversation.
 `/session new` archives the earlier messages. `/session clear` deletes history only
 after the same sender repeats it with the four-digit code it returns, within two
 minutes.
@@ -557,15 +558,17 @@ requires confirmation.
 name, what to call you, and its personality, tone of voice, writing style, way of
 working, and language; press Enter to skip a question. Answer in your own words and in
 any language. Your Krabb's model then rewrites `data/system/KRAB.md` (who it is) and
-`KLAW.md` (how it works) from your answers, keeping everything you did not ask to
-change, including your own edits. It shows both files and a summary, and asks before
-saving.
+`KLAW.md` (how it works) from your answers. The model is asked to keep everything you
+did not ask to change, including your own edits; check the preview of both files and the
+summary before you confirm.
 
 Run it again to change something: the questions then keep whatever you skip. You can
 also describe the change directly, as in `krabb hatch be more concise and call me Sam`,
 or answer with flags such as `--name Pinch --voice "warm and brief"`; `--yes` saves
-without the preview. `krabb hatch --undo` restores the files as they were before the
-latest change, and running it again switches back. Changes apply from the next reply,
+without the preview, and is required with `--json` or without a terminal. `krabb hatch
+--undo` restores the files as they were before the latest change, and running it again
+switches back. Hatching refuses to save when the files changed while the model was writing,
+and refuses hand-edited files over 16 KiB. Changes apply from the next reply,
 including in a running daemon.
 
 Hatching needs an intelligence provider. Without one, `krabb hatch` explains how to set
@@ -574,10 +577,11 @@ keep both files' headings and stay within the instruction budget, or nothing is 
 Personalities shape how your Krabb speaks; they cannot change its built-in charter or
 host policy.
 
-In a conversation whose tools are enabled, send `/hatch` followed by the change, such as
-`/hatch be playful but brief, and reply in Italian`. Krabb applies it and replies with a
-summary; `/hatch undo` goes back. Only a message you type can change the personality:
-the model cannot do it on its own, so content it reads cannot rewrite who it is.
+In a chat, the channel's configured `owner` can send `/hatch` followed by the change,
+such as `/hatch be playful but brief, and reply in Italian`; local clients such as the TUI
+can too. Krabb applies it and replies with a summary; `/hatch undo` goes back. Only a
+message the owner types can change the personality. The model cannot run `/hatch` itself,
+so content it reads cannot rewrite who it is.
 
 Manage the background service with
 `krabb service install|uninstall|status|start|stop|restart`. Installing does

@@ -30,6 +30,8 @@ pub enum Access {
     Channel,
     /// Only callers whose conversation allows tools.
     Tools,
+    /// Only local clients and a channel's configured owner, for changes to every conversation.
+    Owner,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,7 +103,7 @@ pub const SPECS: &[Spec] = &[
         summary: "Change my name, personality, and writing style",
         usage: "/hatch [<what to change> | undo]",
         need: Need::Nothing,
-        access: Access::Tools,
+        access: Access::Owner,
     },
     Spec {
         name: "task",

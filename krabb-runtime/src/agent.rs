@@ -346,16 +346,19 @@ pub(crate) async fn agent_tool_request(
     tool_process.call(Request::call(id, name, args)).await
 }
 
+/// Whether a person can answer prompts: not in CI, with a terminal on stdin and stderr.
+pub(crate) fn interactive() -> bool {
+    std::env::var_os("CI").is_none()
+        && std::io::stdin().is_terminal()
+        && std::io::stderr().is_terminal()
+}
+
 pub(crate) fn confirm_action(yes: bool, json: bool, question: &str) -> Result<bool, PluginError> {
     if yes {
         return Ok(true);
     }
 
-    if json
-        || std::env::var_os("CI").is_some()
-        || !std::io::stdin().is_terminal()
-        || !std::io::stderr().is_terminal()
-    {
+    if json || !interactive() {
         return Err(format!("{question} Use --yes to continue without a prompt.").into());
     }
 

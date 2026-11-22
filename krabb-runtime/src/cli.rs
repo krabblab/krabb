@@ -444,7 +444,13 @@ pub(crate) struct HatchArgs {
     pub(crate) language: Option<String>,
     #[arg(long, help = "Anything else it should know about itself or you.")]
     pub(crate) notes: Option<String>,
-    #[arg(long, conflicts_with = "wishes", help = "Restore the previous personality.")]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "wishes", "name", "call", "personality", "voice", "writing", "work", "language", "notes"
+        ],
+        help = "Restore the previous personality."
+    )]
     pub(crate) undo: bool,
     #[arg(short, long, help = "Save without the preview and confirmation.")]
     pub(crate) yes: bool,

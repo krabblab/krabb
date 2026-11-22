@@ -1168,6 +1168,7 @@ pub(crate) async fn execute_tool_with_registry(
             session,
             sender: None,
             tools: tools_enabled,
+            owner: false,
             origin: slash::Origin::Tool,
         };
 

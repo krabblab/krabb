@@ -69,6 +69,8 @@ pub(crate) struct Caller<'a> {
     pub sender: Option<&'a str>,
     /// Whether this caller may use tool-backed commands such as memory and data.
     pub tools: bool,
+    /// Whether this caller is the channel's configured owner.
+    pub owner: bool,
     pub origin: Origin,
 }
 
@@ -86,6 +88,7 @@ struct Intake {
     session: String,
     sender: Option<String>,
     tools: bool,
+    owner: bool,
 }
 
 impl Intake {
@@ -102,9 +105,12 @@ impl Intake {
         let approval =
             sharing::approval(&host.plugins.config, &sharing::principal(integration), mode);
 
+        let sender = event_id(&event["sender"]);
+
         Ok(Self {
             session: session_id(integration, &chat, thread.as_deref()),
-            sender: event_id(&event["sender"]),
+            owner: sender.is_some() && policy.owner == sender,
+            sender,
             tools: tools_allowed(policy, event, &chat, approval.enabled()),
             id,
             chat,
@@ -128,6 +134,7 @@ impl Intake {
             session: &self.session,
             sender: self.sender.as_deref(),
             tools: self.tools,
+            owner: self.owner,
             origin: Origin::Text,
         }
     }
@@ -487,6 +494,7 @@ fn available(loaded: &[Capability], caller: &Caller<'_>, spec: &Spec) -> bool {
         Access::Local => !caller.channel(),
         Access::Channel => caller.channel(),
         Access::Tools => caller.tools,
+        Access::Owner => !caller.channel() || caller.owner,
     };
 
     present && granted
@@ -613,36 +621,17 @@ async fn compact(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginE
         return Ok("The model is not running; try again in a moment.".into());
     };
 
-    let cleanup = process::Cleanup::default();
-
-    let summary = tokio::select! {
-        biased;
-        _ = host.stop.notified() => Err("Compaction was interrupted.".into()),
-
-        summary = ipc::complete(
-            &provider,
-            &model,
-            workspace.as_deref(),
-            &context[..boundary],
-            host.call,
-            &cleanup,
-            host.plugins.config.inference.task_millis(),
-        ) => summary.map_err(PluginError::from),
-    };
+    let summary =
+        complete(host, &provider, &model, workspace.as_deref(), &context[..boundary]).await;
 
     // Provider failures answer the user; they must not stop the channel's message loop.
-    let summary = match (cleanup.finish().await, summary) {
-        (Ok(()), Ok(summary)) => summary,
+    let summary = match summary {
+        Ok(summary) => summary,
 
-        (finished, summary) => {
-            let error = finished
-                .err()
-                .map(|error| error.to_string())
-                .or(summary.err().map(|error| error.to_string()));
-
+        Err(error) => {
             warn!(
                 session = caller.session,
-                error = %diagnostic(sentence(error.unwrap_or_default())),
+                error = %diagnostic(sentence(error)),
                 "Conversation compaction failed."
             );
 
@@ -725,40 +714,26 @@ async fn hatch(
     let Some(provider) =
         host.plugins.get(host.provider).await.filter(|plugin| plugin.supports(Capability::Model))
     else {
-        return Ok(hatch::no_provider(&directory));
+        // Channel users never see the host's paths.
+        return Ok(if caller.channel() {
+            "Hatching needs an intelligence provider, and none is running. Set one up on the \
+             Krabb host, or edit KRAB.md and KLAW.md there by hand."
+                .into()
+        } else {
+            hatch::no_provider(&directory)
+        });
     };
 
-    let current = hatch::read(&directory);
+    let current = hatch::read(&directory)?;
     let request = hatch::request(caller.session, &current, wishes);
-    let cleanup = process::Cleanup::default();
 
-    let reply = tokio::select! {
-        biased;
-        _ = host.stop.notified() => Err("Hatching was interrupted.".into()),
+    let text = match complete(host, &provider, host.model, None, &request).await {
+        Ok(text) => text,
 
-        reply = ipc::complete(
-            &provider,
-            host.model,
-            None,
-            &request,
-            host.call,
-            &cleanup,
-            host.plugins.config.inference.task_millis(),
-        ) => reply.map_err(PluginError::from),
-    };
-
-    let text = match (cleanup.finish().await, reply) {
-        (Ok(()), Ok(text)) => text,
-
-        (finished, reply) => {
-            let error = finished
-                .err()
-                .map(|error| error.to_string())
-                .or(reply.err().map(|error| error.to_string()));
-
+        Err(error) => {
             warn!(
                 session = caller.session,
-                error = %diagnostic(sentence(error.unwrap_or_default())),
+                error = %diagnostic(sentence(error)),
                 "Hatching failed."
             );
 
@@ -780,10 +755,44 @@ async fn hatch(
         return Ok(format!("{} Nothing needed to change.", draft.summary));
     }
 
-    hatch::save(&directory, &draft.files)?;
+    hatch::save(&directory, &current, &draft.files)?;
     info!(session = caller.session, "Personality changed by command.");
 
     Ok(format!("{}\nSend /hatch undo to go back.", draft.summary))
+}
+
+/// Asks the model for one reply, stopping early when the daemon shuts down. Returns the
+/// reply, or the provider or cleanup failure as text for the log.
+async fn complete(
+    host: &Host<'_>,
+    provider: &Live,
+    model: &str,
+    workspace: Option<&str>,
+    messages: &[Message],
+) -> Result<String, String> {
+    let cleanup = process::Cleanup::default();
+
+    let reply = tokio::select! {
+        biased;
+        _ = host.stop.notified() => Err("The request was interrupted.".into()),
+
+        reply = ipc::complete(
+            provider,
+            model,
+            workspace,
+            messages,
+            host.call,
+            &cleanup,
+            host.plugins.config.inference.task_millis(),
+        ) => reply.map_err(|error| error.to_string()),
+    };
+
+    let finished = cleanup.finish().await.map_err(|error| error.to_string());
+
+    match (finished, reply) {
+        (Ok(()), Ok(reply)) => Ok(reply),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
 }
 
 fn messages(count: usize) -> &'static str {

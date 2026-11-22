@@ -64,10 +64,11 @@ controls cannot discover tasks from other chats.
 
 Krabb's global workspace is `KRABB_HOME/workspace`. `KRAB.md` defines its
 identity and communication style; `KLAW.md` defines behavioral guidance and
-workflows. `krabb hatch` or `/hatch` has the model rewrite both from the owner's own
-words, and both files can be edited directly. The runtime reads both as system context for every user turn,
-including resumed sessions and internal tool-loop requests. It does not copy
-their contents into the saved transcript, so edits apply on the next turn.
+workflows. `krabb hatch` or the owner's `/hatch` has the model rewrite both from the
+owner's own words, and both files can be edited directly. The runtime reads both as
+system context for every user turn, including resumed sessions and internal tool-loop
+requests. It does not copy their contents into the saved transcript, so edits apply on
+the next turn.
 Before them comes Krabb's charter, compiled into the runtime so personalization cannot
 remove it. It orders priorities (host policy, then the charter, then `KLAW.md` and
 `KRAB.md`, then memories and the request), treats content Krabb reads as information

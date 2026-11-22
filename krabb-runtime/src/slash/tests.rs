@@ -75,6 +75,7 @@ fn caller<'a>(session: &'a str, origin: Origin) -> Caller<'a> {
         session,
         sender: Some("7"),
         tools: false,
+        owner: false,
         origin,
     }
 }
@@ -797,30 +798,33 @@ async fn again_during_another_chats_reply_queues_the_question() {
 }
 
 fn hatch_caller(session: &str, origin: Origin) -> Caller<'_> {
-    Caller { tools: true, ..caller(session, origin) }
+    Caller { owner: true, ..caller(session, origin) }
 }
 
 #[tokio::test]
-async fn hatch_needs_a_provider_and_the_users_own_words() {
+async fn hatch_needs_the_owner_a_provider_and_the_owners_own_words() {
     let fixture = Fixture::new("slash-hatch-guard");
     let session = "telegram-7";
     let directory = fixture.root.join("data/system");
-    let text = hatch_caller(session, Origin::Text);
+    let owner = hatch_caller(session, Origin::Text);
+    let member = Caller { tools: true, ..caller(session, Origin::Text) };
 
     std::fs::create_dir_all(&directory).unwrap();
 
-    assert!(
-        send(&fixture, &caller(session, Origin::Text), "/hatch be brief")
-            .await
-            .contains("/hatch is not available here")
-    );
+    assert!(send(&fixture, &member, "/hatch be brief").await.contains("not available here"));
+    assert!(!send(&fixture, &member, "/help").await.contains("/hatch"));
+    assert!(send(&fixture, &owner, "/help").await.contains("/hatch"));
+    assert!(send(&fixture, &owner, "/hatch").await.starts_with("Tell me how you'd like me to be"));
 
-    assert!(send(&fixture, &text, "/hatch").await.starts_with("Tell me how you'd like me to be"));
-
-    let missing = send(&fixture, &text, "/hatch be brief").await;
+    let missing = send(&fixture, &owner, "/hatch be brief").await;
 
     assert!(missing.contains("needs an intelligence provider"), "{missing}");
-    assert!(missing.contains(&directory.display().to_string()));
+    assert!(!missing.contains(&fixture.root.display().to_string()));
+
+    let local = Caller { integration: "tui", ..caller("tui-main", Origin::Text) };
+    let missing = send(&fixture, &local, "/hatch be brief").await;
+
+    assert!(missing.contains(&directory.display().to_string()), "{missing}");
 
     with_model(&fixture).await;
 
@@ -830,8 +834,8 @@ async fn hatch_needs_a_provider_and_the_users_own_words() {
 
     let long = format!("/hatch {}", "x".repeat(crate::hatch::WISH_LIMIT + 1));
 
-    assert!(send(&fixture, &text, &long).await.contains("at most 2000 characters"));
-    assert!(send(&fixture, &text, "/hatch be brief").await.contains("Nothing changed"));
+    assert!(send(&fixture, &owner, &long).await.contains("at most 2000 characters"));
+    assert!(send(&fixture, &owner, "/hatch be brief").await.contains("Nothing changed"));
     assert!(!directory.join("KRAB.md").exists());
 }
 
@@ -849,7 +853,7 @@ async fn hatch_rewrites_both_files_and_undo_switches_back() {
     with_mode(&fixture, "hatch").await;
 
     let reply = send(&fixture, &text, "/hatch call yourself Pinch").await;
-    let hatched = crate::hatch::read(&directory);
+    let hatched = crate::hatch::read(&directory).unwrap();
 
     assert_eq!(reply, "You are now Pinch.\nSend /hatch undo to go back.");
     assert_eq!(hatched.krab, "# Personality Instructions\n\nYou are Pinch.\n");
@@ -862,14 +866,14 @@ async fn hatch_rewrites_both_files_and_undo_switches_back() {
     assert!(send(&fixture, &text, "/hatch undo").await.starts_with("I'm back"));
 
     assert_eq!(
-        crate::hatch::read(&directory).krab,
+        crate::hatch::read(&directory).unwrap().krab,
         "# Personality Instructions\n\nYou are Krabb.\n"
     );
 
-    assert_eq!(crate::hatch::read(&directory).klaw, "");
+    assert_eq!(crate::hatch::read(&directory).unwrap().klaw, "");
 
     assert!(send(&fixture, &text, "/hatch UNDO").await.starts_with("I'm back"));
-    assert_eq!(crate::hatch::read(&directory), hatched);
+    assert_eq!(crate::hatch::read(&directory).unwrap(), hatched);
 }
 
 #[tokio::test]
@@ -886,5 +890,5 @@ async fn hatch_keeps_the_files_when_the_draft_is_unusable() {
     assert!(reply.starts_with("The draft is missing === KRAB.md ==="), "{reply}");
     assert!(reply.ends_with("Nothing changed; send /hatch again to retry."));
     assert!(send(&fixture, &text, "/hatch undo").await.contains("no previous personality"));
-    assert_eq!(crate::hatch::read(&directory), crate::hatch::Files::default());
+    assert_eq!(crate::hatch::read(&directory).unwrap(), crate::hatch::Files::default());
 }

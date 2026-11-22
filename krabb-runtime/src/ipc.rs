@@ -303,6 +303,7 @@ async fn command(request: &IpcRequest, state: &State) -> IpcResponse {
         session,
         sender: Some(client),
         tools,
+        owner: false,
         origin: super::slash::Origin::Text,
     };
 

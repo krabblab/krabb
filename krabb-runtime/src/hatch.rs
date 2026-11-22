@@ -3,8 +3,9 @@
 //! Wishes stay in the owner's own words and language. The model interprets them, so the host
 //! never parses them for keywords; it only checks the shape and size of what comes back.
 
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use krabb_core::types::{Content, Message, Role};
 
@@ -17,6 +18,9 @@ const FILE_LIMIT: usize = crate::CONTEXT_LIMIT / 2 - 128;
 const SUMMARY_LIMIT: usize = 600;
 const ANSWER_LIMIT: usize = 400;
 pub(crate) const WISH_LIMIT: usize = 2000;
+/// Hand-edited files larger than this are refused rather than sent to the model.
+const READ_LIMIT: u64 = 16 * 1024;
+const LOCK_WAIT: Duration = Duration::from_secs(5);
 const FILES: [(&str, &str); 2] = [("KRAB.md", "KRAB.previous.md"), ("KLAW.md", "KLAW.previous.md")];
 const MARKERS: [&str; 3] = ["=== KRAB.md ===", "=== KLAW.md ===", "=== SUMMARY ==="];
 
@@ -131,14 +135,15 @@ fn wishes(answers: &[Option<String>], free: &str) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-/// Reads the current files; a missing, linked, or unreadable file reads as empty.
-pub(crate) fn read(directory: &Path) -> Files {
-    let load = |name: &str| match existing(&directory.join(name)) {
-        Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
-        _ => String::new(),
+/// Reads the current files; a missing file reads as empty. Links, other entries, and files
+/// over the read limit are refused.
+pub(crate) fn read(directory: &Path) -> std::io::Result<Files> {
+    let load = |name: &str| {
+        existing(&directory.join(name))
+            .map(|bytes| String::from_utf8_lossy(&bytes.unwrap_or_default()).into_owned())
     };
 
-    Files { krab: load(FILES[0].0), klaw: load(FILES[1].0) }
+    Ok(Files { krab: load(FILES[0].0)?, klaw: load(FILES[1].0)? })
 }
 
 /// Builds the model request that turns CURRENT and WISHES into new files.
@@ -190,7 +195,7 @@ pub(crate) fn parse(reply: &str) -> Result<Draft, String> {
         (&krab, "# Personality Instructions", "KRAB.md"),
         (&klaw, "# Behavioral Instructions", "KLAW.md"),
     ] {
-        if !text.starts_with(heading) {
+        if text != heading && !text.starts_with(&format!("{heading}\n")) {
             return Err(format!("The draft's {name} must start with {heading}."));
         }
 
@@ -208,40 +213,50 @@ pub(crate) fn parse(reply: &str) -> Result<Draft, String> {
     Ok(Draft { files: Files { krab: krab + "\n", klaw: klaw + "\n" }, summary })
 }
 
-/// Trims a part and drops a code fence the model may have wrapped around it.
+/// Trims a part and drops a code fence the model may have wrapped around all of it.
 fn unfence(text: &str) -> String {
     let text = text.trim();
-    let text =
-        text.strip_prefix("```markdown").or_else(|| text.strip_prefix("```")).unwrap_or(text);
-    let text = text.strip_suffix("```").unwrap_or(text);
 
-    text.trim().to_owned()
+    let Some(opened) = text.strip_prefix("```") else {
+        return text.to_owned();
+    };
+
+    let body = opened.split_once('\n').map_or("", |(_, body)| body).trim_end();
+
+    body.strip_suffix("```").unwrap_or(body).trim().to_owned()
 }
 
-/// Saves FILES in DIRECTORY. When anything changes, both files are first backed up as they
-/// were, so the backups always hold the state before the latest change; a missing file is
-/// backed up as empty, which reads as absent. Returns whether anything changed. Every path
-/// is checked before anything is written, and links or other non-files are refused.
-pub(crate) fn save(directory: &Path, files: &Files) -> std::io::Result<bool> {
-    let mut current = Vec::with_capacity(FILES.len());
+/// Saves FILES in DIRECTORY if it still holds EXPECTED, the files the draft was written
+/// from. When anything changes, both files are first backed up as they were, so the backups
+/// always hold the state before the latest change; a missing file is backed up as empty,
+/// which reads as absent. Returns whether anything changed. A lock shared by the CLI and
+/// the daemon keeps one change from overwriting another.
+pub(crate) fn save(directory: &Path, expected: &Files, files: &Files) -> std::io::Result<bool> {
+    let _lock = crate::locks::lock_at_timeout(directory, ".hatch.lock", LOCK_WAIT)?;
 
-    for (name, backup) in FILES {
+    for (_, backup) in FILES {
         existing(&directory.join(backup))?;
-        current.push(existing(&directory.join(name))?.unwrap_or_default());
     }
 
-    let texts = files.texts();
+    if read(directory)? != *expected {
+        return Err(std::io::Error::other(
+            "The personality changed while the new one was being written; nothing was saved. \
+             Run hatch again to build on the latest version.",
+        ));
+    }
 
-    if current.iter().zip(texts).all(|(previous, text)| previous == text.as_bytes()) {
+    if expected == files {
         return Ok(false);
     }
 
-    for ((_, backup), previous) in FILES.iter().zip(&current) {
+    for ((_, backup), previous) in FILES.iter().zip(expected.texts()) {
         krabb_file::save(directory.join(backup), previous)?;
     }
 
-    for ((name, _), (previous, text)) in FILES.iter().zip(current.iter().zip(texts)) {
-        if previous != text.as_bytes() {
+    for ((name, _), (previous, text)) in
+        FILES.iter().zip(expected.texts().into_iter().zip(files.texts()))
+    {
+        if previous != text {
             krabb_file::save(directory.join(name), text)?;
         }
     }
@@ -250,8 +265,10 @@ pub(crate) fn save(directory: &Path, files: &Files) -> std::io::Result<bool> {
 }
 
 /// Swaps both files with their backups, so a second undo restores the newer version.
+/// Each file is written before its backup, so an interruption can lose only the newer text.
 /// Returns the files whose text changed.
 pub(crate) fn undo(directory: &Path) -> std::io::Result<Vec<&'static str>> {
+    let _lock = crate::locks::lock_at_timeout(directory, ".hatch.lock", LOCK_WAIT)?;
     let mut pairs = Vec::with_capacity(FILES.len());
 
     for (name, backup) in FILES {
@@ -272,8 +289,8 @@ pub(crate) fn undo(directory: &Path) -> std::io::Result<Vec<&'static str>> {
             continue;
         }
 
-        krabb_file::save(&backup, &current)?;
         krabb_file::save(&path, &previous)?;
+        krabb_file::save(&backup, &current)?;
         restored.push(name);
     }
 
@@ -290,25 +307,42 @@ fn existing(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
             ))
         }
 
-        Ok(_) => std::fs::read(path).map(Some),
+        Ok(_) => {
+            let mut bytes = Vec::new();
+
+            std::fs::File::open(path)?.take(READ_LIMIT + 1).read_to_end(&mut bytes)?;
+
+            if bytes.len() as u64 > READ_LIMIT {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is larger than {} KiB; shorten it by hand first.",
+                        path.display(),
+                        READ_LIMIT / 1024
+                    ),
+                ));
+            }
+
+            Ok(Some(bytes))
+        }
+
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
 
-/// Whether DIRECTORY holds a personality other than the one `init` writes.
-pub(crate) fn hatched(directory: &Path) -> bool {
-    let current = read(directory);
-
+/// Whether CURRENT is a personality other than the one `init` writes.
+fn hatched(current: &Files) -> bool {
     current.krab != crate::templates::KRAB || current.klaw != crate::templates::KLAW
 }
 
-/// Asks each question on OUTPUT, reading replies from INPUT. An empty reply skips it.
+/// Asks each question on OUTPUT, reading replies from INPUT. An empty reply skips a question,
+/// and closed input cancels the interview with an `UnexpectedEof` error.
 pub(crate) fn interview(
     input: &mut impl BufRead,
     output: &mut impl Write,
     rerun: bool,
-) -> Result<Vec<Option<String>>, Error> {
+) -> std::io::Result<Vec<Option<String>>> {
     let intro = if rerun {
         "Your Krabb already has a personality. Answer only what you want to change; press \
          Enter to keep the rest as it is."
@@ -332,7 +366,7 @@ fn ask(
     input: &mut impl BufRead,
     output: &mut impl Write,
     question: &Question,
-) -> Result<Option<String>, Error> {
+) -> std::io::Result<Option<String>> {
     loop {
         write!(output, "{} (for example: {})\n> ", question.prompt, question.example)?;
         output.flush()?;
@@ -341,7 +375,7 @@ fn ask(
 
         if input.read_line(&mut line)? == 0 {
             writeln!(output)?;
-            return Ok(None);
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
 
         match clean(&line, ANSWER_LIMIT) {
@@ -353,12 +387,6 @@ fn ask(
             Err(problem) => writeln!(output, "{problem} Please try again.")?,
         }
     }
-}
-
-fn interactive() -> bool {
-    std::env::var_os("CI").is_none()
-        && std::io::stdin().is_terminal()
-        && std::io::stderr().is_terminal()
 }
 
 pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), Error> {
@@ -404,9 +432,27 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
         return Err(format!("Wishes must be at most {WISH_LIMIT} characters.").into());
     }
 
-    if !json && interactive() && answers.iter().all(Option::is_none) && free.trim().is_empty() {
-        answers =
-            interview(&mut std::io::stdin().lock(), &mut std::io::stderr(), hatched(&directory))?;
+    let interactive = !json && crate::agent::interactive();
+
+    if !args.yes && !interactive {
+        return Err("Hatching asks before saving. Use --yes to save without a prompt.".into());
+    }
+
+    let current = read(&directory)?;
+
+    if interactive && answers.iter().all(Option::is_none) && free.trim().is_empty() {
+        let mut input = std::io::stdin().lock();
+
+        answers = match interview(&mut input, &mut std::io::stderr(), hatched(&current)) {
+            Ok(answers) => answers,
+
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                crate::agent::print_cancelled("Hatching", json);
+                return Ok(());
+            }
+
+            Err(error) => return Err(error.into()),
+        };
     }
 
     let Some(wishes) = wishes(&answers, &free) else {
@@ -422,7 +468,6 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
         return Ok(());
     };
 
-    let current = read(&directory);
     let spinner = crate::terminal::progress("Your Krabb is writing its personality", json);
     let reply = crate::model_at(plugin, model, root, request("cli", &current, &wishes)).await;
 
@@ -450,7 +495,7 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
         return Ok(());
     }
 
-    save(&directory, &draft.files)?;
+    save(&directory, &current, &draft.files)?;
     report(json, "hatched", &draft.summary);
 
     Ok(())
@@ -506,6 +551,10 @@ mod tests {
         format!("=== KRAB.md ===\n{krab}\n=== KLAW.md ===\n{klaw}\n=== SUMMARY ===\n{summary}\n")
     }
 
+    fn files(krab: &str, klaw: &str) -> Files {
+        Files { krab: krab.into(), klaw: klaw.into() }
+    }
+
     fn parse_args(flags: &[&str]) -> HatchArgs {
         use clap::Parser;
 
@@ -522,8 +571,8 @@ mod tests {
         let reply = format!(
             "Here you go.\n{}",
             draft(
-                "```markdown\n# Personality Instructions\n\nYou are Pinch.\n```",
-                "# Behavioral Instructions\n\nAsk first.",
+                "```md\n# Personality Instructions\n\nYou are Pinch.\n```",
+                "# Behavioral Instructions\n\nRun checks:\n\n```sh\nmake verify\n```",
                 "Ora ti chiami\nPinch.\n",
             )
         );
@@ -531,7 +580,7 @@ mod tests {
         let draft = parse(&reply).unwrap();
 
         assert_eq!(draft.files.krab, "# Personality Instructions\n\nYou are Pinch.\n");
-        assert_eq!(draft.files.klaw, "# Behavioral Instructions\n\nAsk first.\n");
+        assert!(draft.files.klaw.ends_with("```sh\nmake verify\n```\n"));
         assert_eq!(draft.summary, "Ora ti chiami Pinch.");
     }
 
@@ -545,6 +594,10 @@ mod tests {
         assert!(parse(&draft(krab, "Ask first.", "Done.")).unwrap_err().contains("KLAW.md"));
         assert!(parse(&draft(krab, klaw, " ")).unwrap_err().contains("summary"));
 
+        let glued = draft("# Personality Instructionsfoo", klaw, "Done.");
+
+        assert!(parse(&glued).unwrap_err().contains("must start with"));
+
         let long = format!("{krab}\n{}", "x".repeat(FILE_LIMIT));
 
         assert!(parse(&draft(&long, klaw, "Done.")).unwrap_err().contains("longer"));
@@ -552,11 +605,7 @@ mod tests {
 
     #[test]
     fn the_request_carries_the_hatching_prompt_current_files_and_wishes() {
-        let current = Files {
-            krab: "# Personality Instructions\nYou are Pinch.\n".into(),
-            ..Files::default()
-        };
-
+        let current = files("# Personality Instructions\nYou are Pinch.\n", "");
         let messages = request("cli", &current, "- Name: Nipper");
 
         assert_eq!(messages[0].role, Role::System);
@@ -586,7 +635,8 @@ mod tests {
 
     #[test]
     fn the_interview_keeps_answers_in_order_and_retries_invalid_ones() {
-        let replies = format!("Pinch\n\n{}\nplayful\n", "x".repeat(ANSWER_LIMIT + 1));
+        let skipped = "\n".repeat(QUESTIONS.len() - 3);
+        let replies = format!("Pinch\n\n{}\nplayful\n{skipped}", "x".repeat(ANSWER_LIMIT + 1));
         let mut output = Vec::new();
 
         let answers = interview(&mut replies.as_bytes(), &mut output, true).unwrap();
@@ -602,6 +652,13 @@ mod tests {
     }
 
     #[test]
+    fn closing_the_input_cancels_the_interview() {
+        let error = interview(&mut "Pinch\n".as_bytes(), &mut Vec::new(), false).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
     fn answers_are_single_bounded_lines() {
         assert_eq!(clean("  calm  ", 10), Ok(Some("calm".into())));
         assert_eq!(clean("   ", 10), Ok(None));
@@ -611,26 +668,52 @@ mod tests {
     }
 
     #[test]
-    fn saving_backs_up_changed_files_and_undo_swaps_them_back() {
+    fn saving_backs_up_both_files_and_undo_swaps_them_back() {
         let directory = directory();
-        let first = Files { krab: "krab one".into(), klaw: "klaw one".into() };
-        let second = Files { krab: "krab two".into(), klaw: "klaw one".into() };
+        let empty = Files::default();
+        let first = files("krab one", "klaw one");
+        let second = files("krab two", "klaw one");
 
         assert!(undo(&directory).unwrap().is_empty());
-        assert!(save(&directory, &first).unwrap());
-        assert!(!save(&directory, &first).unwrap());
-        assert!(save(&directory, &second).unwrap());
-        assert_eq!(
-            std::fs::read_to_string(directory.join("KLAW.previous.md")).unwrap(),
-            "klaw one"
-        );
+        assert!(save(&directory, &empty, &first).unwrap());
+        assert!(!save(&directory, &first, &first).unwrap());
+        assert!(save(&directory, &first, &second).unwrap());
 
-        assert_eq!(read(&directory), second);
+        let klaw = std::fs::read_to_string(directory.join("KLAW.previous.md")).unwrap();
+
+        assert_eq!(klaw, "klaw one");
+        assert_eq!(read(&directory).unwrap(), second);
 
         assert_eq!(undo(&directory).unwrap(), ["KRAB.md"]);
-        assert_eq!(read(&directory), first);
+        assert_eq!(read(&directory).unwrap(), first);
         assert_eq!(undo(&directory).unwrap(), ["KRAB.md"]);
-        assert_eq!(read(&directory), second);
+        assert_eq!(read(&directory).unwrap(), second);
+
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn saving_refuses_a_personality_that_changed_meanwhile() {
+        let directory = directory();
+        let first = files("krab one", "klaw one");
+
+        save(&directory, &Files::default(), &first).unwrap();
+
+        let error = save(&directory, &Files::default(), &files("krab two", "")).unwrap_err();
+
+        assert!(error.to_string().contains("changed while"));
+        assert_eq!(read(&directory).unwrap(), first);
+
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn oversized_files_are_refused_instead_of_sent_to_the_model() {
+        let directory = directory();
+
+        std::fs::write(directory.join("KLAW.md"), "x".repeat(READ_LIMIT as usize + 1)).unwrap();
+
+        assert!(read(&directory).unwrap_err().to_string().contains("shorten it by hand"));
 
         let _ = std::fs::remove_dir_all(directory);
     }
@@ -644,13 +727,13 @@ mod tests {
         std::fs::write(&outside, "outside").unwrap();
         std::os::unix::fs::symlink(&outside, directory.join("KLAW.md")).unwrap();
 
-        let files = Files { krab: "krab".into(), klaw: "klaw".into() };
+        let empty = Files::default();
 
-        assert!(save(&directory, &files).is_err());
+        assert!(save(&directory, &empty, &files("krab", "klaw")).is_err());
         assert!(undo(&directory).unwrap().is_empty());
+        assert!(read(&directory).is_err());
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
         assert!(!directory.join("KRAB.md").exists());
-        assert_eq!(read(&directory).klaw, "");
 
         let _ = std::fs::remove_dir_all(directory);
     }
@@ -672,9 +755,20 @@ mod tests {
         assert!(message.contains("krabb plugin setup openai"));
         assert!(message.contains(&directory.display().to_string()));
         assert!(message.ends_with("KLAW.md says how it works."));
-        assert!(!hatched(&directory));
+        assert!(!hatched(&read(&directory).unwrap()));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn undo_cannot_be_combined_with_wishes() {
+        use clap::Parser;
+
+        for flags in [["--undo", "be brief"], ["--undo", "--name=Pinch"]] {
+            let arguments = ["krabb", "hatch"].iter().chain(&flags);
+
+            assert!(crate::cli::Cli::try_parse_from(arguments).is_err());
+        }
     }
 
     #[tokio::test]
@@ -684,16 +778,17 @@ mod tests {
         crate::init_at(&root).unwrap();
 
         let directory = root.join("data/system");
-        let changed = Files { krab: "krab hatched".into(), klaw: crate::templates::KLAW.into() };
+        let current = read(&directory).unwrap();
+        let changed = files("krab hatched", crate::templates::KLAW);
 
-        save(&directory, &changed).unwrap();
+        save(&directory, &current, &changed).unwrap();
 
-        assert!(hatched(&directory));
+        assert!(hatched(&read(&directory).unwrap()));
         assert!(run(parse_args(&["--undo"]), &root, true).await.is_err());
 
         run(parse_args(&["--undo", "--yes"]), &root, true).await.unwrap();
 
-        assert!(!hatched(&directory));
+        assert!(!hatched(&read(&directory).unwrap()));
 
         let _ = std::fs::remove_dir_all(root);
     }
