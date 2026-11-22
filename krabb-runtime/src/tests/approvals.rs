@@ -742,5 +742,7 @@ async fn settings_changes_always_ask_and_show_the_exact_change() {
             dispatch::tool_result_text(&result.unwrap()),
             "The request was denied. No changes were made."
         );
+
+        assert!(!registry.restart.load(std::sync::atomic::Ordering::Acquire));
     }
 }

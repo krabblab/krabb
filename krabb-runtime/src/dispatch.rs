@@ -1178,7 +1178,13 @@ pub(crate) async fn execute_tool_with_registry(
             return Err("Settings cannot be changed from this conversation.".into());
         }
 
-        return Ok(ToolResult::text(settings::apply(&home(), source, session, &args)?));
+        let (text, restart) = settings::apply(&home(), source, &args)?;
+
+        if restart {
+            registry.restart.store(true, std::sync::atomic::Ordering::Release);
+        }
+
+        return Ok(ToolResult::text(text));
     }
 
     if name == slash::TOOL {

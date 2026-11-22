@@ -282,6 +282,7 @@ struct ToolRegistry {
     source: Option<sharing::Principal>,
     execution: state::SessionKind,
     run: Option<krabb_core::task::Run>,
+    restart: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for Plugins {

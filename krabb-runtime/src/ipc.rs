@@ -778,6 +778,8 @@ async fn session_answer(
         return write_frame(output, IpcResponse::fail(request.id, -32000, message)).await;
     }
 
+    let restart = matches!(&result, Ok(reply) if reply.restart);
+
     let response = match result {
         Ok(reply) => IpcResponse::ok(request.id, json!({"done": true, "text": reply.text})),
 
@@ -814,7 +816,10 @@ async fn session_answer(
 
     let written = write_frame(output, response).await;
 
-    super::settings::restart_after(id);
+    if restart && written.is_ok() {
+        super::settings::restart();
+    }
+
     written
 }
 

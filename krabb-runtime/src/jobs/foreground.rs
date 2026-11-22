@@ -118,6 +118,7 @@ impl Drop for Foreground {
 pub(crate) struct Answer {
     pub model: ModelReply,
     pub foreground: Option<Foreground>,
+    pub restart: bool,
 }
 
 impl std::fmt::Debug for Answer {

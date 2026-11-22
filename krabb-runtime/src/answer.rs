@@ -195,6 +195,7 @@ pub(crate) async fn answer(
     registry.run = run.clone();
 
     let cleanup = registry.cleanup.clone();
+    let restart = Arc::clone(&registry.restart);
 
     let mut result = answer_with_registry(
         provider,
@@ -289,7 +290,9 @@ pub(crate) async fn answer(
         }
     }
 
-    result.map(|model| jobs::Answer { model, foreground })
+    let restart = restart.load(std::sync::atomic::Ordering::Acquire);
+
+    result.map(|model| jobs::Answer { model, foreground, restart })
 }
 
 #[allow(clippy::too_many_arguments)]
