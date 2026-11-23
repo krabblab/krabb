@@ -1,12 +1,14 @@
 //! Checks free disk space before an update stops the service or writes anything.
 
+use std::io::ErrorKind;
+
 use super::*;
 
 /// Headroom kept free on every disk the update writes to.
 const MARGIN: u64 = 64 * 1024 * 1024;
 
-/// Staged plugin archives unpack into the home; compressed size understates that.
-const UNPACKED: u64 = 3;
+/// Estimated unpacked size of a plugin archive relative to its compressed size.
+const EXPANSION: u64 = 3;
 
 /// Refuses the update when a disk it writes to lacks room for the recovery point and new files.
 pub(super) fn check(
@@ -16,28 +18,42 @@ pub(super) fn check(
 ) -> Result<(), PluginError> {
     let replacements = [staged.krabb.clone(), staged.daemon.clone()];
     let archives = staged.plan.plugins.iter().map(|artifact| staged.dir.join(&artifact.file));
+    let disks =
+        Disks { root, binaries, replacements: &replacements, temporary: &std::env::temp_dir() };
 
-    check_with(root, binaries, &replacements, &archives.collect::<Vec<_>>(), krabb_file::available)
+    fits(&disks, &archives.collect::<Vec<_>>(), krabb_file::available)
 }
 
-fn check_with(
-    root: &Path,
-    binaries: &[PathBuf],
-    replacements: &[PathBuf],
+/// Where an update writes: the home, each binary's directory, and the unpacking directory.
+struct Disks<'a> {
+    root: &'a Path,
+    binaries: &'a [PathBuf],
+    replacements: &'a [PathBuf],
+    temporary: &'a Path,
+}
+
+fn fits(
+    disks: &Disks<'_>,
     archives: &[PathBuf],
     available: impl Fn(&Path) -> std::io::Result<u64>,
 ) -> Result<(), PluginError> {
-    let mut needs = vec![(root.to_path_buf(), recovery(root, binaries)? + unpacked(archives)?)];
+    let mut needs = vec![(disks.root.to_path_buf(), home(disks.root, disks.binaries, archives)?)];
 
-    for (binary, replacement) in binaries.iter().zip(replacements) {
+    for (binary, replacement) in disks.binaries.iter().zip(disks.replacements) {
         let directory = binary.parent().ok_or("Binary has no parent directory.")?;
 
         needs.push((directory.to_path_buf(), size(replacement)?));
     }
 
+    // Activation unpacks one plugin archive at a time in the temporary directory.
+    let largest = archives.iter().map(|archive| size(archive)).collect::<Result<Vec<_>, _>>()?;
+    let largest = largest.into_iter().max().unwrap_or(0).saturating_mul(EXPANSION);
+
+    needs.push((disks.temporary.to_path_buf(), largest));
+
     for (path, need) in group(needs)? {
         let need = need.saturating_add(MARGIN);
-        let free = available(&path)?;
+        let free = available(&path).map_err(|error| located(&path, error))?;
 
         if free < need {
             return Err(format!(
@@ -55,8 +71,9 @@ fn check_with(
     Ok(())
 }
 
-/// Bytes the recovery point copies: the saved home state plus the current binaries.
-fn recovery(root: &Path, binaries: &[PathBuf]) -> Result<u64, PluginError> {
+/// Home bytes still to be written: the new recovery point, which first replaces the old one,
+/// and the unpacked plugins.
+fn home(root: &Path, binaries: &[PathBuf], archives: &[PathBuf]) -> Result<u64, PluginError> {
     let mut total = 0_u64;
 
     for path in snapshot::paths(root)? {
@@ -67,17 +84,11 @@ fn recovery(root: &Path, binaries: &[PathBuf]) -> Result<u64, PluginError> {
         total = total.saturating_add(size(binary)?);
     }
 
-    Ok(total)
-}
-
-fn unpacked(archives: &[PathBuf]) -> Result<u64, PluginError> {
-    let mut total = 0_u64;
-
     for archive in archives {
-        total = total.saturating_add(size(archive)?.saturating_mul(UNPACKED));
+        total = total.saturating_add(size(archive)?.saturating_mul(EXPANSION));
     }
 
-    Ok(total)
+    Ok(total.saturating_sub(size(&snapshot::store(root))?))
 }
 
 /// Sums needs that land on the same disk, keyed by the first path seen for each disk.
@@ -100,40 +111,91 @@ fn group(needs: Vec<(PathBuf, u64)>) -> Result<Vec<(PathBuf, u64)>, PluginError>
 fn disk(path: &Path) -> Result<String, PluginError> {
     use std::os::unix::fs::MetadataExt;
 
-    Ok(std::fs::metadata(path)?.dev().to_string())
+    let metadata = std::fs::metadata(path).map_err(|error| located(path, error))?;
+
+    Ok(metadata.dev().to_string())
 }
 
 #[cfg(not(unix))]
 fn disk(path: &Path) -> Result<String, PluginError> {
-    let absolute = std::path::absolute(path)?;
-    let prefix = absolute.components().next().map(|part| part.as_os_str().to_owned());
+    use std::path::{Component, Prefix};
 
-    Ok(prefix.unwrap_or_default().to_string_lossy().to_ascii_lowercase())
+    let absolute = std::path::absolute(path).map_err(|error| located(path, error))?;
+
+    let disk = match absolute.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                (letter as char).to_ascii_lowercase().to_string()
+            }
+
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                format!("{}\\{}", server.to_string_lossy(), share.to_string_lossy())
+                    .to_ascii_lowercase()
+            }
+
+            _ => prefix.as_os_str().to_string_lossy().to_ascii_lowercase(),
+        },
+
+        _ => String::new(),
+    };
+
+    Ok(disk)
 }
 
-/// Total bytes under `path`, without following symbolic links; a missing path is empty.
+/// Bytes `path` occupies, without following symbolic links; paths that vanish count as empty.
 fn size(path: &Path) -> Result<u64, PluginError> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(error.into()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(located(path, error)),
     };
 
     if !metadata.is_dir() {
-        return Ok(metadata.len());
+        return Ok(occupied(&metadata));
     }
 
-    let mut total = 0_u64;
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(located(path, error)),
+    };
 
-    for entry in std::fs::read_dir(path)? {
-        total = total.saturating_add(size(&entry?.path())?);
+    let mut total = occupied(&metadata);
+
+    for entry in entries {
+        match entry {
+            Ok(entry) => total = total.saturating_add(size(&entry.path())?),
+
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(located(path, error)),
+        }
     }
 
     Ok(total)
 }
 
+/// Allocated blocks where the platform reports them, so many small files are not undercounted.
+#[cfg(unix)]
+fn occupied(metadata: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata.len().max(metadata.blocks().saturating_mul(512))
+}
+
+#[cfg(not(unix))]
+fn occupied(metadata: &std::fs::Metadata) -> u64 {
+    metadata.len()
+}
+
+fn located(path: &Path, error: std::io::Error) -> PluginError {
+    format!("Could not measure {}: {}.", path.display(), sentence(error.to_string())).into()
+}
+
+/// Mebibytes rounded up to one decimal, so a shortfall never reads as nothing.
 fn mebibytes(bytes: u64) -> String {
-    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    let tenths = bytes.saturating_mul(10).div_ceil(1024 * 1024);
+
+    format!("{}.{} MiB", tenths / 10, tenths % 10)
 }
 
 #[cfg(test)]
@@ -146,54 +208,69 @@ mod tests {
         let nested = root.join("data/sessions");
 
         std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(root.join("config.toml"), vec![0; 100]).unwrap();
-        std::fs::write(nested.join("index.json"), vec![0; 50]).unwrap();
+        std::fs::write(nested.join("index.json"), vec![1; 50]).unwrap();
+
+        let plain = size(&nested).unwrap();
 
         #[cfg(unix)]
-        std::os::unix::fs::symlink("/", root.join("data/outside")).unwrap();
+        std::os::unix::fs::symlink(&root, nested.join("loop")).unwrap();
 
-        assert_eq!(size(&nested).unwrap(), 50);
+        assert!(plain >= 50);
+        assert!(size(&nested).unwrap() - plain < 4096);
         assert_eq!(size(&root.join("missing")).unwrap(), 0);
-        assert!(size(&root.join("data")).unwrap() < 4096);
 
         let grouped = group(vec![(root.clone(), 10), (nested.clone(), 5)]).unwrap();
 
         assert_eq!(grouped, vec![(root.clone(), 15)]);
         assert_eq!(mebibytes(3 * 1024 * 1024 / 2), "1.5 MiB");
+        assert_eq!(mebibytes(1), "0.1 MiB");
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn refuses_updates_that_cannot_fit_without_changing_anything() {
+    fn refuses_updates_that_cannot_fit_and_credits_the_old_point() {
         let root = crate::tests::test_root("update-space-refusal");
         let home = root.join("home");
         let bin = root.join("bin");
-        let binary = bin.join("krabb");
-        let replacement = root.join("staged-krabb");
-        let archive = root.join("echo.tar.gz");
+        let binaries = [bin.join("krabb")];
+        let replacements = [root.join("staged-krabb")];
+        let archives = [root.join("echo.tar.gz")];
 
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(home.join("config.toml"), vec![0; 1024]).unwrap();
-        std::fs::write(&binary, vec![0; 2048]).unwrap();
-        std::fs::write(&replacement, vec![0; 4096]).unwrap();
-        std::fs::write(&archive, vec![0; 100]).unwrap();
+        std::fs::write(home.join("config.toml"), vec![1; 1024]).unwrap();
+        std::fs::write(&binaries[0], vec![1; 2048]).unwrap();
+        std::fs::write(&replacements[0], vec![1; 4096]).unwrap();
+        std::fs::write(&archives[0], vec![1; 100]).unwrap();
 
-        let binaries = [binary];
-        let replacements = [replacement];
-        let archives = [archive];
-        let need = 1024 + 2048 + 4096 + 300 + MARGIN;
+        let disks = Disks {
+            root: &home,
+            binaries: &binaries,
+            replacements: &replacements,
+            temporary: &root,
+        };
 
-        check_with(&home, &binaries, &replacements, &archives, |_| Ok(need)).unwrap();
+        let measured = |path: &Path| size(path).unwrap();
+        let need = measured(&home.join("config.toml"))
+            + measured(&binaries[0])
+            + measured(&replacements[0])
+            + 2 * measured(&archives[0]) * EXPANSION
+            + MARGIN;
 
-        let error = check_with(&home, &binaries, &replacements, &archives, |_| Ok(need - 1))
-            .unwrap_err()
-            .to_string();
+        fits(&disks, &archives, |_| Ok(need)).unwrap();
+
+        let error = fits(&disks, &archives, |_| Ok(need - 1)).unwrap_err().to_string();
 
         assert!(error.contains("nothing was changed"), "{error}");
-        assert!(error.contains("Free 0.0 MiB"), "{error}");
-        assert!(!snapshot::store(&home).exists());
+        assert!(error.contains("Free 0.1 MiB"), "{error}");
+
+        let old = snapshot::store(&home).join("home/config.toml");
+
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, vec![1; 8192]).unwrap();
+
+        fits(&disks, &archives, |_| Ok(need - 1)).unwrap();
 
         let _ = std::fs::remove_dir_all(root);
     }
