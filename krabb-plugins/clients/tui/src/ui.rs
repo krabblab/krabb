@@ -52,6 +52,10 @@ pub(super) const ACCENT_COLOR: Color = Color::Rgb(255, 111, 44);
 const TRANSCRIPT_LIMIT: usize = 512 * 1024;
 const INTERACTION_LIMIT: usize = 12 * 1024;
 const INPUT_HISTORY_LIMIT: usize = super::data::HISTORY_LIMIT;
+/// Pause allowed between chunks of one paste, and the most events read as one paste.
+const PASTE_GAP: Duration = Duration::from_millis(5);
+const PASTE_EVENTS: usize = 64 * 1024;
+
 const INPUT_MAX_ROWS: usize = 5;
 const COMPOSER_GAP_ROWS: u16 = 1;
 const MESSAGE_GAP_ROWS: usize = 2;
@@ -478,16 +482,28 @@ where
     let event_cancelled = Arc::clone(&cancelled);
 
     let event_thread = thread::spawn(move || {
+        let mut started = false;
+
         while !event_cancelled.load(Ordering::Relaxed) {
             if event::poll(Duration::from_millis(100)).unwrap_or(false) {
-                match event::read() {
-                    Ok(event) => {
-                        if event_tx.send(event).is_err() {
-                            break;
-                        }
-                    }
+                let Ok(event) = event::read() else { break };
 
-                    Err(_) => break,
+                let mut events = vec![event];
+
+                // Windows consoles deliver a paste as a burst of keys rather than a paste event.
+                // Keys typed before the TUI started arrive together too, so they stay keys.
+                if cfg!(windows) {
+                    burst(&mut events);
+
+                    if started {
+                        events = coalesce(events);
+                    }
+                }
+
+                started = true;
+
+                if events.into_iter().any(|event| event_tx.send(event).is_err()) {
+                    break;
                 }
             }
         }
@@ -1931,6 +1947,75 @@ where
     }
 
     Ok(false)
+}
+
+/// Reads the rest of a burst of waiting events, allowing short gaps between pasted chunks.
+fn burst(events: &mut Vec<Event>) {
+    let mut wait = Duration::ZERO;
+
+    while events.len() < PASTE_EVENTS && event::poll(wait).unwrap_or(false) {
+        let Ok(event) = event::read() else { break };
+
+        events.push(event);
+        wait = PASTE_GAP;
+    }
+}
+
+/// Joins runs of text keys that arrived together into one paste; typed keys arrive one by one.
+fn coalesce(events: Vec<Event>) -> Vec<Event> {
+    let mut output = Vec::with_capacity(events.len());
+    let mut run: Vec<Event> = Vec::new();
+    let mut text = String::new();
+
+    let flush = |run: &mut Vec<Event>, text: &mut String, output: &mut Vec<Event>| {
+        if text.chars().count() >= 2 {
+            output.push(Event::Paste(std::mem::take(text)));
+            run.clear();
+        } else {
+            output.append(run);
+            text.clear();
+        }
+    };
+
+    for event in events {
+        let character = match &event {
+            Event::Key(key) if key.kind != KeyEventKind::Press => {
+                run.push(event);
+                continue;
+            }
+
+            Event::Key(key) if text_key(key.modifiers) => match key.code {
+                KeyCode::Char(character) => Some(character),
+                KeyCode::Enter => Some('\n'),
+                KeyCode::Tab => Some('\t'),
+                _ => None,
+            },
+
+            _ => None,
+        };
+
+        match character {
+            Some(character) => {
+                text.push(character);
+                run.push(event);
+            }
+
+            None => {
+                flush(&mut run, &mut text, &mut output);
+                output.push(event);
+            }
+        }
+    }
+
+    flush(&mut run, &mut text, &mut output);
+    output
+}
+
+/// Plain or shifted keys, or AltGr, which Windows reports as Control and Alt held together.
+fn text_key(modifiers: KeyModifiers) -> bool {
+    let rest = modifiers.difference(KeyModifiers::SHIFT);
+
+    rest.is_empty() || rest == KeyModifiers::CONTROL | KeyModifiers::ALT
 }
 
 /// Deletes a clipboard image Krabb saved once it is no longer attached.
@@ -6560,6 +6645,50 @@ mod tests {
         assert_eq!(entry, "├─ codex | v1.0.0\n│  ├─ health: ready\n│  └─ permissions: none");
         assert!(!entry.contains('◆'));
         assert!(!entry.contains('◇'));
+    }
+
+    #[test]
+    fn coalesces_keys_that_arrive_together_into_a_paste() {
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let release = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            crossterm::event::KeyEventKind::Release,
+        ));
+
+        let pasted = super::coalesce(vec![
+            key(KeyCode::Char('C')),
+            release.clone(),
+            key(KeyCode::Char(':')),
+            key(KeyCode::Enter),
+            key(KeyCode::Char('x')),
+        ]);
+
+        assert_eq!(pasted, vec![Event::Paste("C:\nx".into())]);
+
+        let typed = super::coalesce(vec![key(KeyCode::Char('a'))]);
+
+        assert_eq!(typed, vec![key(KeyCode::Char('a'))]);
+
+        let control = Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        let mixed = super::coalesce(vec![
+            key(KeyCode::Char('h')),
+            key(KeyCode::Char('i')),
+            control.clone(),
+            key(KeyCode::Enter),
+        ]);
+
+        assert_eq!(mixed, vec![Event::Paste("hi".into()), control, key(KeyCode::Enter)]);
+
+        let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        let path = super::coalesce(vec![
+            key(KeyCode::Char('C')),
+            key(KeyCode::Char(':')),
+            Event::Key(KeyEvent::new(KeyCode::Char('\\'), altgr)),
+            key(KeyCode::Char('a')),
+        ]);
+
+        assert_eq!(path, vec![Event::Paste("C:\\a".into())]);
     }
 
     #[tokio::test]

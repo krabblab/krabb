@@ -33,8 +33,8 @@ What each ✅ needs:
   Text from a PDF or text file is cut off after 64 KiB.
 - **Signal stickers** need `signal-cli` 0.13 or newer.
 - **TUI attachments**: use `/attach <path>`, paste or drag an absolute file path
-  into the prompt (not on Windows), or press Ctrl+V (Alt+V where the terminal
-  keeps Ctrl+V) to attach a clipboard image. Clipboard images need a local
+  into the prompt, or press Ctrl+V (Alt+V where the terminal keeps Ctrl+V) to
+  attach a clipboard image. Clipboard images need a local
   display; over SSH, use `/attach` instead.
 
 Each file may be up to 4 MiB. Images sent to the model are limited to 4 MiB
