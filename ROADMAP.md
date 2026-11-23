@@ -418,6 +418,11 @@ provenance, distribution options, and opt-in scheduled upgrades.
 - Show update availability, scope, progress, restart needs, and failures in CLI,
   status, and the host API. Preserve configuration, credentials, and durable work.
   Treat expanded permissions or unavailable migration paths as explicit blockers.
+- Publish reproducible OCI images and documented Docker/Podman operation, mounted
+  secrets, persistent volumes, health checks, graceful shutdown, and rootless
+  defaults. Keep optional plugins out of the base image unless explicitly selected.
+- Ship a Docker Compose file and a Kubernetes Helm chart for one daemon per home:
+  persistent storage, mounted secrets, probes, and no second replica on one home.
 
 ### Scheduled Updates
 
@@ -749,9 +754,6 @@ without breaking unrelated agents or requiring a kernel release.
 Scale deployment choices from a small personal host to isolated agent instances
 and multiple machines, without making distributed infrastructure mandatory.
 
-- Publish reproducible OCI images and documented Docker/Podman operation, mounted
-  secrets, persistent volumes, health checks, graceful shutdown, and rootless
-  defaults. Keep optional plugins out of the base image unless explicitly selected.
 - Offer shared-daemon, dedicated-daemon, and container-per-agent execution. Define
   process, filesystem, network, credential, CPU, memory, and storage boundaries;
   distinguish workspace isolation from a sandbox for hostile code.
