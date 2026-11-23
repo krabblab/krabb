@@ -1,0 +1,31 @@
+name: Documentation
+description: Missing, unclear, or outdated documentation.
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: Use a concise, Title Case title that names the outcome.
+  - type: textarea
+    id: story
+    attributes:
+      label: User Story
+      description: Who needs this, what they need, and why.
+      placeholder: As a <role>, I want <capability>, so that <benefit>.
+    validations:
+      required: true
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Short, testable statements that define done.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Roadmap section, related issues, dependencies, or measurements.
+    validations:
+      required: false

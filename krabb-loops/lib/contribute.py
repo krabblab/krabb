@@ -69,16 +69,26 @@ def metadata(raw, template):
                    or '\r' in line for line in solution)):
         raise ValueError('solution must contain nonempty single-line descriptions')
 
+    number = data.get('issue')
+
+    if number is not None and (not isinstance(number, int) or isinstance(number, bool)
+                               or number < 1):
+        raise ValueError('issue must be a positive issue number or null')
+
     category, label = TYPES[kind]
     marker = f'- [ ] **{category}**'
-    issue = '<!-- Link the issue this change resolves. Use `Fixes #<issue-number>` for a fix. -->'
+
+    issue = ('<!-- Every PR closes or references an issue. Use `Closes #<issue-number>`, '
+             'or `Refs #<issue-number>` for partial work. -->')
+
     description = '<!-- Describe the solution and how it addresses the linked issue. -->'
 
     if any(template.count(value) != 1 for value in (marker, issue, description)):
         raise ValueError('PR template changed; update the contribution template adapter')
 
     body = template.replace(marker, f'- [x] **{category}**')
-    body = body.replace(issue, issue + "\n- Doesn't close any.")
+    link = f'Closes #{number}' if number else 'No linked issue yet; link one before review.'
+    body = body.replace(issue, issue + '\n\n' + link)
 
     body = body.replace(description, description + '\n'
                         + '\n'.join('- ' + line for line in solution)
@@ -422,10 +432,13 @@ class Contribution:
         task = (
             f'Read the full contribution diff against origin/{self.base}, including untracked '
             'files. Inspect .github/PULL_REQUEST_TEMPLATE.md, CONTRIBUTING.md and the merged '
-            f'PR history at {history_file}. Return only a JSON object with title and solution. '
+            f'PR history at {history_file}. Return only a JSON object with title, solution, '
+            'and issue. '
             'title must summarize the full contribution as a lowercase conventional commit, '
             'without a scope, under 50 characters. solution must be a nonempty list of concise '
             'single-line descriptions of the behavior, relevant risks and validation coverage. '
+            'issue is the number of the GitHub issue this contribution closes when the branch, '
+            'commits, or diff name one, otherwise null. '
             'Keep the style of the recent human PRs. Do not invent linked issues or test results.')
 
         template = (ROOT / '.github/PULL_REQUEST_TEMPLATE.md').read_text()
