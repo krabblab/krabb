@@ -10649,11 +10649,22 @@ async fn expands_readable_file_attachments() {
         assert!(!rendered.iter().any(|item| item.contains(&root.display().to_string())));
     }
 
+    let outside = test_root("text-media-outside");
+
+    fs::create_dir_all(&outside).unwrap();
+    fs::File::create(outside.join("huge.log")).unwrap().set_len(super::MEDIA_LIMIT + 1).unwrap();
+
+    let probe = vec![file(&outside.join("huge.log"), "huge.log", "text/plain")];
+    let result = super::expand_media_files("telegram", probe, &root).await;
+
+    assert_eq!(result[0].render(), "[File huge.log omitted because it is unavailable.]");
+
     let unchanged = super::expand_media_files("tui", content.clone(), &root).await;
 
     assert_eq!(unchanged, content);
 
     let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(outside);
 }
 
 #[tokio::test]

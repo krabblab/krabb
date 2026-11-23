@@ -48,7 +48,11 @@ pub(crate) async fn read(path: &Path, deadline: Instant) -> Text {
 
     command
         .env_clear()
-        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|value| ("LLVM_PROFILE_FILE", value)))
+        .envs(
+            ["LLVM_PROFILE_FILE", "SystemRoot"]
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        )
         .arg(ARGUMENT);
 
     run(command, bytes, deadline).await
