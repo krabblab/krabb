@@ -1320,6 +1320,7 @@ mod tests {
         let events = normalize(&stickers);
 
         assert_eq!(events.len(), 1);
+
         assert_eq!(
             events[0]["content"][0],
             json!({"kind":"image","uri":"whatsapp://media/k1","alt":"Sticker"})

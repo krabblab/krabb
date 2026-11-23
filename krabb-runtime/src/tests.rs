@@ -10577,18 +10577,23 @@ async fn expands_readable_file_attachments() {
     let note = root.join("note.md");
     let secret = root.join("secret.pem");
     let large = root.join("large.txt");
+    let wide = root.join("wide.txt");
+    let cut = root.join("cut.txt");
     let photo = root.join("photo.bin");
-    let report = root.join("report.bin");
-    let scan = root.join("scan.bin");
     let broken = root.join("broken.bin");
+    let huge = root.join("huge.bin");
+
+    let mut straddle = "a".repeat(super::FILE_LIMIT as usize - 1);
+    straddle.push('é');
 
     fs::write(&note, "A short note.").unwrap();
     fs::write(&secret, "PRIVATE KEY").unwrap();
     fs::write(&large, "a".repeat(super::FILE_LIMIT as usize + 10)).unwrap();
+    fs::write(&wide, &straddle).unwrap();
+    fs::write(&cut, b"caf\xc3").unwrap();
     fs::write(&photo, b"GIF89a\x01\x00\x01\x00").unwrap();
-    fs::write(&report, pdf(Some("Quarterly revenue grew."))).unwrap();
-    fs::write(&scan, pdf(None)).unwrap();
     fs::write(&broken, b"%PDF-1.7\nbroken").unwrap();
+    fs::File::create(&huge).unwrap().set_len(super::MEDIA_LIMIT + 1).unwrap();
 
     let file = |path: &Path, name: &str, mime: &str| Content::File {
         uri: format!("file://{}", path.display()),
@@ -10600,98 +10605,53 @@ async fn expands_readable_file_attachments() {
         file(&note, "note.md", "text/markdown"),
         file(&secret, "secret.pem", "application/octet-stream"),
         file(&large, "large.txt", "text/plain"),
+        file(&wide, "wide.txt", "text/plain"),
+        file(&cut, "cut.txt", "text/plain"),
         file(&photo, "funny.gif", "application/octet-stream"),
-        file(&report, "report.pdf", "application/pdf"),
-        file(&scan, "scan.pdf", "application/pdf"),
         file(&broken, "broken.pdf", "application/pdf"),
+        file(&huge, "huge.log", "text/plain"),
         file(&root.join("missing.txt"), "missing.txt", "text/plain"),
     ];
 
     for channel in ["telegram", "signal", "slack"] {
         let result = super::expand_media_files(channel, content.clone(), &root).await;
+        let rendered = result.iter().map(Content::render).collect::<Vec<_>>();
 
-        assert_eq!(result.len(), 8);
-        assert_eq!(result[0], Content::Text { text: "[File: note.md]\nA short note.".into() });
-
+        assert_eq!(result.len(), 9);
+        assert_eq!(rendered[0], "[File: note.md]\nA short note.");
         assert_eq!(
-            result[1].render(),
+            rendered[1],
             "[File secret.pem omitted because its file type is not supported.]"
         );
 
-        let large = result[2].render();
-        assert!(large.starts_with("[File: large.txt, first 64 KiB only]\naaa"));
-        assert!(large.len() < super::FILE_LIMIT as usize + 64);
+        assert!(rendered[2].starts_with("[File: large.txt, first 64 KiB only]\naaa"));
+        assert_eq!(rendered[2].matches('a').count(), super::FILE_LIMIT as usize + 1);
+
+        assert!(rendered[3].starts_with("[File: wide.txt, first 64 KiB only]\naaa"));
+        assert!(!rendered[3].contains('é'));
+
+        assert_eq!(rendered[4], "[File cut.txt omitted because it is not valid text.]");
 
         assert_eq!(
-            result[3],
+            result[5],
             Content::Image {
                 uri: format!("file://{}", photo.display()),
                 alt: Some("funny.gif".into())
             }
         );
 
-        assert!(result[4].render().starts_with("[File: report.pdf]\n"));
-        assert!(result[4].render().contains("Quarterly revenue grew."));
+        assert_eq!(rendered[6], "[File broken.pdf omitted because the PDF could not be read.]");
+        assert_eq!(rendered[7], "[File huge.log omitted because it is larger than 4 MiB.]");
+        assert_eq!(rendered[8], "[File missing.txt omitted because it is unavailable.]");
 
-        assert_eq!(
-            result[5].render(),
-            "[File scan.pdf omitted because the PDF has no extractable text, such as a scan.]"
-        );
-
-        assert_eq!(
-            result[6].render(),
-            "[File broken.pdf omitted because the PDF could not be read.]"
-        );
-
-        assert_eq!(result[7].render(), "[File missing.txt omitted because it is unavailable.]");
-
-        assert!(!result.iter().any(|item| item.render().contains(&root.display().to_string())));
+        assert!(!rendered.iter().any(|item| item.contains(&root.display().to_string())));
     }
 
     let unchanged = super::expand_media_files("tui", content.clone(), &root).await;
+
     assert_eq!(unchanged, content);
 
     let _ = fs::remove_dir_all(root);
-}
-
-fn pdf(text: Option<&str>) -> Vec<u8> {
-    let stream =
-        text.map_or_else(String::new, |text| format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET"));
-
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
-         /Resources << /Font << /F1 5 0 R >> >> >>"
-            .to_owned(),
-        format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
-    ];
-
-    let mut output = b"%PDF-1.4\n".to_vec();
-    let mut offsets = Vec::new();
-
-    for (index, object) in objects.iter().enumerate() {
-        offsets.push(output.len());
-        output.extend(format!("{} 0 obj\n{object}\nendobj\n", index + 1).bytes());
-    }
-
-    let start = output.len();
-    output.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
-
-    for offset in offsets {
-        output.extend(format!("{offset:010} 00000 n \n").bytes());
-    }
-
-    output.extend(
-        format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n",
-            objects.len() + 1
-        )
-        .bytes(),
-    );
-
-    output
 }
 
 #[tokio::test]

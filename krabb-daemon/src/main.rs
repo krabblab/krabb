@@ -5,6 +5,10 @@ use std::{future::Future, process::ExitCode};
 #[tokio::main]
 #[cfg(not(test))]
 async fn main() -> ExitCode {
+    if let Some(code) = krabb_runtime::pdf::child() {
+        return code;
+    }
+
     #[cfg(windows)]
     if std::env::args_os().nth(1).is_some_and(|argument| argument == "--service") {
         return run(async { krabb_runtime::service_dispatch() }).await;

@@ -44,8 +44,8 @@ cache; only textual Bot API responses are decoded as UTF-8.
 
 - Images: PNG, JPEG, GIF, or WebP; up to 4 MiB total per turn. The selected
   model must support image input.
-- GIFs and animated stickers: the first frame or Telegram's preview frame is
-  sent as an image. Video is not read.
+- GIFs and stickers: GIF files and static stickers are sent as images; MP4
+  GIFs and animated stickers send Telegram's preview frame. Video is not read.
 - Documents: images, PDF text, and UTF-8 text or code files. Text beyond 64 KiB
   per file is cut off, and scanned PDFs without a text layer are skipped.
 - Voice: up to 4 MiB and requires the optional speech plugin. Raw audio is

@@ -179,6 +179,7 @@ pub(crate) async fn expand_media_files(
         return content;
     }
 
+    let deadline = tokio::time::Instant::now() + pdf::TIME;
     let mut output = Vec::with_capacity(content.len());
 
     for item in content {
@@ -190,17 +191,32 @@ pub(crate) async fn expand_media_files(
         let name = clip(name, META_LIMIT);
 
         let Some(path) = media_file(&uri, media_root) else {
-            output.push(omitted(&name, "it is unavailable"));
+            output.push(omitted(&name, missing(&uri)));
             continue;
         };
 
-        output.push(read_file(uri, name, mime.as_deref(), &path).await);
+        output.push(read_file(uri, name, mime.as_deref(), &path, deadline).await);
     }
 
     bound(output)
 }
 
-async fn read_file(uri: String, name: String, mime: Option<&str>, path: &Path) -> Content {
+fn missing(uri: &str) -> &'static str {
+    let large = uri
+        .strip_prefix("file://")
+        .and_then(|path| std::fs::metadata(path).ok())
+        .is_some_and(|metadata| metadata.len() > MEDIA_LIMIT);
+
+    if large { "it is larger than 4 MiB" } else { "it is unavailable" }
+}
+
+async fn read_file(
+    uri: String,
+    name: String,
+    mime: Option<&str>,
+    path: &Path,
+    deadline: tokio::time::Instant,
+) -> Content {
     let mut head = Vec::with_capacity(16);
 
     if std::fs::File::open(path).and_then(|file| file.take(16).read_to_end(&mut head)).is_err() {
@@ -212,14 +228,11 @@ async fn read_file(uri: String, name: String, mime: Option<&str>, path: &Path) -
     }
 
     if head.starts_with(pdf::MAGIC) {
-        return match pdf::read(path).await {
-            pdf::Text::Found(text) => {
-                let truncated = text.len() as u64 > FILE_LIMIT;
-                file_text(&name, clip(text, FILE_LIMIT as usize), truncated)
-            }
-
+        return match pdf::read(path, deadline).await {
+            pdf::Text::Found { text, truncated } => file_text(&name, text, truncated),
             pdf::Text::Empty => omitted(&name, "the PDF has no extractable text, such as a scan"),
             pdf::Text::Unreadable => omitted(&name, "the PDF could not be read"),
+            pdf::Text::Slow => omitted(&name, "reading the PDF took too long"),
         };
     }
 
@@ -242,9 +255,10 @@ async fn read_file(uri: String, name: String, mime: Option<&str>, path: &Path) -
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
 
-        Err(error) if error.utf8_error().error_len().is_none() => {
+        Err(error) if truncated && error.utf8_error().error_len().is_none() => {
             let valid = error.utf8_error().valid_up_to();
             let mut bytes = error.into_bytes();
+
             bytes.truncate(valid);
             String::from_utf8(bytes).unwrap_or_default()
         }

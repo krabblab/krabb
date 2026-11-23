@@ -191,7 +191,8 @@ While a reply is being prepared, the plugin calls `signal-cli sendTyping` for
 the individual or group recipient. This requires a `signal-cli` version that
 supports that command. Indicator failures do not prevent the reply.
 
-Text, images, voice, and text files are normalized through the channel boundary. Attachments are resolved
+Text, images, voice, and files are normalized through the channel boundary; files are read as
+described in the [plugin guide](../../../krabb-docs/plugins.md). Attachments are resolved
 through `signal-cli` and cached in `KRABB_MEDIA` (or `KRABB_HOME/data/media`);
 polled events are retained in a crash-safe inbox under `KRABB_HOME` until
 the host acknowledges them. Cached attachments expire after 24 hours and are

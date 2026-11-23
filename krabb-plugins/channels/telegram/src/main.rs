@@ -569,7 +569,7 @@ fn still(media: &serde_json::Value, moving: bool) -> Option<&str> {
         return Some(file);
     }
 
-    media["thumbnail"]["file_id"].as_str().or_else(|| media["thumb"]["file_id"].as_str())
+    media["thumbnail"]["file_id"].as_str()
 }
 
 fn media_root() -> krabb_core::Result<PathBuf> {
@@ -860,6 +860,7 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
     }
 
     let animation = &message["animation"];
+
     let gif = animation["mime_type"].as_str() == Some("image/gif");
     let sticker = &message["sticker"];
     let moving = sticker["is_animated"] == true || sticker["is_video"] == true;

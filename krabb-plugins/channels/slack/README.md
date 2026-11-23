@@ -222,8 +222,9 @@ through their subtype, `bot_id`, or `bot_profile` are ignored, including Krabb's
 own replies, to prevent reply loops.
 
 The plugin receives Socket Mode events and falls back to Web API history polling
-for configured conversations. Text, images, voice, and text files are normalized
+for configured conversations. Text, images, voice, and files are normalized
 through the channel boundary, and bounded downloads are stored under `KRABB_MEDIA`.
+Files are read as described in the [plugin guide](../../../krabb-docs/plugins.md).
 Inbound events and per-channel history cursors are stored under `KRABB_HOME` and
 are removed only after the host acknowledges them.
 
