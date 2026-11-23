@@ -40,7 +40,7 @@ class Contributions(unittest.TestCase):
         self.assertEqual(title, 'feat: preserve rich messages')
         self.assertEqual(label, 'enhancement')
         self.assertIn('- [x] **Feature**', body)
-        self.assertIn("- Doesn't close any.", body)
+        self.assertIn('No linked issue yet; link one before review.', body)
         self.assertIn('<!-- Describe the solution', body)
         self.assertIn('`make verify` passed.', body)
 
@@ -50,6 +50,18 @@ class Contributions(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             MODULE.metadata(json.dumps({'title': title, 'solution': ['Example.']}), '')
+
+        _, linked, _ = MODULE.metadata(json.dumps({
+            'title': title, 'solution': ['Example.'], 'issue': 12,
+        }), template)
+
+        self.assertIn('\n\nCloses #12\n', linked)
+
+        for invalid in ('12', 0, -3, True):
+            with self.subTest(issue=invalid), self.assertRaises(ValueError):
+                MODULE.metadata(json.dumps({
+                    'title': title, 'solution': ['Example.'], 'issue': invalid,
+                }), template)
 
     def test_github_remote_forms(self):
         for remote in ('git@github.com:krabblab/krabb.git',
