@@ -19,7 +19,7 @@
 
 ## Linked Issues
 
-<!-- Link the issue this change resolves. Use `Fixes #<issue-number>` for a fix. -->
+<!-- Every PR closes or references an issue. Use `Closes #<issue-number>`, or `Refs #<issue-number>` for partial work. -->
 
 
 ## Solution

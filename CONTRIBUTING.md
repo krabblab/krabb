@@ -10,6 +10,7 @@ substantial changes through an issue before opening a pull request. Use
 - [Formatting](#formatting)
 - [Change Rules](#change-rules)
 - [Commit Messages](#commit-messages)
+- [Issues And Milestones](#issues-and-milestones)
 - [Pull Requests](#pull-requests)
 
 ## Local Setup
@@ -182,6 +183,25 @@ under 50 characters. Use `refactor` for structure-only changes, `test` for
 test-only changes, `docs` for documentation, `ci` for automation, and `chore`
 for repository maintenance.
 
+## Issues And Milestones
+
+Track work in [GitHub Issues](https://github.com/krabblab/krabb/issues) and follow
+it on the [project board](https://github.com/orgs/krabblab/projects). Open issues
+with the issue forms:
+
+- Size an issue to one pull request. Split larger work into sub-issues.
+- Give it a concise, Title Case title that names the outcome.
+- Write a one-sentence user story: "As a <role>, I want <capability>, so that
+  <benefit>." Add short, testable acceptance criteria and link the roadmap
+  section or related issues under Context.
+- Add one type label, such as `feature` or `fix`, and one area label: `core`,
+  `runtime`, `plugins`, `channels`, `clients`, `providers`, `security`,
+  `release`, or `documentation`.
+
+Each [ROADMAP](ROADMAP.md) release has a milestone with the same name, such as
+`v0.3 | Media`. The roadmap stays the plan; its milestone tracks the work. When a
+milestone closes, update the roadmap and changelog.
+
 ## Pull Requests
 
 If you work with a coding agent (Claude or Codex CLI), the
@@ -202,8 +222,9 @@ summary of every commit it made and every recovery; review those before asking f
 See [Contribution Loop](krabb-docs/loops.md#contribution-loop) for prerequisites,
 resuming, limits, and publication authorization.
 
-Keep one logical change per pull request. Describe the behavior, security and
-platform impact, test commands, documentation updates, and release-note entry.
-Explain the fix or feature, not only the symptom that motivated it. Keep
-review instructions in the pull request template and write the submission
-under its comments.
+Keep one logical change per pull request, and close or reference its issue in
+the template's Linked Issues section, for example `Closes #12`. Describe the
+behavior, security and platform impact, test commands, documentation updates,
+and release-note entry. Explain the fix or feature, not only the symptom that
+motivated it. Keep review instructions in the pull request template and write
+the submission under its comments.

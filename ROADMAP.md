@@ -10,8 +10,8 @@ This is a delivery plan, not a claim that the described features already ship.
 Versions express dependency and product priority, not promised dates. Ship useful
 increments within each milestone. The first public release, v0.1, must be useful
 without a source checkout: install official binaries, configure a single Krabbling,
-and interact through a channel or client. Later releases deepen recovery, managed
-upgrades, orchestration, media, federation, and client support. v0.15 is the
+and interact through a channel or client. Later releases deepen recovery, media,
+managed upgrades, orchestration, federation, and client support. v0.13 is the
 planned final release series before v1.0; minor versions are not limited to 0.9.
 
 ## Table Of Contents
@@ -21,20 +21,18 @@ planned final release series before v1.0; minor versions are not limited to 0.9.
 - [Engineering Gates](#engineering-gates)
 - [v0.1 | Core](#v01--core)
 - [v0.2 | Durability](#v02--durability)
-- [v0.3 | Agents](#v03--agents)
+- [v0.3 | Media](#v03--media)
 - [v0.4 | Distribution](#v04--distribution)
 - [v0.5 | Experience](#v05--experience)
-- [v0.6 | Orchestration](#v06--orchestration)
-- [v0.7 | Media](#v07--media)
+- [v0.6 | Agents](#v06--agents)
+- [v0.7 | Orchestration](#v07--orchestration)
 - [v0.8 | Federation](#v08--federation)
 - [v0.9 | Clients](#v09--clients)
-- [v0.10 | Mobile](#v010--mobile)
-- [v0.11 | Ecosystem](#v011--ecosystem)
-- [v0.12 | Deployment](#v012--deployment)
-- [v0.13 | Efficiency](#v013--efficiency)
-- [v0.14 | Realtime](#v014--realtime)
-- [v0.15 | Stabilization](#v015--stabilization)
-- [v1.0 Acceptance](#v10-acceptance)
+- [v0.10 | Ecosystem](#v010--ecosystem)
+- [v0.11 | Deployment](#v011--deployment)
+- [v0.12 | Realtime](#v012--realtime)
+- [v0.13 | Stabilization](#v013--stabilization)
+- [v1.0 | Stable](#v10--stable)
 
 ## Product Contract
 
@@ -342,61 +340,62 @@ operational and resource baselines before structural changes.
 - Establish reproducible resource measurements and baseline interruption/soak
   workloads. Keep native provider search capability-aware and permissioned;
   unsupported search must not trigger an implicit substitute service.
+- Remove ownership catalog entries together with the attachments they describe.
 
 Acceptance: recover an interrupted migration and restore a complete installation;
 crash/retry tests show no silent state loss or automatic replay of uncertain actions.
 
-## v0.3 | Agents
+## v0.3 | Media
 
-Make one Orchestrator the simplest instance of the same architecture that will
-support many agents. Establish identity and authority before adding team automation.
+Exchange text, files, images, audio, and recorded video across supported interfaces.
+Ship file exchange and images first, then voice and video as independently usable
+increments. Keep every processing engine optional and suitable for local or remote use.
 
-- Adopt one versioned home layout containing host infrastructure and
-  `agents/<id>/` for every local agent, including the default Orchestrator. Separate
-  host configuration, connections, caches, and immutable packages from agent-owned
-  state. Replace implicit global-home access with explicit agent runtime contexts.
-- Migrate existing homes through `krabb-migrations`, preserving all state and source
-  paths needed by plugins. Avoid permanent single-agent versus multi-agent layouts
-  or a special root agent. Keep one supervised daemon as the straightforward default.
-- Define stable agent IDs, roles, lifecycle, ownership, and native versus external
-  registrations. Assign agent ownership to sessions, tasks, memory, schedules,
-  artifacts, credentials, plugin instances, and audit events.
-- Provide an optional Skills plugin for discovering, inspecting, and loading
-  reusable skill packages. Each package contains versioned instructions with
-  optional reference files and scripts; a package does not require its own plugin
-  process. Support a documented `SKILL.md` format, explicit per-agent assignment,
-  local discovery, enabling, and removal.
-- Keep skill discovery and content access in the plugin, normalized contracts in
-  core, and authorization, instruction precedence, and context budgets in runtime.
-  Load detailed content only when needed; agents without the Skills plugin remain
-  usable and incur no skill indexing or background processing costs.
-- Treat skill installation and execution separately: reading instructions must
-  not execute bundled scripts or grant authority. Run any requested script through
-  existing tool policy and approvals. Confine referenced paths, record provenance,
-  and preserve the selected skill version for active tasks across updates.
-- Separate authenticated actors from channels and clients. Define directional
-  grants for discovery, status, task submission, messaging, artifact access,
-  configuration, lifecycle, and delegation. Visibility never grants control or
-  implicit access to conversations, memory, instructions, files, or secrets.
-- Scope grants to selected agents, teams, tasks, or role levels, including explicit
-  rules for future descendants. Default to no transitive access through connections.
-  Define revocation effects on pending and running operations; revocation cannot
-  retract information already delivered to another actor.
-- Introduce a versioned host API for agents, conversations, tasks, artifacts,
-  approvals, configuration, and events. Keep protocol transports in host adapters
-  or plugins. Give authenticated requests a target agent and traceable origin.
-- Preserve convenient CLI defaults for one Orchestrator; add explicit agent
-  selection and management. Define configuration precedence across host, agent,
-  interface, session, and request. A route selects an agent; a model switch does
-  not create a different agent or silently reset its ownership and history.
-- Separate channel connection instances from destinations. Route one bot/account
-  to authorized agents without duplicate polling. Reuse immutable plugin binaries
-  while isolating configuration, secrets, mutable state, and lifecycle per instance;
-  share processes only with an explicit and tested isolation contract.
+- Declare input and output support separately for each selected model and endpoint,
+  including formats and limits. Re-evaluate support when model selection changes;
+  understanding an image or audio clip does not imply generating that medium.
+- Reuse normalized media/artifact contracts, authenticated transfer, bounded
+  processing, cancellation, retention, cleanup, and delivery receipts. Preserve
+  source attachments and identify derived content, subject to retention policy.
+- Prefer native inputs when supported. Reuse platform transcripts where available
+  and appropriate; use alternative transcription, parsing, or conversion only when
+  configured. Report unsupported media without silent provider switching or uploads.
+- Extend channel/client adapters for uploads, downloads, captions, previews or
+  playback, and platform limits. Distinguish native media delivery from a generic
+  file attachment, with a clear alternative when the interface cannot render it.
 
-Acceptance: two agents can use different providers and isolated state through one
-interface; cross-agent access fails without grants, and migrated single-agent use
-remains simple with no mandatory extra resident workers.
+### Files And Images
+
+- Read native document inputs or use explicit parsers for PDF, office documents,
+  spreadsheets, and text. Bound decompression and parsing; report encrypted,
+  malformed, unsupported, or partly interpreted documents with their limitations.
+- Generate and edit downloadable shell scripts, source files, JSON, CSV, Markdown,
+  and other text artifacts. Use tools/libraries for PDF, spreadsheets, and binary
+  outputs. Creating or sending executable content must not execute it.
+- Support native vision and optional image generation/editing. Keep file names,
+  MIME types, versions, ownership, and provenance; deliver actual artifacts rather
+  than only code blocks or inaccessible host paths.
+
+### Voice And Video
+
+- Accept voice notes and audio through native audio models or optional local/remote
+  STT. Retain Whisper as an STT implementation and provide guided setup without
+  requiring hand-written wrappers for supported engines.
+- Add local/remote TTS and native audio output. Offer text, voice, both, or
+  follow-input replies, with voice and language selection independent of the
+  conversational model. Deliver voice notes or audio files as supported.
+- Support native video understanding and explicit alternatives using frames,
+  timestamps, and transcripts. Explain that extracted material loses information
+  and must not be presented as full native video comprehension.
+- Add optional image/video generation and editing backends with durable job state,
+  progress, cancellation, result retrieval, and expiry. Handle uncertain remote
+  completion without automatically repeating paid generation.
+- Verify media input on live Signal and Discord accounts, Windows terminals, and
+  desktop clipboards, beyond simulated tests.
+
+Acceptance: receive, interpret, create, and deliver representative files and media
+on supported routes; test mixed turns, model switches, limits, interrupted jobs,
+and missing capabilities with deterministic fixtures and separate functional checks.
 
 ## v0.4 | Distribution
 
@@ -465,11 +464,64 @@ Orchestrator and consistent everyday operation and recovery guidance.
 - Document architecture, configuration precedence, provider limits, data ownership,
   backup/restore, upgrade policy, permissions, and troubleshooting. Add deterministic
   onboarding and command-output tests and clean-machine acceptance walkthroughs.
+- Search conversation history across visible sessions from the TUI and CLI.
 
 Acceptance: a new user can install, configure, converse, inspect health, back up,
 and upgrade a Krabbling without reading source code or editing internal state.
 
-## v0.6 | Orchestration
+## v0.6 | Agents
+
+Make one Orchestrator the simplest instance of the same architecture that will
+support many agents. Establish identity and authority before adding team automation.
+
+- Adopt one versioned home layout containing host infrastructure and
+  `agents/<id>/` for every local agent, including the default Orchestrator. Separate
+  host configuration, connections, caches, and immutable packages from agent-owned
+  state. Replace implicit global-home access with explicit agent runtime contexts.
+- Migrate existing homes through `krabb-migrations`, preserving all state and source
+  paths needed by plugins. Avoid permanent single-agent versus multi-agent layouts
+  or a special root agent. Keep one supervised daemon as the straightforward default.
+- Define stable agent IDs, roles, lifecycle, ownership, and native versus external
+  registrations. Assign agent ownership to sessions, tasks, memory, schedules,
+  artifacts, credentials, plugin instances, and audit events.
+- Provide an optional Skills plugin for discovering, inspecting, and loading
+  reusable skill packages. Each package contains versioned instructions with
+  optional reference files and scripts; a package does not require its own plugin
+  process. Support a documented `SKILL.md` format, explicit per-agent assignment,
+  local discovery, enabling, and removal.
+- Keep skill discovery and content access in the plugin, normalized contracts in
+  core, and authorization, instruction precedence, and context budgets in runtime.
+  Load detailed content only when needed; agents without the Skills plugin remain
+  usable and incur no skill indexing or background processing costs.
+- Treat skill installation and execution separately: reading instructions must
+  not execute bundled scripts or grant authority. Run any requested script through
+  existing tool policy and approvals. Confine referenced paths, record provenance,
+  and preserve the selected skill version for active tasks across updates.
+- Separate authenticated actors from channels and clients. Define directional
+  grants for discovery, status, task submission, messaging, artifact access,
+  configuration, lifecycle, and delegation. Visibility never grants control or
+  implicit access to conversations, memory, instructions, files, or secrets.
+- Scope grants to selected agents, teams, tasks, or role levels, including explicit
+  rules for future descendants. Default to no transitive access through connections.
+  Define revocation effects on pending and running operations; revocation cannot
+  retract information already delivered to another actor.
+- Introduce a versioned host API for agents, conversations, tasks, artifacts,
+  approvals, configuration, and events. Keep protocol transports in host adapters
+  or plugins. Give authenticated requests a target agent and traceable origin.
+- Preserve convenient CLI defaults for one Orchestrator; add explicit agent
+  selection and management. Define configuration precedence across host, agent,
+  interface, session, and request. A route selects an agent; a model switch does
+  not create a different agent or silently reset its ownership and history.
+- Separate channel connection instances from destinations. Route one bot/account
+  to authorized agents without duplicate polling. Reuse immutable plugin binaries
+  while isolating configuration, secrets, mutable state, and lifecycle per instance;
+  share processes only with an explicit and tested isolation contract.
+
+Acceptance: two agents can use different providers and isolated state through one
+interface; cross-agent access fails without grants, and migrated single-agent use
+remains simple with no mandatory extra resident workers.
+
+## v0.7 | Orchestration
 
 Let one Orchestrator coordinate Executors and Subexecutors while retaining
 responsibility for the outcome and minimizing human coordination effort.
@@ -568,56 +620,6 @@ with a small context window, and configured provider failover without duplicate
 effects. Verify sandbox limits and both MCP directions with scoped identities;
 an app connection must not expose unrelated Krabb state or authority.
 
-## v0.7 | Media
-
-Exchange text, files, images, audio, and recorded video across supported interfaces.
-Ship file exchange and images first, then voice and video as independently usable
-increments. Keep every processing engine optional and suitable for local or remote use.
-
-- Declare input and output support separately for each selected model and endpoint,
-  including formats and limits. Re-evaluate support when model selection changes;
-  understanding an image or audio clip does not imply generating that medium.
-- Reuse normalized media/artifact contracts, authenticated transfer, bounded
-  processing, cancellation, retention, cleanup, and delivery receipts. Preserve
-  source attachments and identify derived content, subject to retention policy.
-- Prefer native inputs when supported. Reuse platform transcripts where available
-  and appropriate; use alternative transcription, parsing, or conversion only when
-  configured. Report unsupported media without silent provider switching or uploads.
-- Extend channel/client adapters for uploads, downloads, captions, previews or
-  playback, and platform limits. Distinguish native media delivery from a generic
-  file attachment, with a clear alternative when the interface cannot render it.
-
-### Files And Images
-
-- Read native document inputs or use explicit parsers for PDF, office documents,
-  spreadsheets, and text. Bound decompression and parsing; report encrypted,
-  malformed, unsupported, or partly interpreted documents with their limitations.
-- Generate and edit downloadable shell scripts, source files, JSON, CSV, Markdown,
-  and other text artifacts. Use tools/libraries for PDF, spreadsheets, and binary
-  outputs. Creating or sending executable content must not execute it.
-- Support native vision and optional image generation/editing. Keep file names,
-  MIME types, versions, ownership, and provenance; deliver actual artifacts rather
-  than only code blocks or inaccessible host paths.
-
-### Voice And Video
-
-- Accept voice notes and audio through native audio models or optional local/remote
-  STT. Retain Whisper as an STT implementation and provide guided setup without
-  requiring hand-written wrappers for supported engines.
-- Add local/remote TTS and native audio output. Offer text, voice, both, or
-  follow-input replies, with voice and language selection independent of the
-  conversational model. Deliver voice notes or audio files as supported.
-- Support native video understanding and explicit alternatives using frames,
-  timestamps, and transcripts. Explain that extracted material loses information
-  and must not be presented as full native video comprehension.
-- Add optional image/video generation and editing backends with durable job state,
-  progress, cancellation, result retrieval, and expiry. Handle uncertain remote
-  completion without automatically repeating paid generation.
-
-Acceptance: receive, interpret, create, and deliver representative files and media
-on supported routes; test mixed turns, model switches, limits, interrupted jobs,
-and missing capabilities with deterministic fixtures and separate functional checks.
-
 ## v0.8 | Federation
 
 Connect Orchestrators as peers and let native or external agents request work
@@ -655,7 +657,7 @@ leaking authority, duplicating effects, or losing task identity.
 Deliver first-party web and desktop applications alongside the TUI, all using
 the same daemon-owned agent, task, approval, and artifact state.
 
-- Harden the v0.3 client API for authenticated remote use: encrypted transport,
+- Harden the v0.6 client API for authenticated remote use: encrypted transport,
   device/session credentials, pairing, revocation, bounded subscriptions, resumable
   event cursors, and explicit protocol compatibility. Avoid public unauthenticated
   listeners; distinguish remote access from local IPC and bind privileges narrowly.
@@ -679,7 +681,7 @@ the same daemon-owned agent, task, approval, and artifact state.
 Acceptance: the same authorized work can be started in TUI and observed or resumed
 in web/desktop clients without a second runtime, duplicate actions, or state divergence.
 
-## v0.10 | Mobile
+### Mobile
 
 Provide Android and iOS clients that make the Orchestrator accessible away from
 the workstation without requiring the phone to host the AOS daemon.
@@ -701,7 +703,7 @@ the workstation without requiring the phone to host the AOS daemon.
 Acceptance: a phone can submit an objective, disconnect, receive or recover progress,
 review a decision, and retrieve an artifact without losing or duplicating work.
 
-## v0.11 | Ecosystem
+## v0.10 | Ecosystem
 
 Make clients, intelligence providers, channels, and optional capabilities easy
 to extend and release independently using established contracts and packaging.
@@ -731,12 +733,13 @@ to extend and release independently using established contracts and packaging.
 - Reuse installation, supervision, integrity, rollback, and permission machinery
   across categories. Support multi-capability components; categories must not be
   inferred solely from directory names or cause duplicate runtime implementations.
+- Add Matrix and Email channel plugins that follow the channel plugin playbook.
 
 Acceptance: an independently released third-party component passes conformance,
 installs from a verified artifact, declares its authority, and updates or rolls back
 without breaking unrelated agents or requiring a kernel release.
 
-## v0.12 | Deployment
+## v0.11 | Deployment
 
 Scale deployment choices from a small personal host to isolated agent instances
 and multiple machines, without making distributed infrastructure mandatory.
@@ -762,7 +765,34 @@ Acceptance: a declared deployment topology survives node loss and maintenance
 within its documented guarantees; restoring an agent preserves identity and state
 without enabling simultaneous conflicting owners or replaying uncertain actions.
 
-## v0.13 | Efficiency
+## v0.12 | Realtime
+
+Extend recorded media to live voice and optional live video where both the
+provider and interface support it, while preserving the lightweight base setup.
+
+- Add optional streaming audio input/output, turn detection, playback, interruption,
+  and echo handling. Preserve transcripts and task continuity according to policy;
+  stop speech independently from cancelling unrelated agent work.
+- Add explicitly enabled camera/screen streams and supported live video inputs.
+  Negotiate codecs, sample rates, frame rates, bandwidth, and provider capabilities;
+  unsupported combinations fail clearly rather than silently recording elsewhere.
+- Bound session duration, concurrency, buffering, latency, and cost. Handle network
+  changes, reconnects, provider failure, device loss, and client suspension without
+  duplicated speech, orphan sessions, or accidentally continuing capture.
+- Use visible capture indicators and explicit microphone/camera permissions.
+  Define recording retention and deletion; default to retaining no raw live recording
+  beyond the processing needs unless the operator enables recording.
+
+Acceptance: a supported live session can be interrupted, disconnected, resumed,
+and stopped with bounded resources, clear capture state, and no unintended actions.
+
+## v0.13 | Stabilization
+
+Measure and remove confirmed bottlenecks, then freeze the proposed v1.0
+contracts and validate the supported AOS as a complete product. This is the final
+planned v0.x series, including release candidates.
+
+### Efficiency
 
 Use accumulated measurements to establish supported resource envelopes and
 remove confirmed bottlenecks across the complete AOS.
@@ -787,31 +817,7 @@ remove confirmed bottlenecks across the complete AOS.
 Acceptance: published resource and latency budgets hold across representative
 platforms and sustained workloads, with explicit limits and regression gates.
 
-## v0.14 | Realtime
-
-Extend recorded media to live voice and optional live video where both the
-provider and interface support it, while preserving the lightweight base setup.
-
-- Add optional streaming audio input/output, turn detection, playback, interruption,
-  and echo handling. Preserve transcripts and task continuity according to policy;
-  stop speech independently from cancelling unrelated agent work.
-- Add explicitly enabled camera/screen streams and supported live video inputs.
-  Negotiate codecs, sample rates, frame rates, bandwidth, and provider capabilities;
-  unsupported combinations fail clearly rather than silently recording elsewhere.
-- Bound session duration, concurrency, buffering, latency, and cost. Handle network
-  changes, reconnects, provider failure, device loss, and client suspension without
-  duplicated speech, orphan sessions, or accidentally continuing capture.
-- Use visible capture indicators and explicit microphone/camera permissions.
-  Define recording retention and deletion; default to retaining no raw live recording
-  beyond the processing needs unless the operator enables recording.
-
-Acceptance: a supported live session can be interrupted, disconnected, resumed,
-and stopped with bounded resources, clear capture state, and no unintended actions.
-
-## v0.15 | Stabilization
-
-Freeze the proposed v1.0 contracts and validate the supported AOS as a complete
-product. This is the final planned v0.x series, including release candidates.
+### Validation
 
 - Publish the v1.0 scope, supported platform/architecture matrix, resource envelopes,
   component compatibility ranges, upgrade origins, and maintenance policy. Separate
@@ -838,7 +844,7 @@ product. This is the final planned v0.x series, including release candidates.
 Acceptance: release candidates satisfy the v1.0 criteria with reproducible evidence;
 unmet gates delay v1.0 rather than being hidden by a version bump.
 
-## v1.0 Acceptance
+## v1.0 | Stable
 
 v1.0 is a maintained stability contract, not a claim of perfection or support for
 every model, device, or external service. Declare the supported boundary and make

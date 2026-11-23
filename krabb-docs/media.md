@@ -47,11 +47,11 @@ Krabb replies with text on every channel and client.
 | Output | Telegram | WhatsApp | Discord | Slack | Signal | TUI |
 |---|---|---|---|---|---|---|
 | Text | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Files and images | v0.7 | v0.7 | v0.7 | v0.7 | v0.7 | v0.7 |
-| Voice replies | v0.7 | v0.7 | v0.7 | v0.7 | v0.7 | v0.7 |
-| Generated images or video | v0.7 | v0.7 | v0.7 | v0.7 | v0.7 | v0.7 |
+| Files and images | v0.3 | v0.3 | v0.3 | v0.3 | v0.3 | v0.3 |
+| Voice replies | v0.3 | v0.3 | v0.3 | v0.3 | v0.3 | v0.3 |
+| Generated images or video | v0.3 | v0.3 | v0.3 | v0.3 | v0.3 | v0.3 |
 
 ## Planned
 
 Video, office documents, file and voice replies, and media generation are
-planned for the [v0.7 Media](../ROADMAP.md#v07--media) milestone.
+planned for the [v0.3 | Media](../ROADMAP.md#v03--media) milestone.
