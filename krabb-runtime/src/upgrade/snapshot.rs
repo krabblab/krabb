@@ -1,6 +1,7 @@
 //! The retained recovery point: previous binaries plus home configuration and state.
 //!
-//! Credentials are never copied, so restoring cannot reactivate removed secrets.
+//! Credentials are never copied, so restoring cannot reactivate removed secrets. Plugins
+//! uninstalled after the point are recorded beside it, so restoring keeps their grants revoked.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,9 @@ use super::*;
 const DIRECTORY: &str = "updates/recovery";
 const POINT: &str = "point.json";
 const POINT_LIMIT: u64 = 1024 * 1024;
+const REVOKED: &str = "revoked.json";
+const REVOKED_LIMIT: u64 = 64 * 1024;
+const REVOKED_PLUGINS: usize = 256;
 const EXCLUDED: &[&str] = &["media", "workspaces"];
 
 /// Recovery point record; a binary restored from it must be able to read it.
@@ -119,6 +123,11 @@ pub(super) async fn restore(
     }
 
     recovery::restore(root, &directory.join("home"), &point.home)?;
+
+    for id in revoked(root)? {
+        crate::revoke::grants(root, &id)?;
+    }
+
     recovery::remove(&root.join(krabb_migrations::JOURNAL))?;
     recovery::remove(&root.join(krabb_migrations::BACKUP))?;
 
@@ -144,7 +153,7 @@ pub(super) async fn rollback(
         );
     };
 
-    let question = if point.accepted {
+    let mut question = if point.accepted {
         format!(
             "Restore Krabb {} from the recovery point taken before updating to {}?\n\
              Conversations, tasks, settings, and plugins changed since then will be replaced, and \
@@ -154,6 +163,16 @@ pub(super) async fn rollback(
     } else {
         format!("Restore Krabb {} after the unfinished update to {}?", point.from, point.to)
     };
+
+    let uninstalled = revoked(root)?;
+
+    if !uninstalled.is_empty() {
+        question.push_str(&format!(
+            "\nPlugins uninstalled since then come back without their sharing grants or \
+             credentials: {}.",
+            uninstalled.join(", ")
+        ));
+    }
 
     if !confirm_action(yes, json, &question)? {
         print_cancelled("Rollback", json);
@@ -192,6 +211,45 @@ pub(super) fn summary(root: &Path) -> Option<serde_json::Value> {
         "accepted": point.accepted,
         "path": store(root),
     }))
+}
+
+/// Records a plugin being uninstalled while a recovery point exists.
+///
+/// It runs before any grant is removed, so a failed uninstall errs toward revoking access.
+pub(crate) fn uninstalled(root: &Path, id: &str) -> Result<(), PluginError> {
+    if !store(root).join(POINT).is_file() {
+        return Ok(());
+    }
+
+    let mut ids = revoked(root)?;
+
+    if ids.iter().any(|known| known == id) {
+        return Ok(());
+    }
+
+    if ids.len() >= REVOKED_PLUGINS {
+        return Err("Too many plugins were uninstalled since the last update.".into());
+    }
+
+    ids.push(id.to_owned());
+    krabb_file::save(store(root).join(REVOKED), serde_json::to_vec_pretty(&ids)?)?;
+
+    Ok(())
+}
+
+fn revoked(root: &Path) -> Result<Vec<String>, PluginError> {
+    let Some(bytes) = krabb_file::load(store(root).join(REVOKED), REVOKED_LIMIT)? else {
+        return Ok(Vec::new());
+    };
+
+    let ids: Vec<String> = serde_json::from_slice(&bytes)
+        .map_err(|_| "The record of plugins uninstalled since the update is invalid.")?;
+
+    if ids.len() > REVOKED_PLUGINS || ids.iter().any(|id| !crate::valid(id)) {
+        return Err("The record of plugins uninstalled since the update is invalid.".into());
+    }
+
+    Ok(ids)
 }
 
 fn write(root: &Path, point: &Point) -> Result<(), PluginError> {

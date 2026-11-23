@@ -66,7 +66,7 @@ fn secrets(lock: &Lock, id: &str) -> Vec<String> {
     declared(entry).difference(&shared).cloned().collect()
 }
 
-fn grants(root: &Path, id: &str) -> Result<usize, PluginError> {
+pub(super) fn grants(root: &Path, id: &str) -> Result<usize, PluginError> {
     let Some(text) = load_config_text(root)? else {
         return Ok(0);
     };

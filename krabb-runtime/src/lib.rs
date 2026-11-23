@@ -3078,6 +3078,7 @@ fn remove_guarded(
     }
 
     guard(&lock)?;
+    upgrade::uninstalled(home_root, &name.id)?;
 
     let revoked = revoke::revoke(home_root, &name.id, &lock)?;
 

@@ -368,6 +368,74 @@ async fn recovery_points_restore_binaries_and_state_but_not_credentials() {
 }
 
 #[tokio::test]
+async fn rollback_keeps_grants_of_plugins_uninstalled_after_the_update() {
+    let root = temp_root("revoked");
+    let home = root.join("home");
+    let service = root.join("krabb.service");
+
+    let config = r#"
+[[visibility]]
+data = ["context"]
+resources = ["global", "channels.echo"]
+
+[channels.telegram]
+visibility = [{ data = ["files"], resources = ["channels.echo"] }]
+"#;
+
+    fs::create_dir_all(home.join("plugins/echo")).unwrap();
+    fs::write(home.join("config.toml"), config).unwrap();
+    fs::write(home.join("plugins.lock"), "{}").unwrap();
+
+    snapshot::uninstalled(&home, "echo").unwrap();
+
+    assert!(!snapshot::store(&home).join("revoked.json").exists());
+
+    let mut point = snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+
+    snapshot::accept(&home, &mut point).unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+
+    assert_eq!(
+        fs::read_to_string(snapshot::store(&home).join("revoked.json")).unwrap(),
+        "[\n  \"echo\"\n]"
+    );
+
+    crate::revoke::grants(&home, "echo").unwrap();
+    fs::remove_dir_all(home.join("plugins/echo")).unwrap();
+
+    snapshot::rollback(&home, &service, true, true).await.unwrap();
+
+    let restored = fs::read_to_string(home.join("config.toml")).unwrap();
+
+    assert!(home.join("plugins/echo").is_dir());
+    assert!(!restored.contains("channels.echo"), "{restored}");
+    assert!(restored.contains("global"), "{restored}");
+    assert!(!snapshot::store(&home).exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn invalid_uninstall_records_block_rollback() {
+    let root = temp_root("revoked-invalid");
+    let home = root.join("home");
+
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "").unwrap();
+    snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+    krabb_file::save(snapshot::store(&home).join("revoked.json"), b"[\"../escape\"]").unwrap();
+
+    let error =
+        snapshot::rollback(&home, &root.join("krabb.service"), true, true).await.unwrap_err();
+
+    assert!(error.to_string().contains("uninstalled since the update is invalid"), "{error}");
+    assert!(snapshot::uninstalled(&home, "echo").is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn finishing_requires_the_staged_version() {
     let root = temp_root("finish");
     let dir = root.join("stage");
