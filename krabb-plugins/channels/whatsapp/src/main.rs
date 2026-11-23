@@ -700,6 +700,12 @@ fn normalize(value: &Value) -> Vec<Value> {
                         content.push(json!({"kind":"audio","uri":uri,"mime":message["audio"]["mime_type"].as_str()}));
                     }
 
+                    "sticker" if message["sticker"]["animated"] != true => {
+                        let Some(uri) = media_ref(&message["sticker"]["id"]) else { continue };
+
+                        content.push(json!({"kind":"image","uri":uri,"alt":"Sticker"}));
+                    }
+
                     "document" => {
                         let Some(uri) = media_ref(&message["document"]["id"]) else { continue };
 
@@ -1308,6 +1314,16 @@ mod tests {
         assert_eq!(events[1]["content"][0]["kind"], "audio");
         assert_eq!(events[2]["content"][0]["kind"], "image");
         assert_eq!(events[3]["content"][0]["kind"], "text");
+
+        let stickers = json!({"entry":[{"changes":[{"value":{"messages":[{"id":"s1","from":"1","type":"sticker","sticker":{"id":"k1","mime_type":"image/webp"}},{"id":"s2","from":"1","type":"sticker","sticker":{"id":"k2","animated":true}}]}}]}]});
+
+        let events = normalize(&stickers);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]["content"][0],
+            json!({"kind":"image","uri":"whatsapp://media/k1","alt":"Sticker"})
+        );
     }
 
     #[test]

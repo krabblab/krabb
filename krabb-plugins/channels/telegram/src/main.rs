@@ -564,6 +564,14 @@ fn valid_file_id(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
 }
 
+fn still(media: &serde_json::Value, moving: bool) -> Option<&str> {
+    if !moving && let Some(file) = media["file_id"].as_str() {
+        return Some(file);
+    }
+
+    media["thumbnail"]["file_id"].as_str().or_else(|| media["thumb"]["file_id"].as_str())
+}
+
 fn media_root() -> krabb_core::Result<PathBuf> {
     let root = std::env::var_os("KRABB_MEDIA")
         .or_else(|| {
@@ -851,8 +859,24 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
         content.push(json!({"kind": "image", "uri": format!("telegram://file/{id}"), "alt": message["caption"].as_str()}));
     }
 
-    if let Some(file) = message["document"]["file_id"].as_str() {
+    let animation = &message["animation"];
+    let gif = animation["mime_type"].as_str() == Some("image/gif");
+    let sticker = &message["sticker"];
+    let moving = sticker["is_animated"] == true || sticker["is_video"] == true;
+
+    if let Some(frame) = still(animation, !gif) {
+        content.push(json!({"kind": "image", "uri": format!("telegram://file/{frame}"), "alt": "GIF, first frame only"}));
+    } else if let Some(file) = message["document"]["file_id"].as_str() {
         content.push(json!({"kind": "file", "uri": format!("telegram://file/{file}"), "name": message["document"]["file_name"].as_str().unwrap_or("document"), "mime": message["document"]["mime_type"].as_str()}));
+    }
+
+    if let Some(frame) = still(sticker, moving) {
+        let alt = sticker["emoji"]
+            .as_str()
+            .map_or_else(|| "Sticker".to_owned(), |emoji| format!("Sticker {emoji}"));
+
+        content
+            .push(json!({"kind": "image", "uri": format!("telegram://file/{frame}"), "alt": alt}));
     }
 
     if let Some(file) = message["voice"]["file_id"].as_str() {
@@ -988,11 +1012,65 @@ mod tests {
 
         let unsupported = normalize(json!([{
             "update_id": 8,
-            "message": {"chat": {"id": 8, "type": "private"}, "sticker": {"file_id": "sticker"}}
+            "message": {
+                "chat": {"id": 8, "type": "private"},
+                "sticker": {"file_id": "sticker", "is_animated": true}
+            }
         }]));
 
         assert_eq!(unsupported["events"][0]["id"], 8);
         assert!(unsupported["events"][0]["content"].as_array().unwrap().is_empty());
+
+        let stickers = normalize(json!([
+            {"update_id": 10, "message": {
+                "chat": {"id": 8, "type": "private"},
+                "sticker": {"file_id": "still", "emoji": "🦀"}
+            }},
+            {"update_id": 11, "message": {
+                "chat": {"id": 8, "type": "private"},
+                "sticker": {"file_id": "video", "is_video": true, "thumbnail": {"file_id": "frame"}}
+            }}
+        ]));
+
+        assert_eq!(
+            stickers["events"][0]["content"],
+            json!([{"kind": "image", "uri": "telegram://file/still", "alt": "Sticker 🦀"}])
+        );
+
+        assert_eq!(
+            stickers["events"][1]["content"],
+            json!([{"kind": "image", "uri": "telegram://file/frame", "alt": "Sticker"}])
+        );
+
+        let animations = normalize(json!([
+            {"update_id": 12, "message": {
+                "chat": {"id": 8, "type": "private"},
+                "caption": "so peak",
+                "animation": {"file_id": "clip", "mime_type": "video/mp4", "thumbnail": {"file_id": "preview"}},
+                "document": {"file_id": "clip", "file_name": "clip.gif.mp4", "mime_type": "video/mp4"}
+            }},
+            {"update_id": 13, "message": {
+                "chat": {"id": 8, "type": "private"},
+                "animation": {"file_id": "gif", "mime_type": "image/gif"},
+                "document": {"file_id": "gif", "file_name": "funny.gif", "mime_type": "image/gif"}
+            }},
+            {"update_id": 14, "message": {
+                "chat": {"id": 8, "type": "private"},
+                "animation": {"file_id": "bare", "mime_type": "video/mp4"},
+                "document": {"file_id": "bare", "file_name": "bare.mp4", "mime_type": "video/mp4"}
+            }}
+        ]));
+
+        assert_eq!(
+            animations["events"][0]["content"],
+            json!([
+                {"kind": "text", "text": "so peak"},
+                {"kind": "image", "uri": "telegram://file/preview", "alt": "GIF, first frame only"}
+            ])
+        );
+
+        assert_eq!(animations["events"][1]["content"][0]["uri"], "telegram://file/gif");
+        assert_eq!(animations["events"][2]["content"][0]["kind"], "file");
 
         let media = normalize(
             json!([{"update_id": 5, "message": {"chat": {"id": 8, "type": "private"}, "document": {"file_id": "file", "file_name": "note.txt", "mime_type": "text/plain"}}}]),
