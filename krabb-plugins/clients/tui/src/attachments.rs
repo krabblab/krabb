@@ -82,6 +82,29 @@ pub(crate) fn pasted(text: &str) -> Option<Vec<Attachment>> {
     Some(paths.into_iter().map(Attachment::file).collect())
 }
 
+/// Reads the path given to `/attach`, relative to the directory Krabb was started in.
+pub(crate) fn named(text: &str, base: &Path) -> Result<Attachment, String> {
+    let words = words(text.trim()).filter(|words| words.len() == 1);
+    let word = words.and_then(|mut words| words.pop()).ok_or("Usage: /attach <path>.")?;
+    let path = Path::new(&word);
+    let path = if path.is_absolute() { path.to_path_buf() } else { base.join(path) };
+
+    resolve(&path.to_string_lossy())
+        .map(Attachment::file)
+        .ok_or_else(|| format!("{word} is not a file Krabb can read."))
+}
+
+/// Deletes the clipboard images Krabb saved once the message carrying them is handled.
+pub(crate) struct Cleanup<'a>(pub &'a [Attachment]);
+
+impl Drop for Cleanup<'_> {
+    fn drop(&mut self) {
+        for attachment in self.0.iter().filter(|attachment| attachment.temporary) {
+            let _ = std::fs::remove_file(&attachment.path);
+        }
+    }
+}
+
 /// Splits pasted text the way a shell would: quotes group words and backslashes escape spaces.
 fn words(text: &str) -> Option<Vec<String>> {
     let mut words = Vec::new();
@@ -100,7 +123,7 @@ fn words(text: &str) -> Option<Vec<String>> {
                 started = true;
             }
 
-            (None, '\\') => {
+            (None, '\\') if cfg!(not(windows)) => {
                 word.push(characters.next()?);
                 started = true;
             }
@@ -196,7 +219,15 @@ pub(crate) fn clipboard() -> Result<Attachment, String> {
 
     let sequence = CLIPBOARD.fetch_add(1, Ordering::Relaxed) + 1;
     let name = format!("clipboard-{sequence}.png");
-    let path = std::env::temp_dir().join(format!("krabb-{}-{name}", std::process::id()));
+    let mut nonce = [0_u8; 8];
+
+    getrandom::fill(&mut nonce).map_err(|_| "The clipboard image could not be saved.")?;
+
+    let nonce = nonce.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let directory = std::env::var_os("KRABB_HOME")
+        .map(|home| PathBuf::from(home).join("run"))
+        .unwrap_or_else(std::env::temp_dir);
+    let path = directory.join(format!("clipboard-{nonce}.png"));
 
     krabb_file::save(&path, png).map_err(|_| "The clipboard image could not be saved.")?;
 
@@ -237,6 +268,28 @@ mod tests {
         assert!(pasted(&root.display().to_string()).is_none());
         assert!(pasted(&format!("{0}\n{0}", note.display())).is_none());
         assert!(pasted("   ").is_none());
+
+        assert_eq!(named("note.txt", &root).unwrap().path, note);
+        assert_eq!(named(&escaped, &root).unwrap().path, spaced);
+        assert_eq!(
+            named("missing.txt", &root).unwrap_err(),
+            "missing.txt is not a file Krabb can read."
+        );
+
+        assert_eq!(named("", &root).unwrap_err(), "Usage: /attach <path>.");
+        assert!(named("a b", &root).is_err());
+
+        let temporary = root.join("clip.png");
+
+        std::fs::write(&temporary, b"png").unwrap();
+
+        let attachment =
+            Attachment { path: temporary.clone(), name: "clip.png".into(), temporary: true };
+
+        drop(Cleanup(&[attachment, Attachment::file(note.clone())]));
+
+        assert!(!temporary.exists());
+        assert!(note.exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

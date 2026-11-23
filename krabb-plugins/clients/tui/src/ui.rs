@@ -874,6 +874,7 @@ where
     cancelled.store(true, Ordering::Relaxed);
     let _ = tokio::task::spawn_blocking(move || event_thread.join()).await;
 
+    drop(crate::attachments::Cleanup(&app.attachments));
     Ok(())
 }
 
@@ -1246,6 +1247,7 @@ const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/clear", "Clear this session's conversation."),
     ("/statusline", "Choose which details appear in the statusline, or reset them."),
     ("/animation", "Show typewriter animation, or turn it on or off."),
+    ("/attach <path>", "Attach an image, PDF, text, or audio file to the next message."),
     ("/quit", "Leave the TUI."),
     ("/exit", "Leave the TUI."),
 ];
@@ -1630,6 +1632,8 @@ where
                         || command.starts_with("/approve ")
                         || command.starts_with("/deny ")
                         || command == "/animation"
+                        || command == "/attach"
+                        || command.starts_with("/attach ")
                         || command.starts_with("/animation ")
                         || command == "/statusline"
                         || command.starts_with("/statusline ");
@@ -1656,6 +1660,13 @@ where
                             app.push_system(&app.status.clone());
                         }
 
+                        return Ok(false);
+                    }
+
+                    if ordinary && busy && !app.attachments.is_empty() {
+                        app.status = "Krabb is busy, so send the attachments after this turn \
+                            finishes."
+                            .into();
                         return Ok(false);
                     }
 
@@ -1757,6 +1768,29 @@ where
                             app.complete_local_interaction(error.into());
                         }
 
+                        return Ok(false);
+                    }
+
+                    if let Some(path) = line
+                        .strip_prefix("/attach")
+                        .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+                    {
+                        let base = std::env::var_os("KRABB_TUI_LAUNCH_DIR")
+                            .map(PathBuf::from)
+                            .or_else(|| std::env::current_dir().ok())
+                            .unwrap_or_default();
+
+                        let message = match crate::attachments::named(path, &base) {
+                            Ok(attachment) => {
+                                app.attach(vec![attachment]);
+                                app.status.clone()
+                            }
+
+                            Err(error) => error,
+                        };
+
+                        app.push_bot(format!("{message}\n"));
+                        app.complete_local_interaction(message);
                         return Ok(false);
                     }
 
@@ -6592,6 +6626,41 @@ mod tests {
         assert_eq!(attachments[0].path, shot);
         assert!(app.attachments.is_empty());
         assert!(app.transcript.contains("[Attached: shot.png]"));
+
+        let (mut command_tx, _command_rx) = duplex(4096);
+        let mut app = App { model_available: true, ..App::default() };
+
+        app.input = format!("/attach {}", shot.display()).chars().collect();
+        app.cursor = app.input.len();
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.attachments.len(), 1);
+        assert!(app.transcript.contains("Attached shot.png."));
+
+        app.session_working = true;
+        app.input = "describe it".chars().collect();
+        app.cursor = app.input.len();
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.attachments.len(), 1);
+        assert_eq!(app.input.iter().collect::<String>(), "describe it");
+        assert!(app.status.starts_with("Krabb is busy, so send the attachments"));
 
         let _ = std::fs::remove_dir_all(root);
     }

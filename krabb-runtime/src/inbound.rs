@@ -401,7 +401,7 @@ pub(crate) fn prepare_images(messages: &mut [Message], media_root: &Path) {
                     let image = media_file(&uri, media_root)
                         .and_then(|path| read_image(&path, IMAGE_LIMIT.min(remaining)));
 
-                    match image.and_then(still) {
+                    match image.and_then(|image| still(image, IMAGE_LIMIT.min(remaining))) {
                         Some((mime, bytes)) => {
                             total = total.saturating_add(bytes.len());
                             Content::Image {
@@ -442,12 +442,12 @@ pub(crate) fn prepare_images(messages: &mut [Message], media_root: &Path) {
 }
 
 /// Sends animated and less common formats as a PNG of their first frame, which every provider reads.
-fn still((mime, bytes): (&'static str, Vec<u8>)) -> Option<(&'static str, Vec<u8>)> {
+fn still((mime, bytes): (&'static str, Vec<u8>), limit: usize) -> Option<(&'static str, Vec<u8>)> {
     if !matches!(mime, "image/gif" | "image/webp") {
         return Some((mime, bytes));
     }
 
-    frame::first(&bytes, IMAGE_LIMIT).map(|png| ("image/png", png))
+    frame::first(&bytes, limit).map(|png| ("image/png", png))
 }
 
 pub(crate) fn read_image(path: &Path, limit: usize) -> Option<(&'static str, Vec<u8>)> {

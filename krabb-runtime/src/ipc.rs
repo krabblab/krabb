@@ -2223,7 +2223,11 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 .map_err(|error| invalid(&format!("session.append.message is invalid: {error}")))?;
 
             let client =
-                requester(&request, state, "session.append").map_err(|error| invalid(&error))?;
+                requester(request, state, "session.append").map_err(|error| invalid(&error))?;
+
+            if !state.sessions.lock().map_err(lock)?.sessions.contains_key(id) {
+                return Err(not_found("Session was not found."));
+            }
 
             let root = message
                 .content
@@ -2248,10 +2252,6 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 return Err(invalid(krabb_core::types::SESSION_BUSY));
             }
 
-            if let Some(root) = &root {
-                message.content = attach::admit(std::mem::take(&mut message.content), root);
-            }
-
             if let Some(target) = request.params.get("reply_to").filter(|value| !value.is_null()) {
                 let target = target
                     .as_str()
@@ -2264,16 +2264,36 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 message.content = super::quote(std::mem::take(&mut message.content), &reply);
             }
 
-            let saved = serde_json::to_value(&message)?;
-
-            if reserved {
+            let owner = if reserved {
                 let owner = request.params["owner"]
                     .as_str()
                     .ok_or_else(|| invalid("session.append.owner is required."))?;
-                sessions.append_reserved(id, owner, message)?;
+
+                Some(owner)
             } else {
-                sessions.append(id, message)?;
+                None
+            };
+
+            let uploads = match &root {
+                Some(root) => {
+                    let (content, uploads) =
+                        attach::admit(std::mem::take(&mut message.content), root);
+
+                    message.content = content;
+                    uploads
+                }
+
+                None => Vec::new(),
+            };
+
+            let saved = serde_json::to_value(&message)?;
+
+            match owner {
+                Some(owner) => sessions.append_reserved(id, owner, message)?,
+                None => sessions.append(id, message)?,
             }
+
+            attach::release(&uploads);
 
             json!({"id": id, "saved": true, "message": saved})
         }

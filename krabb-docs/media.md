@@ -11,14 +11,14 @@ Legend: ✅ read by Krabb · 📝 skipped, and Krabb is told what was skipped an
 | Input | Telegram | WhatsApp | Discord | Slack | Signal | TUI |
 |---|---|---|---|---|---|---|
 | Text | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Photo or image | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ Ctrl+V or path |
-| Image sent as a file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ path |
-| GIF | ✅ first frame | 📝 sent as video | ✅ upload or GIF picker | ✅ upload or GIPHY | 📝 sent as video | ✅ path |
+| Photo or image | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ Ctrl+V or file |
+| Image sent as a file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ file |
+| GIF | ✅ first frame | 📝 sent as video | ✅ upload or GIF picker | ✅ upload or GIPHY | 📝 sent as video | ✅ file |
 | Sticker | ✅ | ✅ | ✅ (Lottie 📝) | — | ✅ | — |
 | Voice note | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Audio file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ path |
-| PDF | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ path |
-| Text or code file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ path |
+| Audio file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ file |
+| PDF | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ file |
+| Text or code file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ file |
 | Video | 📝 | 📝 | 📝 | 📝 | 📝 | 📝 |
 | Other files (office, archives) | 📝 | 📝 | 📝 | 📝 | 📝 | 📝 |
 
@@ -32,9 +32,10 @@ What each ✅ needs:
 - **PDFs** contribute their text layer; scanned pages without text are reported.
   Text from a PDF or text file is cut off after 64 KiB.
 - **Signal stickers** need `signal-cli` 0.13 or newer.
-- **TUI attachments**: paste or drag an absolute file path into the prompt, or
-  press Ctrl+V (Alt+V where the terminal keeps Ctrl+V) to attach a clipboard
-  image. Clipboard images need a local display; over SSH, paste a path instead.
+- **TUI attachments**: use `/attach <path>`, paste or drag an absolute file path
+  into the prompt (not on Windows), or press Ctrl+V (Alt+V where the terminal
+  keeps Ctrl+V) to attach a clipboard image. Clipboard images need a local
+  display; over SSH, use `/attach` instead.
 
 Each file may be up to 4 MiB. Images sent to the model are limited to 4 MiB
 per turn. See [Plugins](plugins.md) for how files are read and bounded.

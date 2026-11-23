@@ -55,17 +55,24 @@ async fn read(request: &IpcRequest, state: &State) -> io::Result<Vec<Content>> {
         return Err(not_found("Session was not found."));
     }
 
-    let root = media(state, id, client)?;
+    let (workspace, root) = place(state, id, client)?;
     let path = upload(&root, &bytes)?;
     let uri = format!("file://{}", path.display());
     let mut call = 0;
 
     let content = if audio {
-        let item = Content::Audio { uri, mime: None };
-        super::super::transcribe_media(&state.plugins, client, vec![item], &root, &mut call).await
+        let item = vec![Content::Audio { uri, mime: None }];
+
+        // Shared workspaces let the speech plugin read only files the catalog gives this client.
+        if let Some(workspace) = workspace.filter(|path| !crate::worktree::isolated(path)) {
+            crate::storage::attachments(&state.home, &workspace, client, &item)
+                .map_err(io::Error::other)?;
+        }
+
+        crate::transcribe_media(&state.plugins, client, item, &root, &mut call).await
     } else {
         let item = Content::File { uri, name: name.to_owned(), mime: None };
-        super::super::expand_media_files(vec![item], &root).await
+        crate::expand_media_files(vec![item], &root).await
     };
 
     if !content.iter().any(|item| matches!(item, Content::Image { .. })) {
@@ -75,7 +82,7 @@ async fn read(request: &IpcRequest, state: &State) -> io::Result<Vec<Content>> {
     Ok(content
         .into_iter()
         .map(|item| match item {
-            Content::Text { text } => Content::Text { text: super::super::clip(text, TEXT) },
+            Content::Text { text } => Content::Text { text: crate::clip(text, TEXT) },
             item => item,
         })
         .collect())
@@ -86,9 +93,12 @@ fn upload(root: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     let directory = krabb_file::directory(root, Path::new("uploads"))?;
     let mut count = 0;
 
-    for entry in std::fs::read_dir(&directory)? {
-        let entry = entry?;
-        let stale = entry.metadata()?.modified()?.elapsed().is_ok_and(|age| age > STALE);
+    for entry in std::fs::read_dir(&directory)?.flatten() {
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+
+        let stale = modified.elapsed().is_ok_and(|age| age > STALE);
 
         if stale {
             let _ = std::fs::remove_file(entry.path());
@@ -101,35 +111,57 @@ fn upload(root: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
         return Err(invalid("Too many attachments are waiting to be sent."));
     }
 
+    let mut nonce = [0_u8; 8];
+    getrandom::fill(&mut nonce).map_err(io::Error::other)?;
+
     let digest = crate::hex_digest(sha2::Sha256::digest(bytes));
-    let path = directory.join(format!("{digest}.bin"));
+    let path = directory.join(format!("{digest}-{}.bin", crate::hex_digest(nonce)));
 
     krabb_file::save(&path, bytes)?;
     Ok(path)
 }
 
-/// Pins uploaded images into retained storage; the caller holds the session lock until saving.
-pub(super) fn admit(content: Vec<Content>, root: &Path) -> Vec<Content> {
-    let uploads: Vec<PathBuf> = content
+/// Pins uploaded images into retained storage and returns the uploads to delete once saved.
+/// The caller holds the session lock until the message is durable.
+pub(super) fn admit(content: Vec<Content>, root: &Path) -> (Vec<Content>, Vec<PathBuf>) {
+    let directory = std::fs::canonicalize(root.join("uploads")).ok();
+
+    let uploads: Vec<Option<PathBuf>> = content
         .iter()
-        .filter_map(|item| match item {
-            Content::Image { uri, .. } => super::super::media_file(uri, root),
+        .map(|item| match item {
+            Content::Image { uri, .. } => crate::media_file(uri, root),
             _ => None,
         })
-        .filter(|path| path.parent().is_some_and(|parent| parent.ends_with("uploads")))
+        .map(|path| {
+            path.filter(|path| directory.is_some() && path.parent() == directory.as_deref())
+        })
         .collect();
 
-    let content = super::super::media::pin(content, root);
+    let pinned = crate::media::pin(content.clone(), root);
 
+    let moved = uploads
+        .into_iter()
+        .zip(content.iter().zip(&pinned))
+        .filter_map(|(path, (before, after))| path.filter(|_| before != after))
+        .collect();
+
+    (pinned, moved)
+}
+
+/// Deletes uploads whose images were copied into retained storage by a saved message.
+pub(super) fn release(uploads: &[PathBuf]) {
     for path in uploads {
         let _ = std::fs::remove_file(path);
     }
-
-    content
 }
 
 /// Resolves the media directory a client's turn reads attachments from.
 pub(super) fn media(state: &State, id: &str, client: &str) -> io::Result<PathBuf> {
+    place(state, id, client).map(|(_, root)| root)
+}
+
+/// Resolves a client turn's workspace and the media directory inside it.
+fn place(state: &State, id: &str, client: &str) -> io::Result<(Option<PathBuf>, PathBuf)> {
     let saved = {
         let sessions = state.sessions.lock().map_err(lock)?;
         sessions.sessions.get(id).and_then(|session| session.workspace.clone())
@@ -138,8 +170,12 @@ pub(super) fn media(state: &State, id: &str, client: &str) -> io::Result<PathBuf
     let policy = state.config.clients.get(client).cloned().unwrap_or_default();
 
     match workspace(state, id, policy.worktree, saved)? {
-        Some(workspace) => super::super::worktree::media(&workspace, client),
-        None => Ok(super::super::media_root_at(&state.home)),
+        Some(workspace) => {
+            let root = crate::worktree::media(&workspace, client)?;
+            Ok((Some(workspace), root))
+        }
+
+        None => Ok((None, crate::media_root_at(&state.home))),
     }
 }
 
@@ -151,14 +187,12 @@ pub(super) fn workspace(
     saved: Option<String>,
 ) -> io::Result<Option<PathBuf>> {
     if worktree {
-        return super::super::worktree::conversation(id, &state.home)
-            .map(Some)
-            .map_err(io::Error::other);
+        return crate::worktree::conversation(id, &state.home).map(Some).map_err(io::Error::other);
     }
 
     match saved {
         Some(saved) => Ok(Some(PathBuf::from(saved))),
-        None => super::super::sharing::workspace(&state.root).map_err(io::Error::other),
+        None => crate::sharing::workspace(&state.root).map_err(io::Error::other),
     }
 }
 
@@ -168,7 +202,7 @@ pub(super) fn accepted(content: &Content, root: Option<&Path>) -> bool {
         Content::Text { text } => text.len() <= TEXT,
 
         Content::Image { uri, .. } => {
-            root.is_some_and(|root| super::super::media_file(uri, root).is_some())
+            root.is_some_and(|root| crate::media_file(uri, root).is_some())
         }
 
         _ => false,
@@ -197,7 +231,7 @@ mod tests {
 
     #[test]
     fn reads_uploads_like_channel_media() {
-        let state = super::super::tests::state_at("attach-read");
+        let state = crate::ipc::tests::state_at("attach-read");
 
         state.sessions.lock().unwrap().create("s", "model").unwrap();
 
@@ -222,10 +256,16 @@ mod tests {
         assert!(accepted(&image[0], Some(&root)));
         assert!(!accepted(&image[0], None));
 
-        let saved = admit(image.clone(), &root);
+        let (saved, uploads) = admit(image.clone(), &root);
 
         assert_ne!(saved, image);
+        assert_eq!(uploads, vec![path.clone()]);
+        assert!(path.exists());
+
+        release(&uploads);
+
         assert!(!path.exists());
+        assert_eq!(admit(saved.clone(), &root), (saved, Vec::new()));
 
         let uploads = std::fs::read_dir(root.join("uploads")).unwrap().count();
 
@@ -236,7 +276,7 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_uploads() {
-        let state = super::super::tests::state_at("attach-reject");
+        let state = crate::ipc::tests::state_at("attach-reject");
 
         state.sessions.lock().unwrap().create("s", "model").unwrap();
 

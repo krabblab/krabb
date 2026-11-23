@@ -638,6 +638,7 @@ where
         while let Some(line) = lines.next_line().await? {
             let (line, attachments) = attachments::decode(&line)
                 .unwrap_or_else(|| (decode_terminal_input(&line), Vec::new()));
+            let _cleanup = attachments::Cleanup(&attachments);
             let line = line.trim();
 
             if line == "/quit" || line == "/exit" {
@@ -1303,6 +1304,7 @@ where
 
                 Err(error) => {
                     if reply_to.is_none() && !line.starts_with('/') && !line.starts_with('!')
+                        && attachments.is_empty()
                         && error.to_string().contains(krabb_core::types::SESSION_BUSY) {
                         let event = enqueue_input(
                             &home,
@@ -1319,7 +1321,13 @@ where
                         continue;
                     }
 
-                    let message = if error.to_string().contains(krabb_core::types::SESSION_BUSY) {
+                    let message = if error.to_string().contains(krabb_core::types::SESSION_BUSY)
+                        && !attachments.is_empty()
+                    {
+                        "Krabb is already working in this session, so the attachments were not \
+                        sent.\nAttach them again when the current turn finishes."
+                            .to_owned()
+                    } else if error.to_string().contains(krabb_core::types::SESSION_BUSY) {
                         "Krabb is already working in this session.\nWait for the current turn to \
                         finish."
                             .to_owned()
@@ -1382,11 +1390,11 @@ where
             for attachment in &attachments {
                 match upload(&home, &session, attachment, host).await {
                     Ok(items) => content.extend(items),
-                    Err(error) => failed = failed.or(Some(error)),
-                }
 
-                if attachment.temporary {
-                    let _ = std::fs::remove_file(&attachment.path);
+                    Err(error) => {
+                        failed = Some(error);
+                        break;
+                    }
                 }
             }
 

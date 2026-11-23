@@ -4,10 +4,18 @@ use std::io::Cursor;
 
 use image::{ImageFormat, ImageReader, Limits};
 
-const SIDE: u32 = 4096;
+// The WebP decoder allocates canvases outside `Limits`, so the header size check bounds them too.
+const SIDE: u32 = 2048;
 const MEMORY: u64 = 64 * 1024 * 1024;
 
 pub(crate) fn first(bytes: &[u8], limit: usize) -> Option<Vec<u8>> {
+    let (width, height) =
+        ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()?;
+
+    if width > SIDE || height > SIDE {
+        return None;
+    }
+
     let mut limits = Limits::default();
 
     limits.max_image_width = Some(SIDE);
@@ -48,9 +56,17 @@ mod tests {
     }
 
     #[test]
+    fn converts_webp_to_png() {
+        let png = first(&encode(2, 5, ImageFormat::WebP), 1024 * 1024).unwrap();
+
+        assert_eq!(image::load_from_memory(&png).unwrap().height(), 5);
+    }
+
+    #[test]
     fn rejects_oversized_or_invalid_images() {
         assert!(first(&encode(SIDE + 1, 1, ImageFormat::Gif), usize::MAX).is_none());
         assert!(first(&encode(64, 64, ImageFormat::Gif), 16).is_none());
+        assert!(first(&encode(1, SIDE + 1, ImageFormat::WebP), usize::MAX).is_none());
         assert!(first(b"GIF89a broken", usize::MAX).is_none());
     }
 }

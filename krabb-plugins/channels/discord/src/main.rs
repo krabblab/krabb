@@ -41,6 +41,7 @@ const TEXT_LIMIT: usize = 256 * 1024;
 const MEDIA_LIMIT: usize = 4 * 1024 * 1024;
 const ATTACHMENTS: usize = 256;
 const MEDIA_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
+const PREVIEW_WAIT: Duration = Duration::from_secs(2);
 const ATTACHMENT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const PENDING_DISPATCHES: usize = 256;
 const PENDING_DISPATCH_BYTES: usize = 16 * 1024 * 1024;
@@ -939,14 +940,14 @@ async fn refresh_attachment(
     token: &str,
     base: &str,
 ) -> krabb_core::Result<Attachment> {
-    let value = message(
-        client,
-        reqwest::Method::GET,
-        format!("{base}/channels/{channel}/messages/{message_id}"),
-        token,
-        Value::Null,
-    )
-    .await?;
+    let url = format!("{base}/channels/{channel}/messages/{message_id}");
+    let mut value = message(client, reqwest::Method::GET, url.clone(), token, Value::Null).await?;
+
+    // Discord builds link previews after the message arrives, so give a GIF link one more look.
+    if id.contains("-e") && previews(&value).is_empty() {
+        tokio::time::sleep(PREVIEW_WAIT).await;
+        value = message(client, reqwest::Method::GET, url, token, Value::Null).await?;
+    }
 
     if value["id"].as_str() != Some(message_id) || value["channel_id"].as_str() != Some(channel) {
         return Err(krabb_core::Error::Denied(
@@ -1052,6 +1053,11 @@ fn sticker(value: &Value) -> Option<(&str, &str, &'static str)> {
     };
 
     Some((id, name, extension))
+}
+
+/// Preview images of a message's embeds, numbered in order so `e0` is always the first.
+fn previews(value: &Value) -> Vec<&str> {
+    value["embeds"].as_array().into_iter().flatten().filter_map(preview).take(10).collect()
 }
 
 fn preview(value: &Value) -> Option<&str> {
@@ -1899,14 +1905,13 @@ fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
         }
     }
 
-    let embeds = value["embeds"].as_array().map_or(0, Vec::len);
-    let previews = (0..embeds.min(10)).filter(|index| preview(&value["embeds"][*index]).is_some());
+    let previews = previews(value).len();
 
-    for index in previews.collect::<Vec<_>>() {
+    for index in 0..previews {
         content.push(json!({"kind": "image", "uri": format!("discord://attachment/{channel}/{message_id}/e{index}"), "alt": "Link preview"}));
     }
 
-    if embeds == 0 && gif_link(text) {
+    if previews == 0 && gif_link(text) {
         content.push(json!({"kind": "image", "uri": format!("discord://attachment/{channel}/{message_id}/e0"), "alt": "GIF, first frame only"}));
     }
 
@@ -1952,18 +1957,16 @@ fn remember_attachments(value: &Value, attachments: &mut BTreeMap<String, Attach
     }
 
     if let Some(message) = value["id"].as_str() {
-        for (index, item) in value["embeds"].as_array().into_iter().flatten().take(10).enumerate() {
-            if let Some(url) = preview(item) {
-                let attachment = Attachment {
-                    url: url.into(),
-                    name: "preview.bin".into(),
-                    mime: None,
-                    size: None,
-                    expires,
-                };
+        for (index, url) in previews(value).into_iter().enumerate() {
+            let attachment = Attachment {
+                url: url.into(),
+                name: "preview.bin".into(),
+                mime: None,
+                size: None,
+                expires,
+            };
 
-                attachments.insert(format!("{message}-e{index}"), attachment);
-            }
+            attachments.insert(format!("{message}-e{index}"), attachment);
         }
     }
 
@@ -2213,7 +2216,7 @@ mod tests {
             json!([
                 {"kind": "image", "uri": "discord://attachment/2/1/5", "alt": "Sticker wave"},
                 {"kind": "text", "text": "[Sticker dance omitted because animated Lottie stickers are not read.]"},
-                {"kind": "image", "uri": "discord://attachment/2/1/e1", "alt": "Link preview"}
+                {"kind": "image", "uri": "discord://attachment/2/1/e0", "alt": "Link preview"}
             ])
         );
 
@@ -2222,7 +2225,7 @@ mod tests {
         remember_attachments(&message, &mut attachments);
 
         assert_eq!(attachments["5"].url, "https://media.discordapp.net/stickers/5.png");
-        assert_eq!(attachments["1-e1"].url, "https://images-ext-1.discordapp.net/external/a.png");
+        assert_eq!(attachments["1-e0"].url, "https://images-ext-1.discordapp.net/external/a.png");
         assert!(!attachments.contains_key("6"));
 
         let link = json!({"id":"7","channel_id":"2","content":"https://tenor.com/view/peak-123","author":{"id":"3","bot":false}});
