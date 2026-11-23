@@ -465,6 +465,8 @@ Orchestrator and consistent everyday operation and recovery guidance.
   backup/restore, upgrade policy, permissions, and troubleshooting. Add deterministic
   onboarding and command-output tests and clean-machine acceptance walkthroughs.
 - Search conversation history across visible sessions from the TUI and CLI.
+- Publish a project website with an install guide, a documentation site built
+  from krabb-docs, and short release-note posts for each release.
 
 Acceptance: a new user can install, configure, converse, inspect health, back up,
 and upgrade a Krabbling without reading source code or editing internal state.
@@ -734,6 +736,9 @@ to extend and release independently using established contracts and packaging.
   across categories. Support multi-capability components; categories must not be
   inferred solely from directory names or cause duplicate runtime implementations.
 - Add Matrix and Email channel plugins that follow the channel plugin playbook.
+- Grow a Krabbverse gallery where owners publish and import Krabfile setups.
+  Strip secrets before publishing, preview requested capabilities before import,
+  and let maintainers review or remove reported setups.
 
 Acceptance: an independently released third-party component passes conformance,
 installs from a verified artifact, declares its authority, and updates or rolls back
