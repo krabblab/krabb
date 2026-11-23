@@ -625,11 +625,12 @@ bounded private files, preserving binary image and audio bytes; generated daemon
 The host reads attached files the same way for every channel. Files whose bytes
 are PNG, JPEG, GIF, or WebP become images. PDFs contribute their extracted text.
 Extraction runs one PDF at a time in a short-lived child process of the Krabb
-binary, which is stopped after 30 seconds per message and, on Linux, capped at
-1 GiB of memory. UTF-8 text and code files are included directly. Both are cut
-off after 64 KiB, and files over 4 MiB are not read. Files that cannot be read reach the model as a
-short note naming the file and the reason, never as silent omissions. Video and
-other binary formats are not read.
+binary, without the host's environment. It is stopped after 30 seconds per
+message and, on Linux, capped at 1 GiB of memory. UTF-8 text and code files are
+included directly. PDF and text content is cut off after 64 KiB, and files over
+4 MiB are not read. Files that cannot be read reach the model as a short note
+naming the file and the reason, never as silent omissions. Video and other
+binary formats are not read.
 
 The SQLite plugin uses WAL mode and idempotent schema migrations. When it is
 installed and agent tools are enabled, Krabb adds a `data` tool to model

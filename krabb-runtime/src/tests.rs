@@ -10640,6 +10640,8 @@ async fn expands_readable_file_attachments() {
             }
         );
 
+        // The test binary is not a PDF reader, so this pins how unframed child output is reported.
+
         assert_eq!(rendered[6], "[File broken.pdf omitted because the PDF could not be read.]");
         assert_eq!(rendered[7], "[File huge.log omitted because it is larger than 4 MiB.]");
         assert_eq!(rendered[8], "[File missing.txt omitted because it is unavailable.]");

@@ -80,7 +80,7 @@ mod onboard;
 mod operations;
 mod origin;
 mod outbound;
-pub mod pdf;
+mod pdf;
 mod plugins;
 mod process;
 mod recovery;
@@ -1400,6 +1400,8 @@ struct Update {
     linked: bool,
 }
 
+pub use pdf::child as pdf_child;
+
 pub async fn cli() -> ExitCode {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
 
@@ -1525,6 +1527,7 @@ pub fn service_dispatch() -> Result<(), Box<dyn std::error::Error + Send + Sync>
 fn service_main() {
     let stop = Arc::new(Stop::new());
     let signal = Arc::clone(&stop);
+
     let service = match krabb_process::service::Service::register("Krabb", move || signal.signal())
     {
         Ok(service) => service,
@@ -1609,6 +1612,7 @@ async fn main_with_log(cli: Cli, log_path: Option<PathBuf>) -> ExitCode {
         Ok(()) => {
             if verbose || debug {
                 let elapsed_ms = started.elapsed().as_millis();
+
                 info!(command, elapsed_ms, "Command completed.");
 
                 if verbose && !json {
@@ -1674,6 +1678,7 @@ async fn main_with_log(cli: Cli, log_path: Option<PathBuf>) -> ExitCode {
             } else {
                 let message = sentence(error.to_string());
                 let causes = error_causes(error.as_ref());
+
                 let display = if verbose && !causes.is_empty() {
                     format!("{message}\n{}", causes.join("\n"))
                 } else {
@@ -1684,8 +1689,10 @@ async fn main_with_log(cli: Cli, log_path: Option<PathBuf>) -> ExitCode {
 
                 if debug {
                     error!(command, elapsed_ms = started.elapsed().as_millis(), "Command failed.");
+
                     let details =
                         format!("{error:?}").split_whitespace().collect::<Vec<_>>().join(" ");
+
                     debug!(
                         command,
                         error = %diagnostic(details),
@@ -1761,6 +1768,7 @@ fn command_label(command: &Command) -> &'static str {
 
 fn error_causes(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
     let mut causes = Vec::new();
+
     let mut source = error.source();
 
     while let Some(cause) = source {
@@ -1797,6 +1805,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         Command::Schedule(args) => {
             let values = args.command.map(ScheduleCommand::into_values).unwrap_or_default();
+
             schedule_command(&values, &home(), json).await?;
         }
 
@@ -1839,6 +1848,7 @@ fn schema_gated(command: &Command) -> bool {
 
 fn completion(shell: CompletionShell) -> std::io::Result<()> {
     let mut command = completion_command();
+
     let mut output = std::io::BufWriter::new(std::io::stdout().lock());
     let name = completion_name();
 

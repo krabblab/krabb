@@ -8,7 +8,7 @@ use krabb_runtime as _;
 #[tokio::main]
 #[cfg(not(test))]
 async fn main() -> ExitCode {
-    if let Some(code) = krabb_runtime::pdf::child() {
+    if let Some(code) = krabb_runtime::pdf_child() {
         return code;
     }
 

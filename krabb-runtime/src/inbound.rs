@@ -191,7 +191,7 @@ pub(crate) async fn expand_media_files(
         let name = clip(name, META_LIMIT);
 
         let Some(path) = media_file(&uri, media_root) else {
-            output.push(omitted(&name, missing(&uri)));
+            output.push(omitted(&name, missing(&uri, media_root)));
             continue;
         };
 
@@ -201,11 +201,16 @@ pub(crate) async fn expand_media_files(
     bound(output)
 }
 
-fn missing(uri: &str) -> &'static str {
+fn missing(uri: &str, root: &Path) -> &'static str {
+    let confined =
+        |path: &PathBuf| std::fs::canonicalize(root).is_ok_and(|root| path.starts_with(root));
+
     let large = uri
         .strip_prefix("file://")
-        .and_then(|path| std::fs::metadata(path).ok())
-        .is_some_and(|metadata| metadata.len() > MEDIA_LIMIT);
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .filter(confined)
+        .and_then(|path| std::fs::symlink_metadata(path).ok())
+        .is_some_and(|metadata| metadata.is_file() && metadata.len() > MEDIA_LIMIT);
 
     if large { "it is larger than 4 MiB" } else { "it is unavailable" }
 }

@@ -40,14 +40,28 @@ pub(crate) async fn read(path: &Path, deadline: Instant) -> Text {
         return Text::Unreadable;
     };
 
-    let Ok(program) = std::env::current_exe() else {
+    let Ok(program) = program() else {
         return Text::Unreadable;
     };
 
     let mut command = Command::new(program);
-    command.arg(ARGUMENT);
+
+    command
+        .env_clear()
+        .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|value| ("LLVM_PROFILE_FILE", value)))
+        .arg(ARGUMENT);
 
     run(command, bytes, deadline).await
+}
+
+#[cfg(target_os = "linux")]
+fn program() -> std::io::Result<std::path::PathBuf> {
+    Ok("/proc/self/exe".into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn program() -> std::io::Result<std::path::PathBuf> {
+    std::env::current_exe()
 }
 
 async fn run(mut command: Command, bytes: Vec<u8>, deadline: Instant) -> Text {
@@ -101,11 +115,17 @@ fn parse(reply: Vec<u8>) -> Text {
         return Text::Unreadable;
     };
 
-    match std::str::from_utf8(body) {
-        Ok("") => Text::Empty,
-        Ok(text) => Text::Found { text: text.to_owned(), truncated },
-        Err(_) => Text::Unreadable,
+    let Ok(text) = std::str::from_utf8(body) else {
+        return Text::Unreadable;
+    };
+
+    let (text, cut) = clean(text, crate::FILE_LIMIT as usize);
+
+    if text.is_empty() {
+        return Text::Empty;
     }
+
+    Text::Found { text, truncated: truncated || cut }
 }
 
 /// Serves one extraction when the executable was started as a PDF reader.
@@ -137,8 +157,10 @@ pub fn child() -> Option<ExitCode> {
 
 #[cfg(target_os = "linux")]
 fn limit() {
-    let memory = rustix::process::Rlimit { current: Some(MEMORY), maximum: Some(MEMORY) };
-    let _ = rustix::process::setrlimit(rustix::process::Resource::Data, memory);
+    use rustix::process::{Resource, Rlimit, setrlimit};
+
+    let _ = setrlimit(Resource::Data, Rlimit { current: Some(MEMORY), maximum: Some(MEMORY) });
+    let _ = setrlimit(Resource::Core, Rlimit { current: Some(0), maximum: Some(0) });
 }
 
 #[cfg(not(target_os = "linux"))]
