@@ -1,6 +1,7 @@
 //! The retained recovery point: previous binaries plus home configuration and state.
 //!
-//! Credentials are never copied, so restoring cannot reactivate removed secrets.
+//! Credentials are never copied, so restoring cannot reactivate removed secrets. Plugins
+//! uninstalled after the point are recorded beside it, so restoring keeps their grants revoked.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,12 @@ use super::*;
 const DIRECTORY: &str = "updates/recovery";
 const POINT: &str = "point.json";
 const POINT_LIMIT: u64 = 1024 * 1024;
+const REVOKED: &str = "revoked.json";
+const REVOKED_LIMIT: u64 = 64 * 1024;
+const REVOKED_PLUGINS: usize = 256;
+const INVALID: &str = "The record of plugins uninstalled since the update is invalid.";
+const PLUGINS_LOCK: &str = ".plugins.lock";
+const PLUGINS_WAIT: Duration = Duration::from_secs(30);
 const EXCLUDED: &[&str] = &["media", "workspaces"];
 
 /// Recovery point record; a binary restored from it must be able to read it.
@@ -52,6 +59,10 @@ pub(super) fn create(
     service: bool,
 ) -> Result<Point, PluginError> {
     let directory = store(root);
+
+    // Uninstall records itself only once a point exists, so it must not run while one is taken.
+    let _plugins = changes(root)?;
+
     let result = (|| -> Result<Point, PluginError> {
         recovery::remove(&directory)?;
 
@@ -102,6 +113,8 @@ pub(super) async fn restore(
     json: bool,
 ) -> Result<(), PluginError> {
     let directory = store(root);
+    let plugins = changes(root)?;
+    let uninstalled = revoked(root)?;
 
     if service.is_file() && running()? {
         service_action_with(service, ServiceAction::Stop, json)?;
@@ -119,8 +132,16 @@ pub(super) async fn restore(
     }
 
     recovery::restore(root, &directory.join("home"), &point.home)?;
+
+    for id in &uninstalled {
+        crate::revoke::restored(root, id)?;
+    }
+
     recovery::remove(&root.join(krabb_migrations::JOURNAL))?;
     recovery::remove(&root.join(krabb_migrations::BACKUP))?;
+
+    // The daemon checks this lock while starting, so release it before the service starts.
+    drop(plugins);
 
     if point.service && service.is_file() {
         service_action_with(service, ServiceAction::Start, json)?;
@@ -144,7 +165,7 @@ pub(super) async fn rollback(
         );
     };
 
-    let question = if point.accepted {
+    let mut question = if point.accepted {
         format!(
             "Restore Krabb {} from the recovery point taken before updating to {}?\n\
              Conversations, tasks, settings, and plugins changed since then will be replaced, and \
@@ -154,6 +175,19 @@ pub(super) async fn rollback(
     } else {
         format!("Restore Krabb {} after the unfinished update to {}?", point.from, point.to)
     };
+
+    let returning = revoked(root)?
+        .into_iter()
+        .filter(|id| store(root).join("home/plugins").join(id).is_dir())
+        .collect::<Vec<_>>();
+
+    if !returning.is_empty() {
+        question.push_str(&format!(
+            "\nPlugins uninstalled since then come back without their sharing grants or \
+             credentials: {}.",
+            returning.join(", ")
+        ));
+    }
 
     if !confirm_action(yes, json, &question)? {
         print_cancelled("Rollback", json);
@@ -192,6 +226,57 @@ pub(super) fn summary(root: &Path) -> Option<serde_json::Value> {
         "accepted": point.accepted,
         "path": store(root),
     }))
+}
+
+/// Records a plugin being uninstalled while a recovery point exists.
+///
+/// It runs before any grant is removed, so a failed uninstall errs toward revoking access. It
+/// never blocks an uninstall: an unreadable record already makes rollback refuse, and one entry
+/// past the limit does the same.
+pub(crate) fn uninstalled(root: &Path, id: &str) -> Result<(), PluginError> {
+    if !store(root).join(POINT).is_file() {
+        return Ok(());
+    }
+
+    let Ok(mut ids) = revoked(root) else {
+        return Ok(());
+    };
+
+    if ids.iter().any(|known| known == id) {
+        return Ok(());
+    }
+
+    ids.push(id.to_owned());
+    krabb_file::save(store(root).join(REVOKED), serde_json::to_vec_pretty(&ids)?)?;
+
+    Ok(())
+}
+
+/// Waits for a running plugin install or uninstall, then keeps others out.
+fn changes(root: &Path) -> Result<crate::DaemonLock, PluginError> {
+    crate::lock_at_timeout(root, PLUGINS_LOCK, PLUGINS_WAIT).map_err(|_| {
+        "A plugin install or uninstall is still running. Try again when it finishes.".into()
+    })
+}
+
+fn revoked(root: &Path) -> Result<Vec<String>, PluginError> {
+    let Some(bytes) = krabb_file::load(store(root).join(REVOKED), REVOKED_LIMIT)? else {
+        return Ok(Vec::new());
+    };
+
+    let ids: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| INVALID)?;
+
+    if ids.iter().any(|id| !crate::valid(id)) {
+        return Err(INVALID.into());
+    }
+
+    if ids.len() > REVOKED_PLUGINS {
+        return Err(
+            "Too many plugins were uninstalled since the update to roll back safely.".into()
+        );
+    }
+
+    Ok(ids)
 }
 
 fn write(root: &Path, point: &Point) -> Result<(), PluginError> {

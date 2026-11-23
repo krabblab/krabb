@@ -368,6 +368,128 @@ async fn recovery_points_restore_binaries_and_state_but_not_credentials() {
 }
 
 #[tokio::test]
+async fn rollback_keeps_grants_of_plugins_uninstalled_after_the_update() {
+    let root = temp_root("revoked");
+    let home = root.join("home");
+    let service = root.join("krabb.service");
+
+    let config = r#"
+[[visibility]]
+data = ["context"]
+resources = ["global", "channels.echo"]
+
+[channels.telegram]
+worktree = "older schema"
+visibility = [{ data = ["files"], resources = ["channels.echo"] }]
+"#;
+
+    fs::create_dir_all(home.join("plugins/echo")).unwrap();
+    fs::write(home.join("config.toml"), config).unwrap();
+    fs::write(home.join("plugins.lock"), "{}").unwrap();
+
+    snapshot::uninstalled(&home, "echo").unwrap();
+
+    assert!(!snapshot::store(&home).join("revoked.json").exists());
+
+    let mut point = snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+
+    snapshot::accept(&home, &mut point).unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+
+    assert_eq!(
+        fs::read_to_string(snapshot::store(&home).join("revoked.json")).unwrap(),
+        "[\n  \"echo\"\n]"
+    );
+
+    crate::revoke::restored(&home, "echo").unwrap();
+    fs::remove_dir_all(home.join("plugins/echo")).unwrap();
+
+    snapshot::rollback(&home, &service, true, true).await.unwrap();
+
+    let restored = fs::read_to_string(home.join("config.toml")).unwrap();
+
+    assert!(home.join("plugins/echo").is_dir());
+    assert!(!restored.contains("channels.echo"), "{restored}");
+    assert!(restored.contains("global"), "{restored}");
+    assert!(restored.contains("older schema"), "{restored}");
+    assert!(!snapshot::store(&home).exists());
+
+    snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+    snapshot::create(&home, "0.2.0", "0.3.0", &[], false).unwrap();
+
+    assert!(!snapshot::store(&home).join("revoked.json").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn unreadable_uninstall_records_block_rollback_but_not_uninstall() {
+    let root = temp_root("revoked-invalid");
+    let home = root.join("home");
+    let service = root.join("krabb.service");
+    let record = snapshot::store(&home).join("revoked.json");
+
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "model = 'old'").unwrap();
+    snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+    fs::write(home.join("config.toml"), "model = 'new'").unwrap();
+    krabb_file::save(&record, b"[\"../escape\"]").unwrap();
+
+    snapshot::uninstalled(&home, "echo").unwrap();
+
+    let error = snapshot::rollback(&home, &service, true, true).await.unwrap_err();
+
+    assert!(error.to_string().contains("uninstalled since the update is invalid"), "{error}");
+    assert_eq!(fs::read(&record).unwrap(), b"[\"../escape\"]");
+
+    let full = (0..256).map(|index| format!("plugin{index}")).collect::<Vec<_>>();
+
+    krabb_file::save(&record, serde_json::to_vec(&full).unwrap()).unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+    snapshot::uninstalled(&home, "other").unwrap();
+
+    let error = snapshot::rollback(&home, &service, true, true).await.unwrap_err();
+    let recorded: Vec<String> = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+
+    assert!(error.to_string().contains("Too many plugins"), "{error}");
+    assert_eq!(recorded.len(), 257);
+    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "model = 'new'");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn recovery_points_wait_for_plugin_changes_and_release_them() {
+    let root = temp_root("revoked-lock");
+    let home = root.join("home");
+
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "").unwrap();
+
+    let held = crate::lock_at(&home, ".plugins.lock").unwrap();
+
+    let busy = std::thread::spawn({
+        let home = home.clone();
+        move || snapshot::create(&home, "0.1.0", "0.2.0", &[], false).map(drop)
+    });
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert!(snapshot::load(&home).unwrap().is_none());
+
+    drop(held);
+
+    busy.join().unwrap().unwrap();
+    snapshot::rollback(&home, &root.join("krabb.service"), true, true).await.unwrap();
+
+    assert!(crate::lock_at(&home, ".plugins.lock").is_ok());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn finishing_requires_the_staged_version() {
     let root = temp_root("finish");
     let dir = root.join("stage");

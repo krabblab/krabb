@@ -10,6 +10,8 @@ mod finish;
 mod snapshot;
 mod stage;
 
+pub(super) use snapshot::uninstalled;
+
 use std::time::Duration;
 
 use clap::Args;

@@ -338,8 +338,10 @@ restores it without the network or the new daemon; if the new `krabb` cannot
 run, start `updates/recovery/bin/0/krabb update --rollback` from the Krabb home
 instead. After an accepted update, rollback replaces conversations, tasks,
 settings, and plugins changed since then and asks first; credentials are kept.
-Downgrades to other versions are not supported. A daemon running outside the
-service must be stopped before an update.
+Plugins uninstalled since the update come back without their sharing grants or
+credentials, and the rollback prompt lists them. Downgrades to other versions
+are not supported. A daemon running outside the service must be stopped before
+an update.
 
 ## Plugin Management
 
