@@ -461,6 +461,32 @@ async fn unreadable_uninstall_records_block_rollback_but_not_uninstall() {
 }
 
 #[tokio::test]
+async fn recovery_points_wait_for_plugin_changes_and_release_them() {
+    let root = temp_root("revoked-lock");
+    let home = root.join("home");
+
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "").unwrap();
+
+    let held = crate::lock_at(&home, ".plugins.lock").unwrap();
+
+    let busy = std::thread::spawn({
+        let home = home.clone();
+        move || snapshot::create(&home, "0.1.0", "0.2.0", &[], false).map(drop)
+    });
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    drop(held);
+
+    busy.join().unwrap().unwrap();
+    snapshot::rollback(&home, &root.join("krabb.service"), true, true).await.unwrap();
+
+    assert!(crate::lock_at(&home, ".plugins.lock").is_ok());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn finishing_requires_the_staged_version() {
     let root = temp_root("finish");
     let dir = root.join("stage");

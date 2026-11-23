@@ -61,7 +61,7 @@ pub(super) fn create(
     let directory = store(root);
 
     // Uninstall records itself only once a point exists, so it must not run while one is taken.
-    let _plugins = crate::lock_at_timeout(root, PLUGINS_LOCK, PLUGINS_WAIT)?;
+    let _plugins = changes(root)?;
 
     let result = (|| -> Result<Point, PluginError> {
         recovery::remove(&directory)?;
@@ -113,8 +113,8 @@ pub(super) async fn restore(
     json: bool,
 ) -> Result<(), PluginError> {
     let directory = store(root);
+    let plugins = changes(root)?;
     let uninstalled = revoked(root)?;
-    let _plugins = crate::lock_at_timeout(root, PLUGINS_LOCK, PLUGINS_WAIT)?;
 
     if service.is_file() && running()? {
         service_action_with(service, ServiceAction::Stop, json)?;
@@ -139,6 +139,9 @@ pub(super) async fn restore(
 
     recovery::remove(&root.join(krabb_migrations::JOURNAL))?;
     recovery::remove(&root.join(krabb_migrations::BACKUP))?;
+
+    // The daemon checks this lock while starting, so release it before the service starts.
+    drop(plugins);
 
     if point.service && service.is_file() {
         service_action_with(service, ServiceAction::Start, json)?;
@@ -247,6 +250,13 @@ pub(crate) fn uninstalled(root: &Path, id: &str) -> Result<(), PluginError> {
     krabb_file::save(store(root).join(REVOKED), serde_json::to_vec_pretty(&ids)?)?;
 
     Ok(())
+}
+
+/// Waits for a running plugin install or uninstall, then keeps others out.
+fn changes(root: &Path) -> Result<crate::DaemonLock, PluginError> {
+    crate::lock_at_timeout(root, PLUGINS_LOCK, PLUGINS_WAIT).map_err(|_| {
+        "A plugin install or uninstall is still running. Try again when it finishes.".into()
+    })
 }
 
 fn revoked(root: &Path) -> Result<Vec<String>, PluginError> {
