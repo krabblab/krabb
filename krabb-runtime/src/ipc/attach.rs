@@ -174,3 +174,94 @@ pub(super) fn accepted(content: &Content, root: Option<&Path>) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use base64::engine::general_purpose::STANDARD;
+
+    use super::*;
+
+    fn request(params: Value) -> IpcRequest {
+        IpcRequest::call(1, "secret", "session.attach", params)
+    }
+
+    fn upload(state: &State, name: &str, bytes: &[u8]) -> io::Result<Vec<Content>> {
+        let params = json!({"id": "s", "name": name, "data": STANDARD.encode(bytes)});
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(read(&request(params), state))
+    }
+
+    #[test]
+    fn reads_uploads_like_channel_media() {
+        let state = super::super::tests::state_at("attach-read");
+
+        state.sessions.lock().unwrap().create("s", "model").unwrap();
+
+        let root = media(&state, "s", krabb_core::client::TUI).unwrap();
+        let note = upload(&state, "note.txt", b"Remember the milk.").unwrap();
+
+        assert_eq!(
+            note,
+            vec![Content::Text { text: "[File: note.txt]\nRemember the milk.".into() }]
+        );
+
+        let image = upload(&state, "shot.png", b"\x89PNG\r\n\x1a\n0000").unwrap();
+
+        let [Content::Image { uri, alt }] = image.as_slice() else {
+            panic!("expected an image: {image:?}");
+        };
+
+        let path = crate::media_file(uri, &root).unwrap();
+
+        assert_eq!(alt.as_deref(), Some("shot.png"));
+        assert!(path.parent().unwrap().ends_with("uploads"));
+        assert!(accepted(&image[0], Some(&root)));
+        assert!(!accepted(&image[0], None));
+
+        let saved = admit(image.clone(), &root);
+
+        assert_ne!(saved, image);
+        assert!(!path.exists());
+
+        let uploads = std::fs::read_dir(root.join("uploads")).unwrap().count();
+
+        assert_eq!(uploads, 0);
+
+        let _ = std::fs::remove_dir_all(&state.home);
+    }
+
+    #[test]
+    fn rejects_unsafe_uploads() {
+        let state = super::super::tests::state_at("attach-reject");
+
+        state.sessions.lock().unwrap().create("s", "model").unwrap();
+
+        assert!(upload(&state, "../escape.txt", b"x").is_err());
+        assert!(upload(&state, "", b"x").is_err());
+        assert!(upload(&state, "empty.txt", b"").is_err());
+
+        let large = vec![b'a'; crate::MEDIA_LIMIT as usize + 1];
+
+        assert!(upload(&state, "large.txt", &large).is_err());
+
+        let missing = json!({"id": "missing", "name": "a.txt", "data": STANDARD.encode(b"a")});
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+
+        assert!(runtime.block_on(read(&request(missing), &state)).is_err());
+
+        let long = Content::Text { text: "a".repeat(TEXT + 1) };
+
+        assert!(!accepted(&long, None));
+        assert!(accepted(&Content::Text { text: "a".repeat(TEXT) }, None));
+        assert!(!accepted(
+            &Content::File { uri: "file:///x".into(), name: "x".into(), mime: None },
+            None
+        ));
+
+        let _ = std::fs::remove_dir_all(&state.home);
+    }
+}
