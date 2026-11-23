@@ -1285,9 +1285,28 @@ async fn remember_files(
         content.push(json!({"kind": "text", "text": text}));
     }
 
-    let Some(files) = value["files"].as_array() else { return content };
-
     let mut stored = attachments.lock().await;
+
+    for (index, url) in gifs(value).into_iter().take(4).enumerate() {
+        let stamp = value["ts"].as_str().unwrap_or_default().replace('.', "-");
+        let id = format!("giphy-{stamp}-{index}");
+
+        if !safe_id(&id) {
+            continue;
+        }
+
+        let attachment = Attachment {
+            url: url.to_owned(),
+            name: "giphy.gif".into(),
+            mime: Some("image/gif".into()),
+            size: None,
+        };
+
+        stored.insert(id.clone(), attachment);
+        content.push(json!({"kind": "image", "uri": format!("slack://file/{id}"), "alt": "GIF, first frame only"}));
+    }
+
+    let Some(files) = value["files"].as_array() else { return content };
 
     for file in files.iter().take(8) {
         let Some(id) = file["id"].as_str().filter(|value| safe_id(value)) else { continue };
@@ -1378,10 +1397,13 @@ async fn media_at(
         return Ok(json!({"uri": format!("file://{}", path.display()), "mime": attachment.mime}));
     }
 
-    let response = app
-        .client
-        .get(&attachment.url)
-        .bearer_auth(token)
+    let mut request = app.client.get(&attachment.url);
+
+    if allowed_url(&attachment.url) {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|error| krabb_core::Error::Denied(format!("Slack media failed: {error}.")))?;
@@ -1441,6 +1463,33 @@ fn allowed_url(value: &str) -> bool {
     reqwest::Url::parse(value).ok().is_some_and(|url| {
         url.scheme() == "https"
             && matches!(url.host_str(), Some("files.slack.com" | "slack-files.com"))
+    })
+}
+
+/// Reads GIPHY images shared as link attachments or image blocks; they are public and get no token.
+fn gifs(value: &Value) -> Vec<&str> {
+    let legacy =
+        value["attachments"].as_array().into_iter().flatten().map(|item| &item["image_url"]);
+    let blocks = value["blocks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|block| block["type"] == "image")
+        .map(|block| &block["image_url"]);
+
+    legacy.chain(blocks).filter_map(Value::as_str).filter(|url| giphy(url)).collect()
+}
+
+fn giphy(value: &str) -> bool {
+    reqwest::Url::parse(value).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(|host| {
+                host == "i.giphy.com"
+                    || host
+                        .strip_prefix("media")
+                        .and_then(|rest| rest.strip_suffix(".giphy.com"))
+                        .is_some_and(|number| number.bytes().all(|byte| byte.is_ascii_digit()))
+            })
     })
 }
 
@@ -1744,6 +1793,30 @@ mod tests {
         assert_eq!(content[2]["kind"], "audio");
         assert_eq!(content[3]["kind"], "file");
         assert_eq!(attachments.lock().await.len(), 3);
+
+        let shared = json!({
+            "ts": "1700000000.000200",
+            "attachments": [
+                {"service_name": "GIPHY", "image_url": "https://media2.giphy.com/media/a/giphy.gif"},
+                {"image_url": "https://example.com/tracker.gif"}
+            ],
+            "blocks": [{"type": "image", "image_url": "https://i.giphy.com/b.gif"}]
+        });
+
+        let content = remember_files(&shared, &attachments).await;
+
+        assert_eq!(
+            content,
+            vec![
+                json!({"kind": "image", "uri": "slack://file/giphy-1700000000-000200-0", "alt": "GIF, first frame only"}),
+                json!({"kind": "image", "uri": "slack://file/giphy-1700000000-000200-1", "alt": "GIF, first frame only"}),
+            ]
+        );
+
+        assert!(giphy("https://media.giphy.com/a.gif"));
+        assert!(!giphy("https://media.giphy.com.evil.com/a.gif"));
+        assert!(!giphy("http://i.giphy.com/a.gif"));
+        assert!(!allowed_url("https://i.giphy.com/b.gif"));
     }
 
     #[test]
