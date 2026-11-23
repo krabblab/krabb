@@ -197,6 +197,7 @@ struct App {
     reveal_bytes: usize,
     input: Vec<char>,
     cursor: usize,
+    attachments: Vec<crate::attachments::Attachment>,
     history: Vec<String>,
     history_path: Option<PathBuf>,
     history_index: Option<usize>,
@@ -1513,6 +1514,15 @@ where
                     return Ok(true);
                 }
 
+                KeyCode::Char('v')
+                    if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    match crate::attachments::clipboard() {
+                        Ok(attachment) => app.attach(vec![attachment]),
+                        Err(message) => app.status = message,
+                    }
+                }
+
                 KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if !app.session_working || app.input.first() == Some(&'/') {
                         app.input.insert(app.cursor, '\n');
@@ -1550,6 +1560,13 @@ where
                         app.cursor += 1;
                         app.input_scroll.follow_latest();
                         app.history_index = None;
+                    }
+                }
+
+                KeyCode::Backspace if app.input.is_empty() && !app.attachments.is_empty() => {
+                    if let Some(removed) = app.attachments.pop() {
+                        app.status = format!("Removed {}.", removed.name);
+                        forget(&removed);
                     }
                 }
 
@@ -1647,9 +1664,24 @@ where
                     app.input_scroll.follow_latest();
                     app.history_index = None;
 
-                    if line.trim().is_empty() {
+                    let sending = ordinary && !busy && !app.attachments.is_empty();
+
+                    if line.trim().is_empty() && !sending {
                         return Ok(false);
                     }
+
+                    let shown = if sending {
+                        let names = app
+                            .attachments
+                            .iter()
+                            .map(|attachment| attachment.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+
+                        format!("{line}\n[Attached: {names}]").trim_start().to_owned()
+                    } else {
+                        line.clone()
+                    };
 
                     if !(is_task_control
                         || busy && ordinary
@@ -1659,7 +1691,7 @@ where
                     }
 
                     app.transcript_scroll.follow_latest();
-                    app.push_user(&line);
+                    app.push_user(&shown);
                     app.remember_input(&line);
 
                     if line == "/history" || line.starts_with("/history ") {
@@ -1775,7 +1807,15 @@ where
                             app.begin_compaction();
                         }
 
-                        command_tx.write_all(serde_json::to_string(&line)?.as_bytes()).await?;
+                        let attachments = if ordinary && !busy {
+                            std::mem::take(&mut app.attachments)
+                        } else {
+                            Vec::new()
+                        };
+
+                        let encoded = crate::attachments::encode(&line, &attachments);
+
+                        command_tx.write_all(encoded.as_bytes()).await?;
                         command_tx.write_all(b"\n").await?;
 
                         if !app.generation_active {
@@ -1830,10 +1870,40 @@ where
             }
         }
 
+        Event::Paste(text) => {
+            app.input_cursor_needs_visibility = true;
+
+            if let Some(attachments) = crate::attachments::pasted(&text) {
+                app.attach(attachments);
+            } else if app.statusline_picker
+                || (app.generation_active || app.compaction_active || app.session_working)
+                    && app.input.first() != Some(&'/')
+            {
+                app.status = "Wait for Krabb's turn to finish before pasting a message.".into();
+            } else {
+                let text = text.replace("\r\n", "\n").replace('\r', "\n");
+
+                for character in text.chars() {
+                    app.input.insert(app.cursor, character);
+                    app.cursor += 1;
+                }
+
+                app.input_scroll.follow_latest();
+                app.history_index = None;
+            }
+        }
+
         _ => {}
     }
 
     Ok(false)
+}
+
+/// Deletes a clipboard image Krabb saved once it is no longer attached.
+fn forget(attachment: &crate::attachments::Attachment) {
+    if attachment.temporary {
+        let _ = std::fs::remove_file(&attachment.path);
+    }
 }
 
 fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
@@ -1983,19 +2053,29 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         Block::default()
             .border_type(BorderType::Plain)
             .borders(Borders::TOP | Borders::BOTTOM)
-            .title(if app.exiting {
-                "Exiting Krabb… | Please wait "
-            } else if app.statusline_picker {
-                "Statusline elements  |  ↑/↓ move  |  Space toggle  |  Enter save  |  Esc cancel "
-            } else if app.compaction_active {
-                "Compacting conversation  |  Please wait "
-            } else if app.generation_active {
-                "Approval commands only  |  /approvals  |  /approve <id>  |  Esc interrupt "
-            } else if app.session_working {
-                "Session busy  |  /approvals  |  /approve <id>  |  /deny <id> "
-            } else {
-                "Message  |  Enter send  |  Esc quit "
-            }),
+            .title::<String>(if app.exiting {
+            "Exiting Krabb… | Please wait ".into()
+        } else if app.statusline_picker {
+            "Statusline elements  |  ↑/↓ move  |  Space toggle  |  Enter save  |  Esc cancel "
+                .into()
+        } else if app.compaction_active {
+            "Compacting conversation  |  Please wait ".into()
+        } else if app.generation_active {
+            "Approval commands only  |  /approvals  |  /approve <id>  |  Esc interrupt ".into()
+        } else if app.session_working {
+            "Session busy  |  /approvals  |  /approve <id>  |  /deny <id> ".into()
+        } else if !app.attachments.is_empty() {
+            let names = app
+                .attachments
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            format!("Attached {names}  |  Backspace remove  |  Enter send ")
+        } else {
+            "Message  |  Enter send  |  Ctrl+V image  |  Esc quit ".into()
+        }),
     );
 
     let footer_text = format!(" | {} | /help for commands", app.name);
@@ -3191,6 +3271,7 @@ impl TerminalGuard {
             output,
             EnterAlternateScreen,
             event::EnableMouseCapture,
+            event::EnableBracketedPaste,
             PushKeyboardEnhancementFlags(
                 KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                     | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
@@ -3212,7 +3293,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         #[cfg(not(windows))]
-        let _ = execute!(self.output, PopKeyboardEnhancementFlags);
+        let _ = execute!(self.output, PopKeyboardEnhancementFlags, event::DisableBracketedPaste);
         let _ = execute!(self.output, LeaveAlternateScreen, event::DisableMouseCapture);
         let _ = terminal::disable_raw_mode();
     }
@@ -3227,6 +3308,25 @@ fn is_mouse_motion(event: &Event) -> bool {
 }
 
 impl App {
+    /// Adds attachments for the next message, reporting any that cannot be sent.
+    fn attach(&mut self, attachments: Vec<crate::attachments::Attachment>) {
+        for attachment in attachments {
+            let size = std::fs::metadata(&attachment.path).map_or(u64::MAX, |data| data.len());
+
+            if self.attachments.len() >= crate::attachments::MAX {
+                self.status =
+                    format!("A message can carry {} attachments.", crate::attachments::MAX);
+                forget(&attachment);
+            } else if size > crate::attachments::LIMIT {
+                self.status = format!("{} is larger than 4 MiB.", attachment.name);
+                forget(&attachment);
+            } else {
+                self.status = format!("Attached {}.", attachment.name);
+                self.attachments.push(attachment);
+            }
+        }
+    }
+
     /// Whether the pointer now hovers a different message than the last frame drew.
     fn hover_changed(&self) -> bool {
         let (Some(area), Some(layout)) = (self.transcript_area, &self.transcript_layout) else {
@@ -6426,6 +6526,74 @@ mod tests {
         assert_eq!(entry, "├─ codex | v1.0.0\n│  ├─ health: ready\n│  └─ permissions: none");
         assert!(!entry.contains('◆'));
         assert!(!entry.contains('◇'));
+    }
+
+    #[tokio::test]
+    async fn attaches_pasted_files_and_sends_them_with_the_message() {
+        let root = std::env::temp_dir().join(format!("krabb-tui-attach-{}", std::process::id()));
+        let shot = root.join("shot.png");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&shot, b"png").unwrap();
+
+        let (mut command_tx, mut command_rx) = duplex(4096);
+        let mut app = App { model_available: true, ..App::default() };
+
+        handle_event(Event::Paste("hello\r\nworld".into()), &mut app, &mut command_tx, false)
+            .await
+            .unwrap();
+
+        assert_eq!(app.input.iter().collect::<String>(), "hello\nworld");
+        assert!(app.attachments.is_empty());
+
+        app.input.clear();
+        app.cursor = 0;
+
+        let pasted = format!("'{}'", shot.display());
+
+        handle_event(Event::Paste(pasted.clone()), &mut app, &mut command_tx, false).await.unwrap();
+
+        assert_eq!(app.attachments.len(), 1);
+        assert!(app.input.is_empty());
+        assert_eq!(app.status, "Attached shot.png.");
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(app.attachments.is_empty());
+        assert!(shot.exists());
+
+        handle_event(Event::Paste(pasted), &mut app, &mut command_tx, false).await.unwrap();
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        drop(command_tx);
+
+        let mut sent = String::new();
+
+        command_rx.read_to_string(&mut sent).await.unwrap();
+
+        let (text, attachments) = crate::attachments::decode(sent.trim()).unwrap();
+
+        assert_eq!(text, "");
+        assert_eq!(attachments[0].path, shot);
+        assert!(app.attachments.is_empty());
+        assert!(app.transcript.contains("[Attached: shot.png]"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
