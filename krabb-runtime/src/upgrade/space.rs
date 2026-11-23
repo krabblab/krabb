@@ -46,8 +46,8 @@ fn fits(
     }
 
     // Activation unpacks one plugin archive at a time in the temporary directory.
-    let largest = archives.iter().map(|archive| size(archive)).collect::<Result<Vec<_>, _>>()?;
-    let largest = largest.into_iter().max().unwrap_or(0).saturating_mul(EXPANSION);
+    let sizes = archives.iter().map(|archive| size(archive)).collect::<Result<Vec<_>, _>>()?;
+    let largest = sizes.into_iter().max().unwrap_or(0).saturating_mul(EXPANSION);
 
     needs.push((disks.temporary.to_path_buf(), largest));
 
@@ -216,7 +216,18 @@ mod tests {
         std::os::unix::fs::symlink(&root, nested.join("loop")).unwrap();
 
         assert!(plain >= 50);
-        assert!(size(&nested).unwrap() - plain < 4096);
+        #[cfg(unix)]
+        let link = occupied(&std::fs::symlink_metadata(nested.join("loop")).unwrap());
+
+        #[cfg(not(unix))]
+        let link = 0;
+
+        let entries = [nested.clone(), nested.join("index.json")]
+            .iter()
+            .map(|path| occupied(&std::fs::symlink_metadata(path).unwrap()))
+            .sum::<u64>();
+
+        assert_eq!(size(&nested).unwrap(), entries + link);
         assert_eq!(size(&root.join("missing")).unwrap(), 0);
 
         let grouped = group(vec![(root.clone(), 10), (nested.clone(), 5)]).unwrap();
