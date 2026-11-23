@@ -170,7 +170,7 @@ pub(crate) async fn transcribe_media(
     output
 }
 
-pub(crate) fn expand_media_files(
+pub(crate) async fn expand_media_files(
     channel_id: &str,
     content: Vec<Content>,
     media_root: &Path,
@@ -182,37 +182,102 @@ pub(crate) fn expand_media_files(
     let mut output = Vec::with_capacity(content.len());
 
     for item in content {
-        let Content::File { uri, name, mime } = &item else {
+        let Content::File { uri, name, mime } = item else {
             output.push(item);
             continue;
         };
 
-        let text = media_file(uri, media_root)
-            .filter(|path| {
-                std::fs::metadata(path).is_ok_and(|metadata| metadata.len() <= FILE_LIMIT)
-            })
-            .filter(|_| safe_text_file(name, mime.as_deref()))
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(|text| {
-                !text.is_empty()
-                    && !text.chars().any(|character| {
-                        character.is_control() && !matches!(character, '\n' | '\r' | '\t')
-                    })
-            });
+        let name = clip(name, META_LIMIT);
 
-        match text {
-            Some(text) => output.push(Content::Text {
-                text: format!("[File: {}]\n{text}", clip(name.clone(), META_LIMIT)),
-            }),
+        let Some(path) = media_file(&uri, media_root) else {
+            output.push(omitted(&name, "it is unavailable"));
+            continue;
+        };
 
-            None => output.push(Content::Text {
-                text: "[File attachment omitted because it is unsafe or unsupported.]".into(),
-            }),
-        }
+        output.push(read_file(uri, name, mime.as_deref(), &path).await);
     }
 
     bound(output)
+}
+
+async fn read_file(uri: String, name: String, mime: Option<&str>, path: &Path) -> Content {
+    let mut head = Vec::with_capacity(16);
+
+    if std::fs::File::open(path).and_then(|file| file.take(16).read_to_end(&mut head)).is_err() {
+        return omitted(&name, "it is unavailable");
+    }
+
+    if image_mime(&head).is_some() {
+        return Content::Image { uri, alt: Some(name) };
+    }
+
+    if head.starts_with(pdf::MAGIC) {
+        return match pdf::read(path).await {
+            pdf::Text::Found(text) => {
+                let truncated = text.len() as u64 > FILE_LIMIT;
+                file_text(&name, clip(text, FILE_LIMIT as usize), truncated)
+            }
+
+            pdf::Text::Empty => omitted(&name, "the PDF has no extractable text, such as a scan"),
+            pdf::Text::Unreadable => omitted(&name, "the PDF could not be read"),
+        };
+    }
+
+    if !safe_text_file(&name, mime) {
+        return omitted(&name, "its file type is not supported");
+    }
+
+    let mut bytes = Vec::new();
+
+    if std::fs::File::open(path)
+        .and_then(|file| file.take(FILE_LIMIT + 1).read_to_end(&mut bytes))
+        .is_err()
+    {
+        return omitted(&name, "it is unavailable");
+    }
+
+    let truncated = bytes.len() as u64 > FILE_LIMIT;
+    bytes.truncate(FILE_LIMIT as usize);
+
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).unwrap_or_default()
+        }
+
+        Err(_) => return omitted(&name, "it is not valid text"),
+    };
+
+    if text
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return omitted(&name, "it is not valid text");
+    }
+
+    if text.trim().is_empty() {
+        return omitted(&name, "it is empty");
+    }
+
+    file_text(&name, text, truncated)
+}
+
+fn file_text(name: &str, text: String, truncated: bool) -> Content {
+    if truncated {
+        return Content::Text {
+            text: format!("[File: {name}, first {} KiB only]\n{text}", FILE_LIMIT / 1024),
+        };
+    }
+
+    Content::Text { text: format!("[File: {name}]\n{text}") }
+}
+
+fn omitted(name: &str, reason: &str) -> Content {
+    Content::Text { text: format!("[File {name} omitted because {reason}.]") }
 }
 
 pub(crate) fn media_uri(uri: &str, channel_id: &str) -> bool {

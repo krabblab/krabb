@@ -80,6 +80,7 @@ mod onboard;
 mod operations;
 mod origin;
 mod outbound;
+mod pdf;
 mod plugins;
 mod process;
 mod recovery;
