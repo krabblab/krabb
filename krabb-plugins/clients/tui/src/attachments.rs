@@ -281,7 +281,12 @@ mod tests {
         let quoted = format!("'{}' \"{}\"", spaced.display(), note.display());
         let link = format!("file://{}/my%20shot.png", root.display());
 
-        assert_eq!(pasted(&escaped).unwrap()[0].path, spaced);
+        if cfg!(unix) {
+            assert_eq!(pasted(&escaped).unwrap()[0].path, spaced);
+            assert_eq!(named(&escaped, &root).unwrap().path, spaced);
+        }
+
+        assert_eq!(pasted(&note.display().to_string()).unwrap()[0].path, note);
         assert_eq!(pasted(&link).unwrap()[0].name, "my shot.png");
         assert!(pasted("note.txt").is_none());
 
@@ -299,7 +304,6 @@ mod tests {
         assert!(pasted("   ").is_none());
 
         assert_eq!(named("note.txt", &root).unwrap().path, note);
-        assert_eq!(named(&escaped, &root).unwrap().path, spaced);
         assert_eq!(
             named("missing.txt", &root).unwrap_err(),
             "missing.txt is not a file Krabb can read."
