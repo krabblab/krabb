@@ -61,6 +61,7 @@ mod dispatch;
 mod doctor;
 mod external;
 mod failure;
+mod frame;
 mod hatch;
 mod home;
 mod inbound;

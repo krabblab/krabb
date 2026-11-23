@@ -1,3 +1,4 @@
+mod attach;
 mod requests;
 mod tasks;
 
@@ -206,6 +207,10 @@ async fn handle(
 
     if request.method == "session.answer" {
         return session_answer(&request, &state, &mut output).await;
+    }
+
+    if request.method == "session.attach" {
+        return attach::attach(&request, &state, &mut output).await;
     }
 
     if request.method == "session.command" {
@@ -553,13 +558,7 @@ async fn session_answer(
     let policy = state.config.clients.get(client_id).cloned().unwrap_or_default();
 
     let prepared = (|| -> io::Result<_> {
-        let workspace = if policy.worktree {
-            Some(super::worktree::conversation(id, &state.home).map_err(io::Error::other)?)
-        } else {
-            workspace
-                .map(PathBuf::from)
-                .or(super::sharing::workspace(&state.root).map_err(io::Error::other)?)
-        };
+        let workspace = attach::workspace(state, id, policy.worktree, workspace)?;
 
         let mut sessions = state.sessions.lock().map_err(lock)?;
         sessions.client(id, client_id)?;
@@ -2223,13 +2222,20 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let mut message: Message = serde_json::from_value(request.params["message"].clone())
                 .map_err(|error| invalid(&format!("session.append.message is invalid: {error}")))?;
 
+            let client =
+                requester(&request, state, "session.append").map_err(|error| invalid(&error))?;
+
+            let root = message
+                .content
+                .iter()
+                .any(|content| matches!(content, Content::Image { .. }))
+                .then(|| attach::media(state, id, client))
+                .transpose()?;
+
             if message.session != id
                 || !matches!(&message.role, Role::User | Role::Assistant)
                 || message.content.is_empty()
-                || message.content.iter().any(|content| {
-                    !matches!(content, Content::Text { text } if text.len() <= DETAIL_LIMIT)
-                })
-
+                || message.content.iter().any(|content| !attach::accepted(content, root.as_deref()))
             {
                 return Err(invalid("session.append.message is outside the supported bounds."));
             }
@@ -2240,6 +2246,10 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
 
             if session.inflight.is_some() || reserved != (session.status == "working") {
                 return Err(invalid(krabb_core::types::SESSION_BUSY));
+            }
+
+            if let Some(root) = &root {
+                message.content = attach::admit(std::mem::take(&mut message.content), root);
             }
 
             if let Some(target) = request.params.get("reply_to").filter(|value| !value.is_null()) {

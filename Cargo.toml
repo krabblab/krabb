@@ -73,6 +73,7 @@ keyring = { version = "4.2.0", default-features = true }
 ring = "0.17"
 rustix = { version = "1.1", features = ["process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+image = { version = "0.25", default-features = false, features = ["gif", "png", "webp"] }
 pdf-extract = "0.12"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 serde = { version = "1", features = ["derive"] }

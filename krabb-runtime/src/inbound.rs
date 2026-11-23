@@ -34,6 +34,8 @@ pub(crate) async fn resolve_media(
 
     for item in &mut content {
         let uri = match item {
+            Content::File { mime: Some(mime), .. } if video(mime) => continue,
+
             Content::Image { uri, .. } | Content::File { uri, .. } | Content::Audio { uri, .. }
                 if media_uri(uri, channel_id) =>
             {
@@ -78,10 +80,6 @@ pub(crate) async fn transcribe_media(
     media_root: &Path,
     call: &mut u64,
 ) -> Vec<Content> {
-    if !matches!(channel_id, "telegram" | "discord" | "whatsapp" | "signal" | "slack") {
-        return content;
-    }
-
     let speech = plugins.find(Capability::Speech).await;
     let mut output = Vec::with_capacity(content.len());
 
@@ -170,15 +168,7 @@ pub(crate) async fn transcribe_media(
     output
 }
 
-pub(crate) async fn expand_media_files(
-    channel_id: &str,
-    content: Vec<Content>,
-    media_root: &Path,
-) -> Vec<Content> {
-    if !matches!(channel_id, "telegram" | "discord" | "whatsapp" | "signal" | "slack") {
-        return content;
-    }
-
+pub(crate) async fn expand_media_files(content: Vec<Content>, media_root: &Path) -> Vec<Content> {
     let deadline = tokio::time::Instant::now() + pdf::TIME;
     let mut output = Vec::with_capacity(content.len());
 
@@ -190,6 +180,11 @@ pub(crate) async fn expand_media_files(
 
         let name = clip(name, META_LIMIT);
 
+        if mime.as_deref().is_some_and(video) {
+            output.push(omitted(&name, "video is not read yet"));
+            continue;
+        }
+
         let Some(path) = media_file(&uri, media_root) else {
             output.push(omitted(&name, missing(&uri, media_root)));
             continue;
@@ -199,6 +194,10 @@ pub(crate) async fn expand_media_files(
     }
 
     bound(output)
+}
+
+fn video(mime: &str) -> bool {
+    mime.trim().to_ascii_lowercase().starts_with("video/")
 }
 
 fn missing(uri: &str, root: &Path) -> &'static str {
@@ -402,7 +401,7 @@ pub(crate) fn prepare_images(messages: &mut [Message], media_root: &Path) {
                     let image = media_file(&uri, media_root)
                         .and_then(|path| read_image(&path, IMAGE_LIMIT.min(remaining)));
 
-                    match image {
+                    match image.and_then(still) {
                         Some((mime, bytes)) => {
                             total = total.saturating_add(bytes.len());
                             Content::Image {
@@ -440,6 +439,15 @@ pub(crate) fn prepare_images(messages: &mut [Message], media_root: &Path) {
             })
             .collect();
     }
+}
+
+/// Sends animated and less common formats as a PNG of their first frame, which every provider reads.
+fn still((mime, bytes): (&'static str, Vec<u8>)) -> Option<(&'static str, Vec<u8>)> {
+    if !matches!(mime, "image/gif" | "image/webp") {
+        return Some((mime, bytes));
+    }
+
+    frame::first(&bytes, IMAGE_LIMIT).map(|png| ("image/png", png))
 }
 
 pub(crate) fn read_image(path: &Path, limit: usize) -> Option<(&'static str, Vec<u8>)> {

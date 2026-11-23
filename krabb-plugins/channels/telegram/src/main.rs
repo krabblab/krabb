@@ -880,8 +880,19 @@ fn normalize_update(update: &serde_json::Value) -> Option<serde_json::Value> {
             .push(json!({"kind": "image", "uri": format!("telegram://file/{frame}"), "alt": alt}));
     }
 
-    if let Some(file) = message["voice"]["file_id"].as_str() {
-        content.push(json!({"kind": "audio", "uri": format!("telegram://file/{file}"), "mime": message["voice"]["mime_type"].as_str()}));
+    for field in ["voice", "audio"] {
+        if let Some(file) = message[field]["file_id"].as_str() {
+            content.push(json!({"kind": "audio", "uri": format!("telegram://file/{file}"), "mime": message[field]["mime_type"].as_str()}));
+        }
+    }
+
+    for field in ["video", "video_note"] {
+        if let Some(file) = message[field]["file_id"].as_str() {
+            let name = message[field]["file_name"].as_str().unwrap_or("video.mp4");
+            let mime = message[field]["mime_type"].as_str().unwrap_or("video/mp4");
+
+            content.push(json!({"kind": "file", "uri": format!("telegram://file/{file}"), "name": name, "mime": mime}));
+        }
     }
 
     let text = message["text"].as_str().or_else(|| message["caption"].as_str());
@@ -1072,6 +1083,20 @@ mod tests {
 
         assert_eq!(animations["events"][1]["content"][0]["uri"], "telegram://file/gif");
         assert_eq!(animations["events"][2]["content"][0]["kind"], "file");
+
+        let sounds = normalize(json!([{"update_id": 15, "message": {
+            "chat": {"id": 8, "type": "private"},
+            "audio": {"file_id": "song", "mime_type": "audio/mpeg"},
+            "video_note": {"file_id": "round"}
+        }}]));
+
+        assert_eq!(
+            sounds["events"][0]["content"],
+            json!([
+                {"kind": "audio", "uri": "telegram://file/song", "mime": "audio/mpeg"},
+                {"kind": "file", "uri": "telegram://file/round", "name": "video.mp4", "mime": "video/mp4"}
+            ])
+        );
 
         let media = normalize(
             json!([{"update_id": 5, "message": {"chat": {"id": 8, "type": "private"}, "document": {"file_id": "file", "file_name": "note.txt", "mime_type": "text/plain"}}}]),

@@ -700,10 +700,18 @@ fn normalize(value: &Value) -> Vec<Value> {
                         content.push(json!({"kind":"audio","uri":uri,"mime":message["audio"]["mime_type"].as_str()}));
                     }
 
-                    "sticker" if message["sticker"]["animated"] != true => {
+                    "sticker" => {
                         let Some(uri) = media_ref(&message["sticker"]["id"]) else { continue };
 
                         content.push(json!({"kind":"image","uri":uri,"alt":"Sticker"}));
+                    }
+
+                    "video" => {
+                        let Some(uri) = media_ref(&message["video"]["id"]) else { continue };
+                        let mime = message["video"]["mime_type"].as_str().unwrap_or("video/mp4");
+
+                        content.push(json!({"kind":"file","uri":uri,"name":"video","mime":mime}));
+                        text = message["video"]["caption"].as_str().unwrap_or_default().into();
                     }
 
                     "document" => {
@@ -1315,15 +1323,25 @@ mod tests {
         assert_eq!(events[2]["content"][0]["kind"], "image");
         assert_eq!(events[3]["content"][0]["kind"], "text");
 
-        let stickers = json!({"entry":[{"changes":[{"value":{"messages":[{"id":"s1","from":"1","type":"sticker","sticker":{"id":"k1","mime_type":"image/webp"}},{"id":"s2","from":"1","type":"sticker","sticker":{"id":"k2","animated":true}}]}}]}]});
+        let media = json!({"entry":[{"changes":[{"value":{"messages":[{"id":"s1","from":"1","type":"sticker","sticker":{"id":"k1","mime_type":"image/webp"}},{"id":"s2","from":"1","type":"sticker","sticker":{"id":"k2","animated":true}},{"id":"v1","from":"1","type":"video","video":{"id":"c1","mime_type":"video/mp4","caption":"so peak"}}]}}]}]});
 
-        let events = normalize(&stickers);
+        let events = normalize(&media);
 
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 3);
 
         assert_eq!(
             events[0]["content"][0],
             json!({"kind":"image","uri":"whatsapp://media/k1","alt":"Sticker"})
+        );
+
+        assert_eq!(events[1]["content"][0]["uri"], "whatsapp://media/k2");
+
+        assert_eq!(
+            events[2]["content"],
+            json!([
+                {"kind":"text","text":"so peak"},
+                {"kind":"file","uri":"whatsapp://media/c1","name":"video","mime":"video/mp4"}
+            ])
         );
     }
 

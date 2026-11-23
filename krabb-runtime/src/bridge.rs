@@ -712,7 +712,7 @@ pub(crate) async fn bridge_with_media(
                 storage::attachments(&home_root, workspace, channel_id, &archived)?;
             }
 
-            let content = expand_media_files(channel_id, archived, active_media).await;
+            let content = expand_media_files(archived, active_media).await;
             let content =
                 transcribe_media(plugins, channel_id, content, active_media, &mut call).await;
 

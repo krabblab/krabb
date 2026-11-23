@@ -10613,41 +10613,35 @@ async fn expands_readable_file_attachments() {
         file(&root.join("missing.txt"), "missing.txt", "text/plain"),
     ];
 
-    for channel in ["telegram", "signal", "slack"] {
-        let result = super::expand_media_files(channel, content.clone(), &root).await;
-        let rendered = result.iter().map(Content::render).collect::<Vec<_>>();
+    let result = super::expand_media_files(content.clone(), &root).await;
+    let rendered = result.iter().map(Content::render).collect::<Vec<_>>();
 
-        assert_eq!(result.len(), 9);
-        assert_eq!(rendered[0], "[File: note.md]\nA short note.");
-        assert_eq!(
-            rendered[1],
-            "[File secret.pem omitted because its file type is not supported.]"
-        );
+    assert_eq!(result.len(), 9);
+    assert_eq!(rendered[0], "[File: note.md]\nA short note.");
+    assert_eq!(rendered[1], "[File secret.pem omitted because its file type is not supported.]");
 
-        assert!(rendered[2].starts_with("[File: large.txt, first 64 KiB only]\naaa"));
-        assert_eq!(rendered[2].matches('a').count(), super::FILE_LIMIT as usize + 1);
+    assert!(rendered[2].starts_with("[File: large.txt, first 64 KiB only]\naaa"));
+    assert_eq!(rendered[2].matches('a').count(), super::FILE_LIMIT as usize + 1);
 
-        assert!(rendered[3].starts_with("[File: wide.txt, first 64 KiB only]\naaa"));
-        assert!(!rendered[3].contains('é'));
+    assert!(rendered[3].starts_with("[File: wide.txt, first 64 KiB only]\naaa"));
+    assert!(!rendered[3].contains('é'));
 
-        assert_eq!(rendered[4], "[File cut.txt omitted because it is not valid text.]");
+    assert_eq!(rendered[4], "[File cut.txt omitted because it is not valid text.]");
 
-        assert_eq!(
-            result[5],
-            Content::Image {
-                uri: format!("file://{}", photo.display()),
-                alt: Some("funny.gif".into())
-            }
-        );
+    assert_eq!(
+        result[5],
+        Content::Image {
+            uri: format!("file://{}", photo.display()),
+            alt: Some("funny.gif".into())
+        }
+    );
 
-        // The test binary is not a PDF reader, so this pins how unframed child output is reported.
+    // The test binary is not a PDF reader, so this pins how unframed child output is reported.
+    assert_eq!(rendered[6], "[File broken.pdf omitted because the PDF could not be read.]");
+    assert_eq!(rendered[7], "[File huge.log omitted because it is larger than 4 MiB.]");
+    assert_eq!(rendered[8], "[File missing.txt omitted because it is unavailable.]");
 
-        assert_eq!(rendered[6], "[File broken.pdf omitted because the PDF could not be read.]");
-        assert_eq!(rendered[7], "[File huge.log omitted because it is larger than 4 MiB.]");
-        assert_eq!(rendered[8], "[File missing.txt omitted because it is unavailable.]");
-
-        assert!(!rendered.iter().any(|item| item.contains(&root.display().to_string())));
-    }
+    assert!(!rendered.iter().any(|item| item.contains(&root.display().to_string())));
 
     let outside = test_root("text-media-outside");
 
@@ -10655,13 +10649,19 @@ async fn expands_readable_file_attachments() {
     fs::File::create(outside.join("huge.log")).unwrap().set_len(super::MEDIA_LIMIT + 1).unwrap();
 
     let probe = vec![file(&outside.join("huge.log"), "huge.log", "text/plain")];
-    let result = super::expand_media_files("telegram", probe, &root).await;
+    let result = super::expand_media_files(probe, &root).await;
 
     assert_eq!(result[0].render(), "[File huge.log omitted because it is unavailable.]");
 
-    let unchanged = super::expand_media_files("tui", content.clone(), &root).await;
+    let clip = vec![Content::File {
+        uri: "telegram://file/clip".into(),
+        name: "clip.mp4".into(),
+        mime: Some("video/mp4".into()),
+    }];
 
-    assert_eq!(unchanged, content);
+    let result = super::expand_media_files(clip, &root).await;
+
+    assert_eq!(result[0].render(), "[File clip.mp4 omitted because video is not read yet.]");
 
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(outside);
