@@ -34,6 +34,8 @@ pub(crate) async fn resolve_media(
 
     for item in &mut content {
         let uri = match item {
+            Content::File { mime: Some(mime), .. } if video(mime) => continue,
+
             Content::Image { uri, .. } | Content::File { uri, .. } | Content::Audio { uri, .. }
                 if media_uri(uri, channel_id) =>
             {
@@ -78,10 +80,6 @@ pub(crate) async fn transcribe_media(
     media_root: &Path,
     call: &mut u64,
 ) -> Vec<Content> {
-    if !matches!(channel_id, "telegram" | "discord" | "whatsapp" | "signal" | "slack") {
-        return content;
-    }
-
     let speech = plugins.find(Capability::Speech).await;
     let mut output = Vec::with_capacity(content.len());
 
@@ -170,49 +168,134 @@ pub(crate) async fn transcribe_media(
     output
 }
 
-pub(crate) fn expand_media_files(
-    channel_id: &str,
-    content: Vec<Content>,
-    media_root: &Path,
-) -> Vec<Content> {
-    if !matches!(channel_id, "telegram" | "discord" | "whatsapp" | "signal" | "slack") {
-        return content;
-    }
-
+pub(crate) async fn expand_media_files(content: Vec<Content>, media_root: &Path) -> Vec<Content> {
+    let deadline = tokio::time::Instant::now() + pdf::TIME;
     let mut output = Vec::with_capacity(content.len());
 
     for item in content {
-        let Content::File { uri, name, mime } = &item else {
+        let Content::File { uri, name, mime } = item else {
             output.push(item);
             continue;
         };
 
-        let text = media_file(uri, media_root)
-            .filter(|path| {
-                std::fs::metadata(path).is_ok_and(|metadata| metadata.len() <= FILE_LIMIT)
-            })
-            .filter(|_| safe_text_file(name, mime.as_deref()))
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .filter(|text| {
-                !text.is_empty()
-                    && !text.chars().any(|character| {
-                        character.is_control() && !matches!(character, '\n' | '\r' | '\t')
-                    })
-            });
+        let name = clip(name, META_LIMIT);
 
-        match text {
-            Some(text) => output.push(Content::Text {
-                text: format!("[File: {}]\n{text}", clip(name.clone(), META_LIMIT)),
-            }),
-
-            None => output.push(Content::Text {
-                text: "[File attachment omitted because it is unsafe or unsupported.]".into(),
-            }),
+        if mime.as_deref().is_some_and(video) {
+            output.push(omitted(&name, "video is not read yet"));
+            continue;
         }
+
+        let Some(path) = media_file(&uri, media_root) else {
+            output.push(omitted(&name, missing(&uri, media_root)));
+            continue;
+        };
+
+        output.push(read_file(uri, name, mime.as_deref(), &path, deadline).await);
     }
 
     bound(output)
+}
+
+fn video(mime: &str) -> bool {
+    mime.trim().to_ascii_lowercase().starts_with("video/")
+}
+
+fn missing(uri: &str, root: &Path) -> &'static str {
+    let confined =
+        |path: &PathBuf| std::fs::canonicalize(root).is_ok_and(|root| path.starts_with(root));
+
+    let large = uri
+        .strip_prefix("file://")
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .filter(confined)
+        .and_then(|path| std::fs::symlink_metadata(path).ok())
+        .is_some_and(|metadata| metadata.is_file() && metadata.len() > MEDIA_LIMIT);
+
+    if large { "it is larger than 4 MiB" } else { "it is unavailable" }
+}
+
+async fn read_file(
+    uri: String,
+    name: String,
+    mime: Option<&str>,
+    path: &Path,
+    deadline: tokio::time::Instant,
+) -> Content {
+    let mut head = Vec::with_capacity(16);
+
+    if std::fs::File::open(path).and_then(|file| file.take(16).read_to_end(&mut head)).is_err() {
+        return omitted(&name, "it is unavailable");
+    }
+
+    if image_mime(&head).is_some() {
+        return Content::Image { uri, alt: Some(name) };
+    }
+
+    if head.starts_with(pdf::MAGIC) {
+        return match pdf::read(path, deadline).await {
+            pdf::Text::Found { text, truncated } => file_text(&name, text, truncated),
+            pdf::Text::Empty => omitted(&name, "the PDF has no extractable text, such as a scan"),
+            pdf::Text::Unreadable => omitted(&name, "the PDF could not be read"),
+            pdf::Text::Slow => omitted(&name, "reading the PDF took too long"),
+        };
+    }
+
+    if !safe_text_file(&name, mime) {
+        return omitted(&name, "its file type is not supported");
+    }
+
+    let mut bytes = Vec::new();
+
+    if std::fs::File::open(path)
+        .and_then(|file| file.take(FILE_LIMIT + 1).read_to_end(&mut bytes))
+        .is_err()
+    {
+        return omitted(&name, "it is unavailable");
+    }
+
+    let truncated = bytes.len() as u64 > FILE_LIMIT;
+    bytes.truncate(FILE_LIMIT as usize);
+
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+
+        Err(error) if truncated && error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+
+            bytes.truncate(valid);
+            String::from_utf8(bytes).unwrap_or_default()
+        }
+
+        Err(_) => return omitted(&name, "it is not valid text"),
+    };
+
+    if text
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return omitted(&name, "it is not valid text");
+    }
+
+    if text.trim().is_empty() {
+        return omitted(&name, "it is empty");
+    }
+
+    file_text(&name, text, truncated)
+}
+
+fn file_text(name: &str, text: String, truncated: bool) -> Content {
+    if truncated {
+        return Content::Text {
+            text: format!("[File: {name}, first {} KiB only]\n{text}", FILE_LIMIT / 1024),
+        };
+    }
+
+    Content::Text { text: format!("[File: {name}]\n{text}") }
+}
+
+fn omitted(name: &str, reason: &str) -> Content {
+    Content::Text { text: format!("[File {name} omitted because {reason}.]") }
 }
 
 pub(crate) fn media_uri(uri: &str, channel_id: &str) -> bool {
@@ -318,7 +401,7 @@ pub(crate) fn prepare_images(messages: &mut [Message], media_root: &Path) {
                     let image = media_file(&uri, media_root)
                         .and_then(|path| read_image(&path, IMAGE_LIMIT.min(remaining)));
 
-                    match image {
+                    match image.and_then(|image| still(image, IMAGE_LIMIT.min(remaining))) {
                         Some((mime, bytes)) => {
                             total = total.saturating_add(bytes.len());
                             Content::Image {
@@ -356,6 +439,15 @@ pub(crate) fn prepare_images(messages: &mut [Message], media_root: &Path) {
             })
             .collect();
     }
+}
+
+/// Sends animated and less common formats as a PNG of their first frame, which every provider reads.
+fn still((mime, bytes): (&'static str, Vec<u8>), limit: usize) -> Option<(&'static str, Vec<u8>)> {
+    if !matches!(mime, "image/gif" | "image/webp") {
+        return Some((mime, bytes));
+    }
+
+    frame::first(&bytes, limit).map(|png| ("image/png", png))
 }
 
 pub(crate) fn read_image(path: &Path, limit: usize) -> Option<(&'static str, Vec<u8>)> {

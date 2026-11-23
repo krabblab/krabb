@@ -61,6 +61,7 @@ mod dispatch;
 mod doctor;
 mod external;
 mod failure;
+mod frame;
 mod hatch;
 mod home;
 mod inbound;
@@ -80,6 +81,7 @@ mod onboard;
 mod operations;
 mod origin;
 mod outbound;
+mod pdf;
 mod plugins;
 mod process;
 mod recovery;
@@ -89,6 +91,9 @@ mod schedules;
 mod sessions;
 mod style;
 mod tools;
+
+pub use pdf::child as pdf_child;
+
 use agent::*;
 use answer::*;
 use archive::*;

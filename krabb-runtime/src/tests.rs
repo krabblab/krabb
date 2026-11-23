@@ -10568,8 +10568,8 @@ async fn handles_discord_audio_without_speech_plugin() {
     assert_eq!(call, 2);
 }
 
-#[test]
-fn expands_only_bounded_text_attachments() {
+#[tokio::test]
+async fn expands_readable_file_attachments() {
     let root = test_root("text-media");
 
     fs::create_dir_all(&root).unwrap();
@@ -10577,40 +10577,95 @@ fn expands_only_bounded_text_attachments() {
     let note = root.join("note.md");
     let secret = root.join("secret.pem");
     let large = root.join("large.txt");
+    let wide = root.join("wide.txt");
+    let cut = root.join("cut.txt");
+    let photo = root.join("photo.bin");
+    let broken = root.join("broken.bin");
+    let huge = root.join("huge.bin");
+
+    let mut straddle = "a".repeat(super::FILE_LIMIT as usize - 1);
+    straddle.push('é');
 
     fs::write(&note, "A short note.").unwrap();
     fs::write(&secret, "PRIVATE KEY").unwrap();
-    fs::File::create(&large).unwrap().set_len(super::FILE_LIMIT + 1).unwrap();
+    fs::write(&large, "a".repeat(super::FILE_LIMIT as usize + 10)).unwrap();
+    fs::write(&wide, &straddle).unwrap();
+    fs::write(&cut, b"caf\xc3").unwrap();
+    fs::write(&photo, b"GIF89a\x01\x00\x01\x00").unwrap();
+    fs::write(&broken, b"%PDF-1.7\nbroken").unwrap();
+    fs::File::create(&huge).unwrap().set_len(super::MEDIA_LIMIT + 1).unwrap();
+
+    let file = |path: &Path, name: &str, mime: &str| Content::File {
+        uri: format!("file://{}", path.display()),
+        name: name.into(),
+        mime: Some(mime.into()),
+    };
 
     let content = vec![
-        Content::File {
-            uri: format!("file://{}", note.display()),
-            name: "note.md".into(),
-            mime: Some("text/markdown".into()),
-        },
-        Content::File {
-            uri: format!("file://{}", secret.display()),
-            name: "secret.pem".into(),
-            mime: Some("application/octet-stream".into()),
-        },
-        Content::File {
-            uri: format!("file://{}", large.display()),
-            name: "large.txt".into(),
-            mime: Some("text/plain".into()),
-        },
+        file(&note, "note.md", "text/markdown"),
+        file(&secret, "secret.pem", "application/octet-stream"),
+        file(&large, "large.txt", "text/plain"),
+        file(&wide, "wide.txt", "text/plain"),
+        file(&cut, "cut.txt", "text/plain"),
+        file(&photo, "funny.gif", "application/octet-stream"),
+        file(&broken, "broken.pdf", "application/pdf"),
+        file(&huge, "huge.log", "text/plain"),
+        file(&root.join("missing.txt"), "missing.txt", "text/plain"),
     ];
 
-    for channel in ["telegram", "signal", "slack"] {
-        let result = super::expand_media_files(channel, content.clone(), &root);
+    let result = super::expand_media_files(content.clone(), &root).await;
+    let rendered = result.iter().map(Content::render).collect::<Vec<_>>();
 
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0], Content::Text { text: "[File: note.md]\nA short note.".into() });
-        assert!(result[1].render().contains("unsafe or unsupported"));
-        assert!(result[2].render().contains("unsafe or unsupported"));
-        assert!(!result.iter().any(|item| item.render().contains(&root.display().to_string())));
-    }
+    assert_eq!(result.len(), 9);
+    assert_eq!(rendered[0], "[File: note.md]\nA short note.");
+    assert_eq!(rendered[1], "[File secret.pem omitted because its file type is not supported.]");
+
+    assert!(rendered[2].starts_with("[File: large.txt, first 64 KiB only]\naaa"));
+    assert_eq!(rendered[2].matches('a').count(), super::FILE_LIMIT as usize + 1);
+
+    assert!(rendered[3].starts_with("[File: wide.txt, first 64 KiB only]\naaa"));
+    assert!(!rendered[3].contains('é'));
+
+    assert_eq!(rendered[4], "[File cut.txt omitted because it is not valid text.]");
+
+    assert_eq!(
+        result[5],
+        Content::Image {
+            uri: format!("file://{}", photo.display()),
+            alt: Some("funny.gif".into())
+        }
+    );
+
+    // The test binary is not a PDF reader, so this pins how unframed child output is reported.
+
+    assert_eq!(rendered[6], "[File broken.pdf omitted because the PDF could not be read.]");
+    assert_eq!(rendered[7], "[File huge.log omitted because it is larger than 4 MiB.]");
+    assert_eq!(rendered[8], "[File missing.txt omitted because it is unavailable.]");
+
+    assert!(!rendered.iter().any(|item| item.contains(&root.display().to_string())));
+
+    let outside = test_root("text-media-outside");
+
+    fs::create_dir_all(&outside).unwrap();
+    fs::File::create(outside.join("huge.log")).unwrap().set_len(super::MEDIA_LIMIT + 1).unwrap();
+
+    let probe = vec![file(&outside.join("huge.log"), "huge.log", "text/plain")];
+    let result = super::expand_media_files(probe, &root).await;
+
+    assert_eq!(result[0].render(), "[File huge.log omitted because it is unavailable.]");
+
+    let clip = vec![Content::File {
+        uri: "telegram://file/clip".into(),
+        name: "clip.mp4".into(),
+        mime: Some("video/mp4".into()),
+    }];
+
+    let result = super::expand_media_files(clip, &root).await;
+
+    assert_eq!(result[0].render(), "[File clip.mp4 omitted because video is not read yet.]");
 
     let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(outside);
 }
 
 #[tokio::test]

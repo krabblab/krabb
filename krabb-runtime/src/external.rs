@@ -288,6 +288,9 @@ pub(crate) async fn external_command_at(
     Ok(())
 }
 
+/// Display variables a terminal client needs to read the clipboard; they carry no secrets.
+const DISPLAY: [&str; 4] = ["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY"];
+
 pub(crate) async fn tui_command(
     path: PathBuf,
     args: &[String],
@@ -328,6 +331,7 @@ pub(crate) async fn tui_command(
         .env("KRABB_HOME", root)
         .env("KRABB_NAME", &config.name)
         .envs(std::env::var_os("LLVM_PROFILE_FILE").map(|value| ("LLVM_PROFILE_FILE", value)))
+        .envs(DISPLAY.iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))))
         .env("KRABB_TUI_LAUNCH_DIR", launch_directory)
         .env(
             "KRABB_TUI_THEME",

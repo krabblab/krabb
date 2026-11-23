@@ -45,6 +45,13 @@ Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit. Use
 Up/Down for input history, Page Up/Page Down to scroll, and Shift-drag to
 select text.
 
+Attach images, PDFs, text or code files, and audio with `/attach <path>` or by
+pasting or dragging their absolute paths into the prompt, or attach a clipboard
+image with Ctrl+V (Alt+V where the terminal keeps Ctrl+V).
+Attachments appear in the prompt title until you send them; Backspace on an
+empty prompt removes the last one. Send them once Krabb's current turn ends. See
+[Media](../../../krabb-docs/media.md) for what Krabb reads.
+
 Assistant replies display bold, italic, strikethrough, headings, and inline code
 with terminal text styles. Code blocks appear in language-labeled panels, and
 links show their labels and URLs. Formatting stays readable while replies stream

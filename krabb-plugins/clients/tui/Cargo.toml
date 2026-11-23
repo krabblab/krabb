@@ -7,6 +7,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+arboard.workspace = true
+base64.workspace = true
+image.workspace = true
 krabb-date.workspace = true
 krabb-log.workspace = true
 krabb-text.workspace = true

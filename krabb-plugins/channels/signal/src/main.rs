@@ -859,7 +859,10 @@ fn normalize(value: &Value) -> Option<Value> {
     let group = group_id.unwrap_or(source);
     let text = data["message"].as_str().unwrap_or_default();
 
-    if text.is_empty() && data["attachments"].as_array().is_none() {
+    if text.is_empty()
+        && data["attachments"].as_array().is_none()
+        && sticker(&data["sticker"]).is_none()
+    {
         return None;
     }
 
@@ -914,7 +917,25 @@ fn content(data: &Value, origin_kind: &str, origin: &str) -> Vec<Value> {
         }
     }
 
+    if let Some((pack, sticker)) = sticker(&data["sticker"]) {
+        items.push(json!({"kind": "image", "uri": format!("signal://sticker/{pack}/{sticker}"), "alt": "Sticker"}));
+    }
+
     items
+}
+
+fn sticker(value: &Value) -> Option<(&str, u64)> {
+    let pack = value["packId"].as_str()?;
+    let id = value["stickerId"].as_u64()?;
+
+    valid_sticker(pack, id).then_some((pack, id))
+}
+
+fn valid_sticker(pack: &str, id: u64) -> bool {
+    !pack.is_empty()
+        && pack.len() <= 64
+        && pack.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && id <= u64::from(u16::MAX)
 }
 
 fn attachment_uri(id: &str, origin_kind: &str, origin: &str) -> Option<String> {
@@ -1091,6 +1112,10 @@ async fn signal_media_at(
         return media_at(uri, root).await;
     }
 
+    if let Some(reference) = uri.strip_prefix("signal://sticker/") {
+        return sticker_at(account, reference, root, command, prefix).await;
+    }
+
     let attachment = uri
         .strip_prefix("signal://attachment/")
         .ok_or_else(|| krabb_core::Error::Denied("Signal media URI is invalid.".into()))?;
@@ -1135,6 +1160,49 @@ async fn signal_media_at(
     media_at(&format!("file://{}", destination.display()), root).await
 }
 
+async fn sticker_at(
+    account: &str,
+    reference: &str,
+    root: &Path,
+    command: &str,
+    prefix: &[String],
+) -> krabb_core::Result<Value> {
+    let invalid = || krabb_core::Error::Denied("Signal sticker URI is invalid.".into());
+    let (pack, id) = reference.split_once('/').ok_or_else(invalid)?;
+    let id = id.parse::<u64>().map_err(|_| invalid())?;
+
+    if !valid_sticker(pack, id) {
+        return Err(invalid());
+    }
+
+    std::fs::create_dir_all(root).map_err(|error| {
+        krabb_core::Error::Denied(format!("Signal media directory failed: {error}."))
+    })?;
+
+    trim_media(root, MEDIA_CACHE_LIMIT, MEDIA_CACHE_FILES)?;
+
+    let destination = root.join(format!("signal-sticker-{pack}-{id}.bin"));
+
+    if let Ok(value) = media_at(&format!("file://{}", destination.display()), root).await {
+        return Ok(value);
+    }
+
+    let mut args = prefix.to_vec();
+
+    args.extend(["-a".into(), account.into(), "getSticker".into()]);
+    args.extend(["--pack-id".into(), pack.into(), "--sticker-id".into(), id.to_string()]);
+
+    let bytes = fetch(command, &args).await?;
+
+    reserve_media(root, bytes.len() as u64)?;
+
+    krabb_file::save(&destination, bytes).map_err(|error| {
+        krabb_core::Error::Denied(format!("Signal media storage failed: {error}."))
+    })?;
+
+    media_at(&format!("file://{}", destination.display()), root).await
+}
+
 fn trim_media(root: &Path, bytes: u64, files: usize) -> krabb_core::Result<()> {
     krabb_file::trim(root, bytes, files, MEDIA_TTL)
         .map_err(|_| krabb_core::Error::Denied("Signal media cache is unavailable.".into()))
@@ -1153,10 +1221,14 @@ async fn get_attachment(
 ) -> krabb_core::Result<Vec<u8>> {
     let args = attachment_args(account, id, origin, prefix);
 
+    fetch(command, &args).await
+}
+
+async fn fetch(command: &str, args: &[String]) -> krabb_core::Result<Vec<u8>> {
     let encoded_limit = MEDIA_LIMIT.saturating_add(2) / 3 * 4;
 
     let output =
-        command_output(command, &args, encoded_limit, OUTPUT_LIMIT).await.map_err(signal_error)?;
+        command_output(command, args, encoded_limit, OUTPUT_LIMIT).await.map_err(signal_error)?;
 
     if output.stdout.len() > encoded_limit || output.stderr.len() > OUTPUT_LIMIT {
         return Err(krabb_core::Error::Denied("signal-cli output exceeded the limit.".into()));
@@ -1298,6 +1370,19 @@ mod tests {
         assert_eq!(event["content"][1]["uri"], "signal://attachment/img?recipient=KzE");
         assert_eq!(event["content"][2]["kind"], "audio");
         assert_eq!(event["content"][3]["kind"], "file");
+
+        let sticker = json!({
+            "envelope": {
+                "sourceNumber": "+1",
+                "timestamp": 44,
+                "dataMessage": {"sticker": {"packId": "ab12", "packKey": "key", "stickerId": 3}}
+            }
+        });
+
+        assert_eq!(
+            normalize(&sticker).unwrap()["content"],
+            json!([{"kind": "image", "uri": "signal://sticker/ab12/3", "alt": "Sticker"}])
+        );
 
         let group = json!({
             "envelope": {
@@ -1451,6 +1536,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(cached, value);
+
+        let script = r#"[ "$3" = getSticker ] && [ "$5" = ab12 ] && [ "$7" = 3 ] && printf 'aGk='"#;
+
+        let sticker = signal_media_at(
+            "+1000",
+            "signal://sticker/ab12/3",
+            &root,
+            "sh",
+            &["-c".into(), script.into(), "sh".into()],
+        )
+        .await
+        .unwrap();
+
+        let path = sticker["uri"].as_str().unwrap().strip_prefix("file://").unwrap();
+
+        assert_eq!(std::fs::read(path).unwrap(), b"hi");
+
+        for invalid in ["signal://sticker/zz/3", "signal://sticker/ab12/x", "signal://sticker/ab12"]
+        {
+            assert!(signal_media_at("+1000", invalid, &root, "false", &[]).await.is_err());
+        }
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -50,8 +50,11 @@ failures do not block final delivery.
 `KRABB_DISCORD_GATEWAY_URL` and `KRABB_DISCORD_INTENTS` are optional
 overrides for local integration tests.
 
-Image, voice-message audio, and bounded text-file attachments are downloaded
-through opaque references into the private `KRABB_MEDIA` cache. The plugin
+Image, voice-message audio, and file attachments, plus stickers and link-preview
+images such as GIF picker results, are downloaded through opaque references into
+the private `KRABB_MEDIA` cache; files are read as described in the
+[plugin guide](../../../krabb-docs/plugins.md). Preview images come through
+Discord's image proxy and are fetched without the bot token. The plugin
 expires files after 24 hours and evicts oldest files before storage to keep the
 cache within 64 MiB and 256 files. Cleanup failures reject storage; the protected
 session image directory is preserved. The plugin

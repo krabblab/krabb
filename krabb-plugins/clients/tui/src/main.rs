@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod attachments;
 mod data;
 mod date;
 #[cfg(test)]
@@ -20,6 +21,7 @@ use krabb_core::{
     },
 };
 
+use base64::Engine;
 #[cfg(test)]
 use krabb_core::types::ToolSpec;
 use serde_json::Value;
@@ -634,7 +636,9 @@ where
         let mut lines = input.lines();
 
         while let Some(line) = lines.next_line().await? {
-            let line = decode_terminal_input(&line);
+            let (line, attachments) = attachments::decode(&line)
+                .unwrap_or_else(|| (decode_terminal_input(&line), Vec::new()));
+            let _cleanup = attachments::Cleanup(&attachments);
             let line = line.trim();
 
             if line == "/quit" || line == "/exit" {
@@ -1260,7 +1264,7 @@ where
                 continue;
             }
 
-            if line.is_empty() {
+            if line.is_empty() && attachments.is_empty() {
                 output.write_all(b"> ").await?;
                 output.flush().await?;
                 continue;
@@ -1300,6 +1304,7 @@ where
 
                 Err(error) => {
                     if reply_to.is_none() && !line.starts_with('/') && !line.starts_with('!')
+                        && attachments.is_empty()
                         && error.to_string().contains(krabb_core::types::SESSION_BUSY) {
                         let event = enqueue_input(
                             &home,
@@ -1316,7 +1321,13 @@ where
                         continue;
                     }
 
-                    let message = if error.to_string().contains(krabb_core::types::SESSION_BUSY) {
+                    let message = if error.to_string().contains(krabb_core::types::SESSION_BUSY)
+                        && !attachments.is_empty()
+                    {
+                        "Krabb is already working in this session, so the attachments were not \
+                        sent.\nAttach them again when the current turn finishes."
+                            .to_owned()
+                    } else if error.to_string().contains(krabb_core::types::SESSION_BUSY) {
                         "Krabb is already working in this session.\nWait for the current turn to \
                         finish."
                             .to_owned()
@@ -1368,13 +1379,47 @@ where
                 Some(reply)
             } else { None };
 
+            let mut content = Vec::new();
+
+            if !line.is_empty() {
+                content.push(Content::Text { text: line.into() });
+            }
+
+            let mut failed = None;
+
+            for attachment in &attachments {
+                match upload(&home, &session, attachment, host).await {
+                    Ok(items) => content.extend(items),
+
+                    Err(error) => {
+                        failed = Some(error);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(error) = failed {
+                let _ = reservation.release().await;
+                let message = format!("Turn was not saved: {error}");
+
+                if let Some(events) = &engine_events {
+                    let _ = events.send(EngineEvent::SystemNotice(message));
+                    output.write_all(b"> ").await?;
+                } else {
+                    output.write_all(format!("{message}\n> ").as_bytes()).await?;
+                }
+
+                output.flush().await?;
+                continue;
+            }
+
             sequence = sequence.saturating_add(1);
             let mut user = Message {
                 id: message_id("user", sequence),
                 session: session.clone(),
                 role: Role::User,
                 sender: Some(client::TUI.into()),
-                content: vec![Content::Text { text: line.into() }],
+                content,
             };
 
             let appended = host(
@@ -2319,6 +2364,42 @@ async fn require_daemon(home: &str) -> krabb_core::Result<()> {
         ),
         ControlError::Failed(error) => error,
     })
+}
+
+/// Sends one attachment to the host, which reads it into message content.
+async fn upload<C, F>(
+    home: &str,
+    session: &str,
+    attachment: &attachments::Attachment,
+    host: C,
+) -> Result<Vec<Content>, String>
+where
+    C: Fn(String, String, Value) -> F,
+    F: std::future::Future<Output = krabb_core::Result<Value>>,
+{
+    let name = &attachment.name;
+    let size =
+        std::fs::metadata(&attachment.path).map_err(|_| format!("{name} is unavailable."))?;
+
+    if size.len() > attachments::LIMIT {
+        return Err(format!("{name} is larger than 4 MiB."));
+    }
+
+    let bytes = std::fs::read(&attachment.path).map_err(|_| format!("{name} is unavailable."))?;
+
+    let params = serde_json::json!({
+        "id": session,
+        "name": name,
+        "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+        "audio": attachment.audio(),
+    });
+
+    let reply = host(home.to_owned(), "session.attach".into(), params)
+        .await
+        .map_err(|error| format!("{name} was not attached: {}.", sentence(error.to_string())))?;
+
+    serde_json::from_value(reply["content"].clone())
+        .map_err(|_| format!("{name} was not attached: the reply was invalid."))
 }
 
 fn decode_terminal_input(line: &str) -> String {
@@ -6273,6 +6354,49 @@ mod tests {
         assert!(super::parse_plugin_list_page("/plugin 0").is_err());
         assert!(super::parse_plugin_list_page("/plugin next").is_err());
         assert!(super::parse_plugin_list_page("/plugin 2 extra").is_err());
+    }
+
+    #[tokio::test]
+    async fn uploads_attachments_through_the_host() {
+        let path =
+            std::env::temp_dir().join(format!("krabb-tui-upload-{}.ogg", std::process::id()));
+
+        std::fs::write(&path, b"voice").unwrap();
+
+        let attachment = super::attachments::Attachment {
+            path: path.clone(),
+            name: "voice.ogg".into(),
+            temporary: false,
+        };
+
+        let host = |_: String, method: String, params: serde_json::Value| async move {
+            assert_eq!(method, "session.attach");
+            assert_eq!(params["id"], "main");
+            assert_eq!(params["audio"], true);
+            assert_eq!(params["data"], "dm9pY2U=");
+
+            Ok(serde_json::json!({"content": [{"kind": "text", "text": "Hello there."}]}))
+        };
+
+        let content = super::upload("home", "main", &attachment, &host).await.unwrap();
+
+        assert_eq!(content, vec![krabb_core::types::Content::Text { text: "Hello there.".into() }]);
+
+        let failing = |_: String, _: String, _: serde_json::Value| async move {
+            Err::<serde_json::Value, _>(krabb_core::Error::Denied(
+                "The attachment is too large".into(),
+            ))
+        };
+
+        let error = super::upload("home", "main", &attachment, &failing).await.unwrap_err();
+
+        assert_eq!(error, "voice.ogg was not attached: The attachment is too large.");
+
+        std::fs::remove_file(&path).unwrap();
+
+        let missing = super::upload("home", "main", &attachment, &host).await.unwrap_err();
+
+        assert_eq!(missing, "voice.ogg is unavailable.");
     }
 
     #[test]

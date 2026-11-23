@@ -622,6 +622,19 @@ limits and retain normalized attachment metadata for providers. Telegram,
 Discord, and WhatsApp media operations resolve opaque provider references into
 bounded private files, preserving binary image and audio bytes; generated daemon replies currently remain text-only.
 
+The host reads attached files the same way for every channel and client. Files
+whose bytes are PNG, JPEG, GIF, or WebP become images; GIF and WebP images reach
+the model as a PNG of their first frame, decoded within fixed size and memory
+bounds. PDFs contribute their extracted text. Extraction runs one PDF at a time
+in a short-lived child process of the Krabb binary, without the host's
+environment. It is stopped after 30 seconds per message and, on Linux, capped at
+1 GiB of memory. UTF-8 text and code files are included directly. PDF and text
+content is cut off after 64 KiB, and files over 4 MiB are not read. Videos are
+not downloaded. Files that cannot be read reach the model as a short note naming
+the file and the reason, never as silent omissions. Clients upload attachments
+with `session.attach`, which reads them before the message is saved. See
+[Media](media.md) for the per-channel matrix.
+
 The SQLite plugin uses WAL mode and idempotent schema migrations. When it is
 installed and agent tools are enabled, Krabb adds a `data` tool to model
 requests. The agent can create logical databases and tables with typed columns,

@@ -41,6 +41,7 @@ const TEXT_LIMIT: usize = 256 * 1024;
 const MEDIA_LIMIT: usize = 4 * 1024 * 1024;
 const ATTACHMENTS: usize = 256;
 const MEDIA_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
+const PREVIEW_WAIT: Duration = Duration::from_secs(2);
 const ATTACHMENT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const PENDING_DISPATCHES: usize = 256;
 const PENDING_DISPATCH_BYTES: usize = 16 * 1024 * 1024;
@@ -837,6 +838,10 @@ async fn media(
             (Some(*channel), Some(*message), (*id).to_owned())
         }
 
+        [channel, message, id] if snowflake(channel) && snowflake(message) && embed(id) => {
+            (Some(*channel), Some(*message), format!("{message}-{id}"))
+        }
+
         _ => {
             return Err(krabb_core::Error::Denied("Discord media URI is invalid.".into()));
         }
@@ -905,10 +910,16 @@ fn cache_media(
 }
 
 async fn download(client: &reqwest::Client, url: &str, token: &str) -> krabb_core::Result<Vec<u8>> {
-    let response =
-        client.get(url).header(AUTHORIZATION, format!("Bot {token}")).send().await.map_err(
-            |error| krabb_core::Error::Denied(format!("Discord media failed: {error}.")),
-        )?;
+    let mut request = client.get(url);
+
+    if !proxied(url) {
+        request = request.header(AUTHORIZATION, format!("Bot {token}"));
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| krabb_core::Error::Denied(format!("Discord media failed: {error}.")))?;
 
     let status = response.status();
     let bytes = collect(response.bytes_stream()).await?;
@@ -929,14 +940,14 @@ async fn refresh_attachment(
     token: &str,
     base: &str,
 ) -> krabb_core::Result<Attachment> {
-    let value = message(
-        client,
-        reqwest::Method::GET,
-        format!("{base}/channels/{channel}/messages/{message_id}"),
-        token,
-        Value::Null,
-    )
-    .await?;
+    let url = format!("{base}/channels/{channel}/messages/{message_id}");
+    let mut value = message(client, reqwest::Method::GET, url.clone(), token, Value::Null).await?;
+
+    // Discord builds link previews after the message arrives, so give a GIF link one more look.
+    if id.contains("-e") && previews(&value).is_empty() {
+        tokio::time::sleep(PREVIEW_WAIT).await;
+        value = message(client, reqwest::Method::GET, url, token, Value::Null).await?;
+    }
 
     if value["id"].as_str() != Some(message_id) || value["channel_id"].as_str() != Some(channel) {
         return Err(krabb_core::Error::Denied(
@@ -1008,7 +1019,62 @@ fn discord_media_url(value: &str) -> bool {
         return false;
     }
 
-    matches!(url.host_str(), Some("cdn.discordapp.com" | "media.discordapp.net"))
+    matches!(url.host_str(), Some("cdn.discordapp.com" | "media.discordapp.net")) || proxied(value)
+}
+
+/// Discord's proxy for embedded link previews; it serves public images and never gets the token.
+fn proxied(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(|host| {
+                host.strip_prefix("images-ext-")
+                    .and_then(|rest| rest.strip_suffix(".discordapp.net"))
+                    .is_some_and(|number| {
+                        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            })
+    })
+}
+
+fn embed(value: &str) -> bool {
+    value
+        .strip_prefix('e')
+        .is_some_and(|index| index.len() == 1 && index.as_bytes()[0].is_ascii_digit())
+}
+
+fn sticker(value: &Value) -> Option<(&str, &str, &'static str)> {
+    let id = value["id"].as_str().filter(|id| snowflake(id))?;
+    let name = value["name"].as_str().unwrap_or("sticker");
+
+    let extension = match value["format_type"].as_u64() {
+        Some(1 | 2) => "png",
+        Some(4) => "gif",
+        _ => return None,
+    };
+
+    Some((id, name, extension))
+}
+
+/// Preview images of a message's embeds, numbered in order so `e0` is always the first.
+fn previews(value: &Value) -> Vec<&str> {
+    value["embeds"].as_array().into_iter().flatten().filter_map(preview).take(10).collect()
+}
+
+fn preview(value: &Value) -> Option<&str> {
+    let image = if value["image"].is_object() { &value["image"] } else { &value["thumbnail"] };
+
+    image["proxy_url"]
+        .as_str()
+        .or_else(|| image["url"].as_str())
+        .filter(|url| discord_media_url(url))
+}
+
+fn gif_link(text: &str) -> bool {
+    text.split_whitespace().any(|word| {
+        ["https://tenor.com/", "https://giphy.com/", "https://media.giphy.com/"]
+            .iter()
+            .any(|prefix| word.starts_with(prefix))
+    })
 }
 
 fn safe_name(value: &str) -> Option<String> {
@@ -1830,6 +1896,25 @@ fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
         }
     }
 
+    for item in value["sticker_items"].as_array().into_iter().flatten().take(3) {
+        let name = item["name"].as_str().unwrap_or("sticker");
+
+        match sticker(item) {
+            Some((id, ..)) => content.push(json!({"kind": "image", "uri": format!("discord://attachment/{channel}/{message_id}/{id}"), "alt": format!("Sticker {name}")})),
+            None => content.push(json!({"kind": "text", "text": format!("[Sticker {name} omitted because animated Lottie stickers are not read.]")})),
+        }
+    }
+
+    let previews = previews(value).len();
+
+    for index in 0..previews {
+        content.push(json!({"kind": "image", "uri": format!("discord://attachment/{channel}/{message_id}/e{index}"), "alt": "Link preview"}));
+    }
+
+    if previews == 0 && gif_link(text) {
+        content.push(json!({"kind": "image", "uri": format!("discord://attachment/{channel}/{message_id}/e0"), "alt": "GIF, first frame only"}));
+    }
+
     if content.is_empty() {
         return None;
     }
@@ -1856,11 +1941,39 @@ fn normalize(value: &serde_json::Value) -> Option<serde_json::Value> {
 }
 
 fn remember_attachments(value: &Value, attachments: &mut BTreeMap<String, Attachment>) {
+    let expires = Instant::now() + ATTACHMENT_TTL;
+
+    for item in value["sticker_items"].as_array().into_iter().flatten() {
+        if let Some((id, name, extension)) = sticker(item) {
+            let url = format!("https://media.discordapp.net/stickers/{id}.{extension}");
+
+            let name =
+                safe_name(&format!("{name}.{extension}")).unwrap_or_else(|| "sticker".into());
+
+            let mime = Some(format!("image/{extension}"));
+
+            attachments.insert(id.into(), Attachment { url, name, mime, size: None, expires });
+        }
+    }
+
+    if let Some(message) = value["id"].as_str() {
+        for (index, url) in previews(value).into_iter().enumerate() {
+            let attachment = Attachment {
+                url: url.into(),
+                name: "preview.bin".into(),
+                mime: None,
+                size: None,
+                expires,
+            };
+
+            attachments.insert(format!("{message}-e{index}"), attachment);
+        }
+    }
+
     let Some(values) = value["attachments"].as_array() else {
+        prune(attachments);
         return;
     };
-
-    let expires = Instant::now() + ATTACHMENT_TTL;
 
     for value in values {
         let Some(id) = value["id"].as_str().filter(|value| snowflake(value)) else {
@@ -1882,6 +1995,10 @@ fn remember_attachments(value: &Value, attachments: &mut BTreeMap<String, Attach
         attachments.insert(id.into(), Attachment { url: url.into(), name, mime, size, expires });
     }
 
+    prune(attachments);
+}
+
+fn prune(attachments: &mut BTreeMap<String, Attachment>) {
     while attachments.len() > ATTACHMENTS {
         let Some(oldest) =
             attachments.iter().min_by_key(|(_, value)| value.expires).map(|(id, _)| id.clone())
@@ -2075,6 +2192,56 @@ mod tests {
         assert!(response_body(reqwest::StatusCode::UNAUTHORIZED, json!({"message":"no"})).is_err());
         assert!(super::credential().is_err());
         assert!(super::keyring("discord").is_none());
+    }
+
+    #[test]
+    fn normalizes_stickers_and_link_previews() {
+        let message = json!({
+            "id": "1",
+            "channel_id": "2",
+            "content": "",
+            "author": {"id": "3", "bot": false},
+            "sticker_items": [
+                {"id": "5", "name": "wave", "format_type": 1},
+                {"id": "6", "name": "dance", "format_type": 3}
+            ],
+            "embeds": [
+                {"type": "rich"},
+                {"type": "gifv", "thumbnail": {"url": "https://media.tenor.com/a.png", "proxy_url": "https://images-ext-1.discordapp.net/external/a.png"}}
+            ]
+        });
+
+        assert_eq!(
+            normalize(&message).unwrap()["content"],
+            json!([
+                {"kind": "image", "uri": "discord://attachment/2/1/5", "alt": "Sticker wave"},
+                {"kind": "text", "text": "[Sticker dance omitted because animated Lottie stickers are not read.]"},
+                {"kind": "image", "uri": "discord://attachment/2/1/e0", "alt": "Link preview"}
+            ])
+        );
+
+        let mut attachments = std::collections::BTreeMap::new();
+
+        remember_attachments(&message, &mut attachments);
+
+        assert_eq!(attachments["5"].url, "https://media.discordapp.net/stickers/5.png");
+        assert_eq!(attachments["1-e0"].url, "https://images-ext-1.discordapp.net/external/a.png");
+        assert!(!attachments.contains_key("6"));
+
+        let link = json!({"id":"7","channel_id":"2","content":"https://tenor.com/view/peak-123","author":{"id":"3","bot":false}});
+
+        assert_eq!(
+            normalize(&link).unwrap()["content"][1],
+            json!({"kind": "image", "uri": "discord://attachment/2/7/e0", "alt": "GIF, first frame only"})
+        );
+
+        assert!(super::proxied("https://images-ext-2.discordapp.net/external/a.png"));
+        assert!(!super::proxied("https://images-ext-.discordapp.net/a.png"));
+        assert!(!super::proxied("https://images-ext-1.discordapp.net.evil.com/a.png"));
+        assert!(!super::proxied("http://images-ext-1.discordapp.net/a.png"));
+        assert!(!super::proxied("https://cdn.discordapp.com/a.png"));
+
+        assert!(super::embed("e0") && !super::embed("e10") && !super::embed("e"));
     }
 
     #[test]
