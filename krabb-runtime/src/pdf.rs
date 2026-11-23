@@ -157,10 +157,10 @@ pub fn child() -> Option<ExitCode> {
 
 #[cfg(target_os = "linux")]
 fn limit() {
-    use rustix::process::{Resource, Rlimit, setrlimit};
+    use rustix::process::{DumpableBehavior, Resource, Rlimit, set_dumpable_behavior, setrlimit};
 
     let _ = setrlimit(Resource::Data, Rlimit { current: Some(MEMORY), maximum: Some(MEMORY) });
-    let _ = setrlimit(Resource::Core, Rlimit { current: Some(0), maximum: Some(0) });
+    let _ = set_dumpable_behavior(DumpableBehavior::NotDumpable);
 }
 
 #[cfg(not(target_os = "linux"))]
