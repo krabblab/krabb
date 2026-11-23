@@ -379,6 +379,7 @@ data = ["context"]
 resources = ["global", "channels.echo"]
 
 [channels.telegram]
+worktree = "older schema"
 visibility = [{ data = ["files"], resources = ["channels.echo"] }]
 "#;
 
@@ -401,7 +402,7 @@ visibility = [{ data = ["files"], resources = ["channels.echo"] }]
         "[\n  \"echo\"\n]"
     );
 
-    crate::revoke::grants(&home, "echo").unwrap();
+    crate::revoke::restored(&home, "echo").unwrap();
     fs::remove_dir_all(home.join("plugins/echo")).unwrap();
 
     snapshot::rollback(&home, &service, true, true).await.unwrap();
@@ -411,26 +412,50 @@ visibility = [{ data = ["files"], resources = ["channels.echo"] }]
     assert!(home.join("plugins/echo").is_dir());
     assert!(!restored.contains("channels.echo"), "{restored}");
     assert!(restored.contains("global"), "{restored}");
+    assert!(restored.contains("older schema"), "{restored}");
     assert!(!snapshot::store(&home).exists());
+
+    snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+    snapshot::create(&home, "0.2.0", "0.3.0", &[], false).unwrap();
+
+    assert!(!snapshot::store(&home).join("revoked.json").exists());
 
     let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]
-async fn invalid_uninstall_records_block_rollback() {
+async fn unreadable_uninstall_records_block_rollback_but_not_uninstall() {
     let root = temp_root("revoked-invalid");
     let home = root.join("home");
+    let service = root.join("krabb.service");
+    let record = snapshot::store(&home).join("revoked.json");
 
     fs::create_dir_all(&home).unwrap();
-    fs::write(home.join("config.toml"), "").unwrap();
+    fs::write(home.join("config.toml"), "model = 'old'").unwrap();
     snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
-    krabb_file::save(snapshot::store(&home).join("revoked.json"), b"[\"../escape\"]").unwrap();
+    fs::write(home.join("config.toml"), "model = 'new'").unwrap();
+    krabb_file::save(&record, b"[\"../escape\"]").unwrap();
 
-    let error =
-        snapshot::rollback(&home, &root.join("krabb.service"), true, true).await.unwrap_err();
+    snapshot::uninstalled(&home, "echo").unwrap();
+
+    let error = snapshot::rollback(&home, &service, true, true).await.unwrap_err();
 
     assert!(error.to_string().contains("uninstalled since the update is invalid"), "{error}");
-    assert!(snapshot::uninstalled(&home, "echo").is_err());
+    assert_eq!(fs::read(&record).unwrap(), b"[\"../escape\"]");
+
+    let full = (0..256).map(|index| format!("plugin{index}")).collect::<Vec<_>>();
+
+    krabb_file::save(&record, serde_json::to_vec(&full).unwrap()).unwrap();
+    snapshot::uninstalled(&home, "echo").unwrap();
+    snapshot::uninstalled(&home, "other").unwrap();
+
+    let error = snapshot::rollback(&home, &service, true, true).await.unwrap_err();
+    let recorded: Vec<String> = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+
+    assert!(error.to_string().contains("Too many plugins"), "{error}");
+    assert_eq!(recorded.len(), 257);
+    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "model = 'new'");
 
     let _ = fs::remove_dir_all(root);
 }

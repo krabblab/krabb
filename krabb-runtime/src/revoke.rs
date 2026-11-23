@@ -66,12 +66,49 @@ fn secrets(lock: &Lock, id: &str) -> Vec<String> {
     declared(entry).difference(&shared).cloned().collect()
 }
 
-pub(super) fn grants(root: &Path, id: &str) -> Result<usize, PluginError> {
+fn grants(root: &Path, id: &str) -> Result<usize, PluginError> {
     let Some(text) = load_config_text(root)? else {
         return Ok(0);
     };
 
     let mut document = text.parse::<toml_edit::DocumentMut>()?;
+    let removed = unshare(&mut document, id);
+
+    if removed == 0 {
+        return Ok(0);
+    }
+
+    let rendered = document.to_string();
+    let config: Config = toml::from_str(&rendered)?;
+
+    config.validate().map_err(|error| -> PluginError { error.into() })?;
+    secure(root.join("config.toml"), rendered.as_bytes())?;
+    info!(plugin = id, grants = removed, "Plugin sharing grants revoked.");
+
+    Ok(removed)
+}
+
+/// Removes a plugin's grants from a configuration restored from a recovery point.
+///
+/// It skips schema validation: the restored file may predate the running binary, and removing
+/// grants cannot make it invalid, so validating could only block the rollback.
+pub(super) fn restored(root: &Path, id: &str) -> Result<usize, PluginError> {
+    let Some(text) = load_config_text(root)? else {
+        return Ok(0);
+    };
+
+    let mut document = text.parse::<toml_edit::DocumentMut>()?;
+    let removed = unshare(&mut document, id);
+
+    if removed > 0 {
+        secure(root.join("config.toml"), document.to_string().as_bytes())?;
+        info!(plugin = id, grants = removed, "Restored plugin sharing grants revoked again.");
+    }
+
+    Ok(removed)
+}
+
+fn unshare(document: &mut toml_edit::DocumentMut, id: &str) -> usize {
     let principals = [format!("channels.{id}"), format!("clients.{id}")];
     let mut removed = 0;
 
@@ -102,18 +139,7 @@ pub(super) fn grants(root: &Path, id: &str) -> Result<usize, PluginError> {
         removed += prune(rules, &principals, false);
     }
 
-    if removed == 0 {
-        return Ok(0);
-    }
-
-    let rendered = document.to_string();
-    let config: Config = toml::from_str(&rendered)?;
-
-    config.validate().map_err(|error| -> PluginError { error.into() })?;
-    secure(root.join("config.toml"), rendered.as_bytes())?;
-    info!(plugin = id, grants = removed, "Plugin sharing grants revoked.");
-
-    Ok(removed)
+    removed
 }
 
 fn count(rules: &toml_edit::Item) -> usize {

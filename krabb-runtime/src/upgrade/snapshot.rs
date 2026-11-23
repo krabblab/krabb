@@ -15,6 +15,9 @@ const POINT_LIMIT: u64 = 1024 * 1024;
 const REVOKED: &str = "revoked.json";
 const REVOKED_LIMIT: u64 = 64 * 1024;
 const REVOKED_PLUGINS: usize = 256;
+const INVALID: &str = "The record of plugins uninstalled since the update is invalid.";
+const PLUGINS_LOCK: &str = ".plugins.lock";
+const PLUGINS_WAIT: Duration = Duration::from_secs(30);
 const EXCLUDED: &[&str] = &["media", "workspaces"];
 
 /// Recovery point record; a binary restored from it must be able to read it.
@@ -56,6 +59,10 @@ pub(super) fn create(
     service: bool,
 ) -> Result<Point, PluginError> {
     let directory = store(root);
+
+    // Uninstall records itself only once a point exists, so it must not run while one is taken.
+    let _plugins = crate::lock_at_timeout(root, PLUGINS_LOCK, PLUGINS_WAIT)?;
+
     let result = (|| -> Result<Point, PluginError> {
         recovery::remove(&directory)?;
 
@@ -106,6 +113,8 @@ pub(super) async fn restore(
     json: bool,
 ) -> Result<(), PluginError> {
     let directory = store(root);
+    let uninstalled = revoked(root)?;
+    let _plugins = crate::lock_at_timeout(root, PLUGINS_LOCK, PLUGINS_WAIT)?;
 
     if service.is_file() && running()? {
         service_action_with(service, ServiceAction::Stop, json)?;
@@ -124,8 +133,8 @@ pub(super) async fn restore(
 
     recovery::restore(root, &directory.join("home"), &point.home)?;
 
-    for id in revoked(root)? {
-        crate::revoke::grants(root, &id)?;
+    for id in &uninstalled {
+        crate::revoke::restored(root, id)?;
     }
 
     recovery::remove(&root.join(krabb_migrations::JOURNAL))?;
@@ -164,13 +173,16 @@ pub(super) async fn rollback(
         format!("Restore Krabb {} after the unfinished update to {}?", point.from, point.to)
     };
 
-    let uninstalled = revoked(root)?;
+    let returning = revoked(root)?
+        .into_iter()
+        .filter(|id| store(root).join("home/plugins").join(id).is_dir())
+        .collect::<Vec<_>>();
 
-    if !uninstalled.is_empty() {
+    if !returning.is_empty() {
         question.push_str(&format!(
             "\nPlugins uninstalled since then come back without their sharing grants or \
              credentials: {}.",
-            uninstalled.join(", ")
+            returning.join(", ")
         ));
     }
 
@@ -215,20 +227,20 @@ pub(super) fn summary(root: &Path) -> Option<serde_json::Value> {
 
 /// Records a plugin being uninstalled while a recovery point exists.
 ///
-/// It runs before any grant is removed, so a failed uninstall errs toward revoking access.
+/// It runs before any grant is removed, so a failed uninstall errs toward revoking access. It
+/// never blocks an uninstall: an unreadable record already makes rollback refuse, and one entry
+/// past the limit does the same.
 pub(crate) fn uninstalled(root: &Path, id: &str) -> Result<(), PluginError> {
     if !store(root).join(POINT).is_file() {
         return Ok(());
     }
 
-    let mut ids = revoked(root)?;
+    let Ok(mut ids) = revoked(root) else {
+        return Ok(());
+    };
 
     if ids.iter().any(|known| known == id) {
         return Ok(());
-    }
-
-    if ids.len() >= REVOKED_PLUGINS {
-        return Err("Too many plugins were uninstalled since the last update.".into());
     }
 
     ids.push(id.to_owned());
@@ -242,11 +254,16 @@ fn revoked(root: &Path) -> Result<Vec<String>, PluginError> {
         return Ok(Vec::new());
     };
 
-    let ids: Vec<String> = serde_json::from_slice(&bytes)
-        .map_err(|_| "The record of plugins uninstalled since the update is invalid.")?;
+    let ids: Vec<String> = serde_json::from_slice(&bytes).map_err(|_| INVALID)?;
 
-    if ids.len() > REVOKED_PLUGINS || ids.iter().any(|id| !crate::valid(id)) {
-        return Err("The record of plugins uninstalled since the update is invalid.".into());
+    if ids.iter().any(|id| !crate::valid(id)) {
+        return Err(INVALID.into());
+    }
+
+    if ids.len() > REVOKED_PLUGINS {
+        return Err(
+            "Too many plugins were uninstalled since the update to roll back safely.".into()
+        );
     }
 
     Ok(ids)
