@@ -708,6 +708,7 @@ fn normalize(value: &Value) -> Vec<Value> {
 
                     "video" => {
                         let Some(uri) = media_ref(&message["video"]["id"]) else { continue };
+
                         let mime = message["video"]["mime_type"].as_str().unwrap_or("video/mp4");
 
                         content.push(json!({"kind":"file","uri":uri,"name":"video","mime":mime}));

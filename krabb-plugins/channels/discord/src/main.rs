@@ -1941,8 +1941,10 @@ fn remember_attachments(value: &Value, attachments: &mut BTreeMap<String, Attach
     for item in value["sticker_items"].as_array().into_iter().flatten() {
         if let Some((id, name, extension)) = sticker(item) {
             let url = format!("https://media.discordapp.net/stickers/{id}.{extension}");
+
             let name =
                 safe_name(&format!("{name}.{extension}")).unwrap_or_else(|| "sticker".into());
+
             let mime = Some(format!("image/{extension}"));
 
             attachments.insert(id.into(), Attachment { url, name, mime, size: None, expires });

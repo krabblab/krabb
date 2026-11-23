@@ -22,3 +22,4 @@ Use these guides to install, configure, operate, and extend Krabb.
 18. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.
 19. [Storage](storage.md) — home layout, ownership, retention, and migration.
 20. [Resources](resources.md) — basic memory and CPU footprint for minimal setups.
+21. [Media](media.md) — what each channel and client can send to Krabb and receive.

@@ -94,6 +94,7 @@ fn words(text: &str) -> Option<Vec<String>> {
         match (quote, character) {
             (Some(open), character) if character == open => quote = None,
             (Some(_), character) => word.push(character),
+
             (None, '\'' | '"') => {
                 quote = Some(character);
                 started = true;

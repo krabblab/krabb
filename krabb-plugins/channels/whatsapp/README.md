@@ -49,7 +49,7 @@ While a reply is being prepared, the plugin sends WhatsApp's native typing
 indicator using the incoming message ID. This also marks that message as read.
 Indicator failures do not prevent the reply.
 
-Inbound text, images, static stickers, voice messages, and documents are
+Inbound text, images, stickers, voice messages, videos, and documents are
 normalized; documents are read as described in the
 [plugin guide](../../../krabb-docs/plugins.md). The plugin
 can send all four content types, while the current daemon response path sends

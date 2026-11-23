@@ -10,7 +10,8 @@ Semantic Versioning.
 - Give your Krabb a name, personality, and writing style with `krabb hatch` or `/hatch`.
 - Keep Krabb honest and careful with a built-in charter that personalization cannot remove.
 - Ask Krabb why a capability is off and get the exact command that turns it on.
-- Let Krabb read the GIFs, stickers, and PDFs you send in chat.
+- Let Krabb read the GIFs, stickers, PDFs, and audio files you send in chat.
+- Attach files and clipboard images in the TUI by pasting a path or pressing Ctrl+V.
 - Let Krabb turn its own tools, shell, or approval on or off when you ask and approve.
 - Install official plugins from the plugin index without a source checkout.
 - List and install any published plugin version with `krabb plugin versions`.
