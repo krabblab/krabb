@@ -476,6 +476,9 @@ async fn recovery_points_wait_for_plugin_changes_and_release_them() {
     });
 
     std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert!(snapshot::load(&home).unwrap().is_none());
+
     drop(held);
 
     busy.join().unwrap().unwrap();
