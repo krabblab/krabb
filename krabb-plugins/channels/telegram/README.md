@@ -38,13 +38,16 @@ command menu. In groups, `/status@your_bot` reaches only the bot it names. See
 
 ## Messages And Media
 
-The plugin normalizes private and group messages, topics, text, photos,
-documents, and voice notes. Media downloads preserve raw bytes in the confined
+The plugin normalizes private and group messages, topics, text, photos, GIFs,
+stickers, documents, and voice notes. Media downloads preserve raw bytes in the confined
 cache; only textual Bot API responses are decoded as UTF-8.
 
 - Images: PNG, JPEG, GIF, or WebP; up to 4 MiB total per turn. The selected
   model must support image input.
-- Documents: bounded UTF-8 text or code files up to 64 KiB each.
+- GIFs and animated stickers: the first frame or Telegram's preview frame is
+  sent as an image. Video is not read.
+- Documents: images, PDF text, and UTF-8 text or code files. Text beyond 64 KiB
+  per file is cut off, and scanned PDFs without a text layer are skipped.
 - Voice: up to 4 MiB and requires the optional speech plugin. Raw audio is
   removed after transcription.
 

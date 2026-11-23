@@ -49,7 +49,9 @@ While a reply is being prepared, the plugin sends WhatsApp's native typing
 indicator using the incoming message ID. This also marks that message as read.
 Indicator failures do not prevent the reply.
 
-Inbound text, images, voice messages, and text files are normalized. The plugin
+Inbound text, images, static stickers, voice messages, and documents are
+normalized; documents are read as described in the
+[plugin guide](../../../krabb-docs/plugins.md). The plugin
 can send all four content types, while the current daemon response path sends
 generated replies as text. Verified webhook events are stored under
 Media storage reserves space before writing: 64 MiB, 256 files, and a 24-hour
