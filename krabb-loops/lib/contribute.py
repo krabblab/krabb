@@ -77,8 +77,10 @@ def metadata(raw, template):
 
     category, label = TYPES[kind]
     marker = f'- [ ] **{category}**'
+
     issue = ('<!-- Every PR closes or references an issue. Use `Closes #<issue-number>`, '
              'or `Refs #<issue-number>` for partial work. -->')
+
     description = '<!-- Describe the solution and how it addresses the linked issue. -->'
 
     if any(template.count(value) != 1 for value in (marker, issue, description)):
