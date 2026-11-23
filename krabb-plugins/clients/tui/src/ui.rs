@@ -1771,7 +1771,7 @@ where
                         return Ok(false);
                     }
 
-                    if let Some(path) = line
+                    if let Some(path) = command
                         .strip_prefix("/attach")
                         .filter(|rest| rest.is_empty() || rest.starts_with(' '))
                     {

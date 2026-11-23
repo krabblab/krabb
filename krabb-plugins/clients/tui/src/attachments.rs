@@ -16,6 +16,8 @@ pub(crate) const MAX: usize = 8;
 
 const AUDIO: &[&str] = &["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"];
 
+const STALE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 static CLIPBOARD: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -87,11 +89,36 @@ pub(crate) fn named(text: &str, base: &Path) -> Result<Attachment, String> {
     let words = words(text.trim()).filter(|words| words.len() == 1);
     let word = words.and_then(|mut words| words.pop()).ok_or("Usage: /attach <path>.")?;
     let path = Path::new(&word);
-    let path = if path.is_absolute() { path.to_path_buf() } else { base.join(path) };
 
-    resolve(&path.to_string_lossy())
+    let path = if word.starts_with("file://") || path.is_absolute() {
+        word.clone()
+    } else {
+        base.join(path).to_string_lossy().into_owned()
+    };
+
+    resolve(&path)
         .map(Attachment::file)
         .ok_or_else(|| format!("{word} is not a file Krabb can read."))
+}
+
+/// Removes clipboard images an earlier session left behind, for example after a crash.
+fn prune(directory: &Path) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let clipboard = name.to_string_lossy().starts_with("clipboard-");
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > STALE));
+
+        if clipboard && stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Deletes the clipboard images Krabb saved once the message carrying them is handled.
@@ -229,6 +256,8 @@ pub(crate) fn clipboard() -> Result<Attachment, String> {
         .unwrap_or_else(std::env::temp_dir);
     let path = directory.join(format!("clipboard-{nonce}.png"));
 
+    prune(&directory);
+
     krabb_file::save(&path, png).map_err(|_| "The clipboard image could not be saved.")?;
 
     Ok(Attachment { path, name, temporary: true })
@@ -278,6 +307,7 @@ mod tests {
 
         assert_eq!(named("", &root).unwrap_err(), "Usage: /attach <path>.");
         assert!(named("a b", &root).is_err());
+        assert_eq!(named(&format!("file://{}", note.display()), &root).unwrap().path, note);
 
         let temporary = root.join("clip.png");
 
