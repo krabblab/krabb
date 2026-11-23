@@ -96,6 +96,7 @@ impl Gate {
         Ok(Challenge { approve, deny, answer: receiver })
     }
 
+    #[cfg(test)]
     pub fn resolve(
         &mut self,
         token: &str,
@@ -103,6 +104,19 @@ impl Gate {
         chat: &str,
         thread: Option<&str>,
         authorized: bool,
+    ) -> Option<bool> {
+        self.resolve_for(token, channel, chat, thread, |_| authorized)
+    }
+
+    /// Resolves a channel approval when AUTHORIZED accepts the sender for the pending request,
+    /// so a request can demand more than the channel's usual approvers.
+    pub fn resolve_for(
+        &mut self,
+        token: &str,
+        channel: &str,
+        chat: &str,
+        thread: Option<&str>,
+        authorized: impl FnOnce(&Target) -> bool,
     ) -> Option<bool> {
         self.resolve_at(token, channel, chat, thread, authorized, now().ok()?)
     }
@@ -113,15 +127,15 @@ impl Gate {
         channel: &str,
         chat: &str,
         thread: Option<&str>,
-        authorized: bool,
+        authorized: impl FnOnce(&Target) -> bool,
         now: u64,
     ) -> Option<bool> {
-        if !authorized {
-            return None;
-        }
-
         let (id, action, provided_signature) = decode(token)?;
         let pending = self.pending.get(id)?;
+
+        if !authorized(&pending.target) {
+            return None;
+        }
 
         if pending.expires <= now
             || pending.target.channel != channel
@@ -388,6 +402,25 @@ mod tests {
     }
 
     #[test]
+    fn lets_a_request_require_its_own_approver() {
+        let mut gate = Gate::new().unwrap();
+        let settings = Target { tool: "settings".into(), ..target() };
+        let challenge = gate.issue(settings).unwrap();
+
+        let owner_only = |target: &Target| target.tool != "settings";
+
+        assert_eq!(
+            gate.resolve_for(&challenge.approve, "telegram", "8", Some("4"), owner_only),
+            None
+        );
+
+        assert_eq!(
+            gate.resolve_for(&challenge.approve, "telegram", "8", Some("4"), |_| true),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn rejects_invalid_local_approval_ids() {
         let mut gate = Gate::new().unwrap();
 
@@ -438,7 +471,7 @@ mod tests {
                 let expected = accepted.then_some(approved);
 
                 assert_eq!(
-                    gate.resolve_at(token, "telegram", "8", Some("4"), true, now),
+                    gate.resolve_at(token, "telegram", "8", Some("4"), |_| true, now),
                     expected,
                     "approved={approved}, offset={offset}"
                 );

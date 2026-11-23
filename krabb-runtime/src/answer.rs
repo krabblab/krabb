@@ -195,6 +195,8 @@ pub(crate) async fn answer(
     registry.run = run.clone();
 
     let cleanup = registry.cleanup.clone();
+    let restart = Arc::clone(&registry.restart);
+    let task = Arc::clone(&registry.task);
 
     let mut result = answer_with_registry(
         provider,
@@ -289,7 +291,21 @@ pub(crate) async fn answer(
         }
     }
 
-    result.map(|model| jobs::Answer { model, foreground })
+    let requested = restart.load(std::sync::atomic::Ordering::Acquire);
+    let handed_off = task.handoff.borrow().is_some();
+
+    // A turn that handed its work to a background task must not restart under that task.
+    if requested && handed_off {
+        let _ = notices.try_send(StreamNotice::System(
+            "The saved setting was not applied, because the work continues in the background. \
+             Restart the daemon with `krabb service restart` to apply it."
+                .into(),
+        ));
+    }
+
+    let restart = requested && !handed_off;
+
+    result.map(|model| jobs::Answer { model, foreground, restart })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -390,6 +406,20 @@ pub(crate) async fn answer_with_registry(
         registry.specs.extend(operations::definitions(&registry.operations));
     }
 
+    let adjustable = registry.source.as_ref().is_some_and(|source| {
+        settings::offered(
+            &plugins.config,
+            source,
+            approval_mode,
+            registry.execution == state::SessionKind::Conversation,
+            isolated,
+        )
+    });
+
+    if adjustable {
+        registry.specs.push(settings::spec());
+    }
+
     let mut specs = registry.specs.clone();
 
     let turn_id = format!("{session}:{}", *call);
@@ -403,6 +433,8 @@ pub(crate) async fn answer_with_registry(
     let schedules = scheduler && registry.execution.interactive() && !isolated && schedule_enabled;
 
     if let Some(source) = &registry.source {
+        let installed = installed_plugins(plugins).await;
+
         let setup = context::Setup {
             source,
             provider: &provider.hello.id,
@@ -413,6 +445,11 @@ pub(crate) async fn answer_with_registry(
             schedules,
             scheduler,
             memory: memory_plugin.is_some() && tools_enabled,
+            grants: grants(&plugins.config, source, tools_enabled, schedule_enabled),
+            background: !registry.execution.interactive(),
+            isolated,
+            adjustable,
+            plugins: &installed,
         };
 
         if let Some(message) = setup.message(session) {
@@ -427,7 +464,8 @@ pub(crate) async fn answer_with_registry(
             .into_iter()
             .filter_map(|(id, plugin)| plugin.supports(Capability::Channel).then_some(id))
             .collect::<Vec<_>>();
-        let workspace_tools_enabled = !registry.specs.is_empty();
+        let workspace_tools_enabled =
+            registry.specs.iter().any(|spec| !HOST_TOOLS.contains(&spec.name.as_str()));
 
         specs.extend(scheduler_tools(
             workspace_tools_enabled,
@@ -1522,9 +1560,19 @@ pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
         "checkpoint" | "input" => false,
         "job" => args["action"] != "list",
         "task" => matches!(args["kind"].as_str(), Some("background")),
-        "write" | "patch" | "shell" | "memory_remember" | "schedule_propose"
-        | "schedule_cancel" | "schedule_pause" | "schedule_resume" | "schedule_run"
-        | "schedule_retry" | "schedule_update" | "message_send" => true,
+        "write"
+        | "patch"
+        | "shell"
+        | "memory_remember"
+        | "schedule_propose"
+        | "schedule_cancel"
+        | "schedule_pause"
+        | "schedule_resume"
+        | "schedule_run"
+        | "schedule_retry"
+        | "schedule_update"
+        | "message_send"
+        | settings::TOOL => true,
         "read"
         | "list"
         | "search"
@@ -1589,5 +1637,77 @@ pub(crate) fn keep_one_mutation(events: &mut Vec<Event>) {
         matches!(event, Event::Tool { name, args, .. } if mutating(name, args)).then_some(index)
     }) {
         events.truncate(next);
+    }
+}
+
+async fn installed_plugins(plugins: &Plugins) -> Vec<(String, Vec<&'static str>)> {
+    plugins
+        .all()
+        .await
+        .into_iter()
+        .map(|(id, plugin)| {
+            let capabilities = plugin.hello.capabilities.iter().map(launch::capability_name);
+            (id, capabilities.collect())
+        })
+        .collect()
+}
+
+/// Reads the source's own settings, so the setup note can say which one turned a capability
+/// off. A channel checks its sender before the turn, so a channel with `tools` on that still
+/// grants neither tools nor schedules did not allow the sender.
+fn grants(
+    config: &Config,
+    source: &sharing::Principal,
+    tools_enabled: bool,
+    schedule_enabled: bool,
+) -> context::Grants {
+    match source {
+        sharing::Principal::Channel(id) => {
+            let section = config.channels.get(id).cloned().unwrap_or_default();
+            let sender = tools_enabled || schedule_enabled || !section.tools;
+
+            context::Grants { tools: section.tools, shell: section.shell, sender }
+        }
+
+        sharing::Principal::Client(id) => {
+            context::Grants { tools: tools_enabled, shell: config.client_shell(id), sender: true }
+        }
+
+        sharing::Principal::Agent(_) => {
+            context::Grants { tools: tools_enabled, shell: false, sender: true }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_setting_that_turned_tools_off_for_a_source() {
+        let mut config = Config::default();
+
+        config
+            .channels
+            .insert("telegram".into(), ChannelConfig { tools: true, ..ChannelConfig::default() });
+
+        let telegram = sharing::Principal::Channel("telegram".into());
+        let stranger = grants(&config, &telegram, false, false);
+
+        assert!(stranger.tools && !stranger.sender && !stranger.shell);
+        assert!(grants(&config, &telegram, false, true).sender);
+        assert!(grants(&config, &telegram, true, false).sender);
+
+        let discord = sharing::Principal::Channel("discord".into());
+        let unconfigured = grants(&config, &discord, false, false);
+
+        assert!(!unconfigured.tools && unconfigured.sender);
+
+        let tui = sharing::Principal::Client("tui".into());
+        config.shell = true;
+
+        let client = grants(&config, &tui, false, false);
+
+        assert!(!client.tools && client.shell && client.sender);
     }
 }

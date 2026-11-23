@@ -1333,6 +1333,7 @@ pub(crate) async fn bridge_with_media(
             };
 
             provider_failures = 0;
+            let restart = model.restart;
             let assistant = Message {
                 id: format!("assistant-{call}"),
                 session: session_name.clone(),
@@ -1430,6 +1431,8 @@ pub(crate) async fn bridge_with_media(
                 channels::intake::settle(&mut store, &delivery_id, sent)?
             };
 
+            let delivered = settled.is_none();
+
             match settled {
                 None => debug!(channel = channel_id, "Channel delivery acknowledged."),
 
@@ -1440,6 +1443,10 @@ pub(crate) async fn bridge_with_media(
 
             status_if_present(&sessions, &session_name, "idle")?;
             slash::settle(&mut *sessions.lock().map_err(|_| state::POISONED)?, &session_name)?;
+
+            if restart && delivered {
+                settings::restart();
+            }
         }
     }
 }
