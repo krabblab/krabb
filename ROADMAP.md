@@ -471,7 +471,9 @@ Orchestrator and consistent everyday operation and recovery guidance.
   onboarding and command-output tests and clean-machine acceptance walkthroughs.
 - Search conversation history across visible sessions from the TUI and CLI.
 - Publish a project website with an install guide, a documentation site built
-  from krabb-docs, and short release-note posts for each release.
+  from krabb-docs, and a blog for release notes and technical posts.
+- Audit hardcoded behavior and make it configurable where useful. Keep security
+  and resource limits enforced in code, adjustable only within validated ranges.
 
 Acceptance: a new user can install, configure, converse, inspect health, back up,
 and upgrade a Krabbling without reading source code or editing internal state.
