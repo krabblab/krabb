@@ -1,0 +1,294 @@
+name: Install
+
+# Installs a published release the way the README does and walks the first-run flow on every
+# target. Plugins are installed but not set up, because setup needs third-party accounts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release to install, such as 0.1.0; empty for the newest release"
+        required: false
+        type: string
+        default: ""
+
+  schedule:
+    - cron: "41 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      unstable: ${{ steps.release.outputs.unstable }}
+      plugins: ${{ steps.index.outputs.plugins }}
+
+    steps:
+      - name: Resolve Release
+        id: release
+        shell: bash
+
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+
+        run: |
+          set -euo pipefail
+
+          if [ -n "$REQUESTED" ]; then
+            tag="v${REQUESTED#v}"
+          else
+            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name')
+          fi
+
+          prerelease=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.prerelease')
+
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "unstable=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Testing Krabb ${tag#v} (pre-release: $prerelease)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: List Official Plugins
+        id: index
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          registry=https://ghcr.io/v2/krabblab/krabb/plugins
+          scope="repository:krabblab/krabb/plugins:pull"
+          token=$(curl -fsSL "https://ghcr.io/token?scope=$scope" | jq -r .token)
+
+          manifest=$(curl -fsSL -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json" "$registry/manifests/index")
+
+          digest=$(jq -r '.layers[0].digest' <<<"$manifest")
+          plugins=$(curl -fsSL -H "Authorization: Bearer $token" "$registry/blobs/$digest" \
+            | jq -c '.plugins | keys')
+
+          echo "plugins=$plugins" >> "$GITHUB_OUTPUT"
+
+  flow:
+    name: Flow (${{ matrix.name }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: linux
+            runner: ubuntu-24.04
+
+          - name: Linux aarch64
+            os: linux
+            runner: ubuntu-24.04-arm
+
+          - name: macOS x86_64
+            os: macos
+            runner: macos-15-intel
+
+          - name: macOS aarch64
+            os: macos
+            runner: macos-15
+
+          - name: Windows x86_64
+            os: windows
+            runner: windows-2025
+
+          - name: Windows aarch64
+            os: windows
+            runner: windows-11-arm
+
+    env:
+      KRABB_VERSION: ${{ needs.plan.outputs.version }}
+      KRABB_UNSTABLE: ${{ needs.plan.outputs.unstable }}
+      KRABB_PLUGINS: ${{ needs.plan.outputs.plugins }}
+
+    steps:
+      - if: matrix.os != 'windows'
+        name: Isolate Home
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          user="$RUNNER_TEMP/user"
+          mkdir -p "$user"
+
+          {
+            echo "HOME=$user"
+            echo "XDG_CONFIG_HOME=$user/.config"
+            echo "KRABB_HOME=$user/.krabb"
+            echo "KRABB_PREFIX=$user/.local"
+          } >> "$GITHUB_ENV"
+
+          echo "$user/.local/bin" >> "$GITHUB_PATH"
+
+      - if: matrix.os != 'windows'
+        name: Install With install.sh
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh
+
+      - if: matrix.os != 'windows'
+        name: Check Version
+        shell: bash
+        run: test "$(krabb version)" = "krabb $KRABB_VERSION"
+
+      - if: matrix.os != 'windows'
+        name: Initialize Home
+        shell: bash
+        run: krabb --json init < /dev/null
+
+      - if: matrix.os != 'windows'
+        name: Run Doctor
+        shell: bash
+        run: krabb --json doctor < /dev/null
+
+      - if: matrix.os != 'windows'
+        name: Show Status
+        shell: bash
+        run: krabb --json status < /dev/null
+
+      - if: matrix.os != 'windows'
+        name: Install Official Plugins
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          flags=(--yes)
+          [ "$KRABB_UNSTABLE" = true ] && flags+=(--unstable)
+          failed=()
+
+          for id in $(jq -r '.[]' <<<"$KRABB_PLUGINS"); do
+            if ! krabb plugin install "$id" "${flags[@]}" < /dev/null; then
+              failed+=("$id")
+            fi
+          done
+
+          installed=$(krabb --json plugin list | jq -r '.items[].id')
+
+          for id in $(jq -r '.[]' <<<"$KRABB_PLUGINS"); do
+            grep -qx "$id" <<<"$installed" || failed+=("$id (not listed)")
+          done
+
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Plugins that did not install: ${failed[*]}"
+            exit 1
+          fi
+
+      - if: matrix.os != 'windows'
+        name: Install And Remove The Service
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          path=$(krabb --json service install | jq -r .path)
+          test -f "$path"
+          test "$(krabb --json service status | jq -r .status)" = installed
+          krabb service uninstall --yes
+          test ! -e "$path"
+
+      - if: matrix.os == 'windows'
+        name: Isolate Home
+        shell: pwsh
+
+        run: |
+          $user = Join-Path $env:RUNNER_TEMP "user"
+          New-Item -ItemType Directory -Force -Path $user | Out-Null
+          "USERPROFILE=$user" >> $env:GITHUB_ENV
+          "HOME=$user" >> $env:GITHUB_ENV
+          "LOCALAPPDATA=$user\AppData\Local" >> $env:GITHUB_ENV
+          "KRABB_HOME=$user\.krabb" >> $env:GITHUB_ENV
+          "$user\AppData\Local\Krabb\bin" >> $env:GITHUB_PATH
+
+      - if: matrix.os == 'windows'
+        name: Install With install.ps1
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+          irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
+
+      - if: matrix.os == 'windows'
+        name: Check Version
+        shell: pwsh
+
+        run: |
+          $reported = krabb version
+          if ($reported -ne "krabb $env:KRABB_VERSION") { throw "Installed CLI reports '$reported'." }
+
+      - if: matrix.os == 'windows'
+        name: Initialize Home
+        shell: pwsh
+
+        run: |
+          krabb --json init
+          if ($LASTEXITCODE -ne 0) { throw "krabb init failed." }
+
+      - if: matrix.os == 'windows'
+        name: Run Doctor
+        shell: pwsh
+
+        run: |
+          krabb --json doctor
+          if ($LASTEXITCODE -ne 0) { throw "krabb doctor failed." }
+
+      - if: matrix.os == 'windows'
+        name: Show Status
+        shell: pwsh
+
+        run: |
+          krabb --json status
+          if ($LASTEXITCODE -ne 0) { throw "krabb status failed." }
+
+      - if: matrix.os == 'windows'
+        name: Install Official Plugins
+        shell: pwsh
+
+        run: |
+          $flags = @("--yes")
+          if ($env:KRABB_UNSTABLE -eq "true") { $flags += "--unstable" }
+          $plugins = $env:KRABB_PLUGINS | ConvertFrom-Json
+          $failed = @()
+
+          foreach ($id in $plugins) {
+            krabb plugin install $id @flags
+            if ($LASTEXITCODE -ne 0) { $failed += $id }
+          }
+
+          $installed = (krabb --json plugin list | Out-String | ConvertFrom-Json).items.id
+
+          foreach ($id in $plugins) {
+            if ($installed -notcontains $id) { $failed += "$id (not listed)" }
+          }
+
+          if ($failed.Count -gt 0) {
+            Write-Output "::error::Plugins that did not install: $($failed -join ', ')"
+            exit 1
+          }
+
+      - if: matrix.os == 'windows'
+        name: Install And Remove The Service
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installed = krabb --json service install | Out-String | ConvertFrom-Json
+          if (!(Test-Path $installed.path)) { throw "Service definition is missing at $($installed.path)." }
+
+          $status = krabb --json service status | Out-String | ConvertFrom-Json
+          if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
+
+          krabb service uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
+          if (Test-Path $installed.path) { throw "Service definition remains at $($installed.path)." }
