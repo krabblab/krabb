@@ -152,10 +152,17 @@ async fn choosing_no_channel_installs_nothing() {
 
 #[test]
 fn model_lists_yield_ids_and_summaries_name_the_choice() {
-    let listing = "Codex models (3):\n  gpt-5.5 - GPT-5.5 (default)\n  gpt-5.5-mini - Mini\n  \
-                   odd entry - spaced\nMore models are available.";
+    let listing = "Codex models (4):\n  gpt-5.5 - GPT-5.5 (default)\n  gpt-5.5-mini - Mini\n  \
+                   odd entry - spaced\n  bad\u{1b}[2J - escape\n  login\nMore models are available.";
 
     assert_eq!(model_ids(listing), ["gpt-5.5", "gpt-5.5-mini"]);
+    assert_eq!(typed_model("  ", "kept"), Ok("kept".into()));
+    assert_eq!(typed_model(" gpt-typed ", "kept"), Ok("gpt-typed".into()));
+
+    for refused in ["gpt 5", "bad\u{1b}", &"x".repeat(257)] {
+        assert_eq!(typed_model(refused, "kept"), Err(MODEL.into()), "{refused:?}");
+    }
+
     assert!(model_ids("No Codex models are available for this account.").is_empty());
 
     assert_eq!(
@@ -191,7 +198,69 @@ async fn repeat_setup_keeps_the_model_of_the_same_provider() {
 
     assert_eq!(config.provider.as_deref(), Some("anthropic"));
     assert_eq!(config.model.as_deref(), Some("default"));
-    assert!(listed(&root, "anthropic").await.is_empty());
+    assert!(listed(&root, &config, "anthropic").await.is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn providers_with_a_models_command_offer_their_models() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = crate::tests::test_root("onboard-listed");
+    let source = root.join("source");
+    let binary = source.join("bin").join(crate::plugin_name("lister"));
+
+    crate::init_at(&root).unwrap();
+    std::fs::create_dir_all(source.join("bin")).unwrap();
+
+    std::fs::write(
+        source.join("krabb-plugin.toml"),
+        "id='lister'\nversion='0.1.0'\nprotocol={major=0,minor=1}\ncapabilities=['model']\n\
+         [[commands]]\nname='lister'\ndescription='List models.'\ninteractive=false\n",
+    )
+    .unwrap();
+
+    let hello = r#"{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"lister","version":"0.1.0","capabilities":["model"],"commands":[{"name":"lister","description":"List models.","interactive":false}]}}"#;
+
+    let reply =
+        r#"{"jsonrpc":"2.0","id":1,"result":{"text":"Models (2):\n  m-one - One\n  m-two - Two"}}"#;
+
+    std::fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*hello*) printf '%s\\n' \
+             '{hello}' ;;\n*models*) printf '%s\\n' '{reply}' ;;\n*shutdown*) printf '%s\\n' \
+             '{{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{{\"ok\":true}}}}'; exit 0 ;;\nesac\n\
+             done\n"
+        ),
+    )
+    .unwrap();
+
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    crate::link_at(
+        crate::Source {
+            id: "lister".into(),
+            source: Some(source.display().to_string()),
+            revision: None,
+            version: None,
+            yes: true,
+        },
+        false,
+        &root,
+    )
+    .unwrap();
+
+    let config = crate::load_config_at(&root).unwrap();
+
+    assert_eq!(listed(&root, &config, "lister").await, ["m-one", "m-two"]);
+
+    crate::save_setting(&root, "provider", "lister".into()).unwrap();
+    crate::save_setting(&root, "model", "m-two".into()).unwrap();
+
+    assert_eq!(configured(&root).unwrap(), Some(("lister".into(), "m-two".into())));
 
     let _ = std::fs::remove_dir_all(root);
 }

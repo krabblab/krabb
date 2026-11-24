@@ -605,13 +605,14 @@ terminal, `krabb init` creates only the home, and `--provider` and `--channel` a
 their steps, as in `krabb init --provider ollama --channel none service`.
 
 The `provider` step then asks for a model. A provider that lists its models, such as
-Codex, offers them as choices; otherwise type a model name. Enter keeps the model you
-chose before for the same provider, or the provider's default. The summary names the
-provider and model, says that `config.toml` in the home holds them for every
-conversation without its own choice, and says whether the running daemon already uses
-them, since changing them never needs a restart. Without a terminal, the step keeps the
-earlier model or the default. Naming the step when a provider is set also offers to
-change only its model.
+Codex, offers its first 20 as choices, plus one to type another name; otherwise type a
+model name. Enter keeps the model you chose before for the same provider, or the
+provider's default. The summary names the provider and model, says that `config.toml`
+in the home holds them for every conversation without its own choice, names any
+`KRABB_MODEL_PLUGIN`, `KRABB_MODEL`, or `clients.cli` override, and says that no
+restart is needed and whether the running daemon already uses them. Without a
+terminal, the step keeps the earlier model or the default. Naming the step when a
+provider is set also offers to change only its model.
 
 `krabb doctor` is read-only; `krabb doctor --fix` creates missing safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
