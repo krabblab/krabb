@@ -5231,6 +5231,20 @@ async fn manages_service_definition() {
 }
 
 #[test]
+fn json_uninstall_folds_its_stop_into_one_result() {
+    use super::ServiceReport::{Json, Silent, Text};
+
+    let remove = ServiceCommand::Remove(super::ServiceRemove { yes: true });
+
+    assert_eq!(super::service_report(&remove, true), Silent);
+    assert_eq!(super::service_report(&remove, false), Text);
+    assert_eq!(super::service_report(&ServiceCommand::Start, true), Json);
+    assert_eq!(super::service_report(&ServiceCommand::Restart, false), Text);
+    assert_eq!(super::ServiceReport::nested(true), Silent);
+    assert_eq!(super::ServiceReport::nested(false), Text);
+}
+
+#[test]
 fn service_actions_report_when_no_transition_is_needed() {
     use super::ServiceState::{Active, Failed, Inactive, NotInstalled, Starting, Stopping};
 
@@ -5301,8 +5315,11 @@ fn service_actions_report_when_no_transition_is_needed() {
         (super::ServiceAction::Stop, None),
         (super::ServiceAction::Restart, None),
     ] {
-        super::service_action_message(action, previous, false).unwrap();
-        super::service_action_message(action, previous, true).unwrap();
+        for report in
+            [super::ServiceReport::Text, super::ServiceReport::Json, super::ServiceReport::Silent]
+        {
+            super::service_action_message(action, previous, report).unwrap();
+        }
     }
 }
 
@@ -5619,6 +5636,23 @@ fn manifest_round_trips() {
     let parsed: Manifest = toml::from_str(&text).unwrap();
 
     assert_eq!(parsed.id, "echo");
+    assert!(value.validate().is_ok());
+
+    let mut escaped = value.clone();
+
+    escaped.version = "0.1.0\u{1b}[2J".into();
+
+    assert!(escaped.validate().unwrap_err().contains("visible text"));
+
+    let mut described = value;
+
+    described.commands.push(CommandSpec {
+        name: "echo".into(),
+        description: "Echo\u{1b}]52;c;eA==\u{7}".into(),
+        interactive: false,
+    });
+
+    assert!(described.validate().is_err());
 }
 
 #[test]

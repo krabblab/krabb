@@ -805,7 +805,7 @@ fn format_cli_error(message: &str) -> String {
         return "The command could not be completed.".into();
     }
 
-    message.lines().map(str::trim_start).collect::<Vec<_>>().join("\n")
+    terminal::printable(&message.lines().map(str::trim_start).collect::<Vec<_>>().join("\n"))
 }
 
 fn toml_position(input: &str, offset: usize) -> (usize, usize) {
@@ -1283,8 +1283,8 @@ impl Manifest {
             return Err("Plugin IDs must contain lowercase letters, digits, or hyphens.".into());
         }
 
-        if self.version.trim().is_empty() {
-            return Err("Plugin versions must not be empty.".into());
+        if self.version.trim().is_empty() || self.version.chars().any(char::is_control) {
+            return Err("Plugin versions must be visible text.".into());
         }
 
         if !Protocol::CURRENT.compatible(self.protocol) {
@@ -1321,10 +1321,11 @@ impl Manifest {
         commands.dedup();
 
         if commands.len() != self.commands.len()
-            || self
-                .commands
-                .iter()
-                .any(|command| !valid(&command.name) || command.description.trim().is_empty())
+            || self.commands.iter().any(|command| {
+                !valid(&command.name)
+                    || command.description.trim().is_empty()
+                    || command.description.chars().any(char::is_control)
+            })
         {
             return Err("Plugin commands must be named uniquely and described.".into());
         }
@@ -1405,6 +1406,23 @@ struct Update {
     linked: bool,
 }
 
+/// Reports invalid arguments as clap does, or as one JSON document when `--json` was passed.
+fn usage_error(error: clap::Error, json: bool) -> ExitCode {
+    use clap::error::ErrorKind;
+
+    let listing = matches!(error.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
+
+    if !json || listing {
+        error.exit();
+    }
+
+    let message = error.render().to_string();
+    let message = message.trim().trim_start_matches("error: ");
+
+    eprintln!("{}", serde_json::json!({"error": message}));
+    ExitCode::from(2)
+}
+
 pub async fn cli() -> ExitCode {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
 
@@ -1441,7 +1459,14 @@ pub async fn cli() -> ExitCode {
         args[1] = "help".into();
     }
 
-    let matches = cli_command().get_matches_from(std::iter::once(NAME.to_owned()).chain(args));
+    let json =
+        args.iter().take_while(|argument| *argument != "--").any(|argument| argument == "--json");
+
+    let matches =
+        match cli_command().try_get_matches_from(std::iter::once(NAME.to_owned()).chain(args)) {
+            Ok(matches) => matches,
+            Err(error) => return usage_error(error, json),
+        };
 
     let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
@@ -1898,13 +1923,21 @@ fn print_help_with_plugins(root: &Path) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// The CLI with the help banner only on a terminal, so logs and scripts get only the help text.
 fn cli_command() -> clap::Command {
-    Cli::command().before_help(banner(terminal::columns()))
+    let command = Cli::command();
+
+    if std::io::stdout().is_terminal() {
+        command.before_help(banner(terminal::columns()))
+    } else {
+        command.before_help(None::<&str>)
+    }
 }
 
 fn help_text_with_plugins(root: &Path) -> Result<String, PluginError> {
     let mut command = cli_command();
     let mut help = command.render_help().to_string();
+
     let commands = available_commands(root)?;
 
     let (conditional, plugins): (BTreeMap<_, _>, BTreeMap<_, _>) =
@@ -1959,7 +1992,7 @@ fn command_help_section(
 async fn ask_at(ask: Ask, root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let text = generate_at(ask, root, "cli").await?;
 
-    println!("{text}");
+    println!("{}", terminal::printable(&text));
     Ok(())
 }
 
@@ -2348,7 +2381,7 @@ fn restart_service() -> Result<bool, PluginError> {
 
     #[cfg(target_os = "windows")]
     {
-        service_action(&service_path(), ServiceAction::Restart)?;
+        service_action_with(&service_path(), ServiceAction::Restart, ServiceReport::Silent)?;
     }
 
     #[cfg(not(target_os = "windows"))]

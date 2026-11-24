@@ -215,6 +215,17 @@ input or error output is not a terminal, and `krabb update --json` without `--ye
 applying it. Errors go to standard error; with `--json`, results go to standard
 output.
 
+Output is plain whenever it is not a terminal: no colors, no help banner, and
+progress printed once as a line, or left out, instead of redrawn. `NO_COLOR` and
+`TERM=dumb` also turn colors off in a terminal, and `TERM=dumb` stops progress
+from redrawing. Text from plugins and models shows control characters as `�`, so
+it cannot move the cursor or change the terminal. Each command that supports
+`--json` prints exactly one JSON document, even when it also stops or starts the
+service, as `krabb service uninstall` and `krabb update` do. A failure, including
+invalid arguments, prints one `{"error": ...}` document on standard error. CLI
+results and errors never wrap commands or paths, so they stay whole and copyable
+in narrow terminals.
+
 ## Status And Health
 intelligence, channels, version, and the installed plugin count. When the daemon
 is running, the capability lists reflect its loaded plugins, including all active
