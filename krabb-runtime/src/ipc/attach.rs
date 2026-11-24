@@ -56,6 +56,7 @@ async fn read(request: &IpcRequest, state: &State) -> io::Result<Vec<Content>> {
     }
 
     let (workspace, root) = place(state, id, client)?;
+    let shared = workspace.filter(|path| !crate::worktree::isolated(path));
     let path = upload(&root, &bytes)?;
     let uri = format!("file://{}", path.display());
     let mut call = 0;
@@ -64,8 +65,8 @@ async fn read(request: &IpcRequest, state: &State) -> io::Result<Vec<Content>> {
         let item = vec![Content::Audio { uri, mime: None }];
 
         // Shared workspaces let the speech plugin read only files the catalog gives this client.
-        if let Some(workspace) = workspace.filter(|path| !crate::worktree::isolated(path)) {
-            crate::storage::attachments(&state.home, &workspace, client, &item)
+        if let Some(workspace) = &shared {
+            crate::storage::attachments(&state.home, workspace, client, &item)
                 .map_err(io::Error::other)?;
         }
 
@@ -77,6 +78,10 @@ async fn read(request: &IpcRequest, state: &State) -> io::Result<Vec<Content>> {
 
     if !content.iter().any(|item| matches!(item, Content::Image { .. })) {
         let _ = std::fs::remove_file(&path);
+
+        if let Some(workspace) = &shared {
+            crate::storage::prune(&state.home, workspace);
+        }
     }
 
     Ok(content

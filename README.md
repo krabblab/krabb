@@ -27,6 +27,9 @@ ACP, agent collaboration uses A2A, and user interfaces connect through AG-UI.
 
 ## Get Started
 
+Krabb builds for Linux, macOS, and Windows on x86_64 and aarch64. A platform is
+experimental until its row in [COMPATIBILITY.md](COMPATIBILITY.md) is complete.
+
 Install the CLI and daemon on Linux or macOS:
 
 ```sh
@@ -38,6 +41,15 @@ On Windows, in PowerShell:
 ```powershell
 irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 ```
+
+To install without running a script, download the archive for your platform from
+[GitHub Releases](https://github.com/krabblab/krabb/releases) and follow
+[Manual Download](krabb-docs/workflows.md#manual-download). Archives are named
+`krabb-core-v<version>-<target>`, with these targets:
+
+- Linux: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (`.tar.gz`)
+- macOS: `x86_64-apple-darwin`, `aarch64-apple-darwin` (`.tar.gz`)
+- Windows: `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` (`.zip`)
 
 Then set it up:
 

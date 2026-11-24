@@ -8,6 +8,7 @@
 
 mod finish;
 mod snapshot;
+mod space;
 mod stage;
 
 pub(super) use snapshot::uninstalled;
@@ -160,6 +161,7 @@ async fn update(
     drop(spinner);
 
     stage::compatible(&staged, &inspection)?;
+    space::check(root, &binaries, &staged)?;
 
     let preview = preview(&version, &lock, &staged, &inspection.schema, &service, running);
 
