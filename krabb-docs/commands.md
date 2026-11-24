@@ -235,15 +235,37 @@ locally available credentials and settings; they do not prove live connectivity.
 Channels are optional for local CLI and TUI use. If any channel is installed,
 health requires at least one ready channel; an explicit `KRABB_CHANNEL` requires
 that channel. Health also checks configuration, the selected intelligence plugin,
-and command conflicts. Failed checks appear in `health_details`.
+and command conflicts. Failed checks appear in `health_details`, and under
+"Needs attention" in the text output.
 
-Each installed plugin is listed with its state and the command that moves it forward:
+Result screens share one layout, as `krabb status` shows:
+
+```text
+Krabb 0.1.0 is healthy
+├─ Runtime: stopped
+├─ Intelligence: configured (codex)
+├─ Channels: not configured
+└─ Plugins: 1 installed
+   └─ codex: configured
+
+Start codex with `krabb service start`.
+```
+
+A headline sentence comes first, then a tree of parts and their details, then,
+when something is left to do, one sentence naming the command to run next.
+`krabb doctor`, `krabb service status`, and `krabb init` follow it. Empty plugin,
+session, schedule, and delivery lists say so in one line and, when there is
+something to add, end with how to add it; the TUI words them the same way and
+uses the same terms, Runtime and Intelligence.
+
+Each installed plugin is listed with its state; the first command that moves a
+plugin forward is the next action, and `--json` lists each plugin's `next`:
 
 | State | Meaning | Next action |
 | --- | --- | --- |
 | `needs setup` | Required secrets or settings are missing. | `krabb plugin setup <id>` |
 | `configured` | Setup is complete; the daemon is stopped. | `krabb service start`, or `krabb service install` |
-| `failed to start` | The daemon is running but did not load the plugin. | Check the application log, then `krabb service restart` |
+| `failed to start` | The daemon is running but did not load the plugin. | `krabb service restart`, after checking the application log |
 | `ready` | The daemon loaded the plugin. Clients are ready once set up. | None |
 
 Use `--json` for automation. Capability objects are named `intelligence` and

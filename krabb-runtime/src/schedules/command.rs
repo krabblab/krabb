@@ -892,11 +892,11 @@ pub(crate) async fn resolve_schedule_name(
 
 pub(crate) fn format_schedule_list(value: &serde_json::Value) -> String {
     let Some(items) = value["items"].as_array() else {
-        return "There are no schedules to list.".into();
+        return NO_SCHEDULES.into();
     };
 
     if items.is_empty() {
-        return "There are no schedules to list.".into();
+        return NO_SCHEDULES.into();
     }
 
     let total = value["total"].as_u64().unwrap_or(items.len() as u64);
@@ -1272,3 +1272,7 @@ pub(crate) fn format_schedule_history(
     output.push_str("Use `krabb schedule history <ID|NAME> --raw` to print the raw log.\n");
     output
 }
+
+/// The empty schedule list, which ends with how to add the first one.
+const NO_SCHEDULES: &str =
+    "No schedules yet.\nAdd one with `krabb schedule add`, or ask your Krabb to schedule a task.";

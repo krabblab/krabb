@@ -192,17 +192,24 @@ pub(crate) async fn plugin(
                             diagnostic(failure["error"].as_str().unwrap_or("Activation failed."))
                         );
                     }
-
-                    println!("\n{}", plugin_log_hint("failed activation"));
                 } else if installed.len() == total && !waiting_for_credentials && !quiet {
                     println!("\n{}", plugin_service_guidance(service_path().is_file()));
                 }
             }
 
             if !activation_errors.is_empty() {
-                return Err("Plugins were installed, but activation failed, as shown above.\n\
-                    If the daemon was upgraded, restart it with `krabb service restart`"
-                    .into());
+                let restart = if service_path().is_file() {
+                    "Restart them with `krabb service restart`"
+                } else {
+                    "Restart `krabb-daemon` to load them"
+                };
+
+                return Err(format!(
+                    "Plugins were installed, but activation failed, as shown above.\n{restart}; \
+                     their errors are in {}.",
+                    logging::application_log_path().display()
+                )
+                .into());
             }
         }
 
@@ -460,9 +467,10 @@ pub(crate) fn plugin_log_hint(failure: &str) -> String {
 
 pub(crate) fn plugin_service_guidance(installed: bool) -> &'static str {
     if installed {
-        "Restart the Krabb service to activate the new plugins:\nkrabb service restart"
+        "Activate the new plugins with `krabb service restart`."
     } else {
-        "The Krabb service is not installed. Install it for full plugin functionality:\nkrabb service install"
+        "The Krabb service is not installed, so install it with `krabb service install` for full \
+         plugin functionality."
     }
 }
 
@@ -669,7 +677,7 @@ pub(crate) fn plugin_update_error(rows: &[serde_json::Value]) -> String {
 
 pub(crate) fn plugin_update_output(rows: &[serde_json::Value]) -> String {
     if rows.is_empty() {
-        return "No plugins to update.".into();
+        return format!("No plugins to update.\n{INSTALL_ONE}");
     }
 
     let updated = rows.iter().filter(|row| row["status"] == "updated").count();

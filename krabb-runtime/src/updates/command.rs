@@ -353,7 +353,7 @@ pub(crate) fn preview_updates_at_inner(
         let mut sections = Vec::new();
 
         if lock.plugins.is_empty() {
-            sections.push("No installed plugins to update.".to_owned());
+            sections.push(format!("No installed plugins to update.\n{INSTALL_ONE}"));
         } else if updates.is_empty() && errors.is_empty() {
             let count = lock.plugins.len();
             let noun = if count == 1 { "plugin is" } else { "plugins are" };

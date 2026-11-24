@@ -302,7 +302,7 @@ async fn channel_commands_reply_once_without_reaching_the_model() {
         let store = fixture.sessions.lock().unwrap();
 
         assert_eq!(store.outbox.len(), 1);
-        assert!(store.outbox[0].text.contains("Model: openai / default-model"));
+        assert!(store.outbox[0].text.contains("Intelligence: openai / default-model"));
         assert_eq!((store.outbox[0].chat.as_str(), store.outbox[0].private), ("7", true));
     }
 

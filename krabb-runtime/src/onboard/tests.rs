@@ -151,6 +151,18 @@ async fn choosing_no_channel_installs_nothing() {
 }
 
 #[test]
+fn the_guide_ends_with_one_next_action() {
+    assert_eq!(
+        closing(true, true),
+        "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`."
+    );
+
+    assert_eq!(closing(true, false), "Your Krabb is ready.\nCheck every part with `krabb status`.");
+
+    assert!(closing(false, true).ends_with("Add one with `krabb init provider`."));
+}
+
+#[test]
 fn model_lists_yield_ids_and_summaries_name_the_choice() {
     let listing = "Codex models (4):\n  gpt-5.5 - GPT-5.5 (default)\n  gpt-5.5-mini - Mini\n  \
                    odd entry - spaced\n  bad\u{1b}[2J - escape\n  login\nMore models are available.";
