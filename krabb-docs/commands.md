@@ -210,8 +210,8 @@ installed:
 - `krabb schedule approve`
 - `krabb service uninstall`
 
-`krabb plugin update` without `--yes` only previews changes when input is not a
-terminal, and `krabb update --json` without `--yes` prints the preview without
+`krabb plugin update` without `--yes` only previews changes with `--json` or when
+input or error output is not a terminal, and `krabb update --json` without `--yes` prints the preview without
 applying it. Errors go to standard error; with `--json`, results go to standard
 output.
 

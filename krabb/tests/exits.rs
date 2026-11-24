@@ -14,7 +14,12 @@ fn krabb(home: &std::path::Path, args: &[&str]) -> Output {
 
 #[test]
 fn documented_exit_codes() {
-    let home = std::env::temp_dir().join(format!("krabb-exits-{}", std::process::id()));
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let home = std::env::temp_dir().join(format!(
+        "krabb-exits-{}-{}",
+        std::process::id(),
+        nanos.as_nanos()
+    ));
 
     std::fs::create_dir_all(&home).unwrap();
 
@@ -26,7 +31,7 @@ fn documented_exit_codes() {
     assert_eq!(rollback.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&rollback.stderr).contains("nothing to roll back"));
 
-    let prompt = krabb(&home, &["service", "uninstall"]);
+    let prompt = krabb(&home, &["init", "--force"]);
 
     assert_eq!(prompt.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&prompt.stderr).contains("Use --yes"));
