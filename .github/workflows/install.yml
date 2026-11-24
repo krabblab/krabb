@@ -15,9 +15,6 @@ on:
   schedule:
     - cron: "41 5 * * 1"
 
-  push:
-    branches: [flow]
-
 permissions:
   contents: read
 
