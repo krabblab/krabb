@@ -179,7 +179,6 @@ jobs:
 
     with:
       artifact: krabb-v${{ needs.prepare.outputs.version }}
-      ref: ${{ github.sha }}
 
   publish:
     name: Publish

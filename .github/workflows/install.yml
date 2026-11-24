@@ -1,18 +1,13 @@
 name: Install
 
-# Installs Krabb archives built from a commit the way the README does and walks the first-run
-# flow on every target. Plugins come from the published index and are installed but not set
+# Builds Krabb from the commit this run is on, installs it the way the README does, and walks
+# the first-run flow on every target. Choose the branch or tag under "Use workflow from" to
+# test another commit. Plugins come from the published index and are installed but not set
 # up, because setup needs third-party accounts. Release runs it on the archives it is about to
 # publish, so a release whose installation does not work is never published.
 
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Commit, branch, or tag to build and install"
-        required: false
-        type: string
-        default: main
 
   schedule:
     - cron: "41 5 * * 1"
@@ -24,11 +19,6 @@ on:
     inputs:
       artifact:
         description: "Prefix of core archives already packaged in this run"
-        required: true
-        type: string
-
-      ref:
-        description: "Commit the archives were built from"
         required: true
         type: string
 
@@ -44,7 +34,6 @@ jobs:
     with:
       names: core
       artifact: krabb-install
-      ref: ${{ inputs.ref || 'main' }}
 
   plan:
     name: Plan
@@ -129,7 +118,6 @@ jobs:
         uses: actions/checkout@v7
 
         with:
-          ref: ${{ inputs.ref || 'main' }}
           persist-credentials: false
 
       - name: Download Archive
@@ -155,10 +143,12 @@ jobs:
           test -f "$release/$archive"
 
           if command -v sha256sum >/dev/null 2>&1; then
-            (cd "$release" && sha256sum "$archive" > SHA256SUMS)
+            hash=$(sha256sum "$release/$archive" | cut -d' ' -f1)
           else
-            (cd "$release" && shasum -a 256 "$archive" > SHA256SUMS)
+            hash=$(shasum -a 256 "$release/$archive" | cut -d' ' -f1)
           fi
+
+          printf '%s  %s\n' "$hash" "$archive" > "$release/SHA256SUMS"
 
           unstable=false
           case "$version" in *-*) unstable=true ;; esac
@@ -275,6 +265,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+
+          # The installer runs no native command, so only its own `exit` sets this.
+          $global:LASTEXITCODE = 0
           & "$env:GITHUB_WORKSPACE/install.ps1"
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed." }
 
