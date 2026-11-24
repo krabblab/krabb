@@ -373,7 +373,7 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn refresh_runs_the_new_hosts_plugin_update_and_reports_failures() {
+async fn refresh_lets_the_new_host_review_plugin_updates_and_reports_failures() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = temp_root("refresh");
@@ -390,20 +390,20 @@ async fn refresh_runs_the_new_hosts_plugin_update_and_reports_failures() {
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     };
 
-    write(r#"echo '{"updated": ["tui"]}'"#);
+    write("exit 0");
 
-    let result = refresh(&root, &script, true).await.unwrap();
-
-    assert_eq!(result["updated"], serde_json::json!(["tui"]));
+    assert!(matches!(refresh(&root, &script).await, Refresh::Done));
 
     assert_eq!(
         fs::read_to_string(&calls).unwrap().trim(),
-        format!("{} plugin update --yes --json", root.display())
+        format!("{} plugin update", root.display())
     );
 
     write("exit 3");
 
-    let error = refresh(&root, &script, false).await.unwrap_err();
+    let Refresh::Failed(error) = refresh(&root, &script).await else {
+        panic!("a failing plugin update must be reported");
+    };
 
     assert!(error.contains("`krabb plugin update` exited"), "{error}");
 

@@ -244,17 +244,26 @@ async fn update(
         );
     }
 
-    let refreshed = if lock.plugins.values().any(|entry| !entry.pinned && local(entry).is_some()) {
-        Some(refresh(root, &binaries[0], json).await)
+    let unofficial = lock.plugins.values().any(|entry| unofficial(entry).is_some());
+
+    let refreshed = if !unofficial {
+        Refresh::None
+    } else if json || !interactive() {
+        Refresh::Pending
     } else {
-        None
+        refresh(root, &binaries[0]).await
     };
 
     if json {
         let refresh = match &refreshed {
-            None => serde_json::Value::Null,
-            Some(Ok(result)) => serde_json::json!({"status": "refreshed", "result": result}),
-            Some(Err(error)) => serde_json::json!({"status": "failed", "error": error}),
+            Refresh::None => serde_json::Value::Null,
+
+            Refresh::Pending => {
+                serde_json::json!({"status": "pending", "command": "krabb plugin update"})
+            }
+
+            Refresh::Done => serde_json::json!({"status": "reviewed"}),
+            Refresh::Failed(error) => serde_json::json!({"status": "failed", "error": error}),
         };
 
         println!(
@@ -267,9 +276,14 @@ async fn update(
                 "refresh": refresh,
             }))?
         );
-    } else if let Some(Err(error)) = refreshed {
+    } else if let Refresh::Pending = refreshed {
         eprintln!(
-            "Plugins from local or custom sources were not refreshed: {error}\nRun `krabb plugin \
+            "Linked and custom-source plugins were not refreshed without a terminal to review \
+             them.\nRun `krabb plugin update` to review and apply their changes."
+        );
+    } else if let Refresh::Failed(error) = refreshed {
+        eprintln!(
+            "Linked and custom-source plugins were not refreshed: {error}\nRun `krabb plugin \
              update` to try again; Krabb {version} stays installed."
         );
     }
@@ -277,31 +291,34 @@ async fn update(
     Ok(())
 }
 
-/// Refreshes plugins from local and custom sources with the new host's own plugin update.
-async fn refresh(root: &Path, krabb: &Path, json: bool) -> Result<serde_json::Value, String> {
-    let mut command = tokio::process::Command::new(krabb);
+/// What happened to plugins that refresh from their own sources after the host update.
+enum Refresh {
+    None,
+    Pending,
+    Done,
+    Failed(String),
+}
 
-    command
-        .args(["plugin", "update", "--yes"])
+/// Lets the new host review and apply refreshes from linked and custom sources in the terminal.
+///
+/// The update preview cannot show their permission changes, so the user confirms them here.
+async fn refresh(root: &Path, krabb: &Path) -> Refresh {
+    eprintln!("Checking linked and custom-source plugins for changes...");
+
+    let status = tokio::process::Command::new(krabb)
+        .args(["plugin", "update"])
         .env("KRABB_HOME", root)
-        .stderr(std::process::Stdio::inherit());
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .await;
 
-    if json {
-        command.arg("--json").stdout(std::process::Stdio::piped());
-    } else {
-        command.stdout(std::process::Stdio::inherit());
-        eprintln!("Refreshing plugins from local and custom sources...");
+    match status {
+        Ok(status) if status.success() => Refresh::Done,
+        Ok(status) => Refresh::Failed(format!("`krabb plugin update` exited with {status}.")),
+        Err(error) => Refresh::Failed(sentence(error.to_string())),
     }
-
-    let output = command.output().await.map_err(|error| sentence(error.to_string()))?;
-
-    if !output.status.success() {
-        return Err(format!("`krabb plugin update` exited with {}.", output.status));
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-
-    Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null))
 }
 
 async fn activate(
@@ -457,11 +474,11 @@ fn preview(
 
     let mut kept = Vec::new();
     let mut supported = Vec::new();
-    let mut refresh = Vec::new();
+    let mut refreshed = Vec::new();
 
     for (id, entry) in lock.plugins.iter().filter(|(id, _)| !staged.manifests.contains_key(*id)) {
-        if let Some(source) = local(entry).filter(|_| !entry.pinned) {
-            refresh.push(id);
+        if let Some(source) = unofficial(entry) {
+            refreshed.push(id);
             rows.push(format!("{id}: refreshes from its {source} after the update"));
             continue;
         }
@@ -519,7 +536,7 @@ fn preview(
         "plugins": plugins,
         "kept": kept,
         "supported": supported,
-        "refresh": refresh,
+        "refresh": refreshed,
         "schema": schema,
         "restart": running,
     });
@@ -527,9 +544,12 @@ fn preview(
     Preview { text, value }
 }
 
-/// The source a plugin refreshes from after an update, when it is not an official release.
-fn local(entry: &Entry) -> Option<&'static str> {
-    if entry.linked {
+/// The source an unpinned plugin refreshes from after an update, when it is not an official
+/// release.
+fn unofficial(entry: &Entry) -> Option<&'static str> {
+    if entry.pinned {
+        None
+    } else if entry.linked {
         Some("linked development build")
     } else if index::official(entry).is_none() {
         Some("custom source")

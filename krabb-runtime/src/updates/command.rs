@@ -22,6 +22,9 @@ pub(crate) async fn update_plugins_at(
         }
 
         if !confirm_action(false, false, "Apply these plugin updates?")? {
+            // A declined preview must never be applied later by `--yes`.
+            let _ = std::fs::remove_dir_all(root.join(".plugin-update-preview"));
+
             print_cancelled("Update", false);
             return Ok(());
         }
