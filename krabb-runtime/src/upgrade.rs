@@ -162,7 +162,7 @@ async fn update(
     drop(spinner);
 
     stage::compatible(&staged, &inspection)?;
-    stage::readable(&staged, &lock)?;
+    stage::readable(root, &mut staged, &lock)?;
     space::check(root, &binaries, &staged)?;
 
     let preview = preview(
@@ -510,14 +510,7 @@ fn preview(
             rows.push(format!("{id} {change}"));
         }
 
-        let migration = updates::state::transition(
-            id,
-            &manifest.version,
-            entry.state.as_ref(),
-            manifest.state.as_ref(),
-        )
-        .ok()
-        .flatten();
+        let migration = staged.migrations.get(id);
 
         if let Some(migration) = migration {
             rows.push(format!("{id} {}", migration.describe()));

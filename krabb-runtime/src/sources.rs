@@ -115,14 +115,7 @@ pub(crate) fn link_recorded(
     manifest.validate().map_err(|error| format!("Invalid plugin manifest: {error}"))?;
     validate_commands(home_root, &source.id, &manifest.commands)?;
 
-    if let Some(installed) = load_lock_at(home_root)?.plugins.get(&source.id) {
-        updates::state::transition(
-            &source.id,
-            &manifest.version,
-            installed.state.as_ref(),
-            manifest.state.as_ref(),
-        )?;
-    }
+    updates::state::check(home_root, load_lock_at(home_root)?.plugins.get(&source.id), &manifest)?;
 
     let dest = home_root.join("plugins").join(&source.id);
 
@@ -255,6 +248,7 @@ pub(crate) fn link_recorded(
     }
 
     result?;
+    updates::state::release(home_root, &source.id)?;
 
     Ok(manifest)
 }

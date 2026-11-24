@@ -273,7 +273,7 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
 
     migrating.plugins.get_mut("echo").unwrap().state = Some(state(1, &[]));
     staged.manifests.get_mut("echo").unwrap().state = Some(state(2, &[1]));
-    stage::readable(&staged, &migrating).unwrap();
+    stage::readable(&home, &mut staged, &migrating).unwrap();
 
     let migration = super::preview(
         "0.2.0",
@@ -295,7 +295,7 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
 
     migrating.plugins.get_mut("echo").unwrap().state = Some(state(3, &[]));
 
-    let error = stage::readable(&staged, &migrating).unwrap_err().to_string();
+    let error = stage::readable(&home, &mut staged, &migrating).unwrap_err().to_string();
 
     assert!(error.contains("older than the installed schema 3"), "{error}");
 

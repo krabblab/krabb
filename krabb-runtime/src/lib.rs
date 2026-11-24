@@ -3130,6 +3130,10 @@ fn remove_guarded(
         let _ = std::fs::remove_dir_all(backup);
     }
 
+    let state = previous_lock.plugins.get(&name.id).and_then(|entry| entry.state.as_ref());
+
+    updates::state::keep(home_root, &name.id, state)?;
+
     Ok(revoked)
 }
 

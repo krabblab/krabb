@@ -1,18 +1,26 @@
 //! The state contract a plugin version declares: the schema its saved state uses and the older
-//! schemas it migrates itself when it starts. The host never migrates plugin state; it previews
-//! each change and refuses one the new version cannot read before anything is replaced.
+//! schemas it migrates itself. The host never migrates plugin state; it previews each change and
+//! refuses one the new version cannot read before anything is replaced.
+
+use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
+
+use crate::{Entry, Manifest, PluginError};
 
 /// How many older schemas one version may migrate from, keeping manifests small.
 const ORIGINS: usize = 64;
 
+/// Schemas of uninstalled plugins whose saved data stays in the home, so a reinstall is checked.
+const KEPT: &str = "data/plugin-states.json";
+
+const KEPT_LIMIT: u64 = 256 * 1024;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct State {
     /// The schema of the state this version reads and writes, starting at 1.
     pub schema: u32,
-    /// Older schemas this version migrates to `schema` when it starts.
+    /// Older schemas this version migrates to `schema` itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub from: Vec<u32>,
 }
@@ -48,17 +56,76 @@ pub(crate) struct Migration {
 }
 
 impl Migration {
-    /// How a preview names this change.
+    /// How previews name this change.
     pub(crate) fn describe(&self) -> String {
         match self.from {
             Some(from) => format!("state: schema {from} → {} when it starts", self.to),
-            None => format!("state: declares schema {}", self.to),
+            None => format!("state: starts recording schema {}", self.to),
         }
     }
 }
 
-/// What replacing the installed version of ID with VERSION does to its saved state: nothing,
-/// a migration the new version declares, or an error when it cannot read that state.
+/// What installing MANIFEST over the recorded state of its plugin does: nothing, a migration
+/// the new version declares, or an error when it cannot read that state. The recorded state is
+/// the installed ENTRY's, or the one kept when the plugin was uninstalled.
+pub(crate) fn check(
+    root: &Path,
+    entry: Option<&Entry>,
+    manifest: &Manifest,
+) -> Result<Option<Migration>, String> {
+    let installed = match entry {
+        Some(entry) => entry.state.clone(),
+        None => kept(root).remove(&manifest.id),
+    };
+
+    transition(&manifest.id, &manifest.version, installed.as_ref(), manifest.state.as_ref())
+}
+
+/// Keeps the recorded schema of an uninstalled plugin, whose saved data outlives it.
+pub(crate) fn keep(root: &Path, id: &str, state: Option<&State>) -> Result<(), PluginError> {
+    let mut states = kept(root);
+
+    match state {
+        Some(state) => states.insert(id.to_owned(), state.clone()),
+        None => states.remove(id),
+    };
+
+    save(root, &states)
+}
+
+/// Drops the kept schema once the plugin is installed again and its lock entry records it.
+pub(crate) fn release(root: &Path, id: &str) -> Result<(), PluginError> {
+    let mut states = kept(root);
+
+    if states.remove(id).is_none() {
+        return Ok(());
+    }
+
+    save(root, &states)
+}
+
+fn kept(root: &Path) -> BTreeMap<String, State> {
+    krabb_file::load(root.join(KEPT), KEPT_LIMIT)
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save(root: &Path, states: &BTreeMap<String, State>) -> Result<(), PluginError> {
+    if states.is_empty() {
+        return match std::fs::remove_file(root.join(KEPT)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        };
+    }
+
+    krabb_file::save(root.join(KEPT), serde_json::to_vec_pretty(states)?)?;
+
+    Ok(())
+}
+
+/// The change from INSTALLED to NEXT for plugin ID at VERSION, or why it is refused.
 pub(crate) fn transition(
     id: &str,
     version: &str,
@@ -66,7 +133,7 @@ pub(crate) fn transition(
     next: Option<&State>,
 ) -> Result<Option<Migration>, String> {
     let refused = |reason: String| {
-        Err(format!("Plugin {id} {version} {reason}, so it was not installed and nothing changed."))
+        Err(format!("Plugin {id} {version} {reason}. The installation was not changed."))
     };
 
     match (installed, next) {
@@ -120,7 +187,11 @@ mod tests {
         let parsed: State = toml::from_str("schema = 2\nfrom = [1]").unwrap();
 
         assert_eq!(parsed, state(2, &[1]));
-        assert!(toml::from_str::<State>("schema = 2\nmigrate = true").is_err());
+
+        let later: State =
+            serde_json::from_str(r#"{"schema": 2, "from": [1], "since": 3}"#).unwrap();
+
+        assert_eq!(later, state(2, &[1]), "fields added later are ignored");
     }
 
     #[test]
@@ -147,7 +218,7 @@ mod tests {
 
             assert!(error.contains(reason), "{error}");
             assert!(error.starts_with("Plugin memory 0.2.0 "), "{error}");
-            assert!(error.ends_with("nothing changed."), "{error}");
+            assert!(error.ends_with("The installation was not changed."), "{error}");
         }
 
         assert_eq!(
@@ -155,7 +226,7 @@ mod tests {
             "state: schema 1 → 2 when it starts"
         );
 
-        assert_eq!(Migration { from: None, to: 1 }.describe(), "state: declares schema 1");
+        assert_eq!(Migration { from: None, to: 1 }.describe(), "state: starts recording schema 1");
     }
 
     #[cfg(unix)]
@@ -176,20 +247,30 @@ mod tests {
         )
         .unwrap();
 
-        let hello = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"result":{{"protocol":{{"major":0,"minor":1}},"id":"keeper","version":"{version}","capabilities":["memory"]}}}}"#
-        );
+        let hello = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocol": {"major": 0, "minor": 1},
+                "id": "keeper",
+                "version": version,
+                "capabilities": ["memory"],
+            },
+        });
 
-        std::fs::write(
-            &binary,
-            format!(
-                "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*hello*) printf '%s\\n' \
-                 '{hello}' ;;\n*shutdown*) printf '%s\\n' \
-                 '{{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{{\"ok\":true}}}}'; exit 0 ;;\nesac\n\
-                 done\n"
-            ),
-        )
-        .unwrap();
+        let stopped = serde_json::json!({"jsonrpc": "2.0", "id": 9999, "result": {"ok": true}});
+
+        let script = [
+            "#!/bin/sh".to_owned(),
+            "while IFS= read -r line; do".into(),
+            "case \"$line\" in".into(),
+            format!("*hello*) printf '%s\\n' '{hello}' ;;"),
+            format!("*shutdown*) printf '%s\\n' '{stopped}'; exit 0 ;;"),
+            "esac".into(),
+            "done".into(),
+        ];
+
+        std::fs::write(&binary, script.join("\n") + "\n").unwrap();
 
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -243,6 +324,39 @@ mod tests {
 
         assert_eq!(recorded(&root), Some(state(3, &[1, 2])));
 
+        let kept = root.join(KEPT);
+        let removal = crate::PluginRemove { id: "keeper".into(), yes: true };
+
+        crate::remove_at(removal, &root).unwrap();
+
+        assert!(kept.is_file());
+
+        let error = install(&root, &source(&root, "0.0.8", "[state]\nschema = 1\n")).unwrap_err();
+
+        assert!(error.contains("older than the installed schema 3"), "{error}");
+
+        let current = source(&root, "0.3.1", "[state]\nschema = 3\nfrom = [1, 2]\n");
+
+        install(&root, &current).unwrap();
+
+        assert!(!kept.exists());
+
+        let older = source(&root, "0.4.0", "[state]\nschema = 2\nfrom = [1]\n");
+
+        for file in ["krabb-plugin.toml", &format!("bin/{}", crate::plugin_name("keeper"))] {
+            std::fs::copy(older.join(file), current.join(file)).unwrap();
+        }
+
+        let error = crate::update_at(&root, true, false).unwrap_err().to_string();
+
+        assert!(
+            error.contains("reads state schema 2, older than the installed schema 3"),
+            "{error}"
+        );
+
+        assert_eq!(crate::load_lock_at(&root).unwrap().plugins["keeper"].version, "0.3.1");
+        assert_eq!(recorded(&root), Some(state(3, &[1, 2])));
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -275,13 +389,5 @@ mod tests {
 
         assert_eq!(declared.state, Some(state(2, &[1])));
         assert!(declared.validate().is_ok());
-
-        let invalid: crate::Manifest = toml::from_str(
-            "id='memory'\nversion='0.2.0'\nprotocol={major=0,minor=1}\ncapabilities=['memory']\n\
-             [state]\nschema=1\nfrom=[1]\n",
-        )
-        .unwrap();
-
-        assert!(invalid.validate().is_err());
     }
 }

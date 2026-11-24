@@ -10,15 +10,24 @@ pub(crate) fn declarations(previous: &Entry, next: &Manifest) -> Value {
         ("secrets", json!(previous.variables), json!(next.variables)),
         ("settings", json!(previous.settings), json!(next.settings)),
         ("commands", json!(previous.commands), json!(next.commands)),
-        (
-            "state",
-            json!(previous.state.as_ref().map(|state| state.schema)),
-            json!(next.state.as_ref().map(|state| state.schema)),
-        ),
     ] {
         if before != after {
             changes.insert(name.into(), json!({"before": before, "after": after}));
         }
+    }
+
+    let migration = super::state::transition(
+        &next.id,
+        &next.version,
+        previous.state.as_ref(),
+        next.state.as_ref(),
+    );
+
+    if let Ok(Some(migration)) = migration {
+        changes.insert(
+            "state".into(),
+            json!({"from": migration.from, "to": migration.to, "text": migration.describe()}),
+        );
     }
 
     Value::Object(changes)
@@ -30,6 +39,10 @@ pub(crate) fn review(changes: &Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .map(|(name, change)| {
+            if let Some(text) = change["text"].as_str() {
+                return text.to_owned();
+            }
+
             format!(
                 "{name}: {} → {}",
                 diagnostic(change["before"].to_string()),

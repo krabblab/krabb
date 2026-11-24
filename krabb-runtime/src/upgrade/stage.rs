@@ -62,6 +62,8 @@ pub(super) struct Staged {
     pub daemon: PathBuf,
     pub plan: Plan,
     pub manifests: BTreeMap<String, Manifest>,
+    /// State migrations the staged plugins run when they start, keyed by plugin.
+    pub migrations: BTreeMap<String, crate::updates::state::Migration>,
     /// Official plugins left as they are because the index no longer lists them.
     pub unlisted: Vec<String>,
     /// Official plugins left as they are because the index could not be read.
@@ -108,6 +110,7 @@ pub(super) fn prepare(
             detached: Vec::new(),
         },
         manifests: BTreeMap::new(),
+        migrations: BTreeMap::new(),
         unlisted: Vec::new(),
         unchecked: Vec::new(),
         keep: false,
@@ -237,16 +240,13 @@ pub(super) fn plan(dir: &Path) -> Result<Plan, PluginError> {
 }
 
 /// Rejects staged plugins that cannot read the state their installed versions saved, before
-/// anything is replaced.
-pub(super) fn readable(staged: &Staged, lock: &Lock) -> Result<(), PluginError> {
+/// anything is replaced, and keeps the migrations the others will run for the preview.
+pub(super) fn readable(root: &Path, staged: &mut Staged, lock: &Lock) -> Result<(), PluginError> {
     for (id, manifest) in &staged.manifests {
-        if let Some(entry) = lock.plugins.get(id) {
-            crate::updates::state::transition(
-                id,
-                &manifest.version,
-                entry.state.as_ref(),
-                manifest.state.as_ref(),
-            )?;
+        let entry = lock.plugins.get(id);
+
+        if let Some(migration) = crate::updates::state::check(root, entry, manifest)? {
+            staged.migrations.insert(id.clone(), migration);
         }
     }
 

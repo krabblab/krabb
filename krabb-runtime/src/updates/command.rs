@@ -584,6 +584,7 @@ pub(crate) fn inspect_update(
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
+    super::state::check(home_root, Some(entry), &manifest)?;
 
     let name = plugin_name(id);
 
@@ -735,7 +736,6 @@ pub(crate) fn check_update_candidate(
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
-    super::state::transition(id, &manifest.version, entry.state.as_ref(), manifest.state.as_ref())?;
 
     if !candidate.binary.is_file() {
         return Err(
@@ -799,6 +799,7 @@ pub(crate) fn prepare_update(
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
+    super::state::check(home_root, Some(entry), &manifest)?;
 
     let name = plugin_name(id);
 
