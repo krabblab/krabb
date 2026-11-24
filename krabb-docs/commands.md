@@ -230,7 +230,7 @@ and command conflicts. Failed checks appear in `health_details`, and under
 Result screens share one layout, as `krabb status` shows:
 
 ```text
-Krabb 0.1.0 needs attention
+Krabb 0.1.0 is healthy
 ├─ Runtime: stopped
 ├─ Intelligence: configured (codex)
 ├─ Channels: not configured
