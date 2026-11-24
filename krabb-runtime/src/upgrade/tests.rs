@@ -368,7 +368,10 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
 
     drop(staged);
 
+    let loads = std::cell::Cell::new(0);
+
     let offline = || -> Result<std::sync::Arc<index::Index>, PluginError> {
+        loads.set(loads.get() + 1);
         Err("The plugin index is unreachable.".into())
     };
 
@@ -387,6 +390,7 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
     );
 
     assert!(shown.text.contains("codex: stays at 0.1.0 (plugin index unavailable)"));
+    assert_eq!(loads.get(), 1);
 
     drop(staged);
 

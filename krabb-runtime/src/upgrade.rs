@@ -256,13 +256,12 @@ async fn update(
 
     if json {
         let refresh = match &refreshed {
-            Refresh::None => serde_json::Value::Null,
+            Refresh::None | Refresh::Done => serde_json::Value::Null,
 
             Refresh::Pending => {
                 serde_json::json!({"status": "pending", "command": "krabb plugin update"})
             }
 
-            Refresh::Done => serde_json::json!({"status": "reviewed"}),
             Refresh::Failed(error) => serde_json::json!({"status": "failed", "error": error}),
         };
 
