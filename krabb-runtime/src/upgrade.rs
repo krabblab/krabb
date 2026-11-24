@@ -78,6 +78,7 @@ fn inspect(root: &Path) -> Result<(), PluginError> {
             "version": VERSION,
             "schema": {"from": plan.from, "to": plan.to, "steps": plan.steps},
             "protocol": Protocol::CURRENT,
+            "service": definition::stale(&service_path()).is_some(),
         })
     );
 
@@ -159,7 +160,15 @@ async fn update(
 
     stage::compatible(&staged, &inspection)?;
 
-    let preview = preview(&version, &lock, &staged, &inspection.schema, &service, running);
+    let preview = preview(
+        &version,
+        &lock,
+        &staged,
+        &inspection.schema,
+        &service,
+        running,
+        inspection.service,
+    );
 
     if json && !yes {
         println!("{}", serde_json::to_string_pretty(&preview.value)?);
@@ -179,16 +188,17 @@ async fn update(
         service_action_with(&service, ServiceAction::Stop, json)?;
     }
 
+    let definition = service.is_file().then_some(service.as_path());
+
     let point = match released(root).await {
-        Ok(()) => snapshot::create(root, VERSION, &version, &binaries, running).map_err(
-            |error| -> PluginError {
+        Ok(()) => snapshot::create(root, VERSION, &version, &binaries, definition, running)
+            .map_err(|error| -> PluginError {
                 format!(
                     "Could not create the recovery point: {} The installation was not changed.",
                     sentence(error.to_string())
                 )
                 .into()
-            },
-        ),
+            }),
 
         Err(error) => Err(error),
     };
@@ -355,6 +365,7 @@ fn preview(
     schema: &stage::Schema,
     service: &Path,
     running: bool,
+    refreshed: bool,
 ) -> Preview {
     let mut rows = vec![format!("krabb and krabb-daemon: {VERSION} → {version}")];
     let mut plugins = Vec::new();
@@ -445,6 +456,10 @@ fn preview(
 
     rows.push(interruption.into());
 
+    if refreshed {
+        rows.push("service definition: refreshed to the current format".into());
+    }
+
     let text = format!(
         "Update Krabb {VERSION} to {version}\n{}\n\nA recovery point is kept.\n`krabb update \
         --rollback` restores {VERSION}.",
@@ -461,6 +476,7 @@ fn preview(
         "supported": supported,
         "schema": schema,
         "restart": running,
+        "definition": refreshed,
     });
 
     Preview { text, value }

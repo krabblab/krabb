@@ -55,6 +55,7 @@ mod context;
 mod context_tests;
 mod credentials;
 mod daemon;
+mod definition;
 mod delivery;
 mod digest;
 mod dispatch;

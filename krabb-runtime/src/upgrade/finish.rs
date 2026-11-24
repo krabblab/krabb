@@ -33,6 +33,10 @@ pub(super) async fn run(
         }
     }
 
+    if definition::refresh(&service_path())? && !json {
+        eprintln!("Refreshed the service definition to the current format.");
+    }
+
     drop(offline_lock(root)?);
 
     if start {

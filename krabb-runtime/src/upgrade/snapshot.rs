@@ -30,6 +30,9 @@ pub(super) struct Point {
     pub service: bool,
     pub binaries: Vec<Binary>,
     pub home: Vec<Entry>,
+    /// The service definition before the update, when one was installed.
+    #[serde(default)]
+    pub definition: Option<Binary>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -56,6 +59,7 @@ pub(super) fn create(
     from: &str,
     to: &str,
     binaries: &[PathBuf],
+    definition: Option<&Path>,
     service: bool,
 ) -> Result<Point, PluginError> {
     let directory = store(root);
@@ -77,6 +81,17 @@ pub(super) fn create(
             saved.push(Binary { path: path.clone(), entries });
         }
 
+        let definition = match definition {
+            Some(path) => {
+                let (parent, name) = split(path)?;
+                let entries = recovery::save(parent, &directory.join("service"), &[name])?;
+
+                Some(Binary { path: path.to_path_buf(), entries })
+            }
+
+            None => None,
+        };
+
         let point = Point {
             from: from.to_owned(),
             to: to.to_owned(),
@@ -85,6 +100,7 @@ pub(super) fn create(
             service,
             binaries: saved,
             home,
+            definition,
         };
 
         write(root, &point)?;
@@ -132,6 +148,17 @@ pub(super) async fn restore(
     }
 
     recovery::restore(root, &directory.join("home"), &point.home)?;
+
+    if let Some(definition) = &point.definition {
+        let (parent, _) = split(&definition.path)?;
+
+        recovery::restore(parent, &directory.join("service"), &definition.entries)?;
+
+        // Only the installed definition is registered with the service manager.
+        if definition.path == service_path() {
+            crate::definition::reload(&definition.path)?;
+        }
+    }
 
     for id in &uninstalled {
         crate::revoke::restored(root, id)?;
