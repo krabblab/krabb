@@ -285,7 +285,7 @@ fn write(root: &Path, point: &Point) -> Result<(), PluginError> {
     Ok(())
 }
 
-fn paths(root: &Path) -> Result<Vec<String>, PluginError> {
+pub(super) fn paths(root: &Path) -> Result<Vec<String>, PluginError> {
     let mut paths = ["config.toml", "plugins.lock", krabb_migrations::MARKER, "plugins"]
         .map(str::to_owned)
         .to_vec();
