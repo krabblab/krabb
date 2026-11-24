@@ -195,6 +195,22 @@ krabb service uninstall -y
 krabb plugin uninstall <id>... -y
 ```
 
-Uninstalling a plugin removes its saved secrets and sharing grants. Then delete the
-`krabb` and `krabb-daemon` binaries from the install location. Delete `KRABB_HOME`
-only if you no longer need its conversations and settings.
+Uninstalling a plugin removes its saved secrets, its OS keyring entry, and its
+sharing grants. Then delete the `krabb` and `krabb-daemon` binaries from the
+install location. Delete `KRABB_HOME` only if you no longer need its
+conversations and settings.
+
+Uninstall cannot reach access that lives outside Krabb:
+
+- **Environment variables.** A secret you set yourself, such as
+  `KRABB_TELEGRAM_TOKEN` in a shell profile or in your service manager's
+  configuration, stays set. Remove it there.
+- **Keys at the provider.** Deleting a saved key does not disable it. Revoke or
+  rotate it where it was issued, such as the provider's API key settings or
+  Telegram's BotFather.
+- **Backups.** A copy of `KRABB_HOME` made earlier still holds the credentials
+  saved at that time. Delete such copies, or keep them as secret as the keys
+  themselves. Update recovery points under `updates/recovery` do not copy
+  `credentials.json` or `credentials.key`.
+- **Shared names.** A secret that another installed plugin also declares stays
+  saved until that plugin is uninstalled too.
