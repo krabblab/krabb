@@ -94,7 +94,7 @@ explicitly, and shows the reason.
    every package. Review the native core coverage checks on macOS and Windows
    x86_64, which require 60% per package and 40% for the runtime host.
 3. Inspect archive contents and checksums with `krabb-scripts/check.sh`.
-4. Review installer output on each supported platform before merging.
+4. Review installer output on each published target before merging.
 
 For a local installer smoke test, set `KRABB_RELEASE_BASE` to a `file://`
 directory containing the archives and `SHA256SUMS`, for example

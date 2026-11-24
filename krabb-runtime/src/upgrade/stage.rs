@@ -16,6 +16,12 @@ const PLAN_LIMIT: u64 = 1024 * 1024;
 pub(super) struct Plan {
     pub version: String,
     pub plugins: Vec<Artifact>,
+    /// Plugins the running daemon had loaded, which must load again after activation.
+    #[serde(default)]
+    pub attached: Vec<String>,
+    /// Plugins the operator had detached, which must stay detached after activation.
+    #[serde(default)]
+    pub detached: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -56,6 +62,10 @@ pub(super) struct Staged {
     pub daemon: PathBuf,
     pub plan: Plan,
     pub manifests: BTreeMap<String, Manifest>,
+    /// Official plugins left as they are because the index no longer lists them.
+    pub unlisted: Vec<String>,
+    /// Official plugins left as they are because the index could not be read.
+    pub unchecked: Vec<String>,
     keep: bool,
 }
 
@@ -91,8 +101,15 @@ pub(super) fn prepare(
         dir: dir.clone(),
         krabb: PathBuf::new(),
         daemon: PathBuf::new(),
-        plan: Plan { version: version.to_owned(), plugins: Vec::new() },
+        plan: Plan {
+            version: version.to_owned(),
+            plugins: Vec::new(),
+            attached: Vec::new(),
+            detached: Vec::new(),
+        },
         manifests: BTreeMap::new(),
+        unlisted: Vec::new(),
+        unchecked: Vec::new(),
         keep: false,
     };
 
@@ -118,13 +135,16 @@ pub(super) fn plugins(
 ) -> Result<(), PluginError> {
     let protocol = inspection.protocol.unwrap_or(Protocol::CURRENT);
     let mut published = None;
+    let mut unavailable = None;
 
     for (id, entry) in &lock.plugins {
-        if protocol.compatible(entry.protocol) {
-            continue;
-        }
+        let compatible = protocol.compatible(entry.protocol);
 
         let Some((_, pin)) = index::official(entry) else {
+            if compatible {
+                continue;
+            }
+
             return Err(format!(
                 "Plugin {id} uses protocol {}.{}, which Krabb {} does not support. Uninstall it, \
                  update, then install a build for the new protocol. The installation was not \
@@ -134,21 +154,55 @@ pub(super) fn plugins(
             .into());
         };
 
-        let published = match &published {
-            Some(published) => published,
-            None => published.insert(load()?),
+        // Pinned plugins stay unless the new host cannot load them.
+        if compatible && (entry.pinned || pin.is_some()) {
+            continue;
+        }
+
+        if published.is_none() {
+            match unavailable.take().map_or_else(load, Err) {
+                Ok(index) => published = Some(index),
+
+                // Plugins that still load can wait for the index; the host update goes ahead.
+                Err(error) if compatible => {
+                    staged.unchecked.push(id.clone());
+                    unavailable = Some(error);
+                    continue;
+                }
+
+                Err(error) => return Err(error),
+            }
+        }
+
+        let Some(published) = &published else {
+            continue;
         };
+
+        if compatible && !published.plugins.contains_key(id) {
+            staged.unlisted.push(id.clone());
+            continue;
+        }
 
         let unstable = pin.is_some_and(|version| !releases::stable(version));
 
-        let choice = index::newest(published, id, unstable, protocol).map_err(|error| {
-            format!(
-                "Krabb {} cannot load the installed {id} plugin: {} The installation was not \
-                 changed.",
-                inspection.version,
-                sentence(error.to_string())
-            )
-        })?;
+        let choice = match index::newest(published, id, unstable, protocol) {
+            Ok(choice) => choice,
+            Err(_) if compatible => continue,
+
+            Err(error) => {
+                return Err(format!(
+                    "Krabb {} cannot load the installed {id} plugin: {} The installation was \
+                     not changed.",
+                    inspection.version,
+                    sentence(error.to_string())
+                )
+                .into());
+            }
+        };
+
+        if compatible && !index::newer(&choice.release.version, entry) {
+            continue;
+        }
 
         let archive = index::pull(published, id, &choice, &staged.dir)?;
         let digest = choice.artifact.sha256.clone();
@@ -166,6 +220,10 @@ pub(super) fn plugins(
         });
     }
 
+    save(staged)
+}
+
+pub(super) fn save(staged: &Staged) -> Result<(), PluginError> {
     krabb_file::save(staged.dir.join(PLAN), serde_json::to_vec_pretty(&staged.plan)?)?;
 
     Ok(())

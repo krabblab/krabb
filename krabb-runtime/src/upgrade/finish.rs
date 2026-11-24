@@ -57,11 +57,34 @@ pub(super) async fn run(
     drop(offline_lock(root)?);
 
     if start {
+        carry(root, &plan.detached)?;
         service_action_with(&service, ServiceAction::Start, json)?;
-        ready(root).await?;
+
+        let missing = missing(&plan.attached, &ready(root).await?);
+
+        if !missing.is_empty() {
+            eprintln!(
+                "Plugins not loaded after the update: {}.\nRun `krabb status` for their errors, \
+                 reinstall them with `krabb plugin install`, or return with `krabb update \
+                 --rollback`.",
+                missing.join(", ")
+            );
+        }
     }
 
     Ok(())
+}
+
+/// Asks the next daemon start to keep these plugins detached, replacing any stale request.
+pub(super) fn carry(root: &Path, detached: &[String]) -> Result<(), PluginError> {
+    krabb_file::save(root.join(DETACHED), serde_json::to_vec(detached)?)?;
+
+    Ok(())
+}
+
+/// Plugins loaded before the update that the restarted daemon does not report as loaded.
+pub(super) fn missing(attached: &[String], active: &[String]) -> Vec<String> {
+    attached.iter().filter(|id| !active.contains(id)).cloned().collect()
 }
 
 fn install(root: &Path, dir: &Path, artifact: &stage::Artifact) -> Result<(), PluginError> {
@@ -84,12 +107,13 @@ fn install(root: &Path, dir: &Path, artifact: &stage::Artifact) -> Result<(), Pl
     Ok(())
 }
 
-async fn ready(root: &Path) -> Result<(), PluginError> {
+/// Waits for the restarted daemon and returns the plugins it loaded, which is final once it answers.
+async fn ready(root: &Path) -> Result<Vec<String>, PluginError> {
     let deadline = tokio::time::Instant::now() + READY;
 
     loop {
-        if let Ok(Some(_)) = control_at("plugin.active", serde_json::json!({}), root).await {
-            return Ok(());
+        if let Ok(Some(active)) = active_at(root).await {
+            return Ok(active);
         }
 
         if tokio::time::Instant::now() >= deadline {

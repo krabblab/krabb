@@ -52,6 +52,7 @@ pub(crate) async fn serve_inner(
     let loaded = sessions_at(root)?;
     let workspace = workspace_root_at(root);
     reclaim_worktrees(root, &loaded);
+    storage::prune(root, &workspace);
     let sessions = Arc::new(Mutex::new(loaded));
     let pending = Arc::new(AsyncMutex::new(approval::Gate::new()?));
     let token = ipc::token()?;
@@ -84,12 +85,23 @@ pub(crate) async fn serve_inner(
         model: model_id.to_owned(),
     });
 
+    let detached = upgrade::carried(root);
+
+    for id in &detached {
+        info!(plugin = %id, "Plugin detached before the update stays detached.");
+    }
+
+    plugins.detached.write().await.extend(detached.iter().cloned());
+
     if channel_id == model_id {
-        if let Err(error) = load_plugin(root, channel_id, None, force, &config, &plugins).await {
+        if !detached.contains(channel_id)
+            && let Err(error) = load_plugin(root, channel_id, None, force, &config, &plugins).await
+        {
             warn!(plugin = channel_id, error = %diagnostic(sentence(error.to_string())), "Plugin failed to start.");
         }
     } else {
         if (force || ready(channel_id))
+            && !detached.contains(channel_id)
             && let Err(error) =
                 load_plugin(root, channel_id, Some(Capability::Channel), force, &config, &plugins)
                     .await
@@ -98,6 +110,7 @@ pub(crate) async fn serve_inner(
         }
 
         if binary_at(model_id, root).is_some()
+            && !detached.contains(model_id)
             && let Err(error) =
                 load_plugin(root, model_id, Some(Capability::Model), force, &config, &plugins).await
         {
@@ -108,6 +121,7 @@ pub(crate) async fn serve_inner(
     for id in installed_at(root) {
         if id != channel_id
             && id != model_id
+            && !detached.contains(&id)
             && let Err(error) = load_plugin(root, &id, None, force, &config, &plugins).await
         {
             warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "Plugin failed to start.");

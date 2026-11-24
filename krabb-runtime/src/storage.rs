@@ -1,5 +1,21 @@
 use super::*;
 
+const ATTACHMENTS: &str = "attachments";
+
+/// Drops ownership entries for attachments that were deleted, so the catalog stays bounded.
+///
+/// Pruning is housekeeping: a busy or unreadable catalog is logged and retried next time.
+pub fn prune(home: &Path, workspace: &Path) {
+    let pruned = krabb_file::Ownership::open(home, workspace)
+        .and_then(|mut catalog| catalog.prune(Path::new(ATTACHMENTS)));
+
+    match pruned {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(removed, "Stale attachment ownership entries pruned."),
+        Err(error) => tracing::warn!(kind = ?error.kind(), "Attachment ownership pruning failed."),
+    }
+}
+
 pub fn attachments(
     home: &Path,
     workspace: &Path,
@@ -12,6 +28,9 @@ pub fn attachments(
 
     let root = std::fs::canonicalize(workspace)?;
     let mut catalog = krabb_file::Ownership::open(home, &root)?;
+
+    catalog.prune(Path::new(ATTACHMENTS))?;
+
     let owner = String::from(sharing::principal(channel));
 
     for item in content {
@@ -159,6 +178,48 @@ mod tests {
 
         assert!(attachments(&home, &workspace, "discord", &content).is_err());
         assert!(!workspace.join(".krabb").exists());
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn deleted_attachments_leave_the_ownership_catalog() {
+        let home = crate::tests::test_root("attachment-prune");
+
+        init_at(&home).unwrap();
+
+        let workspace = home.join("workspace");
+        let voice = workspace.join("attachments/channels.telegram");
+
+        std::fs::create_dir_all(&voice).unwrap();
+
+        let audio = |name: &str| {
+            let path = voice.join(name);
+
+            std::fs::write(&path, "voice").unwrap();
+            vec![Content::Audio { uri: format!("file://{}", path.display()), mime: None }]
+        };
+
+        let entries = || krabb_file::Ownership::open(&home, &workspace).unwrap().entries().count();
+
+        for index in 0..5 {
+            let name = format!("voice-{index}.ogg");
+
+            attachments(&home, &workspace, "telegram", &audio(&name)).unwrap();
+            std::fs::remove_file(voice.join(&name)).unwrap();
+        }
+
+        assert_eq!(entries(), 1);
+
+        prune(&home, &workspace);
+
+        assert_eq!(entries(), 0);
+
+        attachments(&home, &workspace, "telegram", &audio("kept.ogg")).unwrap();
+        prune(&home, &workspace);
+
+        assert_eq!(entries(), 1);
+        assert!(voice.join("kept.ogg").exists());
 
         std::fs::remove_dir_all(home).unwrap();
     }
