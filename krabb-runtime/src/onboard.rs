@@ -485,7 +485,7 @@ fn closing(ready: bool, terminal: bool) -> &'static str {
 }
 
 /// The selected provider when it is installed and ready to answer.
-fn ready_provider(root: &Path) -> Result<Option<String>, Error> {
+pub(crate) fn ready_provider(root: &Path) -> Result<Option<String>, Error> {
     let config = crate::load_config_at(root)?;
     let (provider, _) = crate::selection::client(&config, "cli", (None, None));
 

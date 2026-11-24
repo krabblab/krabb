@@ -4273,11 +4273,11 @@ fn parse_memory_list(command: &str) -> Result<(usize, Option<&'static str>), ()>
 
 fn format_schedules(value: &Value) -> String {
     let Some(items) = value["items"].as_array() else {
-        return "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.\n> ".into();
+        return NO_SCHEDULES.into();
     };
 
     if items.is_empty() {
-        return "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.\n> ".into();
+        return NO_SCHEDULES.into();
     }
 
     let total = value["total"].as_u64().unwrap_or(items.len() as u64);
@@ -5107,6 +5107,10 @@ fn format_session_archive(id: &str, archived: bool, changed: bool) -> String {
 
     format!("{action} session {id}.")
 }
+
+/// The empty schedule list; in the TUI the Krabb itself adds schedules.
+const NO_SCHEDULES: &str =
+    "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.\n> ";
 
 /// The empty plugin list, worded as the CLI words it.
 const NO_PLUGINS: &str = "No plugins installed.\nInstall one with `krabb plugin install <id>`.";
@@ -6496,10 +6500,7 @@ mod tests {
 
     #[test]
     fn formats_schedule_and_memory_records() {
-        assert_eq!(
-            super::format_schedules(&json!({"items": []})),
-            "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.\n> "
-        );
+        assert_eq!(super::format_schedules(&json!({"items": []})), super::NO_SCHEDULES);
 
         assert_eq!(
             super::format_schedules(&json!({"items": [{"id": 7, "due": 42, "text": "call back"}]})),

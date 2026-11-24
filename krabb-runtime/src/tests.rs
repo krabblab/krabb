@@ -1399,6 +1399,17 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
             .starts_with("Restart codex with `krabb service restart`; its errors are in ")
     );
 
+    let unready = serde_json::json!({
+        "health": "unhealthy",
+        "health_details": ["selected intelligence plugin is not ready"],
+        "plugin_states": [{"id": "codex", "state": "failed to start", "next": "krabb service restart"}],
+    });
+
+    assert!(
+        super::status_text(&unready, 1)
+            .contains("\n\nRestart codex with `krabb service restart`; its errors are in ")
+    );
+
     assert_eq!(state("tui", &entry("client"), true, Some(&active), true).0, "ready");
 
     let text = super::status_text(
@@ -2043,7 +2054,7 @@ fn schedule_list_shows_pending_state_and_exact_utc_time() {
 
     assert_eq!(
         super::format_schedule_list(&serde_json::json!({"items": []})),
-        "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary."
+        "No schedules yet.\nAdd one with `krabb schedule add`, or ask your Krabb to schedule a task."
     );
 
     let local = super::format_schedule_list(&serde_json::json!({

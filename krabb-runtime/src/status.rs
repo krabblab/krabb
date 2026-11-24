@@ -292,6 +292,13 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
         return Some("Undo the unfinished update with `krabb update --rollback`.".into());
     }
 
+    let plugins = value["plugin_states"].as_array().into_iter().flatten();
+
+    // A plugin that did not load also makes its capability "not ready"; restarting is the cure.
+    if let Some(plugin) = plugins.clone().find(|plugin| plugin["state"] == "failed to start") {
+        return Some(restart(plugin["id"].as_str().unwrap_or_default()));
+    }
+
     let details = value["health_details"].as_array().into_iter().flatten();
 
     if let Some(next) =
@@ -300,7 +307,7 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
         return Some(next.into());
     }
 
-    value["plugin_states"].as_array().into_iter().flatten().find_map(|plugin| {
+    plugins.into_iter().find_map(|plugin| {
         let id = plugin["id"].as_str().unwrap_or_default();
         let next = plugin["next"].as_str()?;
 
@@ -312,13 +319,16 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
             }
 
             (Some("configured"), _) => format!("Start {id} with `{next}`."),
-
-            _ => format!(
-                "Restart {id} with `{next}`; its errors are in {}.",
-                logging::application_log_path().display()
-            ),
+            _ => restart(id),
         })
     })
+}
+
+fn restart(id: &str) -> String {
+    format!(
+        "Restart {id} with `krabb service restart`; its errors are in {}.",
+        logging::application_log_path().display()
+    )
 }
 
 /// How the text output names a health detail, and the one command that resolves it.

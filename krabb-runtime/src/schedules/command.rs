@@ -1275,4 +1275,4 @@ pub(crate) fn format_schedule_history(
 
 /// The empty schedule list, which ends with how to add the first one.
 const NO_SCHEDULES: &str =
-    "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.";
+    "No schedules yet.\nAdd one with `krabb schedule add`, or ask your Krabb to schedule a task.";

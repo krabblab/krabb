@@ -198,9 +198,15 @@ pub(crate) async fn plugin(
             }
 
             if !activation_errors.is_empty() {
+                let restart = if service_path().is_file() {
+                    "`krabb service restart`"
+                } else {
+                    "a new `krabb-daemon`"
+                };
+
                 return Err(format!(
                     "Plugins were installed, but activation failed, as shown above.\nRestart them \
-                     with `krabb service restart`; their errors are in {}.",
+                     with {restart}; their errors are in {}.",
                     logging::application_log_path().display()
                 )
                 .into());

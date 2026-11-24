@@ -66,12 +66,7 @@ pub(crate) fn init(
                 })
             );
         } else {
-            let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
-
-            println!(
-                "Krabb is already initialized\n{home}\n\nAdd an intelligence provider with \
-                 `krabb init provider`."
-            );
+            println!("{}", already(&root)?);
         }
 
         return Ok(());
@@ -342,4 +337,36 @@ pub(crate) fn directory_present(path: &Path) -> bool {
 pub(crate) fn regular_file_present(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+}
+
+/// The answer to `krabb init` on a home that exists, with the step that is still missing.
+fn already(root: &Path) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
+
+    let next = if crate::onboard::ready_provider(root)?.is_some() {
+        "Check every part with `krabb status`."
+    } else {
+        "Add an intelligence provider with `krabb init provider`."
+    };
+
+    Ok(format!("Krabb is already initialized\n{home}\n\n{next}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_existing_home_names_its_missing_step() {
+        let root = crate::tests::test_root("home-already");
+
+        init_at(&root).unwrap();
+
+        let text = already(&root).unwrap();
+
+        assert!(text.starts_with("Krabb is already initialized\n└─ Home: "), "{text}");
+        assert!(text.ends_with("\n\nAdd an intelligence provider with `krabb init provider`."));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
