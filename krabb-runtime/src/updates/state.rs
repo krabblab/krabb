@@ -109,7 +109,8 @@ fn kept(root: &Path) -> Result<BTreeMap<String, State>, PluginError> {
     let unreadable = || -> PluginError {
         format!(
             "The saved plugin state records in {} cannot be read. The installation was not \
-             changed.",
+             changed. Fix or remove that file to continue; removing it forgets the recorded \
+             schemas of uninstalled plugins, so their next install is not checked.",
             root.join(KEPT).display()
         )
         .into()
@@ -368,6 +369,16 @@ mod tests {
         assert_eq!(crate::load_lock_at(&root).unwrap().plugins["keeper"].version, "0.3.1");
         assert_eq!(recorded(&root), Some(state(3, &[1, 2])));
 
+        std::fs::write(&kept, "x".repeat(KEPT_LIMIT as usize + 1)).unwrap();
+
+        let removal = crate::PluginRemove { id: "keeper".into(), yes: true };
+        let error = crate::remove_at(removal, &root).unwrap_err().to_string();
+
+        assert!(error.contains("cannot be read") && error.contains("Fix or remove"), "{error}");
+        assert!(crate::load_lock_at(&root).unwrap().plugins.contains_key("keeper"));
+        assert!(root.join("plugins/keeper").is_dir());
+
+        std::fs::remove_file(&kept).unwrap();
         crate::remove_at(crate::PluginRemove { id: "keeper".into(), yes: true }, &root).unwrap();
         std::fs::write(&kept, "not json").unwrap();
 

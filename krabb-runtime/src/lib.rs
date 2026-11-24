@@ -3089,12 +3089,12 @@ fn remove_guarded(
     }
 
     guard(&lock)?;
-    upgrade::uninstalled(home_root, &name.id)?;
 
     // Kept first: an uninstall that fails later still has a lock entry, which takes precedence.
     let state = lock.plugins.get(&name.id).and_then(|entry| entry.state.as_ref());
 
     updates::state::keep(home_root, &name.id, state)?;
+    upgrade::uninstalled(home_root, &name.id)?;
 
     let revoked = revoke::revoke(home_root, &name.id, &lock)?;
 
