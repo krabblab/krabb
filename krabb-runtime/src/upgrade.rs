@@ -329,17 +329,10 @@ async fn record(root: &Path, staged: &mut stage::Staged) -> Result<(), PluginErr
         return Ok(());
     };
 
-    let ids = |value: &serde_json::Value| -> Vec<String> {
-        value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|id| id.as_str().filter(|id| valid(id)).map(str::to_owned))
-            .collect()
-    };
+    let detached = serde_json::json!({"items": active["detached"].clone()});
 
-    staged.plan.attached = ids(&active["items"]);
-    staged.plan.detached = ids(&active["detached"]);
+    staged.plan.attached = active_ids(active).unwrap_or_default();
+    staged.plan.detached = active_ids(detached).unwrap_or_default();
 
     stage::save(staged)
 }

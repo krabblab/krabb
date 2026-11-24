@@ -662,18 +662,19 @@ async fn detached_plugins_carry_across_the_restart_and_missing_ones_are_reported
 
     finish::carry(&root, &[]).unwrap();
 
-    assert!(!root.join(DETACHED).exists());
+    assert!(root.join(DETACHED).exists());
     assert!(carried(&root).is_empty());
+    assert!(!root.join(DETACHED).exists());
 
     finish::carry(&root, &["telegram".into(), "../escape".into()]).unwrap();
 
     assert_eq!(carried(&root), ["telegram".to_owned()].into_iter().collect());
     assert!(!root.join(DETACHED).exists());
 
-    let deadline = Duration::from_millis(10);
+    let attached = ["echo".to_owned(), "tui".to_owned()];
 
-    assert!(finish::loaded(&root, &[], deadline).await.is_empty());
-    assert_eq!(finish::loaded(&root, &["echo".into()], deadline).await, ["echo"]);
+    assert_eq!(finish::missing(&attached, &["tui".into()]), ["echo"]);
+    assert!(finish::missing(&attached, &attached).is_empty());
 
     finish::carry(&root, &["telegram".into()]).unwrap();
     fs::write(root.join("config.toml"), "").unwrap();

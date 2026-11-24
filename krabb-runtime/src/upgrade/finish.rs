@@ -38,9 +38,8 @@ pub(super) async fn run(
     if start {
         carry(root, &plan.detached)?;
         service_action_with(&service_path(), ServiceAction::Start, json)?;
-        ready(root).await?;
 
-        let missing = loaded(root, &plan.attached, READY).await;
+        let missing = missing(&plan.attached, &ready(root).await?);
 
         if !missing.is_empty() {
             eprintln!(
@@ -55,44 +54,16 @@ pub(super) async fn run(
     Ok(())
 }
 
-/// Asks the next daemon start to keep these plugins detached.
+/// Asks the next daemon start to keep these plugins detached, replacing any stale request.
 pub(super) fn carry(root: &Path, detached: &[String]) -> Result<(), PluginError> {
-    if detached.is_empty() {
-        return Ok(());
-    }
-
     krabb_file::save(root.join(DETACHED), serde_json::to_vec(detached)?)?;
 
     Ok(())
 }
 
-/// Waits until every plugin loaded before the update is loaded again, and returns any that are not.
-pub(super) async fn loaded(root: &Path, attached: &[String], limit: Duration) -> Vec<String> {
-    let deadline = tokio::time::Instant::now() + limit;
-
-    loop {
-        let active = control_at("plugin.active", serde_json::json!({}), root)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-
-        let missing = attached
-            .iter()
-            .filter(|id| {
-                !active["items"]
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(|item| item == *id))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if missing.is_empty() || tokio::time::Instant::now() >= deadline {
-            return missing;
-        }
-
-        tokio::time::sleep(POLL).await;
-    }
+/// Plugins loaded before the update that the restarted daemon does not report as loaded.
+pub(super) fn missing(attached: &[String], active: &[String]) -> Vec<String> {
+    attached.iter().filter(|id| !active.contains(id)).cloned().collect()
 }
 
 fn install(root: &Path, dir: &Path, artifact: &stage::Artifact) -> Result<(), PluginError> {
@@ -115,12 +86,13 @@ fn install(root: &Path, dir: &Path, artifact: &stage::Artifact) -> Result<(), Pl
     Ok(())
 }
 
-async fn ready(root: &Path) -> Result<(), PluginError> {
+/// Waits for the restarted daemon and returns the plugins it loaded, which is final once it answers.
+async fn ready(root: &Path) -> Result<Vec<String>, PluginError> {
     let deadline = tokio::time::Instant::now() + READY;
 
     loop {
-        if let Ok(Some(_)) = control_at("plugin.active", serde_json::json!({}), root).await {
-            return Ok(());
+        if let Ok(Some(active)) = active_at(root).await {
+            return Ok(active);
         }
 
         if tokio::time::Instant::now() >= deadline {

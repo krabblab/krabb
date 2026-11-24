@@ -84,14 +84,13 @@ pub(crate) async fn serve_inner(
         model: model_id.to_owned(),
     });
 
-    // Plugins detached before an update stay detached; they never start after the restart.
     let detached = upgrade::carried(root);
 
-    plugins.detached.write().await.extend(detached.iter().cloned());
-
-    if detached.contains(channel_id) || detached.contains(model_id) {
-        info!("A plugin detached before the update stays detached.");
+    for id in &detached {
+        info!(plugin = %id, "Plugin detached before the update stays detached.");
     }
+
+    plugins.detached.write().await.extend(detached.iter().cloned());
 
     if channel_id == model_id {
         if !detached.contains(channel_id)
