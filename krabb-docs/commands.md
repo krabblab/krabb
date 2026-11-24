@@ -55,6 +55,7 @@ krabb <plugin-command> [arguments...]
 - [Shell Completion](#shell-completion)
 - [Output And Logging](#output-and-logging)
 - [Confirmation And File Operations](#confirmation-and-file-operations)
+- [Exit Codes And Scripts](#exit-codes-and-scripts)
 - [Status And Health](#status-and-health)
 - [Terminal User Interface](#terminal-user-interface)
 - [Conversation Commands](#conversation-commands)
@@ -184,6 +185,35 @@ as the exact output filename. Exporting with no local config or plugin lock
 uses the default config and an empty plugin list. If the output Krabfile is
 already present, export stops without changing it; pass `--force` to overwrite
 that file.
+
+## Exit Codes And Scripts
+
+| Code | Meaning |
+|---|---|
+| `0` | The command succeeded, or you declined a confirmation prompt; the output then says the action was cancelled. |
+| `1` | The command failed. This includes a prompt that could not be shown because input is not a terminal or `--json` was passed. |
+| `2` | The arguments were invalid, such as an unknown option or a missing value. |
+
+Scripts should pass `--yes` to commands that ask before changing state, because
+without a terminal they fail with exit code `1` instead of waiting for an answer.
+Some of these commands appear only when the plugin that provides them is
+installed:
+
+- `krabb init --force`, when it resets an existing home
+- `krabb hatch --undo`
+- `krabb import`
+- `krabb update` and `krabb update --rollback`
+- `krabb plugin install`, when it replaces installed plugins
+- `krabb plugin uninstall`
+- `krabb session delete`
+- `krabb delivery retry` and `krabb delivery drop`
+- `krabb schedule approve`
+- `krabb service uninstall`
+
+`krabb plugin update` without `--yes` only previews changes when input is not a
+terminal, and `krabb update --json` without `--yes` prints the preview without
+applying it. Errors go to standard error; with `--json`, results go to standard
+output.
 
 ## Status And Health
 intelligence, channels, version, and the installed plugin count. When the daemon
