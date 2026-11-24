@@ -712,9 +712,18 @@ pub(crate) async fn bridge_with_media(
                 storage::attachments(&home_root, workspace, channel_id, &archived)?;
             }
 
+            let voice = archived.iter().any(|item| matches!(item, Content::Audio { .. }));
             let content = expand_media_files(archived, active_media).await;
             let content =
                 transcribe_media(plugins, channel_id, content, active_media, &mut call).await;
+
+            // Transcription deletes raw voice files, so their ownership entries go with them.
+            if voice
+                && let Some(workspace) =
+                    workspace.as_deref().filter(|path| !worktree::isolated(path))
+            {
+                storage::prune(&home_root, workspace);
+            }
 
             if content.is_empty() {
                 commit_event(

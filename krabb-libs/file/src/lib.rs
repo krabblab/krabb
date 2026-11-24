@@ -4,9 +4,11 @@ mod cache;
 mod directory;
 mod layout;
 mod ownership;
+mod space;
 pub use directory::{confined, directory, workspace_state};
 pub use layout::location;
 pub use ownership::Ownership;
+pub use space::available;
 
 use serde::{Deserialize, Serialize};
 
