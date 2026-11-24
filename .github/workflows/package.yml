@@ -317,6 +317,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $krabb = Join-Path $env:RUNNER_TEMP "krabb-local/Krabb/bin/krabb.exe"
           $user = Join-Path $env:RUNNER_TEMP "krabb-service-user"
+          if (!(Test-Path $krabb)) { throw "The installed CLI is missing at $krabb." }
 
           New-Item -ItemType Directory -Force -Path (Join-Path $user ".krabb") | Out-Null
           $env:USERPROFILE = $user
@@ -330,21 +331,23 @@ jobs:
           }
 
           $installed = Invoke-Krabb --json service install
-          if ($installed.status -ne "installed") { throw "Service install reported '$($installed.status)'." }
-          if (!(Test-Path $installed.path)) { throw "Service definition is missing at $($installed.path)." }
 
-          $status = Invoke-Krabb --json service status
-          if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
-          if (!(Get-Service -Name $status.name -ErrorAction SilentlyContinue)) {
-            throw "Windows has no $($status.name) service."
+          try {
+            if ($installed.status -ne "installed") { throw "Service install reported '$($installed.status)'." }
+            if (!(Test-Path $installed.path)) { throw "Service definition is missing at $($installed.path)." }
+
+            $status = Invoke-Krabb --json service status
+            if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
+            if (!(Get-Service -Name $status.name -ErrorAction SilentlyContinue)) {
+              throw "Windows has no $($status.name) service."
+            }
+          } finally {
+            & $krabb service uninstall --yes
+            if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
           }
 
-          & $krabb service uninstall --yes
-          if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
           if (Test-Path $installed.path) { throw "Service definition remains at $($installed.path)." }
-          if (Get-Service -Name $status.name -ErrorAction SilentlyContinue) {
-            throw "Windows still has the $($status.name) service."
-          }
+          if (Get-Service -Name Krabb -ErrorAction SilentlyContinue) { throw "Windows still has the Krabb service." }
 
       - name: Upload Archives
         uses: actions/upload-artifact@v7
