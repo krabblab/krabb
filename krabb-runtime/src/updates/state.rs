@@ -75,7 +75,7 @@ pub(crate) fn check(
 ) -> Result<Option<Migration>, String> {
     let installed = match entry {
         Some(entry) => entry.state.clone(),
-        None => kept(root).remove(&manifest.id),
+        None => kept(root).map_err(|error| error.to_string())?.remove(&manifest.id),
     };
 
     transition(&manifest.id, &manifest.version, installed.as_ref(), manifest.state.as_ref())
@@ -83,7 +83,7 @@ pub(crate) fn check(
 
 /// Keeps the recorded schema of an uninstalled plugin, whose saved data outlives it.
 pub(crate) fn keep(root: &Path, id: &str, state: Option<&State>) -> Result<(), PluginError> {
-    let mut states = kept(root);
+    let mut states = kept(root)?;
 
     match state {
         Some(state) => states.insert(id.to_owned(), state.clone()),
@@ -95,7 +95,7 @@ pub(crate) fn keep(root: &Path, id: &str, state: Option<&State>) -> Result<(), P
 
 /// Drops the kept schema once the plugin is installed again and its lock entry records it.
 pub(crate) fn release(root: &Path, id: &str) -> Result<(), PluginError> {
-    let mut states = kept(root);
+    let mut states = kept(root)?;
 
     if states.remove(id).is_none() {
         return Ok(());
@@ -104,12 +104,23 @@ pub(crate) fn release(root: &Path, id: &str) -> Result<(), PluginError> {
     save(root, &states)
 }
 
-fn kept(root: &Path) -> BTreeMap<String, State> {
-    krabb_file::load(root.join(KEPT), KEPT_LIMIT)
-        .ok()
-        .flatten()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// The kept schemas; a record that cannot be read refuses instead of forgetting them.
+fn kept(root: &Path) -> Result<BTreeMap<String, State>, PluginError> {
+    let unreadable = || -> PluginError {
+        format!(
+            "The saved plugin state records in {} cannot be read. The installation was not \
+             changed.",
+            root.join(KEPT).display()
+        )
+        .into()
+    };
+
+    let Some(bytes) = krabb_file::load(root.join(KEPT), KEPT_LIMIT).map_err(|_| unreadable())?
+    else {
+        return Ok(BTreeMap::new());
+    };
+
+    serde_json::from_slice(&bytes).map_err(|_| unreadable())
 }
 
 fn save(root: &Path, states: &BTreeMap<String, State>) -> Result<(), PluginError> {
@@ -356,6 +367,13 @@ mod tests {
 
         assert_eq!(crate::load_lock_at(&root).unwrap().plugins["keeper"].version, "0.3.1");
         assert_eq!(recorded(&root), Some(state(3, &[1, 2])));
+
+        crate::remove_at(crate::PluginRemove { id: "keeper".into(), yes: true }, &root).unwrap();
+        std::fs::write(&kept, "not json").unwrap();
+
+        let error = install(&root, &current).unwrap_err();
+
+        assert!(error.contains("cannot be read"), "{error}");
 
         let _ = std::fs::remove_dir_all(root);
     }

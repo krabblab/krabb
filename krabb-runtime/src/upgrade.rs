@@ -521,7 +521,11 @@ fn preview(
             "from": entry.version,
             "to": manifest.version,
             "changes": changes,
-            "state": migration,
+            "state": migration.map(|migration| serde_json::json!({
+                "from": migration.from,
+                "to": migration.to,
+                "text": migration.describe(),
+            })),
         }));
     }
 

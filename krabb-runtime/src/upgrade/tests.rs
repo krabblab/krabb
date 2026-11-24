@@ -291,7 +291,10 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
         migration.text
     );
 
-    assert_eq!(migration.value["plugins"][0]["state"], serde_json::json!({"from": 1, "to": 2}));
+    assert_eq!(
+        migration.value["plugins"][0]["state"],
+        serde_json::json!({"from": 1, "to": 2, "text": "state: schema 1 → 2 when it starts"})
+    );
 
     migrating.plugins.get_mut("echo").unwrap().state = Some(state(3, &[]));
 

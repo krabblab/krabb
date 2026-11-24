@@ -248,7 +248,10 @@ pub(crate) fn link_recorded(
     }
 
     result?;
-    updates::state::release(home_root, &source.id)?;
+
+    if let Err(error) = updates::state::release(home_root, &source.id) {
+        tracing::warn!(plugin = %source.id, %error, "Kept plugin state record was not cleared.");
+    }
 
     Ok(manifest)
 }

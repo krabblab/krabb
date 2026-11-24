@@ -76,13 +76,13 @@ state, not during `hello`, because Krabb starts a new release once to check it
 before the replacement is final.
 
 Before replacing a plugin, through `krabb update`, `krabb plugin update`,
-automatic updates, or `krabb plugin install`, Krabb compares the schema recorded
-for it with the new release's:
+automatic updates, `krabb plugin install`, or `krabb import`, Krabb compares the
+schema recorded for it with the new release's:
 
 - the same schema, or neither release declaring one, needs nothing;
-- a release that declares state for the first time starts recording it, and the
-  preview shows `state: starts recording schema 3`;
-- a schema listed in `from` is a pending migration, which the preview shows as
+- a release that declares state for the first time starts recording it, and
+  update previews show `state: starts recording schema 3`;
+- a schema listed in `from` is a pending migration, which update previews show as
   `state: schema 1 → 3 when it starts`;
 - a lower schema, a schema missing from `from`, or a release that stops declaring
   state is refused before anything changes, naming the schemas involved. Under
