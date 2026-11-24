@@ -200,6 +200,18 @@ async fn repeat_setup_keeps_the_model_of_the_same_provider() {
     assert_eq!(config.model.as_deref(), Some("default"));
     assert!(listed(&root, &config, "anthropic").await.is_empty());
 
+    let rest = std::fs::read_to_string(root.join("config.toml"))
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("provider") && !line.starts_with("model"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    std::fs::write(root.join("config.toml"), format!("model = \"gpt-only\"\n{rest}\n")).unwrap();
+
+    assert!(matches!(guide.select("codex").await.unwrap(), Flow::Next));
+    assert_eq!(crate::load_config_at(&root).unwrap().model.as_deref(), Some("gpt-only"));
+
     let _ = std::fs::remove_dir_all(root);
 }
 
