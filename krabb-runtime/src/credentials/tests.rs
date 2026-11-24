@@ -481,6 +481,15 @@ fn service_reinstall_replaces_the_credential_copy() {
 
     assert_eq!(stored.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN"]);
 
+    let failing = BTreeMap::from([
+        ("KRABB_SLACK_BOT_TOKEN".to_owned(), "synthetic-service-token".to_owned()),
+        ("KRABB_KEYRING".to_owned(), "1".to_owned()),
+    ]);
+
+    assert!(crate::service_environment_from(&service, root.clone(), &failing).is_err());
+    assert_eq!(read(&copy, &key).unwrap(), stored, "a failed reinstall keeps the previous copy");
+    assert!(!copy.with_extension("json.new").exists());
+
     fs::remove_dir_all(root).unwrap();
 }
 

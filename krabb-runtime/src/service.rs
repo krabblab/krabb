@@ -203,14 +203,18 @@ pub(crate) fn service_environment_from(
         let preference =
             credentials::preference_from(environment.get("KRABB_KEYRING").map(String::as_str))?;
 
-        // Saving merges into an existing file, so start fresh to drop values of an older install.
-        match std::fs::remove_file(&path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        // Saving merges into an existing file, so a fresh staged copy drops an older install's
+        // values, and the rename keeps the previous copy until the new one is complete.
+        let staged = path.with_extension("json.new");
+        let _ = std::fs::remove_file(&staged);
 
-            _ => {}
+        if let Err(error) = credentials::save(&staged, &key, credentials, preference) {
+            let _ = std::fs::remove_file(&staged);
+
+            return Err(error);
         }
 
-        credentials::save(&path, &key, credentials, preference)?;
+        std::fs::rename(&staged, &path)?;
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path)?));
     } else if let Some(path) = configured.as_ref() {
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path.clone())?));
