@@ -1410,12 +1410,7 @@ struct Update {
 fn usage_error(error: clap::Error, json: bool) -> ExitCode {
     use clap::error::ErrorKind;
 
-    let listing = matches!(
-        error.kind(),
-        ErrorKind::DisplayHelp
-            | ErrorKind::DisplayVersion
-            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-    );
+    let listing = matches!(error.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
 
     if !json || listing {
         error.exit();
@@ -1464,7 +1459,8 @@ pub async fn cli() -> ExitCode {
         args[1] = "help".into();
     }
 
-    let json = args.iter().any(|argument| argument == "--json");
+    let json =
+        args.iter().take_while(|argument| *argument != "--").any(|argument| argument == "--json");
 
     let matches =
         match cli_command().try_get_matches_from(std::iter::once(NAME.to_owned()).chain(args)) {

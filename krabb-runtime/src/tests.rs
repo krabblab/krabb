@@ -5616,6 +5616,23 @@ fn manifest_round_trips() {
     let parsed: Manifest = toml::from_str(&text).unwrap();
 
     assert_eq!(parsed.id, "echo");
+    assert!(value.validate().is_ok());
+
+    let mut escaped = value.clone();
+
+    escaped.version = "0.1.0\u{1b}[2J".into();
+
+    assert!(escaped.validate().unwrap_err().contains("visible text"));
+
+    let mut described = value;
+
+    described.commands.push(CommandSpec {
+        name: "echo".into(),
+        description: "Echo\u{1b}]52;c;eA==\u{7}".into(),
+        interactive: false,
+    });
+
+    assert!(described.validate().is_err());
 }
 
 #[test]
