@@ -41,7 +41,8 @@ or `ready`, with the command to run next. Keep the daemon in the foreground unti
 replies and acknowledgements work, then move it to the
 [background service](#background-service). Configuration, conversations,
 credentials, and plugins live in `KRABB_HOME`; [Storage](storage.md) lists every
-location.
+location. If a reply does not arrive, start with
+[Troubleshooting](troubleshooting.md#check-the-installation).
 
 ## Manual Download
 
@@ -273,9 +274,9 @@ Uninstall cannot reach access that lives outside Krabb:
 
 - **Environment variables.** A secret you set yourself, such as
   `KRABB_TELEGRAM_TOKEN` in a shell profile, stays set. Remove it there.
-  `krabb service install` also copies such variables into a `.credentials.json`
-  file next to the service definition, which neither uninstall deletes; delete it
-  yourself.
+  `krabb service install` also copies such variables into an encrypted
+  `.credentials.json` file next to the service definition. Uninstalling a plugin
+  removes its values from that copy, and `krabb service uninstall` deletes it.
 - **Keys at the provider.** Deleting a saved key does not disable it. Revoke or
   rotate it where it was issued, such as the provider's API key settings or
   Telegram's BotFather.

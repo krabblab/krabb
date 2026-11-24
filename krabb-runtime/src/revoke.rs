@@ -20,10 +20,59 @@ pub(super) fn revoke(root: &Path, id: &str, lock: &Lock) -> Result<Revoked, Plug
     revoked.secrets = credentials::forget(&setup::path(root), &credentials::key_path(root), &names)
         .map_err(|error| failure(id, &revoked, error))?;
 
+    let service = service_path();
+
+    let copied = service_copy(root, &service, &names).unwrap_or_else(|error| {
+        eprintln!(
+            "Could not remove {id}'s values from the service credential copy {}: {}\nRun \
+             `krabb service uninstall`, or delete that file, to remove them.",
+            service_credentials_path(&service).display(),
+            sentence(error.to_string())
+        );
+
+        Vec::new()
+    });
+
+    for name in copied {
+        if !revoked.secrets.contains(&name) {
+            revoked.secrets.push(name);
+        }
+    }
+
     revoked.keyring =
         credentials::forget_entry(id).map_err(|error| failure(id, &revoked, error))?;
 
     Ok(revoked)
+}
+
+/// Forgets names in the copy `krabb service install` makes of secrets set in its environment,
+/// when the installed service runs this home.
+fn service_copy(root: &Path, service: &Path, names: &[String]) -> Result<Vec<String>, PluginError> {
+    let copy = service_credentials_path(service);
+
+    if !copy.is_file() || copy == setup::path(root) {
+        return Ok(Vec::new());
+    }
+
+    let Some(environment) = definition::environment(service) else {
+        return Ok(Vec::new());
+    };
+
+    let value = |wanted: &str| {
+        environment.iter().find(|(name, _)| name == wanted).map(|(_, value)| PathBuf::from(value))
+    };
+
+    let same = |path: &Path| std::fs::canonicalize(path).ok() == std::fs::canonicalize(root).ok();
+
+    let referenced = value("KRABB_CREDENTIALS").is_some_and(|path| path == copy);
+
+    if !referenced || !value("KRABB_HOME").is_some_and(|home| same(&home)) {
+        return Ok(Vec::new());
+    }
+
+    let key = value("KRABB_CREDENTIALS_KEY").unwrap_or_else(|| credentials::key_path(root));
+
+    credentials::forget(&copy, &key, names)
 }
 
 fn failure(id: &str, revoked: &Revoked, error: PluginError) -> PluginError {

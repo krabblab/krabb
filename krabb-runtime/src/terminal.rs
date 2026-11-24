@@ -35,12 +35,30 @@ fn draw(writer: &mut dyn Write, frame: &str, message: &str, columns: u16) {
     let _ = writer.flush();
 }
 
+/// TEXT with control characters other than newlines and tabs shown as `�`, so text from
+/// plugins or models cannot move the cursor, rewrite the screen, or set the clipboard.
+pub(crate) fn printable(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .chars()
+        .map(|character| match character {
+            '\n' | '\t' => character,
+            character if character.is_control() => '\u{fffd}',
+            character => character,
+        })
+        .collect()
+}
+
 pub(crate) fn columns() -> u16 {
     crossterm::terminal::size().map(|(columns, _)| columns).unwrap_or(80)
 }
 
 pub(crate) fn progress(message: impl Into<String>, json: bool) -> Option<Spinner> {
-    progress_to(message.into(), json, io::stderr().is_terminal(), Box::new(io::stderr()))
+    progress_to(message.into(), json, redraws(), Box::new(io::stderr()))
+}
+
+/// Whether progress may redraw its line: stderr is a terminal that understands line controls.
+fn redraws() -> bool {
+    io::stderr().is_terminal() && !std::env::var("TERM").is_ok_and(|term| term == "dumb")
 }
 
 fn progress_to(
@@ -71,7 +89,7 @@ pub(crate) struct Spinner {
 
 impl Spinner {
     pub(crate) fn start(message: impl Into<String>) -> Option<Self> {
-        if !io::stderr().is_terminal() {
+        if !redraws() {
             return None;
         }
 
@@ -134,7 +152,7 @@ mod tests {
 
     use unicode_width::UnicodeWidthStr;
 
-    use super::{draw, progress_to};
+    use super::{draw, printable, progress_to};
 
     #[test]
     fn frames_fit_narrow_terminals_and_preserve_unicode() {
@@ -242,5 +260,12 @@ mod tests {
             assert!(spinner.is_none());
             assert!(output.lock().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn printable_text_keeps_lines_and_neutralizes_controls() {
+        assert_eq!(printable("one\n\ttwo"), "one\n\ttwo");
+        assert_eq!(printable("windows\r\nlines"), "windows\nlines");
+        assert_eq!(printable("a\u{1b}]52;c;eA==\u{7}b\r"), "a\u{fffd}]52;c;eA==\u{fffd}b\u{fffd}");
     }
 }

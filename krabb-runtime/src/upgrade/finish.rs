@@ -58,7 +58,7 @@ pub(super) async fn run(
 
     if start {
         carry(root, &plan.detached)?;
-        service_action_with(&service, ServiceAction::Start, json)?;
+        service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
 
         let missing = missing(&plan.attached, &ready(root).await?);
 

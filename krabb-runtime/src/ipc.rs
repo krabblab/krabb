@@ -318,13 +318,16 @@ async fn command(request: &IpcRequest, state: &State) -> IpcResponse {
     }
 }
 
+/// The `model.list` error for a plugin the daemon does not run, which callers can tell apart.
+pub(crate) const MODEL_NOT_RUNNING: &str = "The selected model plugin is not running.";
+
 async fn model_list(request: &IpcRequest, state: &State) -> IpcResponse {
     let Some(plugin_id) = request.params["plugin"].as_str() else {
         return IpcResponse::fail(request.id, -32602, "model.list.plugin is required.");
     };
 
     let Some(plugin) = state.plugins.get(plugin_id).await else {
-        return IpcResponse::fail(request.id, -32004, "The selected model plugin is not running.");
+        return IpcResponse::fail(request.id, -32004, MODEL_NOT_RUNNING);
     };
 
     if !plugin.supports(Capability::Model) {
@@ -488,11 +491,7 @@ async fn session_answer(
     }
 
     let Some(provider) = state.plugins.get(plugin_id).await else {
-        return write_frame(
-            output,
-            IpcResponse::fail(request.id, -32004, "The selected model plugin is not running."),
-        )
-        .await;
+        return write_frame(output, IpcResponse::fail(request.id, -32004, MODEL_NOT_RUNNING)).await;
     };
 
     if !provider.supports(Capability::Model) {
@@ -852,11 +851,7 @@ async fn session_compact(
     };
 
     let Some(provider) = state.plugins.get(plugin_id).await else {
-        return write_frame(
-            output,
-            IpcResponse::fail(request.id, -32004, "The selected model plugin is not running."),
-        )
-        .await;
+        return write_frame(output, IpcResponse::fail(request.id, -32004, MODEL_NOT_RUNNING)).await;
     };
 
     if !provider.supports(Capability::Model) {
@@ -4920,6 +4915,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(
@@ -5055,6 +5051,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(
@@ -5202,6 +5199,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(
@@ -6555,6 +6553,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(

@@ -7,6 +7,7 @@ use another language if they implement the JSON-RPC 2.0 protocol.
 ## Table Of Contents
 
 - [Manifest](#manifest)
+  - [Plugin State](#plugin-state)
 - [Credentials And Sign-In](#credentials-and-sign-in)
 - [Requests](#requests)
 - [Authoring](#authoring)
@@ -45,9 +46,9 @@ declaring 0.0 or 0.1. The current protocol is 0.1, and all bundled plugins
 declare 0.1.
 
 `plugins.lock` records the canonical source, revision marker, SHA-256 of the
-manifest and executable, protocol, version, capabilities, permissions, and
-secrets. An explicit Git `--revision` is pinned for later updates; unpinned Git
-sources follow their configured default revision. Local and remote updates
+manifest and executable, protocol, version, capabilities, permissions, secrets,
+and state schema. An explicit Git `--revision` is pinned for later updates;
+unpinned Git sources follow their configured default revision. Local and remote updates
 health-check staged binaries before activation and refresh the hash only after
 staged activation succeeds; lock persistence failure restores the previous
 plugin bytes. Git
@@ -56,6 +57,41 @@ sources must use `.tar`, `.tar.gz`, `.tgz`, or `.zip` and include a SHA-256
 fragment; remote archives require HTTPS. Krabb rejects embedded URL
 credentials, unsafe archive paths, and archive symbolic links. Release archives
 place plugin executables in `bin/` beside their manifest.
+
+### Plugin State
+
+A plugin that keeps saved state declares its schema in a `[state]` table:
+
+```toml
+[state]
+schema = 3
+from = [1, 2]
+```
+
+`schema` is the version of the state this release reads and writes, starting at
+1. `from` lists the older schemas this release migrates to `schema` itself; list
+up to 64, each lower than `schema`. Krabb never migrates plugin state, and the
+protocol has no migration method. Migrate on the first request that needs the
+state, not during `hello`, because Krabb starts a new release once to check it
+before the replacement is final.
+
+Before replacing a plugin, through `krabb update`, `krabb plugin update`,
+automatic updates, `krabb plugin install`, or `krabb import`, Krabb compares the
+schema recorded for it with the new release's:
+
+- the same schema, or neither release declaring one, needs nothing;
+- a release that declares state for the first time starts recording it, and
+  update previews show `state: starts recording schema 3`;
+- a schema listed in `from` is a pending migration, which update previews show as
+  `state: schema 1 → 3 when it starts`;
+- a lower schema, a schema missing from `from`, or a release that stops declaring
+  state is refused before anything changes, naming the schemas involved. Under
+  `krabb update`, this refuses the whole update.
+
+Uninstalling a plugin keeps its saved data and its recorded schema, so
+reinstalling an older release is refused the same way. Keep `[state]` in every
+later release, and keep older schemas in `from` for as long as installs may still
+hold them.
 
 ## Credentials And Sign-In
 

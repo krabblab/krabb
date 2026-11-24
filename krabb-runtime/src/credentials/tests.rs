@@ -392,6 +392,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
             setup: BTreeMap::new(),
             check: false,
             commands: vec![],
+            state: None,
         };
 
         let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
@@ -418,6 +419,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
         setup: BTreeMap::new(),
         check: false,
         commands: vec![],
+        state: None,
     };
 
     fs::remove_file(&key).unwrap();
@@ -454,6 +456,43 @@ fn service_capture_preserves_custom_credential_and_key_paths() {
     assert!(!fs::read_to_string(path).unwrap().contains("synthetic"));
     assert!(!root.join("credentials.key").exists());
     assert!(!captured.iter().any(|(_, value)| value.contains("synthetic")));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn service_reinstall_replaces_the_credential_copy() {
+    let root = crate::tests::test_root("service-copy-replace");
+    let service = root.join("service");
+    let copy = crate::service_credentials_path(&service);
+    let key = root.join("credentials.key");
+
+    let install = |name: &str| {
+        let environment = BTreeMap::from([
+            (name.to_owned(), "synthetic-service-token".to_owned()),
+            ("KRABB_KEYRING".to_owned(), "0".to_owned()),
+        ]);
+
+        crate::service_environment_from(&service, root.clone(), &environment).unwrap();
+    };
+
+    install("KRABB_TELEGRAM_TOKEN");
+    install("KRABB_DISCORD_TOKEN");
+
+    let stored = read(&copy, &key).unwrap();
+
+    assert_eq!(stored.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN"]);
+
+    let failing = BTreeMap::from([
+        ("KRABB_SLACK_BOT_TOKEN".to_owned(), "synthetic-service-token".to_owned()),
+        ("KRABB_KEYRING".to_owned(), "1".to_owned()),
+    ]);
+
+    let error = crate::service_environment_from(&service, root.clone(), &failing).unwrap_err();
+
+    assert!(error.to_string().contains("Keyring was requested"), "{error}");
+    assert_eq!(read(&copy, &key).unwrap(), stored, "a failed reinstall keeps the previous copy");
+    assert!(!copy.with_extension("json.new").exists());
 
     fs::remove_dir_all(root).unwrap();
 }

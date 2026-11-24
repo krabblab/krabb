@@ -18,6 +18,7 @@ fn entry(variables: &[&str], settings: &[&str]) -> Entry {
             .collect(),
         linked: false,
         commands: Vec::new(),
+        state: None,
     }
 }
 
@@ -125,6 +126,54 @@ fn failed_revocation_keeps_the_plugin_installed_for_a_retry() {
     assert!(error.contains("Removed 5 sharing grant(s) already."), "{error}");
     assert!(error.contains("retry the uninstall"), "{error}");
     assert_eq!(revoke(&root, "absent", &Lock::default()).unwrap(), Revoked::default());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn uninstall_also_forgets_the_service_credential_copy() {
+    let root = crate::tests::test_root("revoke-service-copy");
+    let service = root.join("units/krabb.service");
+    let copy = service_credentials_path(&service);
+
+    let unit = |home: &Path| {
+        let environment = [
+            ("KRABB_HOME".to_owned(), home.display().to_string()),
+            ("KRABB_CREDENTIALS".to_owned(), copy.display().to_string()),
+            ("KRABB_CREDENTIALS_KEY".to_owned(), credentials::key_path(home).display().to_string()),
+        ];
+
+        service_text(Path::new("/usr/local/bin/krabb-daemon"), &environment)
+    };
+
+    std::fs::create_dir_all(root.join("other")).unwrap();
+    std::fs::create_dir_all(service.parent().unwrap()).unwrap();
+    std::fs::write(&service, unit(&root.join("other"))).unwrap();
+
+    credentials::save(
+        &copy,
+        &credentials::key_path(&root),
+        [("KRABB_TELEGRAM_TOKEN", "synthetic"), ("KRABB_DISCORD_TOKEN", "keep")]
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into()))
+            .collect(),
+        Some(false),
+    )
+    .unwrap();
+
+    let names = ["KRABB_TELEGRAM_TOKEN".to_owned(), "KRABB_TELEGRAM_MODE".to_owned()];
+
+    assert!(service_copy(&root, &service, &names).unwrap().is_empty());
+
+    std::fs::write(&service, unit(&root)).unwrap();
+
+    assert_eq!(service_copy(&root, &service, &names).unwrap(), ["KRABB_TELEGRAM_TOKEN"]);
+
+    let left = credentials::read(&copy, &credentials::key_path(&root)).unwrap();
+
+    assert_eq!(left.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN"]);
+    assert!(service_copy(&root, &service, &names).unwrap().is_empty());
+    assert!(service_copy(&root, &root.join("missing.service"), &names).unwrap().is_empty());
 
     let _ = std::fs::remove_dir_all(root);
 }

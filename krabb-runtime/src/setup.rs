@@ -20,6 +20,10 @@ const ATTEMPTS: usize = 3;
 const CLEAR: &str = "-";
 pub(super) const CANCELLED: &str = "Setup cancelled, and credentials were not saved.";
 
+const PASTED: &str = "Pasted secret must be single-line and at most 16 KiB.";
+
+const LONG: &str = "Secret exceeds the 16 KiB limit.";
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Setting {
@@ -446,6 +450,24 @@ fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Res
         eprint!("{}", heading(field, number, color));
     }
 
+    read(!field.secret)
+}
+
+/// Reads one visible line after HEADING, such as a model name. Enter with nothing typed returns
+/// an empty string, Esc cancels with [`CANCELLED`], and [`rejected`] tells an oversized answer.
+pub(super) fn line(heading: &str) -> Result<String, Error> {
+    interactive()?;
+    eprint!("{heading}");
+
+    read(true)
+}
+
+/// Whether ERROR refused a pasted or typed answer as too long or multi-line.
+pub(super) fn rejected(error: &Error) -> bool {
+    [PASTED, LONG].contains(&error.to_string().as_str())
+}
+
+fn read(echo: bool) -> Result<String, Error> {
     crossterm::terminal::enable_raw_mode()?;
 
     let _terminal = Terminal;
@@ -454,7 +476,7 @@ fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Res
     eprint!("|> ");
     io::stderr().flush()?;
 
-    input(!field.secret, crossterm::event::read)
+    input(echo, crossterm::event::read)
 }
 
 /// What the person sets and how to answer, shown once per field; never a saved value.
@@ -528,7 +550,7 @@ fn input(echo: bool, mut next: impl FnMut() -> io::Result<Event>) -> Result<Stri
 
         if let Event::Paste(text) = event {
             if text.chars().any(char::is_control) || value.len() + text.len() > LIMIT {
-                return Err("Pasted secret must be single-line and at most 16 KiB.".into());
+                return Err(PASTED.into());
             }
 
             value.push_str(&text);
@@ -560,7 +582,7 @@ fn input(echo: bool, mut next: impl FnMut() -> io::Result<Event>) -> Result<Stri
                     show(character.encode_utf8(&mut [0; 4]));
 
                     if value.len() > LIMIT {
-                        return Err("Secret exceeds the 16 KiB limit.".into());
+                        return Err(LONG.into());
                     }
                 }
 

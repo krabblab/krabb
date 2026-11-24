@@ -268,6 +268,40 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
     assert_eq!(preview.value["refresh"], serde_json::json!(["tui"]));
     assert_eq!(preview.value["supported"], serde_json::json!([]));
 
+    let state = |schema, from: &[u32]| crate::updates::state::State { schema, from: from.to_vec() };
+    let mut migrating = lock.clone();
+
+    migrating.plugins.get_mut("echo").unwrap().state = Some(state(1, &[]));
+    staged.manifests.get_mut("echo").unwrap().state = Some(state(2, &[1]));
+    stage::readable(&home, &mut staged, &migrating).unwrap();
+
+    let migration = super::preview(
+        "0.2.0",
+        &migrating,
+        &staged,
+        &schema,
+        &root.join("none.service"),
+        false,
+        false,
+    );
+
+    assert!(
+        migration.text.contains("echo state: schema 1 → 2 when it starts"),
+        "{}",
+        migration.text
+    );
+
+    assert_eq!(
+        migration.value["plugins"][0]["state"],
+        serde_json::json!({"from": 1, "to": 2, "text": "state: schema 1 → 2 when it starts"})
+    );
+
+    migrating.plugins.get_mut("echo").unwrap().state = Some(state(3, &[]));
+
+    let error = stage::readable(&home, &mut staged, &migrating).unwrap_err().to_string();
+
+    assert!(error.contains("older than the installed schema 3"), "{error}");
+
     drop(staged);
 
     assert!(!dir.exists());
@@ -964,4 +998,19 @@ async fn failed_activation_restores_the_previous_installation() {
     assert!(snapshot::load(&home).unwrap().is_none());
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_json_host_error_folds_into_one_error_and_keeps_warnings() {
+    let pretty =
+        "Plugins not loaded after the update: echo.\n{\n  \"error\": \"Migration failed.\"\n}\n";
+
+    assert_eq!(
+        reported(pretty),
+        ("Plugins not loaded after the update: echo.\n", Some("Migration failed.".into()))
+    );
+
+    assert_eq!(reported("{\"error\":\"Broken.\"}"), ("", Some("Broken.".into())));
+    assert_eq!(reported("only a warning\n"), ("only a warning\n", None));
+    assert_eq!(reported("note\n{\"other\":1}"), ("note\n{\"other\":1}", None));
 }

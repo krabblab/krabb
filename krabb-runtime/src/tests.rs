@@ -1346,6 +1346,7 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
         settings: Vec::new(),
         commands: Vec::new(),
         linked: false,
+        state: None,
     };
 
     let model = entry("model");
@@ -4189,6 +4190,7 @@ fn validates_manifests_and_environment() {
         setup: BTreeMap::new(),
         check: false,
         commands: Vec::new(),
+        state: None,
     };
 
     assert!(manifest.validate().is_ok());
@@ -4260,6 +4262,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         test_home,
@@ -4305,6 +4308,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &config,
         test_home,
@@ -4325,6 +4329,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         test_home,
@@ -4354,6 +4359,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         Path::new("/tmp/krabb-home"),
@@ -4655,6 +4661,7 @@ fn recovers_locks_and_plugin_staging() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 
@@ -5221,8 +5228,18 @@ async fn manages_service_definition() {
         .is_err()
     );
 
+    let copy = super::service_credentials_path(&path);
+
+    fs::write(&copy, "stale copy").unwrap();
+
     #[cfg(not(windows))]
-    service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
+    {
+        service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
+
+        assert!(!copy.exists(), "a reinstall without secrets must not keep an older copy");
+
+        fs::write(&copy, "copy").unwrap();
+    }
 
     super::service_at_with_status(
         &path,
@@ -5283,8 +5300,32 @@ async fn manages_service_definition() {
         fs::remove_file(&path).unwrap();
 
         assert!(!path.exists());
+
+        if cfg!(not(windows)) {
+            assert!(!copy.exists(), "uninstall must delete the service credential copy");
+        }
+
+        fs::write(&copy, "orphaned copy").unwrap();
+        fs::write(copy.with_extension("json.new"), "staged copy").unwrap();
         service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();
+
+        assert!(!copy.exists());
+        assert!(!copy.with_extension("json.new").exists());
     }
+}
+
+#[test]
+fn json_uninstall_folds_its_stop_into_one_result() {
+    use super::ServiceReport::{Json, Silent, Text};
+
+    let remove = ServiceCommand::Remove(super::ServiceRemove { yes: true });
+
+    assert_eq!(super::service_report(&remove, true), Silent);
+    assert_eq!(super::service_report(&remove, false), Text);
+    assert_eq!(super::service_report(&ServiceCommand::Start, true), Json);
+    assert_eq!(super::service_report(&ServiceCommand::Restart, false), Text);
+    assert_eq!(super::ServiceReport::nested(true), Silent);
+    assert_eq!(super::ServiceReport::nested(false), Text);
 }
 
 #[test]
@@ -5358,8 +5399,11 @@ fn service_actions_report_when_no_transition_is_needed() {
         (super::ServiceAction::Stop, None),
         (super::ServiceAction::Restart, None),
     ] {
-        super::service_action_message(action, previous, false).unwrap();
-        super::service_action_message(action, previous, true).unwrap();
+        for report in
+            [super::ServiceReport::Text, super::ServiceReport::Json, super::ServiceReport::Silent]
+        {
+            super::service_action_message(action, previous, report).unwrap();
+        }
     }
 }
 
@@ -5632,6 +5676,7 @@ fn discovers_plugins_and_detects_source_changes() {
         settings: Vec::new(),
         commands: Vec::new(),
         linked: false,
+        state: None,
     };
 
     assert!(changed(&root, "echo", &entry).unwrap());
@@ -5670,6 +5715,7 @@ fn update_modes_are_explicit() {
                 settings: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
+                state: None,
             }
         )
         .is_err()
@@ -5691,12 +5737,30 @@ fn manifest_round_trips() {
         setup: BTreeMap::new(),
         check: false,
         commands: Vec::new(),
+        state: None,
     };
 
     let text = toml::to_string(&value).unwrap();
     let parsed: Manifest = toml::from_str(&text).unwrap();
 
     assert_eq!(parsed.id, "echo");
+    assert!(value.validate().is_ok());
+
+    let mut escaped = value.clone();
+
+    escaped.version = "0.1.0\u{1b}[2J".into();
+
+    assert!(escaped.validate().unwrap_err().contains("visible text"));
+
+    let mut described = value;
+
+    described.commands.push(CommandSpec {
+        name: "echo".into(),
+        description: "Echo\u{1b}]52;c;eA==\u{7}".into(),
+        interactive: false,
+    });
+
+    assert!(described.validate().is_err());
 }
 
 #[test]
@@ -5735,6 +5799,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
             }],
 
             linked: false,
+            state: None,
         },
     );
 
@@ -5856,6 +5921,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
                 description: "Open the model console.".into(),
                 interactive: false,
             }],
+            state: None,
         },
     );
 
@@ -5917,6 +5983,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         },
     );
 
@@ -5967,6 +6034,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         },
     );
 
@@ -6032,6 +6100,7 @@ fn krabb_owned_plugin_commands_are_conditional_native_commands() {
             description: format!("Run the {id} command."),
             interactive,
         }],
+        state: None,
     };
 
     let mut lock = super::Lock::default();
@@ -6138,6 +6207,7 @@ async fn plugin_removal_preserves_state_owned_by_conditional_commands() {
         settings: Vec::new(),
         linked: false,
         commands: Vec::new(),
+        state: None,
     };
 
     let catalog = root.join("data/sessions/index.json");
@@ -10900,6 +10970,7 @@ async fn asks_a_local_plugin() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 
@@ -10920,6 +10991,7 @@ async fn asks_a_local_plugin() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 

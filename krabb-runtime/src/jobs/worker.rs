@@ -236,7 +236,9 @@ pub(crate) async fn run(context: Context) {
                 }
             }
 
-            _ = context.stop.notified(), if !context.stop.is_signaled() => {}
+            // Unguarded: a stop signaled after the check above must still end this wait, and
+            // `notified` returns at once for a stop that already happened.
+            _ = context.stop.notified() => {}
 
             _ = &mut notified, if !context.stop.is_signaled() => {}
 
