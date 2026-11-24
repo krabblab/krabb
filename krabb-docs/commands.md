@@ -218,9 +218,9 @@ output.
 Output is plain whenever it is not a terminal: no colors, no help banner, and
 progress printed once as a line instead of redrawn. `NO_COLOR` and `TERM=dumb`
 also turn colors off in a terminal, and `TERM=dumb` keeps progress to plain lines.
-With `--json`, each command prints exactly one JSON document, such as
-`krabb service uninstall` reporting the stop and the removal together, and a
-failure prints one `{"error": ...}` document on standard error. Krabb never wraps
+With `--json`, each command prints exactly one JSON document, even when it also
+stops or starts the service, as `krabb service uninstall` and `krabb update` do,
+and a failure prints one `{"error": ...}` document on standard error. Krabb never wraps
 commands or paths itself, so they stay whole and copyable in narrow terminals.
 
 ## Status And Health
