@@ -107,11 +107,36 @@ fn unstable_selection_includes_pre_releases_but_not_withdrawn_versions() {
     ]);
 
     assert_eq!(unstable(&candidates).unwrap(), "0.1.0-rc.1");
-    assert!(pick(&candidates, None).unwrap_err().starts_with("No stable version of echo"));
+
+    assert_eq!(
+        pick(&candidates, None).unwrap_err(),
+        "Plugin echo has only pre-releases for this version of Krabb."
+    );
+
+    let error = select_for(&candidates, "echo", None, false, Protocol::CURRENT, "linux", "x86_64")
+        .err()
+        .unwrap();
+
+    assert_eq!(
+        error.downcast_ref::<Unavailable>().unwrap().next(),
+        "Install its pre-release with `krabb plugin install echo --unstable`"
+    );
 
     let withdrawn = index(vec![release("0.1.0-rc.1", (0, 1), Some("broken"))]);
 
-    assert!(unstable(&withdrawn).unwrap_err().starts_with("No version of echo supports"));
+    assert_eq!(
+        unstable(&withdrawn).unwrap_err(),
+        "No release of plugin echo works with this version of Krabb."
+    );
+
+    let error = select_for(&withdrawn, "echo", None, true, Protocol::CURRENT, "linux", "x86_64")
+        .err()
+        .unwrap();
+
+    assert_eq!(
+        error.downcast_ref::<Unavailable>().unwrap().next(),
+        "See every release with `krabb plugin versions echo`"
+    );
 }
 
 #[test]

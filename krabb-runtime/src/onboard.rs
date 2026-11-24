@@ -605,12 +605,12 @@ impl Guide {
 /// How the guide ends: whether the Krabb can answer, then the one command to run next.
 fn closing(ready: bool, terminal: bool) -> &'static str {
     match (ready, terminal) {
-        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.",
-        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`.",
+        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`",
+        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`",
 
         (false, _) => {
             "Your Krabb is set up, and it needs a provider to answer.\n\
-                       Add one with `krabb init provider`."
+                       Add one with `krabb init provider`"
         }
     }
 }

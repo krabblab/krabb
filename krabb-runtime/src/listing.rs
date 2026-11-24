@@ -101,16 +101,16 @@ pub(crate) fn format_plugin_list(items: &[Value], page: usize) -> Result<String,
 
 /// The empty plugin list, which ends with the command that adds the first plugin.
 pub(crate) const NO_PLUGINS: &str =
-    "No plugins installed.\nInstall one with `krabb plugin install <id>`.";
+    "No plugins installed.\nInstall one with `krabb plugin install <id>`";
 
 /// The empty delivery list, which needs nothing more.
 const NO_DELIVERIES: &str = "No pending deliveries.\nEvery reply has been delivered.";
 
 /// The sentence that ends every empty plugin result.
-pub(crate) const INSTALL_ONE: &str = "Install one with `krabb plugin install <id>`.";
+pub(crate) const INSTALL_ONE: &str = "Install one with `krabb plugin install <id>`";
 
 /// The empty session list, which ends with the command that starts a conversation.
-const NO_SESSIONS: &str = "No sessions yet.\nStart a conversation with `krabb tui`.";
+const NO_SESSIONS: &str = "No sessions yet.\nStart a conversation with `krabb tui`";
 
 pub(crate) fn format_session_list(value: &Value, page: usize) -> Result<String, String> {
     let Some(items) = value["items"].as_array() else {
