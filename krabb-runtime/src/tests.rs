@@ -5144,8 +5144,18 @@ async fn manages_service_definition() {
         .is_err()
     );
 
+    let copy = super::service_credentials_path(&path);
+
+    fs::write(&copy, "stale copy").unwrap();
+
     #[cfg(not(windows))]
-    service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
+    {
+        service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
+
+        assert!(!copy.exists(), "a reinstall without secrets must not keep an older copy");
+
+        fs::write(&copy, "copy").unwrap();
+    }
 
     super::service_at_with_status(
         &path,
@@ -5206,7 +5216,17 @@ async fn manages_service_definition() {
         fs::remove_file(&path).unwrap();
 
         assert!(!path.exists());
+
+        if cfg!(not(windows)) {
+            assert!(!copy.exists(), "uninstall must delete the service credential copy");
+        }
+
+        fs::write(&copy, "orphaned copy").unwrap();
+        fs::write(copy.with_extension("json.new"), "staged copy").unwrap();
         service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();
+
+        assert!(!copy.exists());
+        assert!(!copy.with_extension("json.new").exists());
     }
 }
 

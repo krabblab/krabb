@@ -274,9 +274,9 @@ Uninstall cannot reach access that lives outside Krabb:
 
 - **Environment variables.** A secret you set yourself, such as
   `KRABB_TELEGRAM_TOKEN` in a shell profile, stays set. Remove it there.
-  `krabb service install` also copies such variables into a `.credentials.json`
-  file next to the service definition, which neither uninstall deletes; delete it
-  yourself.
+  `krabb service install` also copies such variables into an encrypted
+  `.credentials.json` file next to the service definition. Uninstalling a plugin
+  removes its values from that copy, and `krabb service uninstall` deletes it.
 - **Keys at the provider.** Deleting a saved key does not disable it. Revoke or
   rotate it where it was issued, such as the provider's API key settings or
   Telegram's BotFather.

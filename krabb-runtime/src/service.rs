@@ -203,7 +203,23 @@ pub(crate) fn service_environment_from(
         let preference =
             credentials::preference_from(environment.get("KRABB_KEYRING").map(String::as_str))?;
 
-        credentials::save(&path, &key, credentials, preference)?;
+        // Saving merges into an existing file, so a fresh staged copy drops an older install's
+        // values, and the rename keeps the previous copy until the new one is complete.
+        let staged = path.with_extension("json.new");
+        let _ = std::fs::remove_file(&staged);
+
+        if let Err(error) = credentials::save(&staged, &key, credentials, preference) {
+            let _ = std::fs::remove_file(&staged);
+
+            return Err(error);
+        }
+
+        if let Err(error) = std::fs::rename(&staged, &path) {
+            let _ = std::fs::remove_file(&staged);
+
+            return Err(error.into());
+        }
+
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path)?));
     } else if let Some(path) = configured.as_ref() {
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path.clone())?));
@@ -254,6 +270,29 @@ pub(crate) fn service_credentials_path(path: &Path) -> PathBuf {
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("krabb.service");
 
     path.with_file_name(format!("{name}.credentials.json"))
+}
+
+/// Deletes the secrets copy `krabb service install` writes next to the service definition.
+pub(crate) fn remove_service_credentials(path: &Path) -> std::io::Result<()> {
+    let copy = service_credentials_path(path);
+    let staged = copy.with_extension("json.new");
+    let mut files = vec![copy.clone(), staged.clone()];
+
+    for file in [&copy, &staged] {
+        if let (Some(parent), Some(name)) = (file.parent(), file.file_name()) {
+            files.push(parent.join(format!(".{}.lock", name.to_string_lossy())));
+        }
+    }
+
+    for file in files {
+        match std::fs::remove_file(&file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn service_at(
@@ -337,6 +376,15 @@ pub(crate) fn service_at_with_status(
             #[cfg(not(target_os = "windows"))]
             secure(path, definition.as_bytes())?;
 
+            let copy = service_path_value(service_credentials_path(path))?;
+
+            if !environment
+                .iter()
+                .any(|(name, value)| name == "KRABB_CREDENTIALS" && *value == copy)
+            {
+                remove_service_credentials(path)?;
+            }
+
             info!("Service installed.");
 
             if json {
@@ -372,6 +420,8 @@ pub(crate) fn service_at_with_status(
             if installed {
                 std::fs::remove_file(path)?;
             }
+
+            remove_service_credentials(path)?;
 
             if installed {
                 info!("Service uninstalled.");
