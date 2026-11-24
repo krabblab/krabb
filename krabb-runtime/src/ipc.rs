@@ -1968,7 +1968,9 @@ async fn uninstall(request: &IpcRequest, state: &State) -> IpcResponse {
 
 async fn active(request: &IpcRequest, state: &State) -> IpcResponse {
     let items = state.plugins.all().await.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
-    IpcResponse::ok(request.id, json!({"items": items}))
+    let detached = state.plugins.detached.read().await.iter().cloned().collect::<Vec<_>>();
+
+    IpcResponse::ok(request.id, json!({"items": items, "detached": detached}))
 }
 
 fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
@@ -5076,6 +5078,12 @@ for line in sys.stdin:
         let response = active(&request, &state).await;
 
         assert_eq!(response.result.unwrap()["items"], json!(["tools"]));
+
+        state.plugins.detached.write().await.insert("telegram".into());
+
+        let response = active(&request, &state).await;
+
+        assert_eq!(response.result.unwrap()["detached"], json!(["telegram"]));
 
         let request = IpcRequest::call(2, "secret", "plugin.setup", json!({"id": "tools"}));
 

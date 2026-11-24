@@ -16,6 +16,12 @@ const PLAN_LIMIT: u64 = 1024 * 1024;
 pub(super) struct Plan {
     pub version: String,
     pub plugins: Vec<Artifact>,
+    /// Plugins the running daemon had loaded, which must load again after activation.
+    #[serde(default)]
+    pub attached: Vec<String>,
+    /// Plugins the operator had detached, which must stay detached after activation.
+    #[serde(default)]
+    pub detached: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -92,7 +98,12 @@ pub(super) fn prepare(
         dir: dir.clone(),
         krabb: PathBuf::new(),
         daemon: PathBuf::new(),
-        plan: Plan { version: version.to_owned(), plugins: Vec::new() },
+        plan: Plan {
+            version: version.to_owned(),
+            plugins: Vec::new(),
+            attached: Vec::new(),
+            detached: Vec::new(),
+        },
         manifests: BTreeMap::new(),
         unlisted: Vec::new(),
         unchecked: Vec::new(),
@@ -206,6 +217,10 @@ pub(super) fn plugins(
         });
     }
 
+    save(staged)
+}
+
+pub(super) fn save(staged: &Staged) -> Result<(), PluginError> {
     krabb_file::save(staged.dir.join(PLAN), serde_json::to_vec_pretty(&staged.plan)?)?;
 
     Ok(())

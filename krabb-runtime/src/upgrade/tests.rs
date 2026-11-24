@@ -655,6 +655,45 @@ async fn recovery_points_wait_for_plugin_changes_and_release_them() {
 }
 
 #[tokio::test]
+async fn detached_plugins_carry_across_the_restart_and_missing_ones_are_reported() {
+    let root = temp_root("carry");
+
+    fs::create_dir_all(root.join("updates")).unwrap();
+
+    finish::carry(&root, &[]).unwrap();
+
+    assert!(root.join(DETACHED).exists());
+    assert!(carried(&root).is_empty());
+    assert!(!root.join(DETACHED).exists());
+
+    finish::carry(&root, &["telegram".into(), "../escape".into()]).unwrap();
+
+    assert_eq!(carried(&root), ["telegram".to_owned()].into_iter().collect());
+    assert!(!root.join(DETACHED).exists());
+
+    finish::carry(&root, &["telegram".into()]).unwrap();
+    finish::carry(&root, &[]).unwrap();
+
+    assert!(carried(&root).is_empty());
+
+    let attached = ["echo".to_owned(), "tui".to_owned()];
+
+    assert_eq!(finish::missing(&attached, &["tui".into()]), ["echo"]);
+    assert!(finish::missing(&attached, &attached).is_empty());
+
+    finish::carry(&root, &["telegram".into()]).unwrap();
+    fs::write(root.join("config.toml"), "").unwrap();
+
+    let point = snapshot::create(&root, "0.1.0", "0.2.0", &[], false).unwrap();
+
+    snapshot::restore(&root, &point, &root.join("none.service"), true).await.unwrap();
+
+    assert!(!root.join(DETACHED).exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn finishing_requires_the_staged_version() {
     let root = temp_root("finish");
     let dir = root.join("stage");
@@ -663,7 +702,7 @@ async fn finishing_requires_the_staged_version() {
 
     krabb_file::save(
         dir.join(stage::PLAN),
-        serde_json::to_vec(&stage::Plan { version: "9.9.9".into(), plugins: Vec::new() }).unwrap(),
+        serde_json::to_vec(&serde_json::json!({"version": "9.9.9", "plugins": []})).unwrap(),
     )
     .unwrap();
 
@@ -674,7 +713,7 @@ async fn finishing_requires_the_staged_version() {
 
     krabb_file::save(
         dir.join(stage::PLAN),
-        serde_json::to_vec(&stage::Plan { version: VERSION.into(), plugins: Vec::new() }).unwrap(),
+        serde_json::to_vec(&serde_json::json!({"version": VERSION, "plugins": []})).unwrap(),
     )
     .unwrap();
 

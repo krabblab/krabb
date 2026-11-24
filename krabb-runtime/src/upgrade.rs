@@ -22,6 +22,8 @@ use super::*;
 const READY: Duration = Duration::from_secs(60);
 const STOP: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(250);
+const DETACHED: &str = "updates/detached.json";
+const DETACHED_LIMIT: u64 = 64 * 1024;
 
 #[derive(Debug, Args)]
 pub(super) struct Options {
@@ -178,6 +180,7 @@ async fn update(
     }
 
     if running {
+        record(root, &mut staged).await?;
         service_action_with(&service, ServiceAction::Stop, json)?;
     }
 
@@ -320,6 +323,35 @@ async fn refresh(root: &Path, krabb: &Path) -> Refresh {
         Ok(status) => Refresh::Failed(format!("`krabb plugin update` exited with {status}.")),
         Err(error) => Refresh::Failed(sentence(error.to_string())),
     }
+}
+
+/// Records which plugins the running daemon has loaded or detached, for activation to restore.
+async fn record(root: &Path, staged: &mut stage::Staged) -> Result<(), PluginError> {
+    let Ok(Some(active)) = control_at("plugin.active", serde_json::json!({}), root).await else {
+        return Ok(());
+    };
+
+    let detached = serde_json::json!({"items": active["detached"].clone()});
+
+    staged.plan.attached = active_ids(active).unwrap_or_default();
+    staged.plan.detached = active_ids(detached).unwrap_or_default();
+
+    stage::save(staged)
+}
+
+/// Reads and removes the plugins activation asked the next daemon start to keep detached.
+pub(crate) fn carried(root: &Path) -> BTreeSet<String> {
+    let path = root.join(DETACHED);
+    let bytes = krabb_file::load(&path, DETACHED_LIMIT).ok().flatten();
+
+    let _ = std::fs::remove_file(&path);
+
+    bytes
+        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| valid(id))
+        .collect()
 }
 
 async fn activate(

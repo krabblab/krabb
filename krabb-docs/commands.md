@@ -364,9 +364,11 @@ After approval, Krabb stops a running service and saves a recovery point with
 the previous binaries, configuration, plugins, and state under
 `updates/recovery`. Saved credentials, `data/media`, and `data/workspaces` are
 not copied. The new host installs the staged plugins, migrates the home, and
-restarts a previously running service, which must answer within 60 seconds. A
-stopped service stays stopped. Any failure restores the recovery point and the
-service state.
+restarts a previously running service, which must answer within 60 seconds.
+Plugins you detached stay detached, and every plugin that was loaded must load
+again within 60 seconds; one that does not is reported with its next step, and
+the new version stays installed. A stopped service stays stopped. Any other failure
+restores the recovery point and the service state.
 
 `krabb status` shows a retained recovery point. `krabb update --rollback`
 restores it without the network or the new daemon; if the new `krabb` cannot
