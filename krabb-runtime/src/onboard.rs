@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::style::{accent, dim};
 
 use crate::cli::{
-    ConfigCommand, ConfigSet, HatchArgs, InitArgs, PluginCommand, PluginInstall, ServiceCommand,
-    ServiceInstall,
+    HatchArgs, InitArgs, PluginCommand, PluginInstall, ServiceCommand, ServiceInstall,
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -69,6 +68,12 @@ const PLACES: [Offer; 6] = [
 ];
 
 const YES_LATER: [&str; 2] = ["Yes", "Not now"];
+
+/// How many listed models a choice shows, so a long catalog stays readable.
+const MODELS: usize = 20;
+
+/// How long a provider may take to list its models before setup asks for a name instead.
+const LISTING: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Runs `krabb init`: the reset or plain home creation as before, or the guided steps.
 pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
@@ -255,9 +260,10 @@ impl Guide {
 
             let question = format!("Change the {current} provider your Krabb thinks with?");
 
-            match self.ask(&question, &["Keep it", "Choose another"])? {
+            match self.ask(&question, &["Keep it", "Change its model", "Choose another"])? {
                 None => return Ok(Flow::Stop),
                 Some(0) => return Ok(Flow::Next),
+                Some(1) => return self.select(&current).await,
 
                 Some(_) => {}
             }
@@ -288,16 +294,90 @@ impl Guide {
             return Ok(Flow::Stop);
         }
 
-        let provider = toml::Value::String(offer.id.into());
+        self.select(offer.id).await
+    }
 
-        for assignment in [format!("provider={provider}"), "model=\"default\"".to_owned()] {
-            let set = ConfigSet { assignment, force: false };
+    /// Asks for PROVIDER's model, saves both, and says where they apply and when.
+    async fn select(&mut self, provider: &str) -> Result<Flow, Error> {
+        let config = crate::load_config_at(&self.root)?;
 
-            crate::config_command(ConfigCommand::Set(set), &self.root, false).await?;
+        let kept = config
+            .model
+            .filter(|model| config.provider.as_deref() == Some(provider) && model != "default");
+
+        let Some(model) = self.model(provider, kept.as_deref()).await? else {
+            return Ok(Flow::Stop);
+        };
+
+        crate::save_setting(&self.root, "provider", provider.into())?;
+        crate::save_setting(&self.root, "model", model.as_str().into())?;
+
+        let applied =
+            crate::control_at("config.selection.reload", serde_json::json!({}), &self.root)
+                .await?
+                .is_some();
+
+        self.done(&summary(provider, &model));
+        self.note(&format!(
+            "Saved in {} for every conversation that has no choice of its own.",
+            self.root.join("config.toml").display()
+        ));
+
+        self.note(if applied {
+            "No restart is needed: the running daemon uses it for new turns."
+        } else {
+            "No restart is needed: it applies when the daemon starts."
+        });
+
+        Ok(Flow::Next)
+    }
+
+    /// The model to use: one from the provider's list, a typed name, or KEPT on Enter.
+    async fn model(&mut self, provider: &str, kept: Option<&str>) -> Result<Option<String>, Error> {
+        let keep = kept.unwrap_or("default").to_owned();
+
+        if !self.interactive {
+            return Ok(Some(keep));
         }
 
-        self.done(&format!("Your Krabb thinks with the {} provider.", offer.id));
-        Ok(Flow::Next)
+        let models = listed(&self.root, provider).await;
+
+        if !models.is_empty() {
+            let first = kept.map_or_else(
+                || "Use its default model".to_owned(),
+                |model| format!("Keep {model}"),
+            );
+
+            let mut labels = vec![first.as_str()];
+
+            labels.extend(models.iter().take(MODELS).map(String::as_str));
+
+            return Ok(match self.ask("Which model should your Krabb use?", &labels)? {
+                None => None,
+                Some(0) => Some(keep),
+                Some(index) => Some(models[index - 1].clone()),
+            });
+        }
+
+        self.number += 1;
+
+        let hint = kept.map_or_else(
+            || format!("Press Enter to use the {provider} default model."),
+            |model| format!("Press Enter to keep {model}."),
+        );
+
+        let heading = format!(
+            "{}\n{}\n",
+            accent(&format!("{}. Which model should your Krabb use?", self.number), self.color),
+            dim(&hint, self.color)
+        );
+
+        match crate::setup::line(&heading) {
+            Ok(typed) if typed.trim().is_empty() => Ok(Some(keep)),
+            Ok(typed) => Ok(Some(typed.trim().to_owned())),
+            Err(error) if error.to_string() == crate::setup::CANCELLED => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     async fn hatch(&mut self) -> Result<Flow, Error> {
@@ -476,6 +556,60 @@ impl Guide {
         println!("Check every part with `krabb status`");
         Ok(())
     }
+}
+
+fn summary(provider: &str, model: &str) -> String {
+    if model == "default" {
+        format!("Your Krabb thinks with the {provider} provider and its default model.")
+    } else {
+        format!("Your Krabb thinks with the {provider} provider and the {model} model.")
+    }
+}
+
+/// Model ids PROVIDER lists through its `models` command, or none when it cannot list them.
+async fn listed(root: &Path, provider: &str) -> Vec<String> {
+    let Some(path) = crate::binary_at(provider, root) else {
+        return Vec::new();
+    };
+
+    let Ok(config) = crate::load_config_at(root) else {
+        return Vec::new();
+    };
+
+    let Ok(mut process) = crate::launch(root, path, provider, None, false, &config).await else {
+        return Vec::new();
+    };
+
+    let mut models = Vec::new();
+
+    if process.hello.commands.iter().any(|command| command.name == provider) {
+        let request = krabb_core::types::Request::call(
+            1,
+            "command",
+            serde_json::json!({"name": provider, "args": ["models"]}),
+        );
+
+        if let Ok(Ok(response)) = tokio::time::timeout(LISTING, process.call(request)).await
+            && let Some(text) = response.result.as_ref().and_then(|value| value["text"].as_str())
+        {
+            models = model_ids(text);
+        }
+    }
+
+    let _ = process.stop().await;
+
+    models
+}
+
+/// Reads the indented `id - name` lines a provider's model list prints.
+fn model_ids(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("  "))
+        .filter_map(|line| line.split(" - ").next())
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && !id.contains(char::is_whitespace))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The selected provider when it is installed and ready to answer.

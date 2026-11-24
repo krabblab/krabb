@@ -457,6 +457,22 @@ fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Res
     input(!field.secret, crossterm::event::read)
 }
 
+/// Reads one visible line after HEADING, such as a model name. Enter with nothing typed returns
+/// an empty string, and Esc cancels with [`CANCELLED`].
+pub(super) fn line(heading: &str) -> Result<String, Error> {
+    interactive()?;
+    eprint!("{heading}");
+    crossterm::terminal::enable_raw_mode()?;
+
+    let _terminal = Terminal;
+
+    crossterm::execute!(io::stderr(), crossterm::event::EnableBracketedPaste)?;
+    eprint!("|> ");
+    io::stderr().flush()?;
+
+    input(true, crossterm::event::read)
+}
+
 /// What the person sets and how to answer, shown once per field; never a saved value.
 fn heading(field: &Field, number: usize, color: bool) -> String {
     let prompt = &field.prompt;

@@ -149,3 +149,49 @@ async fn choosing_no_channel_installs_nothing() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn model_lists_yield_ids_and_summaries_name_the_choice() {
+    let listing = "Codex models (3):\n  gpt-5.5 - GPT-5.5 (default)\n  gpt-5.5-mini - Mini\n  \
+                   odd entry - spaced\nMore models are available.";
+
+    assert_eq!(model_ids(listing), ["gpt-5.5", "gpt-5.5-mini"]);
+    assert!(model_ids("No Codex models are available for this account.").is_empty());
+
+    assert_eq!(
+        summary("openai", "default"),
+        "Your Krabb thinks with the openai provider and its default model."
+    );
+
+    assert_eq!(
+        summary("codex", "gpt-5.5"),
+        "Your Krabb thinks with the codex provider and the gpt-5.5 model."
+    );
+}
+
+#[tokio::test]
+async fn repeat_setup_keeps_the_model_of_the_same_provider() {
+    let root = crate::tests::test_root("onboard-model");
+    let mut guide = guide(root.clone());
+
+    guide.home().unwrap();
+    crate::save_setting(&root, "provider", "openai".into()).unwrap();
+    crate::save_setting(&root, "model", "gpt-chosen".into()).unwrap();
+
+    assert!(matches!(guide.select("openai").await.unwrap(), Flow::Next));
+
+    let config = crate::load_config_at(&root).unwrap();
+
+    assert_eq!(config.provider.as_deref(), Some("openai"));
+    assert_eq!(config.model.as_deref(), Some("gpt-chosen"));
+
+    assert!(matches!(guide.select("anthropic").await.unwrap(), Flow::Next));
+
+    let config = crate::load_config_at(&root).unwrap();
+
+    assert_eq!(config.provider.as_deref(), Some("anthropic"));
+    assert_eq!(config.model.as_deref(), Some("default"));
+    assert!(listed(&root, "anthropic").await.is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
