@@ -195,16 +195,17 @@ krabb service uninstall -y
 krabb plugin uninstall <id>... -y
 ```
 
-Uninstalling a plugin removes its saved secrets, its OS keyring entry, and its
-sharing grants. Then delete the `krabb` and `krabb-daemon` binaries from the
+Uninstalling a plugin removes its saved secrets and its sharing grants. Then delete the `krabb` and `krabb-daemon` binaries from the
 install location. Delete `KRABB_HOME` only if you no longer need its
 conversations and settings.
 
 Uninstall cannot reach access that lives outside Krabb:
 
 - **Environment variables.** A secret you set yourself, such as
-  `KRABB_TELEGRAM_TOKEN` in a shell profile or in your service manager's
-  configuration, stays set. Remove it there.
+  `KRABB_TELEGRAM_TOKEN` in a shell profile, stays set. Remove it there.
+  `krabb service install` also copies such variables into a `.credentials.json`
+  file next to the service definition, which neither uninstall deletes; delete it
+  yourself.
 - **Keys at the provider.** Deleting a saved key does not disable it. Revoke or
   rotate it where it was issued, such as the provider's API key settings or
   Telegram's BotFather.
@@ -214,3 +215,9 @@ Uninstall cannot reach access that lives outside Krabb:
   `credentials.json` or `credentials.key`.
 - **Shared names.** A secret that another installed plugin also declares stays
   saved until that plugin is uninstalled too.
+- **OS keyring.** With `KRABB_KEYRING=1`, the key that encrypts saved credentials
+  stays in the OS keyring even after you delete `KRABB_HOME`. Remove its Krabb
+  entry with your keyring manager.
+- **Data outside the home.** Stores at custom paths such as `KRABB_DB`,
+  `KRABB_MEMORY`, or `KRABB_ROOT`, and logins kept by other tools, such as Codex's
+  own sign-in, stay until you delete them.
