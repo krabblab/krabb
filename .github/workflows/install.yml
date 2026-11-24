@@ -171,6 +171,7 @@ jobs:
           mkdir -p "$user"
 
           {
+            echo "KRABB_RUNNER_HOME=$HOME"
             echo "HOME=$user"
             echo "XDG_CONFIG_HOME=$user/.config"
             echo "KRABB_HOME=$user/.krabb"
@@ -287,14 +288,55 @@ jobs:
           wait "$pid" || true
 
       - if: matrix.os != 'windows'
-        name: Install And Remove The Service
+        name: Run Krabb As A Service
         shell: bash
 
         run: |
           set -euo pipefail
+
+          # systemd reads user units from the runner's own home and needs a user session, so
+          # Linux keeps Krabb's home isolated but uses the runner's systemd user manager.
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo loginctl enable-linger "$(id -un)"
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            export XDG_CONFIG_HOME="$KRABB_RUNNER_HOME/.config"
+
+            for _ in $(seq 1 30); do
+              systemctl --user is-system-running > /dev/null 2>&1 && break
+              [ "$(systemctl --user is-system-running 2>/dev/null)" = degraded ] && break
+              sleep 1
+            done
+          fi
+
+          until_daemon() {
+            for _ in $(seq 1 60); do
+              [ "$(krabb --json status < /dev/null | jq -r .daemon)" = "$1" ] && return 0
+              sleep 1
+            done
+
+            echo "::error::The service did not leave the daemon $1."
+            tail -n 40 "$KRABB_HOME"/logs/*.log || true
+            return 1
+          }
+
           path=$(krabb --json service install | jq -r .path)
           test -f "$path"
           test "$(krabb --json service status | jq -r .status)" = installed
+
+          krabb service start
+          until_daemon running
+          krabb --json session new service-flow < /dev/null > /dev/null
+
+          krabb service restart
+          until_daemon running
+
+          if ! krabb --json session list < /dev/null | jq -e '.items[] | select(.id == "service-flow")' > /dev/null; then
+            echo "::error::The session did not survive the service restart."
+            exit 1
+          fi
+
+          krabb service stop
+          until_daemon stopped
           krabb service uninstall --yes
           test ! -e "$path"
 
@@ -448,7 +490,7 @@ jobs:
           $daemon.WaitForExit()
 
       - if: matrix.os == 'windows'
-        name: Install And Remove The Service
+        name: Run Krabb As A Service
         shell: pwsh
 
         run: |
@@ -457,19 +499,40 @@ jobs:
           function Invoke-Krabb {
             $output = krabb @args
             if ($LASTEXITCODE -ne 0) { throw "krabb $args failed: $output" }
-            return ($output | Out-String | ConvertFrom-Json)
+            return $output
           }
 
-          $installed = Invoke-Krabb --json service install
+          function Wait-Daemon([string] $State) {
+            for ($i = 0; $i -lt 60; $i++) {
+              $reported = (krabb --json status | Out-String | ConvertFrom-Json).daemon
+              if ($reported -eq $State) { return }
+              Start-Sleep -Seconds 1
+            }
+
+            Get-ChildItem (Join-Path $env:KRABB_HOME "logs") -Filter *.log -ErrorAction SilentlyContinue |
+              ForEach-Object { Get-Content $_.FullName -Tail 40 }
+            throw "The service did not leave the daemon $State."
+          }
+
+          $installed = Invoke-Krabb --json service install | Out-String | ConvertFrom-Json
 
           try {
             if (!(Test-Path $installed.path)) { throw "Service definition is missing at $($installed.path)." }
 
-            $status = Invoke-Krabb --json service status
+            $status = Invoke-Krabb --json service status | Out-String | ConvertFrom-Json
             if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
-            if (!(Get-Service -Name $status.name -ErrorAction SilentlyContinue)) {
-              throw "Windows has no $($status.name) service."
-            }
+
+            Invoke-Krabb service start | Out-Null
+            Wait-Daemon "running"
+            Invoke-Krabb --json session new service-flow | Out-Null
+
+            Invoke-Krabb service restart | Out-Null
+            Wait-Daemon "running"
+            $ids = (Invoke-Krabb --json session list | Out-String | ConvertFrom-Json).items.id
+            if ($ids -notcontains "service-flow") { throw "The session did not survive the service restart." }
+
+            Invoke-Krabb service stop | Out-Null
+            Wait-Daemon "stopped"
           } finally {
             krabb service uninstall --yes
             if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
