@@ -62,31 +62,36 @@ personality, where you talk to your Krabb, and the background service. Run only 
 steps you need, such as `krabb init provider`, and run it again any time to continue
 or change one. `krabb status` lists each plugin's state and the next command to run.
 
-Send your first message from the terminal once the service is running:
+If you chose Terminal during `krabb init`, send your first message once the service
+is running:
 
 ```sh
 krabb tui
 ```
 
 `krabb tui --once "Hello"` sends one message and prints the reply. With a channel
-such as Telegram, message your bot from an account in the channel's `allow` list.
+such as Telegram, send your bot a direct message; groups first need an `allow`
+entry in the [channel policy](krabb-docs/configuration.md#channel-policy).
 
-Remote inference sends your conversation to a hosted provider and needs only an
-account and a key. Local inference runs a model on your own machine with Ollama,
-keeps conversations local, and needs the memory and CPU described in the
+Remote inference sends your conversation to a hosted provider and needs an account
+with a key or sign-in. Local inference runs a model on an Ollama server you
+control, keeps conversations off hosted services, and needs the memory and CPU
+described in the
 [resource guide](krabb-docs/resources.md).
 
 | Provider | Inference | What setup asks for |
 | --- | --- | --- |
 | OpenAI, Anthropic, Gemini, OpenRouter | Remote | The provider's API key |
-| Codex | Remote | An API key, or `krabb codex login` with the Codex CLI installed |
-| Ollama | Local or remote | Nothing for a local server; an API key for Ollama cloud |
+| Codex | Remote | An OpenAI API key, or `krabb codex login` with the Codex CLI installed |
+| Ollama | Local or remote | The local server address, such as `http://127.0.0.1:11434`; an API key for Ollama Cloud |
 
-Channels need their platform's bot token; the
+Telegram and Discord need a bot token, Slack needs bot and app tokens, Signal
+needs a registered or linked `signal-cli` account, and WhatsApp needs Meta Cloud
+API credentials and a public HTTPS callback; the
 [channel setup guides](krabb-docs/providers.md#channels) cover each platform.
-Some plugins need software Krabb does not install: Signal needs `signal-cli`,
-Browser needs Node.js and Playwright, Whisper needs a Whisper-compatible
-executable, and sandboxed shell tools need Docker or Podman.
+Some plugins need software Krabb does not install: local inference needs Ollama,
+Codex sign-in needs the Codex CLI, Signal needs `signal-cli`, and sandboxed shell
+tools need Docker or Podman.
 
 The [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice,
 backups, upgrades, and uninstalling. [Storage](krabb-docs/storage.md) lists where
