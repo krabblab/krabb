@@ -116,6 +116,7 @@ fn systemd_unit(definition: &str) -> Option<Installed> {
     let mut executable = None;
     let mut environment = Vec::new();
     let mut layout = String::new();
+    let mut after = false;
 
     for line in definition.split_inclusive('\n') {
         let text = line.strip_suffix('\n').unwrap_or(line);
@@ -127,13 +128,19 @@ fn systemd_unit(definition: &str) -> Option<Installed> {
 
             executable = Some(PathBuf::from(unescape(quoted(value)?, false)?));
             layout.push_str("ExecStart=\n");
+            after = true;
         } else if let Some(value) = text.strip_prefix("Environment=") {
+            if !after {
+                return None;
+            }
+
             let assignment = unescape(quoted(value)?, true)?;
             let (name, value) = assignment.split_once('=')?;
 
             environment.push(variable(name, value)?);
         } else {
             layout.push_str(line);
+            after = false;
         }
     }
 
@@ -325,6 +332,8 @@ mod tests {
             "ExecStart=\"/a\"\nEnvironment=\"A=50%\"\n",
             "ExecStart=\"/a\"\nEnvironment=\"A=$HOME\"\n",
             "ExecStart=\"/a\\$\"\n",
+            "Environment=\"A=1\"\nExecStart=\"/a\"\n",
+            "ExecStart=\"/a\"\nRestart=always\nEnvironment=\"A=1\"\n",
         ] {
             assert!(systemd_unit(unit).is_none(), "{unit}");
         }

@@ -133,7 +133,7 @@ pub(super) async fn restore(
     let uninstalled = revoked(root)?;
 
     if let Some(saved) = &point.definition {
-        confined(saved, service)?;
+        confined(saved)?;
     }
 
     if service.is_file() && running()? {
@@ -342,7 +342,19 @@ pub(super) fn put_back(
     saved: &Saved,
     service: &Path,
 ) -> Result<bool, PluginError> {
-    let name = confined(saved, service)?;
+    let name = confined(saved)?;
+
+    if saved.path != service {
+        eprintln!(
+            "The service definition was saved at {}, but Krabb now uses {}, so it was not \
+             restored.",
+            saved.path.display(),
+            service.display()
+        );
+
+        return Ok(false);
+    }
+
     let store = directory.join("service");
 
     if std::fs::read(store.join(&name)).ok() == std::fs::read(service).ok() {
@@ -356,12 +368,12 @@ pub(super) fn put_back(
     Ok(true)
 }
 
-/// Refuses a recovery point that would write anywhere but the installed service definition.
-fn confined(saved: &Saved, service: &Path) -> Result<String, PluginError> {
-    let (_, name) = split(service)?;
+/// Refuses a recovery point whose definition entry names anything but the saved file itself.
+fn confined(saved: &Saved) -> Result<String, PluginError> {
+    let (_, name) = split(&saved.path)?;
 
     match saved.entries.as_slice() {
-        [entry] if saved.path == service && entry.path == name && entry.present => Ok(name),
+        [entry] if entry.path == name && entry.present => Ok(name),
 
         _ => Err("The recovery point names a service definition Krabb did not save, so it was \
                   not restored."

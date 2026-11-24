@@ -39,8 +39,19 @@ pub(super) async fn run(
         .and_then(|point| point.definition)
         .is_some_and(|saved| saved.path == service);
 
-    if saved && definition::refresh(&service)? && !json {
-        eprintln!("Refreshed the service definition to the current format.");
+    if saved {
+        match definition::refresh(&service) {
+            Ok(true) if !json => {
+                eprintln!("Refreshed the service definition to the current format.")
+            }
+
+            Ok(_) => {}
+
+            Err(error) => eprintln!(
+                "The service definition was kept in its earlier format: {}",
+                sentence(error.to_string())
+            ),
+        }
     }
 
     drop(offline_lock(root)?);

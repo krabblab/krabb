@@ -516,9 +516,12 @@ async fn rollback_restores_only_the_installed_service_definition() {
     assert_eq!(fs::read_to_string(&unit).unwrap(), "old unit");
 
     let elsewhere = root.join("units/other.service");
-    let error = snapshot::put_back(&directory, saved, &elsewhere).unwrap_err();
 
-    assert!(error.to_string().contains("did not save"), "{error}");
+    fs::write(&unit, "new unit").unwrap();
+
+    assert!(!snapshot::put_back(&directory, saved, &elsewhere).unwrap());
+    assert!(!elsewhere.exists());
+    assert_eq!(fs::read_to_string(&unit).unwrap(), "new unit");
 
     let mut tampered = serde_json::to_value(&point).unwrap();
 
@@ -528,7 +531,7 @@ async fn rollback_restores_only_the_installed_service_definition() {
     let error = snapshot::restore(&home, &tampered, &unit, true).await.unwrap_err();
 
     assert!(error.to_string().contains("did not save"), "{error}");
-    assert_eq!(fs::read_to_string(&unit).unwrap(), "old unit");
+    assert_eq!(fs::read_to_string(&unit).unwrap(), "new unit");
 
     let legacy = serde_json::json!({
         "from": "0.1.0", "to": "0.2.0", "created": 1, "accepted": false, "service": false,
