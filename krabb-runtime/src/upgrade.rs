@@ -491,6 +491,8 @@ fn preview(
             Some("pinned to a revision".to_owned())
         } else if staged.unlisted.contains(id) {
             Some("no longer in the plugin index".to_owned())
+        } else if staged.unchecked.contains(id) {
+            Some("plugin index unavailable".to_owned())
         } else {
             None
         };

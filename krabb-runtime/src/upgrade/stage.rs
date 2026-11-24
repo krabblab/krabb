@@ -55,6 +55,8 @@ pub(super) struct Staged {
     pub manifests: BTreeMap<String, Manifest>,
     /// Official plugins left as they are because the index no longer lists them.
     pub unlisted: Vec<String>,
+    /// Official plugins left as they are because the index could not be read.
+    pub unchecked: Vec<String>,
     keep: bool,
 }
 
@@ -93,6 +95,7 @@ pub(super) fn prepare(
         plan: Plan { version: version.to_owned(), plugins: Vec::new() },
         manifests: BTreeMap::new(),
         unlisted: Vec::new(),
+        unchecked: Vec::new(),
         keep: false,
     };
 
@@ -118,6 +121,7 @@ pub(super) fn plugins(
 ) -> Result<(), PluginError> {
     let protocol = inspection.protocol.unwrap_or(Protocol::CURRENT);
     let mut published = None;
+    let mut unavailable = None;
 
     for (id, entry) in &lock.plugins {
         let compatible = protocol.compatible(entry.protocol);
@@ -141,20 +145,35 @@ pub(super) fn plugins(
             continue;
         }
 
-        let published = match &published {
-            Some(published) => published,
-            None => published.insert(load()?),
+        if published.is_none() {
+            match unavailable.take().map_or_else(load, Err) {
+                Ok(index) => published = Some(index),
+
+                // Plugins that still load can wait for the index; the host update goes ahead.
+                Err(error) if compatible => {
+                    staged.unchecked.push(id.clone());
+                    unavailable = Some(error);
+                    continue;
+                }
+
+                Err(error) => return Err(error),
+            }
+        }
+
+        let Some(published) = &published else {
+            continue;
         };
+
+        if compatible && !published.plugins.contains_key(id) {
+            staged.unlisted.push(id.clone());
+            continue;
+        }
 
         let unstable = pin.is_some_and(|version| !releases::stable(version));
 
         let choice = match index::newest(published, id, unstable, protocol) {
             Ok(choice) => choice,
-
-            Err(_) if compatible => {
-                staged.unlisted.push(id.clone());
-                continue;
-            }
+            Err(_) if compatible => continue,
 
             Err(error) => {
                 return Err(format!(

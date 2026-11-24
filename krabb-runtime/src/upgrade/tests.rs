@@ -352,6 +352,53 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
         assert!(shown.text.contains(&row), "{row}\n{}", shown.text);
     }
 
+    lock.plugins.insert("echo".into(), current("0.1.0", "index:echo@0.3.0-rc.1"));
+
+    lock.plugins.insert("codex".into(), current("0.1.0", "index:codex"));
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+
+    assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
+    assert!(shown.text.contains("echo: stays at 0.1.0 (pinned to 0.3.0-rc.1)"), "{}", shown.text);
+    assert!(shown.text.contains("codex: stays at 0.1.0 (no longer in the plugin index)"));
+
+    drop(staged);
+
+    let offline = || -> Result<std::sync::Arc<index::Index>, PluginError> {
+        Err("The plugin index is unreachable.".into())
+    };
+
+    lock.plugins.insert("echo".into(), current("0.1.0", "index:echo"));
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &offline).unwrap();
+
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+
+    assert!(
+        shown.text.contains("echo: stays at 0.1.0 (plugin index unavailable)"),
+        "{}",
+        shown.text
+    );
+
+    assert!(shown.text.contains("codex: stays at 0.1.0 (plugin index unavailable)"));
+
+    drop(staged);
+
+    lock.plugins.get_mut("codex").unwrap().protocol = Protocol { major: 0, minor: 1 };
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    assert!(stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &offline).is_err());
+
+    drop(staged);
+    lock.plugins.remove("codex");
+
     let mut revision = current("0.1.0", "index:echo");
 
     revision.pinned = true;
