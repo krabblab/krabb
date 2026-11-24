@@ -15,6 +15,7 @@ fn krabb(home: &std::path::Path, args: &[&str]) -> Output {
 #[test]
 fn documented_exit_codes() {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+
     let home = std::env::temp_dir().join(format!(
         "krabb-exits-{}-{}",
         std::process::id(),
