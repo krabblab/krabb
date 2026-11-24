@@ -53,6 +53,8 @@ pub(super) struct Staged {
     pub daemon: PathBuf,
     pub plan: Plan,
     pub manifests: BTreeMap<String, Manifest>,
+    /// Official plugins left as they are because the index no longer lists them.
+    pub unlisted: Vec<String>,
     keep: bool,
 }
 
@@ -90,6 +92,7 @@ pub(super) fn prepare(
         daemon: PathBuf::new(),
         plan: Plan { version: version.to_owned(), plugins: Vec::new() },
         manifests: BTreeMap::new(),
+        unlisted: Vec::new(),
         keep: false,
     };
 
@@ -117,11 +120,13 @@ pub(super) fn plugins(
     let mut published = None;
 
     for (id, entry) in &lock.plugins {
-        if protocol.compatible(entry.protocol) {
-            continue;
-        }
+        let compatible = protocol.compatible(entry.protocol);
 
         let Some((_, pin)) = index::official(entry) else {
+            if compatible {
+                continue;
+            }
+
             return Err(format!(
                 "Plugin {id} uses protocol {}.{}, which Krabb {} does not support. Uninstall it, \
                  update, then install a build for the new protocol. The installation was not \
@@ -131,6 +136,11 @@ pub(super) fn plugins(
             .into());
         };
 
+        // Pinned plugins stay unless the new host cannot load them.
+        if compatible && (entry.pinned || pin.is_some()) {
+            continue;
+        }
+
         let published = match &published {
             Some(published) => published,
             None => published.insert(load()?),
@@ -138,14 +148,28 @@ pub(super) fn plugins(
 
         let unstable = pin.is_some_and(|version| !releases::stable(version));
 
-        let choice = index::newest(published, id, unstable, protocol).map_err(|error| {
-            format!(
-                "Krabb {} cannot load the installed {id} plugin: {} The installation was not \
-                 changed.",
-                inspection.version,
-                sentence(error.to_string())
-            )
-        })?;
+        let choice = match index::newest(published, id, unstable, protocol) {
+            Ok(choice) => choice,
+
+            Err(_) if compatible => {
+                staged.unlisted.push(id.clone());
+                continue;
+            }
+
+            Err(error) => {
+                return Err(format!(
+                    "Krabb {} cannot load the installed {id} plugin: {} The installation was \
+                     not changed.",
+                    inspection.version,
+                    sentence(error.to_string())
+                )
+                .into());
+            }
+        };
+
+        if compatible && !index::newer(&choice.release.version, entry) {
+            continue;
+        }
 
         let archive = index::pull(published, id, &choice, &staged.dir)?;
         let digest = choice.artifact.sha256.clone();

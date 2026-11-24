@@ -17,7 +17,7 @@ Semantic Versioning.
 - List and install any published plugin version with `krabb plugin versions`.
 - Install pre-release plugins with `krabb plugin install --unstable`.
 - Recover interrupted home upgrades automatically.
-- Update Krabb with `krabb update`, moving plugins it can no longer load.
+- Update Krabb and every installed plugin with `krabb update`.
 - Update busy plugins live without pausing other channels or conversations.
 - Revoke a plugin's secrets and grants on uninstall.
 - Guide setup prompts and test the connection after saving.

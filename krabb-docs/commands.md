@@ -314,16 +314,19 @@ krabb update --rollback [-y|--yes]
 ```
 
 `krabb update` moves the CLI and daemon to one release, the latest stable one
-unless a version is given. Releases contain only the host; plugins keep their own
-versions. Krabb downloads and verifies the release and runs the new host once
-before changing anything. An official plugin whose protocol the new host does not
-support moves to the newest version that it does support, in the same
-transaction; one with no such version, or a linked or custom-source plugin the new
-host cannot load, stops the update with the installation unchanged. Other plugins
-stay as they are; update them with `krabb plugin update`. A truncated or mismatched
-download also stops the update. It then previews versions, plugin permission,
-capability, and secret changes, home migrations, and the service interruption.
-With `--json`, the command prints that preview and applies it only with `--yes`.
+unless a version is given. Releases contain only the host; plugins keep their
+own versions. Krabb downloads and verifies the release and runs the new host
+once before changing anything. Every official plugin moves to the newest version
+the new host supports, in the same transaction, unless it is pinned to a version
+or revision and still loads. An official plugin with no compatible version, or a
+linked or custom-source plugin the new host cannot load, stops the update with
+the installation unchanged. After the update, linked and custom-source plugins
+refresh from their sources through `krabb plugin update`; a failure there leaves
+the new version installed and names the command to retry. A truncated or
+mismatched download also stops the update. It then previews versions, plugin
+permission, capability, and secret changes, home migrations, and the service
+interruption. With `--json`, the command prints that preview and applies it only
+with `--yes`.
 
 After approval, Krabb stops a running service and saves a recovery point with
 the previous binaries, configuration, plugins, and state under
