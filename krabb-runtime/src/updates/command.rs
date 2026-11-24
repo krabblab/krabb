@@ -22,7 +22,9 @@ pub(crate) async fn update_plugins_at(
         }
 
         if !confirm_action(false, false, "Apply these plugin updates?")? {
+            discard_preview(root)?;
             print_cancelled("Update", false);
+
             return Ok(());
         }
     } else if !root.join(".plugin-update-preview/preview.json").is_file() {
@@ -50,6 +52,25 @@ pub(crate) async fn update_plugins_at(
     }
 
     updates::apply(root, json, &previews).await
+}
+
+/// Removes a declined preview so a later `--yes` cannot apply it.
+fn discard_preview(root: &Path) -> Result<(), PluginError> {
+    let _lock = lock_at(root, ".plugins.lock")?;
+    let preview = root.join(".plugin-update-preview");
+
+    match std::fs::remove_file(preview.join("preview.json")) {
+        Ok(()) => {}
+
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    match std::fs::remove_dir_all(&preview) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) fn update_at(

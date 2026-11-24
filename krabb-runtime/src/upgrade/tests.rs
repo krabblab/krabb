@@ -251,8 +251,8 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
         "echo: 0.1.0 → 0.2.0 (pin to 0.1.0 removed because it cannot run on 0.2.0)",
         "echo permissions: adds network, removes filesystem",
         "echo secrets: adds KRABB_ECHO_KEY",
-        "tui: stays at 0.1.0 (linked development build)",
-        "codex: stays at 0.1.0 (supported)",
+        "tui: refreshes from its linked development build after the update",
+        "codex: stays at 0.1.0 (no longer in the plugin index)",
         "home schema: 1 → 2 (1 migration)",
         "service: not installed",
         rollback.as_str(),
@@ -260,9 +260,10 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
         assert!(preview.text.contains(row), "{row}\n{}", preview.text);
     }
 
-    assert_eq!(preview.value["kept"], serde_json::json!(["tui"]));
+    assert_eq!(preview.value["kept"], serde_json::json!(["codex"]));
 
-    assert_eq!(preview.value["supported"], serde_json::json!(["codex"]));
+    assert_eq!(preview.value["refresh"], serde_json::json!(["tui"]));
+    assert_eq!(preview.value["supported"], serde_json::json!([]));
 
     drop(staged);
 
@@ -292,6 +293,170 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
 
     assert!(error.to_string().contains("failed verification"), "{error}");
     assert!(stage::prepare(&home, "0.3.0", Some(&base)).is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn staging_updates_every_official_plugin_except_pinned_ones() {
+    let root = temp_root("stage-all");
+    let home = root.join("home");
+    let release = release(&root, "0.2.0");
+    let base = format!("file://{}", release.display());
+    let location = publish(&root, ECHO, "0.2.0");
+    let load = || index::load_from(&home, &location);
+
+    fs::create_dir_all(&home).unwrap();
+
+    let current = |version: &str, source: &str| {
+        let mut entry = entry(version, source, false);
+
+        entry.protocol = NEXT;
+        entry
+    };
+
+    let mut lock = Lock::default();
+
+    lock.plugins.insert("echo".into(), current("0.1.0", "index:echo"));
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+    let plan = stage::plan(&staged.dir).unwrap();
+
+    assert_eq!(plan.plugins.len(), 1);
+    assert_eq!(plan.plugins[0].id, "echo");
+    assert_eq!(plan.plugins[0].pin, None);
+
+    let schema = stage::Schema { from: 1, to: 1, steps: Vec::new() };
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+
+    assert!(shown.text.contains("echo: 0.1.0 → 0.2.0\n"), "{}", shown.text);
+
+    drop(staged);
+
+    for (source, version, reason) in
+        [("index:echo@0.1.0", "0.1.0", "pinned to 0.1.0"), ("index:echo", "0.2.0", "current")]
+    {
+        lock.plugins.insert("echo".into(), current(version, source));
+
+        let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+        stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+        let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+        let row = format!("echo: stays at {version} ({reason})");
+
+        assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
+        assert!(shown.text.contains(&row), "{row}\n{}", shown.text);
+    }
+
+    lock.plugins.insert("echo".into(), current("0.1.0", "index:echo@0.3.0-rc.1"));
+
+    lock.plugins.insert("codex".into(), current("0.1.0", "index:codex"));
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+
+    assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
+    assert!(shown.text.contains("echo: stays at 0.1.0 (pinned to 0.3.0-rc.1)"), "{}", shown.text);
+    assert!(shown.text.contains("codex: stays at 0.1.0 (no longer in the plugin index)"));
+
+    drop(staged);
+
+    let loads = std::cell::Cell::new(0);
+
+    let offline = || -> Result<std::sync::Arc<index::Index>, PluginError> {
+        loads.set(loads.get() + 1);
+        Err("The plugin index is unreachable.".into())
+    };
+
+    lock.plugins.insert("echo".into(), current("0.1.0", "index:echo"));
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &offline).unwrap();
+
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+
+    assert!(
+        shown.text.contains("echo: stays at 0.1.0 (plugin index unavailable)"),
+        "{}",
+        shown.text
+    );
+
+    assert!(shown.text.contains("codex: stays at 0.1.0 (plugin index unavailable)"));
+    assert_eq!(loads.get(), 1);
+
+    drop(staged);
+
+    lock.plugins.get_mut("codex").unwrap().protocol = Protocol { major: 0, minor: 1 };
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    assert!(stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &offline).is_err());
+
+    drop(staged);
+    lock.plugins.remove("codex");
+
+    let mut revision = current("0.1.0", "index:echo");
+
+    revision.pinned = true;
+    lock.plugins.insert("echo".into(), revision);
+
+    let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
+
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+
+    assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
+    assert!(shown.text.contains("echo: stays at 0.1.0 (pinned to a revision)"));
+
+    drop(staged);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn refresh_lets_the_new_host_review_plugin_updates_and_reports_failures() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_root("refresh");
+    let script = root.join("krabb");
+    let calls = root.join("calls");
+
+    let write = |body: &str| {
+        fs::write(
+            &script,
+            format!("#!/bin/sh\necho \"$KRABB_HOME $*\" >> '{}'\n{body}\n", calls.display()),
+        )
+        .unwrap();
+
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+
+    write("exit 0");
+
+    assert!(matches!(refresh(&root, &script).await, Refresh::Done));
+
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap().trim(),
+        format!("{} plugin update", root.display())
+    );
+
+    write("exit 3");
+
+    let Refresh::Failed(error) = refresh(&root, &script).await else {
+        panic!("a failing plugin update must be reported");
+    };
+
+    assert!(error.contains("`krabb plugin update` exited"), "{error}");
 
     let _ = fs::remove_dir_all(root);
 }

@@ -346,16 +346,19 @@ krabb update --rollback [-y|--yes]
 `krabb update` moves the CLI and daemon to one release, the latest stable one
 unless a version is given. Releases contain only the host; plugins keep their
 own versions. Krabb downloads and verifies the release and runs the new host
-once before changing anything. An official plugin whose protocol the new host
-does not support moves to the newest version that it does support, in the same
-transaction; one with no such version, or a linked or custom-source plugin the
-new host cannot load, stops the update with the installation unchanged. Other
-plugins stay as they are; update them with `krabb plugin update`. A truncated or
-mismatched download also stops the update, and so does too little free disk
-space for the recovery point and new files plus 64 MiB, with the missing amount
-named. It then previews versions, plugin permission, capability, and secret
-changes, home migrations, and the service interruption. With `--json`, the
-command prints that preview and applies it only with `--yes`.
+once before changing anything. Every official plugin moves to the newest version
+the new host supports, in the same transaction, unless it still loads and is
+pinned to a version or revision, or is no longer in the plugin index. An
+official plugin with no compatible version, or a linked or custom-source plugin
+the new host cannot load, stops the update with the installation unchanged.
+After the update, in a terminal, Krabb runs `krabb plugin update` so you can
+review and apply changes to linked and custom-source plugins; without a terminal
+or with `--json`, it reports them as pending. Either way, the new version stays
+installed. A truncated or mismatched download also stops the update, and so does
+too little free disk space for the recovery point and new files plus 64 MiB,
+with the missing amount named. It then previews versions, plugin permission,
+capability, and secret changes, home migrations, and the service interruption.
+With `--json`, the command prints that preview and applies it only with `--yes`.
 
 After approval, Krabb stops a running service and saves a recovery point with
 the previous binaries, configuration, plugins, and state under

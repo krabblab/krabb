@@ -239,7 +239,34 @@ async fn update(
     snapshot::accept(root, &mut point)?;
     staged.discard();
 
+    if !json {
+        println!(
+            "Updated Krabb {VERSION} to {version}.\nRun `krabb update --rollback` to return to \
+            {VERSION}.\nThe recovery point is kept until the next update."
+        );
+    }
+
+    let unofficial = lock.plugins.values().any(|entry| unofficial(entry).is_some());
+
+    let refreshed = if !unofficial {
+        Refresh::None
+    } else if json || !interactive() {
+        Refresh::Pending
+    } else {
+        refresh(root, &binaries[0]).await
+    };
+
     if json {
+        let refresh = match &refreshed {
+            Refresh::None | Refresh::Done => serde_json::Value::Null,
+
+            Refresh::Pending => {
+                serde_json::json!({"status": "pending", "command": "krabb plugin update"})
+            }
+
+            Refresh::Failed(error) => serde_json::json!({"status": "failed", "error": error}),
+        };
+
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -247,16 +274,52 @@ async fn update(
                 "status": "updated",
                 "from": VERSION,
                 "version": version,
+                "refresh": refresh,
             }))?
         );
-    } else {
-        println!(
-            "Updated Krabb {VERSION} to {version}.\nRun `krabb update --rollback` to return to \
-            {VERSION}.\nThe recovery point is kept until the next update."
+    } else if let Refresh::Pending = refreshed {
+        eprintln!(
+            "Linked and custom-source plugins were not refreshed without a terminal to review \
+             them.\nRun `krabb plugin update` to review and apply their changes."
+        );
+    } else if let Refresh::Failed(error) = refreshed {
+        eprintln!(
+            "Linked and custom-source plugins were not refreshed: {error}\nRun `krabb plugin \
+             update` to try again; Krabb {version} stays installed."
         );
     }
 
     Ok(())
+}
+
+/// What happened to plugins that refresh from their own sources after the host update.
+enum Refresh {
+    None,
+    Pending,
+    Done,
+    Failed(String),
+}
+
+/// Lets the new host review and apply refreshes from linked and custom sources in the terminal.
+///
+/// The update preview cannot show their permission changes, so the user confirms them here.
+async fn refresh(root: &Path, krabb: &Path) -> Refresh {
+    eprintln!("Checking linked and custom-source plugins for changes...");
+
+    let status = tokio::process::Command::new(krabb)
+        .args(["plugin", "update"])
+        .env("KRABB_HOME", root)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .await;
+
+    match status {
+        Ok(status) if status.success() => Refresh::Done,
+        Ok(status) => Refresh::Failed(format!("`krabb plugin update` exited with {status}.")),
+        Err(error) => Refresh::Failed(sentence(error.to_string())),
+    }
 }
 
 async fn activate(
@@ -412,22 +475,37 @@ fn preview(
 
     let mut kept = Vec::new();
     let mut supported = Vec::new();
+    let mut refreshed = Vec::new();
 
     for (id, entry) in lock.plugins.iter().filter(|(id, _)| !staged.manifests.contains_key(*id)) {
-        let reason = if entry.linked {
-            Some("linked development build")
-        } else if index::official(entry).is_none() {
-            Some("custom source")
+        if let Some(source) = unofficial(entry) {
+            refreshed.push(id);
+            rows.push(format!("{id}: refreshes from its {source} after the update"));
+            continue;
+        }
+
+        let pinned = index::official(entry).and_then(|(_, version)| version);
+
+        let reason = if let Some(version) = pinned {
+            Some(format!("pinned to {version}"))
+        } else if entry.pinned {
+            Some("pinned to a revision".to_owned())
+        } else if staged.unlisted.contains(id) {
+            Some("no longer in the plugin index".to_owned())
+        } else if staged.unchecked.contains(id) {
+            Some("plugin index unavailable".to_owned())
         } else {
             None
         };
 
-        match reason {
+        match &reason {
             Some(_) => kept.push(id),
             None => supported.push(id),
         }
 
-        rows.push(format!("{id}: stays at {} ({})", entry.version, reason.unwrap_or("supported")));
+        let reason = reason.as_deref().unwrap_or("current");
+
+        rows.push(format!("{id}: stays at {} ({reason})", entry.version));
     }
 
     if schema.to > schema.from {
@@ -461,11 +539,26 @@ fn preview(
         "plugins": plugins,
         "kept": kept,
         "supported": supported,
+        "refresh": refreshed,
         "schema": schema,
         "restart": running,
     });
 
     Preview { text, value }
+}
+
+/// The source an unpinned plugin refreshes from after an update, when it is not an official
+/// release.
+fn unofficial(entry: &Entry) -> Option<&'static str> {
+    if entry.pinned {
+        None
+    } else if entry.linked {
+        Some("linked development build")
+    } else if index::official(entry).is_none() {
+        Some("custom source")
+    } else {
+        None
+    }
 }
 
 fn change(label: &str, before: &[String], after: &[String]) -> Option<String> {
