@@ -644,7 +644,7 @@ async fn listed(root: &Path, config: &crate::Config, provider: &str) -> Vec<Stri
 
         Ok(Ok(None)) => {}
 
-        Ok(Err(error)) if error.to_string().contains("is not running") => {}
+        Ok(Err(error)) if error.to_string() == crate::ipc::MODEL_NOT_RUNNING => {}
 
         _ => return Vec::new(),
     }
