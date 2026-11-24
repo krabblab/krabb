@@ -401,7 +401,9 @@ and settings that no other installed plugin declares, and removes sharing grants
 to or from the plugin in `config.toml`. A local `visibility` list emptied this way
 stays `[]`, so it never starts inheriting top-level grants. If revocation fails,
 the plugin stays installed and the error lists what was already removed; rerun
-the uninstall to finish.
+the uninstall to finish. Access outside Krabb, such as environment variables, keys
+at the provider, and older home backups, needs its own cleanup; see
+[Uninstall](workflows.md#uninstall).
 
 Use `plugin install` (alias `add`) to install and activate a plugin, and
 `plugin uninstall` (alias `remove`) to remove it. Installing does not require a
