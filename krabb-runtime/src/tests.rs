@@ -5222,9 +5222,11 @@ async fn manages_service_definition() {
         }
 
         fs::write(&copy, "orphaned copy").unwrap();
+        fs::write(copy.with_extension("json.new"), "staged copy").unwrap();
         service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();
 
         assert!(!copy.exists());
+        assert!(!copy.with_extension("json.new").exists());
     }
 }
 

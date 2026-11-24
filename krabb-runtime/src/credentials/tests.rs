@@ -486,7 +486,9 @@ fn service_reinstall_replaces_the_credential_copy() {
         ("KRABB_KEYRING".to_owned(), "1".to_owned()),
     ]);
 
-    assert!(crate::service_environment_from(&service, root.clone(), &failing).is_err());
+    let error = crate::service_environment_from(&service, root.clone(), &failing).unwrap_err();
+
+    assert!(error.to_string().contains("Keyring was requested"), "{error}");
     assert_eq!(read(&copy, &key).unwrap(), stored, "a failed reinstall keeps the previous copy");
     assert!(!copy.with_extension("json.new").exists());
 

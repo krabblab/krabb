@@ -214,7 +214,12 @@ pub(crate) fn service_environment_from(
             return Err(error);
         }
 
-        std::fs::rename(&staged, &path)?;
+        if let Err(error) = std::fs::rename(&staged, &path) {
+            let _ = std::fs::remove_file(&staged);
+
+            return Err(error.into());
+        }
+
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path)?));
     } else if let Some(path) = configured.as_ref() {
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path.clone())?));
@@ -269,10 +274,25 @@ pub(crate) fn service_credentials_path(path: &Path) -> PathBuf {
 
 /// Deletes the secrets copy `krabb service install` writes next to the service definition.
 pub(crate) fn remove_service_credentials(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(service_credentials_path(path)) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        result => result,
+    let copy = service_credentials_path(path);
+    let staged = copy.with_extension("json.new");
+    let mut files = vec![copy.clone(), staged.clone()];
+
+    for file in [&copy, &staged] {
+        if let (Some(parent), Some(name)) = (file.parent(), file.file_name()) {
+            files.push(parent.join(format!(".{}.lock", name.to_string_lossy())));
+        }
     }
+
+    for file in files {
+        match std::fs::remove_file(&file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn service_at(
