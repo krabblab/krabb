@@ -339,8 +339,8 @@ jobs:
             throw "Windows has no $($status.name) service."
           }
 
-          $removed = Invoke-Krabb --json service uninstall --yes
-          if ($removed.status -ne "uninstalled") { throw "Service uninstall reported '$($removed.status)'." }
+          & $krabb service uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
           if (Test-Path $installed.path) { throw "Service definition remains at $($installed.path)." }
           if (Get-Service -Name $status.name -ErrorAction SilentlyContinue) {
             throw "Windows still has the $($status.name) service."
