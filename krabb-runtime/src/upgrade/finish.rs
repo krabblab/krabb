@@ -48,7 +48,7 @@ pub(super) async fn run(
             Ok(_) => {}
 
             Err(error) => eprintln!(
-                "The service definition was kept in its earlier format: {}",
+                "The service definition could not be refreshed: {}",
                 sentence(error.to_string())
             ),
         }
