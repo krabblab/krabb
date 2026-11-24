@@ -240,7 +240,7 @@ impl Guide {
         if crate::home::regular_file_present(&self.root.join("config.toml")) {
             Ok(())
         } else {
-            Err("Krabb is not initialized.\nRun `krabb init home` first.".into())
+            Err("Krabb is not initialized.\nCreate it with `krabb init home`".into())
         }
     }
 
@@ -336,9 +336,9 @@ impl Guide {
         self.overridden(provider, &model)?;
 
         self.note(if applied {
-            "No restart needed; the running daemon uses it for new turns"
+            "No restart is needed, because the running daemon uses it for new turns"
         } else {
-            "No restart needed; it applies when the daemon starts"
+            "No restart is needed, because it applies when the daemon starts"
         });
 
         Ok(Flow::Next)
@@ -605,12 +605,12 @@ impl Guide {
 /// How the guide ends: whether the Krabb can answer, then the one command to run next.
 fn closing(ready: bool, terminal: bool) -> &'static str {
     match (ready, terminal) {
-        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.",
-        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`.",
+        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`",
+        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`",
 
         (false, _) => {
             "Your Krabb is set up, and it needs a provider to answer.\n\
-                       Add one with `krabb init provider`."
+                       Add one with `krabb init provider`"
         }
     }
 }

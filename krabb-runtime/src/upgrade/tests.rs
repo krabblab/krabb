@@ -918,7 +918,7 @@ fn staging_keeps_pre_release_pins_on_pre_releases() {
     let mut staged = stage::prepare(&home, "0.2.0", Some(&base)).unwrap();
     let error = stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap_err();
 
-    assert!(error.to_string().contains("No stable version of echo"), "{error}");
+    assert!(error.to_string().contains("No stable release of plugin echo"), "{error}");
 
     drop(staged);
     lock.plugins.insert("echo".into(), entry("0.1.0-rc.1", "index:echo@0.1.0-rc.1", false));
