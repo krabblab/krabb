@@ -39,6 +39,11 @@ On Windows, in PowerShell:
 irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 ```
 
+To install without running a script, download the archive for your platform from
+[GitHub Releases](https://github.com/krabblab/krabb/releases), such as
+`krabb-core-v0.1.0-x86_64-unknown-linux-gnu.tar.gz`, and follow
+[Manual Download](krabb-docs/workflows.md#manual-download).
+
 Then set it up:
 
 ```sh

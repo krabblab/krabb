@@ -5,6 +5,7 @@ Use these workflows to set up, operate, and update a Krabb installation.
 ## Table Of Contents
 
 - [First Run](#first-run)
+- [Manual Download](#manual-download)
 - [Local Development](#local-development)
 - [Background Service](#background-service)
 - [Optional Worktrees](#optional-worktrees)
@@ -40,6 +41,70 @@ replies and acknowledgements work, then move it to the
 [background service](#background-service). Configuration, conversations,
 credentials, and plugins live in `KRABB_HOME`; [Storage](storage.md) lists every
 location.
+
+## Manual Download
+
+Each release on [GitHub Releases](https://github.com/krabblab/krabb/releases)
+publishes one archive per platform, named `krabb-core-v<version>-<target>`, and a
+`SHA256SUMS` file:
+
+| Platform | Target | Archive |
+|---|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS Apple silicon | `aarch64-apple-darwin` | `.tar.gz` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `.zip` |
+| Windows ARM64 | `aarch64-pc-windows-msvc` | `.zip` |
+
+On Linux or macOS, download and verify the archive, then put `krabb` and
+`krabb-daemon` on your `PATH`. Set `version` and `target` for your platform:
+
+```sh
+version=0.1.0
+target=x86_64-unknown-linux-gnu
+archive="krabb-core-v$version-$target.tar.gz"
+base="https://github.com/krabblab/krabb/releases/download/v$version"
+
+curl -fsSLO "$base/$archive"
+curl -fsSLO "$base/SHA256SUMS"
+grep "$archive" SHA256SUMS | sha256sum -c -    # on macOS: shasum -a 256 -c -
+
+mkdir -p krabb ~/.local/bin
+tar -xzf "$archive" -C krabb
+find krabb -type f \( -name krabb -o -name krabb-daemon \) -exec install -m 0755 {} ~/.local/bin/ \;
+```
+
+If `~/.local/bin` is not on your `PATH`, add `export PATH="$HOME/.local/bin:$PATH"`
+to your shell profile.
+
+On Windows, in PowerShell:
+
+```powershell
+$version = "0.1.0"
+$target = "x86_64-pc-windows-msvc"
+$archive = "krabb-core-v$version-$target.zip"
+$base = "https://github.com/krabblab/krabb/releases/download/v$version"
+
+Invoke-WebRequest "$base/$archive" -OutFile $archive
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+
+$expected = ((Select-String -Path SHA256SUMS -SimpleMatch $archive).Line -split "\s+")[0]
+$actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+if ($actual -ne $expected) { throw "Checksum verification failed for $archive." }
+
+Expand-Archive $archive -DestinationPath krabb
+$bin = Join-Path $env:LOCALAPPDATA "Krabb\bin"
+New-Item -ItemType Directory -Force $bin | Out-Null
+Get-ChildItem krabb -Recurse -Include krabb.exe, krabb-daemon.exe | Copy-Item -Destination $bin
+
+$path = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable("Path", "$path;$bin", "User")
+```
+
+Open a new terminal so the `PATH` change applies, then run `krabb init`. These
+are the same locations the install scripts use, so `krabb update` works the same
+way afterwards.
 
 ## Local Development
 
