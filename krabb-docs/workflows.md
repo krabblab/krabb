@@ -68,9 +68,9 @@ base="https://github.com/krabblab/krabb/releases/download/v$version"
 
 curl -fsSLO "$base/$archive"
 curl -fsSLO "$base/SHA256SUMS"
-grep "$archive" SHA256SUMS | sha256sum -c -    # on macOS: shasum -a 256 -c -
+grep -F "$archive" SHA256SUMS | sha256sum -c -    # on macOS: shasum -a 256 -c -
 
-mkdir -p krabb ~/.local/bin
+rm -rf krabb && mkdir -p krabb ~/.local/bin
 tar -xzf "$archive" -C krabb
 find krabb -type f \( -name krabb -o -name krabb-daemon \) -exec install -m 0755 {} ~/.local/bin/ \;
 ```
@@ -86,25 +86,29 @@ $target = "x86_64-pc-windows-msvc"
 $archive = "krabb-core-v$version-$target.zip"
 $base = "https://github.com/krabblab/krabb/releases/download/v$version"
 
-Invoke-WebRequest "$base/$archive" -OutFile $archive
-Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+Invoke-WebRequest -UseBasicParsing "$base/$archive" -OutFile $archive
+Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS" -OutFile SHA256SUMS
 
 $expected = ((Select-String -Path SHA256SUMS -SimpleMatch $archive).Line -split "\s+")[0]
 $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
 if ($actual -ne $expected) { throw "Checksum verification failed for $archive." }
 
-Expand-Archive $archive -DestinationPath krabb
+Expand-Archive -Force $archive -DestinationPath krabb
 $bin = Join-Path $env:LOCALAPPDATA "Krabb\bin"
 New-Item -ItemType Directory -Force $bin | Out-Null
 Get-ChildItem krabb -Recurse -Include krabb.exe, krabb-daemon.exe | Copy-Item -Destination $bin
 
 $path = [Environment]::GetEnvironmentVariable("Path", "User")
-[Environment]::SetEnvironmentVariable("Path", "$path;$bin", "User")
+
+if (($path -split ";") -notcontains $bin) {
+    $entries = @($path, $bin) | Where-Object { $_ }
+    [Environment]::SetEnvironmentVariable("Path", ($entries -join ";"), "User")
+}
 ```
 
-Open a new terminal so the `PATH` change applies, then run `krabb init`. These
-are the same locations the install scripts use, so `krabb update` works the same
-way afterwards.
+Open a new terminal so the `PATH` change applies, then run `krabb init`. The
+binaries end up where the install scripts put them, so `krabb update` works the
+same way afterwards.
 
 ## Local Development
 
