@@ -71,6 +71,31 @@ impl Ownership {
         self.catalog.roots.get(&self.root)?.get(path).map(String::as_str)
     }
 
+    /// Drops entries under `prefix` in every catalogued root whose files no longer exist.
+    ///
+    /// It only reads metadata, so live files are never touched. Returns how many entries it removed.
+    pub fn prune(&mut self, prefix: &Path) -> io::Result<usize> {
+        let mut removed = 0;
+
+        for (root, entries) in &mut self.catalog.roots {
+            let root = Path::new(root);
+            let before = entries.len();
+
+            entries.retain(|path, _| {
+                !path.starts_with(prefix) || std::fs::symlink_metadata(root.join(path)).is_ok()
+            });
+
+            removed += before - entries.len();
+        }
+
+        if removed > 0 {
+            self.catalog.roots.retain(|_, entries| !entries.is_empty());
+            self.save()?;
+        }
+
+        Ok(removed)
+    }
+
     pub fn assign(&mut self, path: &Path, owner: &str) -> io::Result<()> {
         if path.as_os_str().is_empty()
             || path.components().any(|c| !matches!(c, Component::Normal(_)))
@@ -89,6 +114,10 @@ impl Ownership {
             .or_default()
             .insert(PathBuf::from(path), owner.to_owned());
 
+        self.save()
+    }
+
+    fn save(&self) -> io::Result<()> {
         let bytes = serde_json::to_vec(&self.catalog).map_err(io::Error::other)?;
 
         if bytes.len() > 16 * 1024 * 1024 {
@@ -217,5 +246,48 @@ mod tests {
         assert!(Ownership::open(&home, &home).unwrap().owner(Path::new("notes.txt")).is_none());
 
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn prune_drops_only_missing_attachment_entries() {
+        let home =
+            std::env::temp_dir().join(format!("krabb-ownership-prune-{}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&home);
+
+        let root = home.join("workspace");
+        let attachments = root.join("attachments/channels.telegram");
+
+        std::fs::create_dir_all(&attachments).unwrap();
+        std::fs::write(attachments.join("kept.bin"), "kept").unwrap();
+        std::fs::write(attachments.join("gone.bin"), "gone").unwrap();
+
+        let mut ownership = Ownership::open(&home, &root).unwrap();
+
+        for path in [
+            "attachments/channels.telegram/kept.bin",
+            "attachments/channels.telegram/gone.bin",
+            "notes.txt",
+        ] {
+            ownership.assign(Path::new(path), "channels.telegram").unwrap();
+        }
+
+        std::fs::remove_file(attachments.join("gone.bin")).unwrap();
+
+        assert_eq!(ownership.prune(Path::new("attachments")).unwrap(), 1);
+        assert_eq!(ownership.prune(Path::new("attachments")).unwrap(), 0);
+
+        drop(ownership);
+
+        let reopened = Ownership::open(&home, &root).unwrap();
+
+        assert!(reopened.owner(Path::new("attachments/channels.telegram/kept.bin")).is_some());
+        assert!(reopened.owner(Path::new("attachments/channels.telegram/gone.bin")).is_none());
+        assert!(reopened.owner(Path::new("notes.txt")).is_some());
+        assert!(attachments.join("kept.bin").exists());
+
+        drop(reopened);
+
+        let _ = std::fs::remove_dir_all(home);
     }
 }

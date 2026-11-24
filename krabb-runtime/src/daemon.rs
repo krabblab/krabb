@@ -52,6 +52,7 @@ pub(crate) async fn serve_inner(
     let loaded = sessions_at(root)?;
     let workspace = workspace_root_at(root);
     reclaim_worktrees(root, &loaded);
+    storage::prune(root, &workspace);
     let sessions = Arc::new(Mutex::new(loaded));
     let pending = Arc::new(AsyncMutex::new(approval::Gate::new()?));
     let token = ipc::token()?;
