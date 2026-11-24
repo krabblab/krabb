@@ -66,7 +66,7 @@ pub(crate) fn init(
                 })
             );
         } else {
-            println!("{}", already(&root)?);
+            println!("{}", already(&root));
         }
 
         return Ok(());
@@ -340,16 +340,17 @@ pub(crate) fn regular_file_present(path: &Path) -> bool {
 }
 
 /// The answer to `krabb init` on a home that exists, with the step that is still missing.
-fn already(root: &Path) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+/// A configuration that cannot be read falls back to the provider step, which reports it.
+fn already(root: &Path) -> String {
     let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
 
-    let next = if crate::onboard::ready_provider(root)?.is_some() {
+    let next = if matches!(crate::onboard::ready_provider(root), Ok(Some(_))) {
         "Check every part with `krabb status`."
     } else {
         "Add an intelligence provider with `krabb init provider`."
     };
 
-    Ok(format!("Krabb is already initialized\n{home}\n\n{next}"))
+    format!("Krabb is already initialized\n{home}\n\n{next}")
 }
 
 #[cfg(test)]
@@ -362,10 +363,14 @@ mod tests {
 
         init_at(&root).unwrap();
 
-        let text = already(&root).unwrap();
+        let text = already(&root);
 
         assert!(text.starts_with("Krabb is already initialized\n└─ Home: "), "{text}");
         assert!(text.ends_with("\n\nAdd an intelligence provider with `krabb init provider`."));
+
+        std::fs::write(root.join("config.toml"), "provider = [").unwrap();
+
+        assert!(already(&root).ends_with("`krabb init provider`."));
 
         let _ = std::fs::remove_dir_all(root);
     }
