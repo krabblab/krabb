@@ -1275,6 +1275,9 @@ struct Manifest {
     check: bool,
     #[serde(default)]
     commands: Vec<CommandSpec>,
+    /// The schema of the plugin's saved state and the older ones it migrates when it starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<updates::state::State>,
 }
 
 impl Manifest {
@@ -1289,6 +1292,10 @@ impl Manifest {
 
         if !Protocol::CURRENT.compatible(self.protocol) {
             return Err("Plugin protocol is not compatible with this daemon.".into());
+        }
+
+        if let Some(state) = &self.state {
+            state.validate()?;
         }
 
         let mut capabilities = self.capabilities.clone();
@@ -1397,6 +1404,9 @@ struct Entry {
     linked: bool,
     #[serde(default)]
     commands: Vec<CommandSpec>,
+    /// The state contract of the installed version, absent for versions that declared none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<updates::state::State>,
 }
 
 struct Update {

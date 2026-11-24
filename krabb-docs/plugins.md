@@ -7,6 +7,7 @@ use another language if they implement the JSON-RPC 2.0 protocol.
 ## Table Of Contents
 
 - [Manifest](#manifest)
+  - [Plugin State](#plugin-state)
 - [Credentials And Sign-In](#credentials-and-sign-in)
 - [Requests](#requests)
 - [Authoring](#authoring)
@@ -45,8 +46,8 @@ declaring 0.0 or 0.1. The current protocol is 0.1, and all bundled plugins
 declare 0.1.
 
 `plugins.lock` records the canonical source, revision marker, SHA-256 of the
-manifest and executable, protocol, version, capabilities, permissions, and
-secrets. An explicit Git `--revision` is pinned for later updates; unpinned Git
+manifest and executable, protocol, version, capabilities, permissions, secrets,
+and state schema. An explicit Git `--revision` is pinned for later updates; unpinned Git
 sources follow their configured default revision. Local and remote updates
 health-check staged binaries before activation and refresh the hash only after
 staged activation succeeds; lock persistence failure restores the previous
@@ -56,6 +57,33 @@ sources must use `.tar`, `.tar.gz`, `.tgz`, or `.zip` and include a SHA-256
 fragment; remote archives require HTTPS. Krabb rejects embedded URL
 credentials, unsafe archive paths, and archive symbolic links. Release archives
 place plugin executables in `bin/` beside their manifest.
+
+### Plugin State
+
+A plugin that keeps saved state declares its schema in a `[state]` table:
+
+```toml
+[state]
+schema = 3
+from = [1, 2]
+```
+
+`schema` is the version of the state this release reads and writes, starting at
+1. `from` lists the older schemas this release migrates to `schema` itself when it
+starts; list up to 64, each lower than `schema`. Krabb never migrates plugin state
+and has no method for it. Before replacing an installed plugin, through `krabb
+update`, `krabb plugin update`, or `krabb plugin install`, it compares the schema
+recorded for the installed version with the new one:
+
+- the same schema, or neither version declaring one, needs nothing;
+- a schema listed in `from` is a pending migration, which the update preview shows
+  as `state: schema 1 → 3 when it starts`;
+- a lower schema, a schema missing from `from`, or a release that stops declaring
+  state is refused before anything changes, naming the schemas involved.
+
+A plugin's first release with `[state]` starts recording it. Keep `[state]` in
+every later release, and keep older schemas in `from` for as long as installs may
+still hold them.
 
 ## Credentials And Sign-In
 

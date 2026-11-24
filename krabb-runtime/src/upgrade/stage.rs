@@ -236,6 +236,23 @@ pub(super) fn plan(dir: &Path) -> Result<Plan, PluginError> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+/// Rejects staged plugins that cannot read the state their installed versions saved, before
+/// anything is replaced.
+pub(super) fn readable(staged: &Staged, lock: &Lock) -> Result<(), PluginError> {
+    for (id, manifest) in &staged.manifests {
+        if let Some(entry) = lock.plugins.get(id) {
+            crate::updates::state::transition(
+                id,
+                &manifest.version,
+                entry.state.as_ref(),
+                manifest.state.as_ref(),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Rejects staged plugins the downloaded host cannot talk to, before anything is replaced.
 pub(super) fn compatible(staged: &Staged, inspection: &Inspection) -> Result<(), PluginError> {
     let Some(protocol) = inspection.protocol else {

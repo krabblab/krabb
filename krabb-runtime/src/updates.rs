@@ -3,6 +3,7 @@
 pub(crate) mod command;
 mod image;
 mod review;
+pub(crate) mod state;
 pub(super) use image::Image;
 pub(super) use review::{declarations, review};
 
@@ -329,6 +330,7 @@ fn record(entry: &mut Entry, manifest: &Manifest, revision: String, hash: String
     entry.variables = manifest.variables.clone();
     entry.settings = manifest.settings.clone();
     entry.commands = manifest.commands.clone();
+    entry.state = manifest.state.clone();
 }
 
 fn updated(id: &str, version: &str) -> serde_json::Value {

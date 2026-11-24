@@ -10,6 +10,11 @@ pub(crate) fn declarations(previous: &Entry, next: &Manifest) -> Value {
         ("secrets", json!(previous.variables), json!(next.variables)),
         ("settings", json!(previous.settings), json!(next.settings)),
         ("commands", json!(previous.commands), json!(next.commands)),
+        (
+            "state",
+            json!(previous.state.as_ref().map(|state| state.schema)),
+            json!(next.state.as_ref().map(|state| state.schema)),
+        ),
     ] {
         if before != after {
             changes.insert(name.into(), json!({"before": before, "after": after}));

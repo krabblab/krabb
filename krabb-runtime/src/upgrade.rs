@@ -162,6 +162,7 @@ async fn update(
     drop(spinner);
 
     stage::compatible(&staged, &inspection)?;
+    stage::readable(&staged, &lock)?;
     space::check(root, &binaries, &staged)?;
 
     let preview = preview(
@@ -509,11 +510,25 @@ fn preview(
             rows.push(format!("{id} {change}"));
         }
 
+        let migration = updates::state::transition(
+            id,
+            &manifest.version,
+            entry.state.as_ref(),
+            manifest.state.as_ref(),
+        )
+        .ok()
+        .flatten();
+
+        if let Some(migration) = migration {
+            rows.push(format!("{id} {}", migration.describe()));
+        }
+
         plugins.push(serde_json::json!({
             "id": id,
             "from": entry.version,
             "to": manifest.version,
             "changes": changes,
+            "state": migration,
         }));
     }
 

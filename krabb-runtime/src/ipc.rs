@@ -4920,6 +4920,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(
@@ -5055,6 +5056,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(
@@ -5202,6 +5204,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(
@@ -6555,6 +6558,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         };
 
         crate::save_lock_at(

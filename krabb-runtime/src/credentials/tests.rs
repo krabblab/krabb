@@ -392,6 +392,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
             setup: BTreeMap::new(),
             check: false,
             commands: vec![],
+            state: None,
         };
 
         let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
@@ -418,6 +419,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
         setup: BTreeMap::new(),
         check: false,
         commands: vec![],
+        state: None,
     };
 
     fs::remove_file(&key).unwrap();
