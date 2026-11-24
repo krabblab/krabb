@@ -1316,6 +1316,7 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
         settings: Vec::new(),
         commands: Vec::new(),
         linked: false,
+        state: None,
     };
 
     let model = entry("model");
@@ -4112,6 +4113,7 @@ fn validates_manifests_and_environment() {
         setup: BTreeMap::new(),
         check: false,
         commands: Vec::new(),
+        state: None,
     };
 
     assert!(manifest.validate().is_ok());
@@ -4183,6 +4185,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         test_home,
@@ -4228,6 +4231,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &config,
         test_home,
@@ -4248,6 +4252,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         test_home,
@@ -4277,6 +4282,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         Path::new("/tmp/krabb-home"),
@@ -4578,6 +4584,7 @@ fn recovers_locks_and_plugin_staging() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 
@@ -5571,6 +5578,7 @@ fn discovers_plugins_and_detects_source_changes() {
         settings: Vec::new(),
         commands: Vec::new(),
         linked: false,
+        state: None,
     };
 
     assert!(changed(&root, "echo", &entry).unwrap());
@@ -5609,6 +5617,7 @@ fn update_modes_are_explicit() {
                 settings: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
+                state: None,
             }
         )
         .is_err()
@@ -5630,6 +5639,7 @@ fn manifest_round_trips() {
         setup: BTreeMap::new(),
         check: false,
         commands: Vec::new(),
+        state: None,
     };
 
     let text = toml::to_string(&value).unwrap();
@@ -5691,6 +5701,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
             }],
 
             linked: false,
+            state: None,
         },
     );
 
@@ -5812,6 +5823,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
                 description: "Open the model console.".into(),
                 interactive: false,
             }],
+            state: None,
         },
     );
 
@@ -5873,6 +5885,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         },
     );
 
@@ -5923,6 +5936,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         },
     );
 
@@ -5988,6 +6002,7 @@ fn krabb_owned_plugin_commands_are_conditional_native_commands() {
             description: format!("Run the {id} command."),
             interactive,
         }],
+        state: None,
     };
 
     let mut lock = super::Lock::default();
@@ -6094,6 +6109,7 @@ async fn plugin_removal_preserves_state_owned_by_conditional_commands() {
         settings: Vec::new(),
         linked: false,
         commands: Vec::new(),
+        state: None,
     };
 
     let catalog = root.join("data/sessions/index.json");
@@ -10855,6 +10871,7 @@ async fn asks_a_local_plugin() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 
@@ -10875,6 +10892,7 @@ async fn asks_a_local_plugin() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 

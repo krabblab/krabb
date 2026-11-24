@@ -367,8 +367,9 @@ review and apply changes to linked and custom-source plugins; without a terminal
 or with `--json`, it reports them as pending. Either way, the new version stays
 installed. A truncated or mismatched download also stops the update, and so does
 too little free disk space for the recovery point and new files plus 64 MiB,
-with the missing amount named. It then previews versions, plugin permission,
-capability, and secret changes, home migrations, and the service interruption.
+with the missing amount named, and so does a plugin that cannot read its saved
+state. It then previews versions, plugin permission, capability, secret, and state
+changes, home migrations, and the service interruption.
 With `--json`, the command prints that preview and applies it only with `--yes`.
 
 After approval, Krabb stops a running service and saves a recovery point with
@@ -434,7 +435,9 @@ setup commands. Binary presence does not mean a plugin is authenticated or activ
 
 `plugin update` previews changes, then replaces changed plugins after
 confirmation, including reviewed changes to capabilities, permissions, secret names,
-settings, and commands. Reinstallation is not needed for these changes. `--yes` accepts
+settings, commands, and the plugin's state schema. A release that cannot read the
+installed state is listed as a failed check and not offered. Reinstallation is not
+needed for these changes. `--yes` accepts
 the saved preview; stale or modified candidates are rejected. Running plugins keep
 serving during preparation and switch over between their requests. Installation
 activation errors print their cause and return a failure exit status.

@@ -63,6 +63,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: vec![],
+            state: None,
         },
     );
 

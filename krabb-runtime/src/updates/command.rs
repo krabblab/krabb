@@ -584,6 +584,7 @@ pub(crate) fn inspect_update(
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
+    super::state::check(home_root, Some(entry), &manifest)?;
 
     let name = plugin_name(id);
 
@@ -798,6 +799,7 @@ pub(crate) fn prepare_update(
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
+    super::state::check(home_root, Some(entry), &manifest)?;
 
     let name = plugin_name(id);
 

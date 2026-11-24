@@ -16,6 +16,20 @@ pub(crate) fn declarations(previous: &Entry, next: &Manifest) -> Value {
         }
     }
 
+    let migration = super::state::transition(
+        &next.id,
+        &next.version,
+        previous.state.as_ref(),
+        next.state.as_ref(),
+    );
+
+    if let Ok(Some(migration)) = migration {
+        changes.insert(
+            "state".into(),
+            json!({"from": migration.from, "to": migration.to, "text": migration.describe()}),
+        );
+    }
+
     Value::Object(changes)
 }
 
@@ -25,6 +39,10 @@ pub(crate) fn review(changes: &Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .map(|(name, change)| {
+            if let Some(text) = change["text"].as_str() {
+                return text.to_owned();
+            }
+
             format!(
                 "{name}: {} → {}",
                 diagnostic(change["before"].to_string()),

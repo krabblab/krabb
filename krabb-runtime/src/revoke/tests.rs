@@ -18,6 +18,7 @@ fn entry(variables: &[&str], settings: &[&str]) -> Entry {
             .collect(),
         linked: false,
         commands: Vec::new(),
+        state: None,
     }
 }
 

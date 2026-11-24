@@ -162,6 +162,7 @@ async fn update(
     drop(spinner);
 
     stage::compatible(&staged, &inspection)?;
+    stage::readable(root, &mut staged, &lock)?;
     space::check(root, &binaries, &staged)?;
 
     let preview = preview(
@@ -550,11 +551,22 @@ fn preview(
             rows.push(format!("{id} {change}"));
         }
 
+        let migration = staged.migrations.get(id);
+
+        if let Some(migration) = migration {
+            rows.push(format!("{id} {}", migration.describe()));
+        }
+
         plugins.push(serde_json::json!({
             "id": id,
             "from": entry.version,
             "to": manifest.version,
             "changes": changes,
+            "state": migration.map(|migration| serde_json::json!({
+                "from": migration.from,
+                "to": migration.to,
+                "text": migration.describe(),
+            })),
         }));
     }
 

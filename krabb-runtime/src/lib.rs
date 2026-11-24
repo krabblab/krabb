@@ -1275,6 +1275,9 @@ struct Manifest {
     check: bool,
     #[serde(default)]
     commands: Vec<CommandSpec>,
+    /// The schema of the plugin's saved state and the older ones it migrates when it starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<updates::state::State>,
 }
 
 impl Manifest {
@@ -1289,6 +1292,10 @@ impl Manifest {
 
         if !Protocol::CURRENT.compatible(self.protocol) {
             return Err("Plugin protocol is not compatible with this daemon.".into());
+        }
+
+        if let Some(state) = &self.state {
+            state.validate()?;
         }
 
         let mut capabilities = self.capabilities.clone();
@@ -1398,6 +1405,9 @@ struct Entry {
     linked: bool,
     #[serde(default)]
     commands: Vec<CommandSpec>,
+    /// The state contract of the installed version, absent for versions that declared none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<updates::state::State>,
 }
 
 struct Update {
@@ -3112,6 +3122,11 @@ fn remove_guarded(
     }
 
     guard(&lock)?;
+
+    // Kept first: an uninstall that fails later still has a lock entry, which takes precedence.
+    let state = lock.plugins.get(&name.id).and_then(|entry| entry.state.as_ref());
+
+    updates::state::keep(home_root, &name.id, state)?;
     upgrade::uninstalled(home_root, &name.id)?;
 
     let revoked = revoke::revoke(home_root, &name.id, &lock)?;
