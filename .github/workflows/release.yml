@@ -171,9 +171,19 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.version }}
 
+  # A release whose archives do not install and run on every target is never published.
+  install:
+    name: Install
+    needs: [prepare, package]
+    uses: ./.github/workflows/install.yml
+
+    with:
+      artifact: krabb-v${{ needs.prepare.outputs.version }}
+      ref: ${{ github.sha }}
+
   publish:
     name: Publish
-    needs: [prepare, checksum]
+    needs: [prepare, checksum, install]
     uses: ./.github/workflows/publish.yml
 
     permissions:

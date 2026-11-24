@@ -1,74 +1,59 @@
 name: Install
 
-# Installs a published release the way the README does and walks the first-run flow on every
-# target. Plugins are installed but not set up, because setup needs third-party accounts.
+# Installs Krabb archives built from a commit the way the README does and walks the first-run
+# flow on every target. Plugins come from the published index and are installed but not set
+# up, because setup needs third-party accounts. Release runs it on the archives it is about to
+# publish, so a release whose installation does not work is never published.
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release to pin, such as 0.1.0; empty for the installers' default (latest)"
+      ref:
+        description: "Commit, branch, or tag to build and install"
         required: false
         type: string
-        default: ""
+        default: main
 
   schedule:
     - cron: "41 5 * * 1"
+
+  push:
+    branches: [flow]
+
+  workflow_call:
+    inputs:
+      artifact:
+        description: "Prefix of core archives already packaged in this run"
+        required: true
+        type: string
+
+      ref:
+        description: "Commit the archives were built from"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  package:
+    name: Package
+    if: inputs.artifact == ''
+    uses: ./.github/workflows/package.yml
+
+    with:
+      names: core
+      artifact: krabb-install
+      ref: ${{ inputs.ref || 'main' }}
+
   plan:
     name: Plan
     runs-on: ubuntu-latest
 
     outputs:
-      version: ${{ steps.release.outputs.version }}
-      pin: ${{ steps.release.outputs.pin }}
-      unstable: ${{ steps.release.outputs.unstable }}
       plugins: ${{ steps.index.outputs.plugins }}
 
     steps:
-      - name: Resolve Release
-        id: release
-        shell: bash
-
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REQUESTED: ${{ inputs.version }}
-
-        run: |
-          set -euo pipefail
-
-          pin=""
-
-          # Without a version, installers fetch the latest stable release; before the first
-          # one exists, pin the newest pre-release so the flow still runs.
-          if [ -n "$REQUESTED" ]; then
-            tag="v${REQUESTED#v}"
-            pin="${tag#v}"
-          elif tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null)
-          then
-            :
-          else
-            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name // ""')
-            pin="${tag#v}"
-          fi
-
-          if [ -z "$tag" ]; then
-            echo "::error::No Krabb release is published."
-            exit 1
-          fi
-
-          prerelease=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.prerelease')
-
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-          echo "pin=$pin" >> "$GITHUB_OUTPUT"
-          echo "unstable=$prerelease" >> "$GITHUB_OUTPUT"
-          echo "Testing Krabb ${tag#v} (pinned: ${pin:-no}, pre-release: $prerelease)." \
-            >> "$GITHUB_STEP_SUMMARY"
-
       - name: List Official Plugins
         id: index
         shell: bash
@@ -90,7 +75,8 @@ jobs:
 
   flow:
     name: Flow (${{ matrix.name }})
-    needs: plan
+    needs: [package, plan]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.package.result != 'failure' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
 
@@ -102,34 +88,87 @@ jobs:
           - name: Linux x86_64
             os: linux
             runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
 
           - name: Linux aarch64
             os: linux
             runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
 
           - name: macOS x86_64
             os: macos
             runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
 
           - name: macOS aarch64
             os: macos
             runner: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
 
           - name: Windows x86_64
             os: windows
             runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
 
           - name: Windows aarch64
             os: windows
             runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
 
     env:
-      KRABB_EXPECTED: ${{ needs.plan.outputs.version }}
-      KRABB_VERSION: ${{ needs.plan.outputs.pin }}
-      KRABB_UNSTABLE: ${{ needs.plan.outputs.unstable }}
       KRABB_PLUGINS: ${{ needs.plan.outputs.plugins }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+          persist-credentials: false
+
+      - name: Download Archive
+        uses: actions/download-artifact@v8
+
+        with:
+          name: ${{ inputs.artifact || 'krabb-install' }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/release
+
+      - name: Serve The Archive Locally
+        shell: bash
+
+        env:
+          KRABB_TARGET: ${{ matrix.target }}
+          KRABB_ARCHIVE: ${{ matrix.archive }}
+
+        run: |
+          set -euo pipefail
+          version=$(bash krabb-scripts/version.sh)
+          release="$RUNNER_TEMP/release"
+          archive="krabb-core-v$version-$KRABB_TARGET.$KRABB_ARCHIVE"
+
+          test -f "$release/$archive"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "$release" && sha256sum "$archive" > SHA256SUMS)
+          else
+            (cd "$release" && shasum -a 256 "$archive" > SHA256SUMS)
+          fi
+
+          unstable=false
+          case "$version" in *-*) unstable=true ;; esac
+
+          {
+            echo "KRABB_EXPECTED=$version"
+            echo "KRABB_VERSION=$version"
+            echo "KRABB_UNSTABLE=$unstable"
+          } >> "$GITHUB_ENV"
+
       - if: matrix.os != 'windows'
         name: Isolate Home
         shell: bash
@@ -144,6 +183,7 @@ jobs:
             echo "XDG_CONFIG_HOME=$user/.config"
             echo "KRABB_HOME=$user/.krabb"
             echo "KRABB_PREFIX=$user/.local"
+            echo "KRABB_RELEASE_BASE=file://$RUNNER_TEMP/release"
           } >> "$GITHUB_ENV"
 
           echo "$user/.local/bin" >> "$GITHUB_PATH"
@@ -151,10 +191,7 @@ jobs:
       - if: matrix.os != 'windows'
         name: Install With install.sh
         shell: bash
-
-        run: |
-          set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | sh
+        run: sh install.sh
 
       - if: matrix.os != 'windows'
         name: Check Version
@@ -220,12 +257,15 @@ jobs:
         shell: pwsh
 
         run: |
+          $ErrorActionPreference = "Stop"
           $user = Join-Path $env:RUNNER_TEMP "user"
+          $release = Join-Path $env:RUNNER_TEMP "release"
           New-Item -ItemType Directory -Force -Path $user | Out-Null
           "USERPROFILE=$user" >> $env:GITHUB_ENV
           "HOME=$user" >> $env:GITHUB_ENV
           "LOCALAPPDATA=$user\AppData\Local" >> $env:GITHUB_ENV
           "KRABB_HOME=$user\.krabb" >> $env:GITHUB_ENV
+          "KRABB_RELEASE_BASE=$(([Uri]$release).AbsoluteUri.TrimEnd('/'))" >> $env:GITHUB_ENV
           "$user\AppData\Local\Krabb\bin" >> $env:GITHUB_PATH
 
       - if: matrix.os == 'windows'
@@ -235,7 +275,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
-          irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
+          & "$env:GITHUB_WORKSPACE/install.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed." }
 
       - if: matrix.os == 'windows'
         name: Check Version
