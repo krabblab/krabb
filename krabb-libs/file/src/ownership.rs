@@ -79,10 +79,19 @@ impl Ownership {
 
         for (root, entries) in &mut self.catalog.roots {
             let root = Path::new(root);
+
+            // A workspace that is missing, such as an unmounted drive, keeps its entries.
+            if !root.is_dir() {
+                continue;
+            }
+
             let before = entries.len();
 
             entries.retain(|path, _| {
-                !path.starts_with(prefix) || std::fs::symlink_metadata(root.join(path)).is_ok()
+                let missing = std::fs::symlink_metadata(root.join(path))
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+
+                !path.starts_with(prefix) || !missing
             });
 
             removed += before - entries.len();
@@ -287,6 +296,23 @@ mod tests {
         assert!(attachments.join("kept.bin").exists());
 
         drop(reopened);
+
+        let elsewhere = home.join("elsewhere");
+
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        let mut catalog = Ownership::open(&home, &elsewhere).unwrap();
+
+        catalog.assign(Path::new("attachments/gone.bin"), "channels.telegram").unwrap();
+        drop(catalog);
+
+        std::fs::remove_dir_all(&elsewhere).unwrap();
+
+        let mut catalog = Ownership::open(&home, &root).unwrap();
+
+        assert_eq!(catalog.prune(Path::new("attachments")).unwrap(), 0);
+
+        drop(catalog);
 
         let _ = std::fs::remove_dir_all(home);
     }
