@@ -190,7 +190,7 @@ async fn update(
 
     if running {
         record(root, &mut staged).await?;
-        service_action_report(&service, ServiceAction::Stop, ServiceReport::nested(json))?;
+        service_action_with(&service, ServiceAction::Stop, ServiceReport::nested(json))?;
     }
 
     let installed = service.is_file().then_some(service.as_path());
@@ -215,7 +215,7 @@ async fn update(
 
         Err(error) => {
             if running {
-                service_action_report(&service, ServiceAction::Start, ServiceReport::nested(json))?;
+                service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
             }
 
             return Err(error);
@@ -387,13 +387,54 @@ async fn activate(
         command.arg("--json");
     }
 
-    let status = command.status().await?;
+    if !json {
+        let status = command.status().await?;
 
-    if !status.success() {
-        return Err("The new version could not finish activation.".into());
+        if !status.success() {
+            return Err("The new version could not finish activation.".into());
+        }
+
+        return Ok(());
     }
 
-    Ok(())
+    // The new host reports its own failure as a JSON document; fold it into this command's
+    // single error instead of printing two.
+    let output = command
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (warnings, error) = reported(&stderr);
+
+    eprint!("{warnings}");
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(error.unwrap_or_else(|| "The new version could not finish activation.".into()).into())
+}
+
+/// Splits a `--json` host's standard error into its warnings and the message of the error
+/// document it ends with, if any.
+fn reported(stderr: &str) -> (&str, Option<String>) {
+    let start =
+        if stderr.starts_with('{') { Some(0) } else { stderr.rfind("\n{").map(|at| at + 1) };
+
+    let Some(start) = start else {
+        return (stderr, None);
+    };
+
+    let error = serde_json::from_str::<serde_json::Value>(&stderr[start..])
+        .ok()
+        .and_then(|value| value["error"].as_str().map(str::to_owned));
+
+    match error {
+        Some(error) => (&stderr[..start], Some(error)),
+        None => (stderr, None),
+    }
 }
 
 fn report_current(json: bool) -> Result<(), PluginError> {

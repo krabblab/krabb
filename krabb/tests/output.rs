@@ -75,3 +75,26 @@ fn redirected_output_is_plain_and_json_is_one_document() {
 
     let _ = std::fs::remove_dir_all(user);
 }
+
+#[test]
+fn json_usage_errors_are_one_document_with_exit_code_two() {
+    let user = std::env::temp_dir().join(format!("krabb-usage-{}", std::process::id()));
+
+    std::fs::create_dir_all(&user).unwrap();
+
+    for args in [&["--json", "status", "--nope"][..], &["--json", "plugin", "install"]] {
+        let output = krabb(&user, args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert_eq!(documents(&stderr), Some(1), "{args:?} printed {stderr}");
+        assert!(stderr.contains("\"error\""), "{stderr}");
+    }
+
+    let plain = krabb(&user, &["status", "--nope"]);
+
+    assert_eq!(plain.status.code(), Some(2));
+    assert_eq!(documents(&String::from_utf8_lossy(&plain.stderr)), None);
+
+    let _ = std::fs::remove_dir_all(user);
+}

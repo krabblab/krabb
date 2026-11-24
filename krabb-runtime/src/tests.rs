@@ -5211,6 +5211,20 @@ async fn manages_service_definition() {
 }
 
 #[test]
+fn json_uninstall_folds_its_stop_into_one_result() {
+    use super::ServiceReport::{Json, Silent, Text};
+
+    let remove = ServiceCommand::Remove(super::ServiceRemove { yes: true });
+
+    assert_eq!(super::service_report(&remove, true), Silent);
+    assert_eq!(super::service_report(&remove, false), Text);
+    assert_eq!(super::service_report(&ServiceCommand::Start, true), Json);
+    assert_eq!(super::service_report(&ServiceCommand::Restart, false), Text);
+    assert_eq!(super::ServiceReport::nested(true), Silent);
+    assert_eq!(super::ServiceReport::nested(false), Text);
+}
+
+#[test]
 fn service_actions_report_when_no_transition_is_needed() {
     use super::ServiceState::{Active, Failed, Inactive, NotInstalled, Starting, Stopping};
 
@@ -6148,10 +6162,9 @@ fn narrow_terminals_get_a_banner_that_does_not_wrap() {
     let width = BANNER.lines().map(|line| line.chars().count()).max().unwrap();
 
     assert!(width < usize::from(BANNER_COLUMNS));
-    assert_eq!(banner(BANNER_COLUMNS, true), BANNER);
-    assert_eq!(banner(BANNER_COLUMNS - 1, true), "\nKrabb");
-    assert_eq!(banner(0, true), "\nKrabb");
-    assert_eq!(banner(BANNER_COLUMNS, false), "");
+    assert_eq!(banner(BANNER_COLUMNS), BANNER);
+    assert_eq!(banner(BANNER_COLUMNS - 1), "\nKrabb");
+    assert_eq!(banner(0), "\nKrabb");
 }
 
 #[test]

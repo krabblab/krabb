@@ -268,18 +268,24 @@ pub(crate) fn service_at_json(
     command: ServiceCommand,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let report = match command {
-        ServiceCommand::Remove(_) => ServiceReport::nested(json),
-        _ if json => ServiceReport::Json,
-        _ => ServiceReport::Text,
-    };
+    let report = service_report(&command, json);
 
     service_at_with_mode(
         path,
         command,
-        |path, action| service_action_report(path, action, report),
+        |path, action| service_action_with(path, action, report),
         json,
     )
+}
+
+/// How a service command's own stop or start reports: uninstall's stop is one step of its single
+/// JSON result, while `service start`, `stop`, and `restart` report themselves.
+pub(crate) fn service_report(command: &ServiceCommand, json: bool) -> ServiceReport {
+    match (json, command) {
+        (false, _) => ServiceReport::Text,
+        (true, ServiceCommand::Remove(_)) => ServiceReport::Silent,
+        (true, _) => ServiceReport::Json,
+    }
 }
 
 pub(crate) fn service_at_with(
@@ -1049,7 +1055,7 @@ pub(crate) fn service_action(
     path: &Path,
     action: ServiceAction,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    service_action_with(path, action, false)
+    service_action_with(path, action, ServiceReport::Text)
 }
 
 /// How a service action reports itself: as its own text or JSON result, or not at all when it is
@@ -1069,18 +1075,6 @@ impl ServiceReport {
 }
 
 pub(crate) fn service_action_with(
-    path: &Path,
-    action: ServiceAction,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    service_action_report(
-        path,
-        action,
-        if json { ServiceReport::Json } else { ServiceReport::Text },
-    )
-}
-
-pub(crate) fn service_action_report(
     path: &Path,
     action: ServiceAction,
     report: ServiceReport,

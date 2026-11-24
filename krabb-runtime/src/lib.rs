@@ -154,16 +154,8 @@ const BANNER: &str = concat!(
 
 const BANNER_COLUMNS: u16 = 41;
 
-/// The help banner: the full logo when it fits, the name when narrow, and nothing when the
-/// output is not a terminal, so logs and scripts get only the help text.
-pub(crate) fn banner(columns: u16, terminal: bool) -> &'static str {
-    if !terminal {
-        ""
-    } else if columns < BANNER_COLUMNS {
-        "\nKrabb"
-    } else {
-        BANNER
-    }
+pub(crate) fn banner(columns: u16) -> &'static str {
+    if columns < BANNER_COLUMNS { "\nKrabb" } else { BANNER }
 }
 
 pub(crate) fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
@@ -813,7 +805,7 @@ fn format_cli_error(message: &str) -> String {
         return "The command could not be completed.".into();
     }
 
-    message.lines().map(str::trim_start).collect::<Vec<_>>().join("\n")
+    terminal::printable(&message.lines().map(str::trim_start).collect::<Vec<_>>().join("\n"))
 }
 
 fn toml_position(input: &str, offset: usize) -> (usize, usize) {
@@ -1291,8 +1283,8 @@ impl Manifest {
             return Err("Plugin IDs must contain lowercase letters, digits, or hyphens.".into());
         }
 
-        if self.version.trim().is_empty() {
-            return Err("Plugin versions must not be empty.".into());
+        if self.version.trim().is_empty() || self.version.chars().any(char::is_control) {
+            return Err("Plugin versions must be visible text.".into());
         }
 
         if !Protocol::CURRENT.compatible(self.protocol) {
@@ -1329,10 +1321,11 @@ impl Manifest {
         commands.dedup();
 
         if commands.len() != self.commands.len()
-            || self
-                .commands
-                .iter()
-                .any(|command| !valid(&command.name) || command.description.trim().is_empty())
+            || self.commands.iter().any(|command| {
+                !valid(&command.name)
+                    || command.description.trim().is_empty()
+                    || command.description.chars().any(char::is_control)
+            })
         {
             return Err("Plugin commands must be named uniquely and described.".into());
         }
@@ -1413,6 +1406,28 @@ struct Update {
     linked: bool,
 }
 
+/// Reports invalid arguments as clap does, or as one JSON document when `--json` was passed.
+fn usage_error(error: clap::Error, json: bool) -> ExitCode {
+    use clap::error::ErrorKind;
+
+    let listing = matches!(
+        error.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+
+    if !json || listing {
+        error.exit();
+    }
+
+    let message = error.render().to_string();
+    let message = message.trim().trim_start_matches("error: ");
+
+    eprintln!("{}", serde_json::json!({"error": message}));
+    ExitCode::from(2)
+}
+
 pub async fn cli() -> ExitCode {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
 
@@ -1449,7 +1464,13 @@ pub async fn cli() -> ExitCode {
         args[1] = "help".into();
     }
 
-    let matches = cli_command().get_matches_from(std::iter::once(NAME.to_owned()).chain(args));
+    let json = args.iter().any(|argument| argument == "--json");
+
+    let matches =
+        match cli_command().try_get_matches_from(std::iter::once(NAME.to_owned()).chain(args)) {
+            Ok(matches) => matches,
+            Err(error) => return usage_error(error, json),
+        };
 
     let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
@@ -1906,19 +1927,20 @@ fn print_help_with_plugins(root: &Path) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// The CLI with the help banner only on a terminal, so logs and scripts get only the help text.
 fn cli_command() -> clap::Command {
-    use std::io::IsTerminal;
+    let command = Cli::command();
 
-    Cli::command().before_help(banner(terminal::columns(), std::io::stdout().is_terminal()))
+    if std::io::stdout().is_terminal() {
+        command.before_help(banner(terminal::columns()))
+    } else {
+        command.before_help(None::<&str>)
+    }
 }
 
 fn help_text_with_plugins(root: &Path) -> Result<String, PluginError> {
     let mut command = cli_command();
     let mut help = command.render_help().to_string();
-
-    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        help = help.trim_start_matches('\n').to_owned();
-    }
 
     let commands = available_commands(root)?;
 
@@ -1974,7 +1996,7 @@ fn command_help_section(
 async fn ask_at(ask: Ask, root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let text = generate_at(ask, root, "cli").await?;
 
-    println!("{text}");
+    println!("{}", terminal::printable(&text));
     Ok(())
 }
 
@@ -2363,7 +2385,7 @@ fn restart_service() -> Result<bool, PluginError> {
 
     #[cfg(target_os = "windows")]
     {
-        service_action(&service_path(), ServiceAction::Restart)?;
+        service_action_with(&service_path(), ServiceAction::Restart, ServiceReport::Silent)?;
     }
 
     #[cfg(not(target_os = "windows"))]

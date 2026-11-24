@@ -965,3 +965,18 @@ async fn failed_activation_restores_the_previous_installation() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_json_host_error_folds_into_one_error_and_keeps_warnings() {
+    let pretty =
+        "Plugins not loaded after the update: echo.\n{\n  \"error\": \"Migration failed.\"\n}\n";
+
+    assert_eq!(
+        reported(pretty),
+        ("Plugins not loaded after the update: echo.\n", Some("Migration failed.".into()))
+    );
+
+    assert_eq!(reported("{\"error\":\"Broken.\"}"), ("", Some("Broken.".into())));
+    assert_eq!(reported("only a warning\n"), ("only a warning\n", None));
+    assert_eq!(reported("note\n{\"other\":1}"), ("note\n{\"other\":1}", None));
+}

@@ -35,6 +35,18 @@ fn draw(writer: &mut dyn Write, frame: &str, message: &str, columns: u16) {
     let _ = writer.flush();
 }
 
+/// TEXT with control characters other than newlines and tabs shown as `�`, so text from
+/// plugins or models cannot move the cursor, rewrite the screen, or set the clipboard.
+pub(crate) fn printable(text: &str) -> String {
+    text.chars()
+        .map(|character| match character {
+            '\n' | '\t' => character,
+            character if character.is_control() => '\u{fffd}',
+            character => character,
+        })
+        .collect()
+}
+
 pub(crate) fn columns() -> u16 {
     crossterm::terminal::size().map(|(columns, _)| columns).unwrap_or(80)
 }
@@ -139,7 +151,7 @@ mod tests {
 
     use unicode_width::UnicodeWidthStr;
 
-    use super::{draw, progress_to};
+    use super::{draw, printable, progress_to};
 
     #[test]
     fn frames_fit_narrow_terminals_and_preserve_unicode() {
@@ -247,5 +259,11 @@ mod tests {
             assert!(spinner.is_none());
             assert!(output.lock().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn printable_text_keeps_lines_and_neutralizes_controls() {
+        assert_eq!(printable("one\n\ttwo"), "one\n\ttwo");
+        assert_eq!(printable("a\u{1b}]52;c;eA==\u{7}b\r"), "a\u{fffd}]52;c;eA==\u{fffd}b\u{fffd}");
     }
 }
