@@ -12,6 +12,9 @@ on:
   schedule:
     - cron: "41 5 * * 1"
 
+  push:
+    branches: [flow]
+
   workflow_call:
     inputs:
       artifact:
@@ -230,6 +233,20 @@ jobs:
           fi
 
       - if: matrix.os != 'windows'
+        name: Check Plugin Health
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          krabb --json doctor < /dev/null > /dev/null
+          unhealthy=$(krabb --json plugin list | jq -r '.items[] | select(.health != "ready") | .id')
+
+          if [ -n "$unhealthy" ]; then
+            echo "::error::Plugins that are not healthy: $(echo $unhealthy)"
+            exit 1
+          fi
+
+      - if: matrix.os != 'windows'
         name: Install And Remove The Service
         shell: bash
 
@@ -327,6 +344,23 @@ jobs:
 
           if ($failed.Count -gt 0) {
             Write-Output "::error::Plugins that did not install: $($failed -join ', ')"
+            exit 1
+          }
+
+      - if: matrix.os == 'windows'
+        name: Check Plugin Health
+        shell: pwsh
+
+        run: |
+          krabb --json doctor | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "krabb doctor failed after installing plugins." }
+
+          $listed = krabb --json plugin list
+          if ($LASTEXITCODE -ne 0) { throw "krabb plugin list failed." }
+          $unhealthy = @(($listed | Out-String | ConvertFrom-Json).items | Where-Object { $_.health -ne "ready" })
+
+          if ($unhealthy.Count -gt 0) {
+            Write-Output "::error::Plugins that are not healthy: $($unhealthy.id -join ', ')"
             exit 1
           }
 
