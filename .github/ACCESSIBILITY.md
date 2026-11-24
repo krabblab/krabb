@@ -19,8 +19,9 @@ with a standard such as WCAG.
 
 ## Supported Environments
 
-- **Command line:** `krabb` runs in any terminal on Linux, macOS, and Windows.
-  `--json` gives structured output for tools and scripts.
+- **Command line:** `krabb` builds for Linux, macOS, and Windows; see
+  [Compatibility](../COMPATIBILITY.md) for the platforms verified so far. `--json`
+  gives structured output for tools and scripts.
 - **Terminal interface:** `krabb tui` is keyboard-driven. `krabb tui --once
   "prompt"` prints one reply as plain text without the full-screen interface.
 - **Chat channels:** Telegram, WhatsApp, Discord, Slack, and Signal let you use
@@ -32,7 +33,7 @@ with a standard such as WCAG.
   Set `theme = false` under `[clients.tui]` to use your terminal's own colors.
 - `/animation off` in the terminal interface shows replies at once instead of
   typing them out.
-- Errors name the problem and the next step in text, not only in color.
+- Most errors name the problem and the next step in text, not only in color.
 
 ## Known Limitations
 
@@ -41,10 +42,12 @@ with a standard such as WCAG.
   command line, or a chat channel instead.
 - Help output starts with a decorative text banner, and some lists use box-drawing
   characters, which screen readers may read aloud.
-- Media replies such as voice are not available yet, so replies are text only.
+- Krabb can transcribe voice notes, but replies are text only for now.
 
-Planned work is tracked in issues [#147](https://github.com/krabblab/krabb/issues/147)
-and [#201](https://github.com/krabblab/krabb/issues/201).
+Planned work is tracked in
+[Verify Unicode, Timezones, and Accessibility](https://github.com/krabblab/krabb/issues/147)
+and
+[Client Accessibility, Localization, and Safe Transfer](https://github.com/krabblab/krabb/issues/201).
 
 ## Report a Barrier
 

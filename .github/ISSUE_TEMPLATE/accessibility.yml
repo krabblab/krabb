@@ -10,7 +10,7 @@ body:
     attributes:
       label: User Story
       description: What you were trying to do.
-      placeholder: As a <role>, I want <goal>, so that <benefit>.
+      placeholder: As a <role>, I want <capability>, so that <benefit>.
     validations:
       required: true
   - type: textarea
