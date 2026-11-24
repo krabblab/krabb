@@ -671,6 +671,11 @@ async fn detached_plugins_carry_across_the_restart_and_missing_ones_are_reported
     assert_eq!(carried(&root), ["telegram".to_owned()].into_iter().collect());
     assert!(!root.join(DETACHED).exists());
 
+    finish::carry(&root, &["telegram".into()]).unwrap();
+    finish::carry(&root, &[]).unwrap();
+
+    assert!(carried(&root).is_empty());
+
     let attached = ["echo".to_owned(), "tui".to_owned()];
 
     assert_eq!(finish::missing(&attached, &["tui".into()]), ["echo"]);
