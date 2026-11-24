@@ -1267,7 +1267,7 @@ async fn injects_only_the_current_conversations_bounded_memory_index() {
 }
 
 #[test]
-fn formats_status_as_aligned_lines() {
+fn status_reads_as_a_tree_with_one_next_action() {
     let value = serde_json::json!({
         "version": super::VERSION,
         "health": "unhealthy",
@@ -1286,9 +1286,41 @@ fn formats_status_as_aligned_lines() {
     assert_eq!(
         super::status_text(&value, 0),
         format!(
-            "Version:            {}\nHealth:             unhealthy\nBackground runtime: stopped\nIntelligence:       configured (codex, gemini)\nChannels:           configured (telegram, discord)\nPlugins:            0 installed",
+            "Krabb {} needs attention\n\
+             ├─ Runtime: stopped\n\
+             ├─ Intelligence: configured (codex, gemini)\n\
+             ├─ Channels: configured (telegram, discord)\n\
+             └─ Plugins: 0 installed\n\
+             \n\
+             Run `krabb doctor` for details.",
             super::VERSION
         )
+    );
+
+    let healthy = serde_json::json!({
+        "version": "0.1.0",
+        "health": "healthy",
+        "daemon": "running",
+        "intelligence": {"status": "configured", "plugins": ["codex"]},
+        "channels": {"status": "not configured", "plugins": []},
+        "recovery": {"from": "0.0.9", "accepted": true},
+    });
+
+    assert_eq!(
+        super::status_text(&healthy, 1),
+        "Krabb 0.1.0 is healthy\n\
+         ├─ Runtime: running\n\
+         ├─ Intelligence: configured (codex)\n\
+         ├─ Channels: not configured\n\
+         ├─ Plugins: 1 installed\n\
+         └─ Recovery point: Krabb 0.0.9 (kept)"
+    );
+
+    let unfinished = serde_json::json!({"recovery": {"from": "0.0.9", "accepted": false}});
+
+    assert!(
+        super::status_text(&unfinished, 0)
+            .ends_with("\n\nUndo the unfinished update with `krabb update --rollback`.")
     );
 
     assert_eq!(
@@ -1356,7 +1388,8 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     );
 
     assert!(text.ends_with(
-        "2 installed\n  openai            ready\n  telegram          needs setup: krabb plugin setup telegram"
+        "└─ Plugins: 2 installed\n   ├─ openai: ready\n   └─ telegram: needs setup\n\n\
+         Set up telegram with `krabb plugin setup telegram`."
     ));
 }
 
@@ -1413,12 +1446,22 @@ fn formats_status_health_details_only_when_present() {
     let text = super::status_text(&value, 3);
 
     assert!(text.ends_with(
-            "Plugins:            3 installed\nHealth details:     configuration is invalid, plugin commands have name conflicts"
-        ));
+        "├─ Plugins: 3 installed\n└─ Needs attention\n   ├─ Configuration is invalid\n   \
+         └─ Plugin commands have name conflicts\n\nRun `krabb doctor` for details."
+    ));
+
+    value["health_details"] = serde_json::json!([
+        "no intelligence plugin is installed (run `krabb plugin install <provider>`)"
+    ]);
+
+    assert!(super::status_text(&value, 3).ends_with(
+        "   └─ No intelligence plugin is installed\n\n\
+         Install a provider with `krabb plugin install <provider>`."
+    ));
 
     value["health_details"] = serde_json::json!([]);
 
-    assert!(!super::status_text(&value, 3).contains("Health details:"));
+    assert!(!super::status_text(&value, 3).contains("Needs attention"));
 }
 
 #[tokio::test]
@@ -1497,12 +1540,13 @@ fn plugin_install_failures_point_to_the_daily_application_log() {
 fn plugin_install_guidance_uses_the_service_state() {
     assert_eq!(
         super::plugin_service_guidance(false),
-        "The Krabb service is not installed. Install it for full plugin functionality:\nkrabb service install"
+        "The Krabb service is not installed, so install it with `krabb service install` for \
+         full plugin functionality."
     );
 
     assert_eq!(
         super::plugin_service_guidance(true),
-        "Restart the Krabb service to activate the new plugins:\nkrabb service restart"
+        "Activate the new plugins with `krabb service restart`."
     );
 }
 
@@ -5295,7 +5339,18 @@ fn service_status_uses_clear_sentences() {
             Path::new("/home/user/krabb.service"),
             true
         ),
-        "The Krabb service is running.\nIts definition is at /home/user/krabb.service."
+        "The Krabb service is running\n└─ Definition: /home/user/krabb.service"
+    );
+
+    assert_eq!(
+        super::service_status_text(
+            "Krabb",
+            super::ServiceState::Inactive,
+            Path::new("/home/user/krabb.service"),
+            true
+        ),
+        "The Krabb service is stopped\n└─ Definition: /home/user/krabb.service\n\n\
+         Start it with `krabb service start`."
     );
 
     assert_eq!(
@@ -5305,7 +5360,7 @@ fn service_status_uses_clear_sentences() {
             Path::new("unused"),
             false
         ),
-        "The Krabb service is not installed."
+        "The Krabb service is not installed.\nInstall it with `krabb service install`."
     );
 }
 
@@ -7019,7 +7074,8 @@ fn plugin_inventory_uses_tree_rows_and_pages_of_five() {
     assert!(second_page.starts_with("Plugins (6–7 of 7, page 2 of 2)\n├─ plugin-05"));
     assert!(second_page.contains("└─ plugin-06@v1.0.0"));
     assert!(super::format_plugin_list(&items, 3).unwrap_err().contains("1 to 2"));
-    assert_eq!(super::format_plugin_list(&[], 1).unwrap(), "No plugins installed.");
+    assert_eq!(super::format_plugin_list(&[], 1).unwrap(), super::NO_PLUGINS);
+    assert!(super::NO_PLUGINS.ends_with("Install one with `krabb plugin install <id>`."));
 }
 
 #[test]
@@ -7061,7 +7117,7 @@ fn session_inventory_prioritizes_working_sessions_and_paginates() {
 
     assert_eq!(
         super::format_session_list(&serde_json::json!({"items": []}), 1).unwrap(),
-        "No sessions."
+        "No sessions yet.\nStart a conversation with `krabb tui`."
     );
 }
 

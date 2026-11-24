@@ -463,18 +463,24 @@ impl Guide {
     fn finish(&self) -> Result<(), Error> {
         println!();
 
-        if ready_provider(&self.root)?.is_some() {
-            println!("Your Krabb is ready.");
-        } else {
-            println!("Your Krabb is set up, and it needs a provider to answer.");
-        }
+        let ready = ready_provider(&self.root)?.is_some();
+        let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
 
-        if crate::load_lock_at(&self.root)?.plugins.contains_key("tui") {
-            println!("Chat with it in the terminal with `krabb tui`");
-        }
-
-        println!("Check every part with `krabb status`");
+        println!("{}", finished(ready, terminal));
         Ok(())
+    }
+}
+
+/// How the guide ends: whether the Krabb can answer, then the one command to run next.
+fn finished(ready: bool, terminal: bool) -> &'static str {
+    match (ready, terminal) {
+        (true, true) => "Your Krabb is ready.\nChat with it with `krabb tui`.",
+        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`.",
+
+        (false, _) => {
+            "Your Krabb is set up, and it needs a provider to answer.\n\
+                       Add one with `krabb init provider`."
+        }
     }
 }
 

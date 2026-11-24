@@ -225,52 +225,121 @@ pub(crate) fn capability_text(value: &serde_json::Value) -> String {
     }
 }
 
+/// The status as the plugin tree layout: a headline, one branch per part, and one next action.
 pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String {
-    let mut output = format!(
-        "{:<20}{}\n{:<20}{}\n{:<20}{}\n{:<20}{}\n{:<20}{}\n{:<20}{} installed",
-        "Version:",
-        value["version"].as_str().unwrap_or(VERSION),
-        "Health:",
-        value["health"].as_str().unwrap_or("unhealthy"),
-        "Background runtime:",
-        value["daemon"].as_str().unwrap_or("stopped"),
-        "Intelligence:",
-        capability_text(&value["intelligence"]),
-        "Channels:",
-        capability_text(&value["channels"]),
-        "Plugins:",
-        installed
-    );
+    let version = value["version"].as_str().unwrap_or(VERSION);
+    let healthy = value["health"] == "healthy";
+    let headline = if healthy { "is healthy" } else { "needs attention" };
 
-    for plugin in value["plugin_states"].as_array().into_iter().flatten() {
-        let id = plugin["id"].as_str().unwrap_or_default();
-        let state = plugin["state"].as_str().unwrap_or_default();
+    let plugins = value["plugin_states"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|plugin| {
+            format!(
+                "{}: {}",
+                plugin["id"].as_str().unwrap_or_default(),
+                plugin["state"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
 
-        output.push_str(&format!("\n  {id:<18}{state}"));
+    let details = value["health_details"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(|detail| capitalized(problem(detail)))
+        .collect::<Vec<_>>();
 
-        if let Some(next) = plugin["next"].as_str() {
-            output.push_str(&format!(": {next}"));
-        }
-    }
-
-    if let Some(details) = value["health_details"].as_array() {
-        let details = details.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>();
-
-        if !details.is_empty() {
-            output.push_str("\nHealth details:     ");
-            output.push_str(&details.join(", "));
-        }
-    }
+    let mut parts = vec![
+        (format!("Runtime: {}", value["daemon"].as_str().unwrap_or("stopped")), Vec::new()),
+        (format!("Intelligence: {}", capability_text(&value["intelligence"])), Vec::new()),
+        (format!("Channels: {}", capability_text(&value["channels"])), Vec::new()),
+        (format!("Plugins: {installed} installed"), plugins),
+    ];
 
     if let Some(from) = value["recovery"]["from"].as_str() {
-        let state = if value["recovery"]["accepted"] == true {
-            "kept"
-        } else {
-            "update unfinished, so run `krabb update --rollback`"
-        };
+        let state =
+            if value["recovery"]["accepted"] == true { "kept" } else { "update unfinished" };
 
-        output.push_str(&format!("\n{:<20}Krabb {from} ({state})", "Recovery point:"));
+        parts.push((format!("Recovery point: Krabb {from} ({state})"), Vec::new()));
+    }
+
+    if !details.is_empty() {
+        parts.push(("Needs attention".into(), details));
+    }
+
+    let tree = parts
+        .iter()
+        .enumerate()
+        .map(|(index, (label, details))| {
+            format_tree_entry(label, details, index + 1 == parts.len())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut output = format!("Krabb {version} {headline}\n{tree}");
+
+    if let Some(next) = next_action(value) {
+        output.push_str(&format!("\n\n{next}"));
     }
 
     output
+}
+
+/// The one command that moves the installation forward, as a sentence.
+fn next_action(value: &serde_json::Value) -> Option<String> {
+    if value["recovery"]["from"].is_string() && value["recovery"]["accepted"] != true {
+        return Some("Undo the unfinished update with `krabb update --rollback`.".into());
+    }
+
+    let details = value["health_details"].as_array().into_iter().flatten();
+
+    if let Some(command) = details.filter_map(serde_json::Value::as_str).find_map(remedy) {
+        return Some(match command {
+            "krabb init" => "Create the configuration with `krabb init`.".into(),
+
+            command if command.starts_with("krabb plugin install") => {
+                format!("Install a provider with `{command}`.")
+            }
+
+            command => format!("Run `{command}` next."),
+        });
+    }
+
+    for plugin in value["plugin_states"].as_array().into_iter().flatten() {
+        let id = plugin["id"].as_str().unwrap_or_default();
+
+        let Some(next) = plugin["next"].as_str() else {
+            continue;
+        };
+
+        return Some(match plugin["state"].as_str() {
+            Some("needs setup") => format!("Set up {id} with `{next}`."),
+            Some("configured") => format!("Start {id} with `{next}`."),
+            _ => format!("{}.", capitalized(next)),
+        });
+    }
+
+    (value["health"] == "unhealthy").then(|| "Run `krabb doctor` for details.".into())
+}
+
+/// A health detail without the command it names in `(run `...`)`.
+fn problem(detail: &str) -> &str {
+    detail.split_once(" (run `").map_or(detail, |(problem, _)| problem)
+}
+
+/// The command a health detail names in `(run `...`)`.
+fn remedy(detail: &str) -> Option<&str> {
+    detail.split_once(" (run `")?.1.strip_suffix("`)")
+}
+
+fn capitalized(text: &str) -> String {
+    let mut characters = text.chars();
+
+    characters
+        .next()
+        .map(|first| first.to_uppercase().chain(characters).collect())
+        .unwrap_or_default()
 }

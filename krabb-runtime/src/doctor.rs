@@ -188,39 +188,88 @@ pub(crate) fn doctor_at(
             println!("Repairs applied:\n{}", format_tree_list(&descriptions));
         }
     } else {
-        let config_status = if config_valid == Some(true) { "valid" } else { "missing" };
+        let checks = Checks {
+            configuration: config_valid == Some(true),
+            plugins: plugins_directory_present,
+            workspace: workspace_directory_present,
+            krab: krab_instructions_present,
+            klaw: klaw_instructions_present,
+        };
 
-        let plugins_status = if plugins_directory_present { "present" } else { "missing" };
-
-        let workspace_status = if workspace_directory_present { "present" } else { "missing" };
-
-        let krab_status = if krab_instructions_present { "present" } else { "missing" };
-
-        let klaw_status = if klaw_instructions_present { "present" } else { "missing" };
-
-        let health = if healthy { "healthy" } else { "unhealthy" };
-
-        println!("Krabb local installation is {health}.");
-        println!("Its home directory is {}.", root.display());
-        println!("Runtime activation is checked separately with `krabb status`.");
-        println!("\nThe configuration is {config_status}.");
-        println!("The plugins directory is {plugins_status}.");
-        println!("The workspace is {workspace_status}.");
-        println!("KRAB.md instructions are {krab_status}.");
-        println!("KLAW.md instructions are {klaw_status}.");
-        println!("\n{} plugins are installed.", lock.plugins.len());
-        println!("Plugin integrity checks passed.");
-
-        println!(
-            "The protocol version is {}.{}.",
-            Protocol::CURRENT.major,
-            Protocol::CURRENT.minor
-        );
-
-        if !healthy {
-            println!("\nRun `krabb doctor --fix` to restore missing local state.");
-        }
+        println!("{}", report(root, &checks, lock.plugins.len(), healthy));
     }
 
     Ok(())
+}
+
+/// What the read-only check found in the home.
+struct Checks {
+    configuration: bool,
+    plugins: bool,
+    workspace: bool,
+    krab: bool,
+    klaw: bool,
+}
+
+/// The check as the plugin tree layout, ending with the one command to run next.
+fn report(root: &Path, checks: &Checks, installed: usize, healthy: bool) -> String {
+    let present = |found: bool| if found { "present" } else { "missing" };
+
+    let configuration = if checks.configuration { "valid" } else { "missing" };
+
+    let headline = if healthy { "is healthy" } else { "needs repair" };
+
+    let parts = [
+        format!("Home: {}", root.display()),
+        format!("Configuration: {configuration}"),
+        format!("Plugins directory: {}", present(checks.plugins)),
+        format!("Workspace: {}", present(checks.workspace)),
+        format!("KRAB.md instructions: {}", present(checks.krab)),
+        format!("KLAW.md instructions: {}", present(checks.klaw)),
+        format!(
+            "Plugins: {installed} installed, integrity checks passed, protocol {}.{}",
+            Protocol::CURRENT.major,
+            Protocol::CURRENT.minor
+        ),
+    ];
+
+    let next = if healthy {
+        "Check that the runtime and plugins are running with `krabb status`."
+    } else {
+        "Restore the missing local state with `krabb doctor --fix`."
+    };
+
+    format!("The local installation {headline}\n{}\n\n{next}", format_tree_list(&parts))
+}
+
+#[cfg(test)]
+mod layout {
+    use super::*;
+
+    #[test]
+    fn the_check_reads_as_a_tree_with_one_next_action() {
+        let all =
+            Checks { configuration: true, plugins: true, workspace: true, krab: true, klaw: true };
+
+        assert_eq!(
+            report(Path::new("/home/owner/.krabb"), &all, 2, true),
+            "The local installation is healthy\n\
+             ├─ Home: /home/owner/.krabb\n\
+             ├─ Configuration: valid\n\
+             ├─ Plugins directory: present\n\
+             ├─ Workspace: present\n\
+             ├─ KRAB.md instructions: present\n\
+             ├─ KLAW.md instructions: present\n\
+             └─ Plugins: 2 installed, integrity checks passed, protocol 0.1\n\
+             \n\
+             Check that the runtime and plugins are running with `krabb status`."
+        );
+
+        let missing = Checks { workspace: false, ..all };
+        let text = report(Path::new("/home/owner/.krabb"), &missing, 0, false);
+
+        assert!(text.starts_with("The local installation needs repair\n"), "{text}");
+        assert!(text.contains("├─ Workspace: missing\n"), "{text}");
+        assert!(text.ends_with("\n\nRestore the missing local state with `krabb doctor --fix`."));
+    }
 }

@@ -224,7 +224,27 @@ locally available credentials and settings; they do not prove live connectivity.
 Channels are optional for local CLI and TUI use. If any channel is installed,
 health requires at least one ready channel; an explicit `KRABB_CHANNEL` requires
 that channel. Health also checks configuration, the selected intelligence plugin,
-and command conflicts. Failed checks appear in `health_details`.
+and command conflicts. Failed checks appear in `health_details`, and under
+"Needs attention" in the text output.
+
+Result screens share one layout, as `krabb status` shows:
+
+```text
+Krabb 0.1.0 needs attention
+├─ Runtime: stopped
+├─ Intelligence: configured (codex)
+├─ Channels: not configured
+└─ Plugins: 1 installed
+   └─ codex: configured
+
+Start codex with `krabb service start`.
+```
+
+A headline sentence comes first, then a tree of parts and their details, then
+one sentence naming the command to run next. `krabb doctor`, `krabb service
+status`, plugin lists and results, update previews, and the end of `krabb init`
+follow it, and an empty list ends with the command that fills it. The TUI uses
+the same terms, such as Runtime and Intelligence.
 
 Each installed plugin is listed with its state and the command that moves it forward:
 

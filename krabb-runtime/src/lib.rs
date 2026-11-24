@@ -3286,7 +3286,7 @@ fn list_at(
             }))?
         );
     } else if rows.is_empty() {
-        println!("No plugins installed.");
+        println!("{NO_PLUGINS}");
     } else {
         println!("{}", format_plugin_list(&rows, page)?);
     }

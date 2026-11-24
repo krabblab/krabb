@@ -742,7 +742,7 @@ where
                     Ok(value) => format_status(&value),
 
                     Err(error) if daemon_unavailable(&error) => {
-                        "Background runtime: stopped.\nStart it with `krabb service start`.\n> ".into()
+                        "Runtime: stopped.\nStart it with `krabb service start`.\n> ".into()
                     }
 
                     Err(error) => format!("Daemon status unavailable: {}.\n> ", sentence(error.to_string())),
@@ -4866,10 +4866,7 @@ fn format_approval_notice(
 fn format_status(value: &Value) -> String {
     let running = value["running"].as_bool().unwrap_or(false);
     let sessions = value["sessions"].as_u64().unwrap_or(0);
-    format!(
-        "Background runtime: {}\nSessions: {sessions}\n> ",
-        if running { "running" } else { "stopped" }
-    )
+    format!("Runtime: {}\nSessions: {sessions}\n> ", if running { "running" } else { "stopped" })
 }
 
 fn format_approval(value: &Value) -> String {
@@ -5113,11 +5110,11 @@ fn format_session_archive(id: &str, archived: bool, changed: bool) -> String {
 
 fn format_plugins(value: &Value, page: usize) -> String {
     let Some(items) = value["items"].as_array() else {
-        return "No plugins installed.".into();
+        return "No plugins installed.\nInstall one with `krabb plugin install <id>`.".into();
     };
 
     if items.is_empty() {
-        return "No plugins installed.".into();
+        return "No plugins installed.\nInstall one with `krabb plugin install <id>`.".into();
     }
 
     let mut items = items.iter().collect::<Vec<_>>();
@@ -6108,11 +6105,11 @@ mod tests {
     fn formats_status() {
         let text = super::format_status(&serde_json::json!({"running": true, "sessions": 2}));
 
-        assert_eq!(text, "Background runtime: running\nSessions: 2\n> ");
+        assert_eq!(text, "Runtime: running\nSessions: 2\n> ");
 
         let text = super::format_status(&serde_json::json!({"running": false}));
 
-        assert_eq!(text, "Background runtime: stopped\nSessions: 0\n> ");
+        assert_eq!(text, "Runtime: stopped\nSessions: 0\n> ");
     }
 
     #[test]

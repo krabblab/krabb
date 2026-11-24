@@ -460,9 +460,10 @@ pub(crate) fn plugin_log_hint(failure: &str) -> String {
 
 pub(crate) fn plugin_service_guidance(installed: bool) -> &'static str {
     if installed {
-        "Restart the Krabb service to activate the new plugins:\nkrabb service restart"
+        "Activate the new plugins with `krabb service restart`."
     } else {
-        "The Krabb service is not installed. Install it for full plugin functionality:\nkrabb service install"
+        "The Krabb service is not installed, so install it with `krabb service install` for full \
+         plugin functionality."
     }
 }
 

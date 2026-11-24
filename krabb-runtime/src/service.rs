@@ -476,9 +476,21 @@ pub(crate) fn service_status_text(
             ServiceState::NotInstalled => "not installed",
         };
 
-        format!("The {name} service is {state}.\nIts definition is at {}.", path.display())
+        let definition = format_tree_list(&[format!("Definition: {}", path.display())]);
+
+        let next = match status {
+            ServiceState::Inactive => "\n\nStart it with `krabb service start`.",
+
+            ServiceState::Failed => {
+                "\n\nCheck it with `krabb status`, then restart it with `krabb service restart`."
+            }
+
+            _ => "",
+        };
+
+        format!("The {name} service is {state}\n{definition}{next}")
     } else {
-        format!("The {name} service is not installed.")
+        format!("The {name} service is not installed.\nInstall it with `krabb service install`.")
     }
 }
 
