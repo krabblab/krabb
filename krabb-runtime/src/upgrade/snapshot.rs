@@ -137,6 +137,7 @@ pub(super) async fn restore(
         crate::revoke::restored(root, id)?;
     }
 
+    recovery::remove(&root.join(super::DETACHED))?;
     recovery::remove(&root.join(krabb_migrations::JOURNAL))?;
     recovery::remove(&root.join(krabb_migrations::BACKUP))?;
 

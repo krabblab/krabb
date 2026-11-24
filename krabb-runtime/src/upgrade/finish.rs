@@ -36,11 +36,63 @@ pub(super) async fn run(
     drop(offline_lock(root)?);
 
     if start {
+        carry(root, &plan.detached)?;
         service_action_with(&service_path(), ServiceAction::Start, json)?;
         ready(root).await?;
+
+        let missing = loaded(root, &plan.attached, READY).await;
+
+        if !missing.is_empty() {
+            eprintln!(
+                "Plugins not loaded after the update: {}.\nRun `krabb status` for their errors, \
+                 reinstall them with `krabb plugin install`, or return with `krabb update \
+                 --rollback`.",
+                missing.join(", ")
+            );
+        }
     }
 
     Ok(())
+}
+
+/// Asks the next daemon start to keep these plugins detached.
+pub(super) fn carry(root: &Path, detached: &[String]) -> Result<(), PluginError> {
+    if detached.is_empty() {
+        return Ok(());
+    }
+
+    krabb_file::save(root.join(DETACHED), serde_json::to_vec(detached)?)?;
+
+    Ok(())
+}
+
+/// Waits until every plugin loaded before the update is loaded again, and returns any that are not.
+pub(super) async fn loaded(root: &Path, attached: &[String], limit: Duration) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + limit;
+
+    loop {
+        let active = control_at("plugin.active", serde_json::json!({}), root)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+
+        let missing = attached
+            .iter()
+            .filter(|id| {
+                !active["items"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item == *id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if missing.is_empty() || tokio::time::Instant::now() >= deadline {
+            return missing;
+        }
+
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 fn install(root: &Path, dir: &Path, artifact: &stage::Artifact) -> Result<(), PluginError> {

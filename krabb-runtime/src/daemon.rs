@@ -84,12 +84,24 @@ pub(crate) async fn serve_inner(
         model: model_id.to_owned(),
     });
 
+    // Plugins detached before an update stay detached; they never start after the restart.
+    let detached = upgrade::carried(root);
+
+    plugins.detached.write().await.extend(detached.iter().cloned());
+
+    if detached.contains(channel_id) || detached.contains(model_id) {
+        info!("A plugin detached before the update stays detached.");
+    }
+
     if channel_id == model_id {
-        if let Err(error) = load_plugin(root, channel_id, None, force, &config, &plugins).await {
+        if !detached.contains(channel_id)
+            && let Err(error) = load_plugin(root, channel_id, None, force, &config, &plugins).await
+        {
             warn!(plugin = channel_id, error = %diagnostic(sentence(error.to_string())), "Plugin failed to start.");
         }
     } else {
         if (force || ready(channel_id))
+            && !detached.contains(channel_id)
             && let Err(error) =
                 load_plugin(root, channel_id, Some(Capability::Channel), force, &config, &plugins)
                     .await
@@ -98,6 +110,7 @@ pub(crate) async fn serve_inner(
         }
 
         if binary_at(model_id, root).is_some()
+            && !detached.contains(model_id)
             && let Err(error) =
                 load_plugin(root, model_id, Some(Capability::Model), force, &config, &plugins).await
         {
@@ -108,6 +121,7 @@ pub(crate) async fn serve_inner(
     for id in installed_at(root) {
         if id != channel_id
             && id != model_id
+            && !detached.contains(&id)
             && let Err(error) = load_plugin(root, &id, None, force, &config, &plugins).await
         {
             warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "Plugin failed to start.");
