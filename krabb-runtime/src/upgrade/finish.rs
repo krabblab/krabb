@@ -33,14 +33,20 @@ pub(super) async fn run(
         }
     }
 
-    if definition::refresh(&service_path())? && !json {
+    let service = service_path();
+
+    let saved = snapshot::load(root)?
+        .and_then(|point| point.definition)
+        .is_some_and(|saved| saved.path == service);
+
+    if saved && definition::refresh(&service)? && !json {
         eprintln!("Refreshed the service definition to the current format.");
     }
 
     drop(offline_lock(root)?);
 
     if start {
-        service_action_with(&service_path(), ServiceAction::Start, json)?;
+        service_action_with(&service, ServiceAction::Start, json)?;
         ready(root).await?;
     }
 

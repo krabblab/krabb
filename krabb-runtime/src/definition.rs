@@ -1,14 +1,28 @@
 //! Keeps an installed service definition in the current release's format.
 //!
-//! A refresh keeps the installed executable and environment and only changes the template, so
-//! variables saved at install time are never dropped.
+//! A definition is rewritten only when its layout, with the executable and environment left
+//! blank, is one a Krabb release wrote and every value decodes exactly. Anything else counts as
+//! edited by hand and is left alone. A refresh keeps the installed executable and environment.
 
 use super::*;
 
-type Installed = (PathBuf, Vec<(String, String)>);
+/// Layouts earlier releases wrote, with the executable and environment left blank. Add the
+/// outgoing layout here whenever `service_text` changes.
+const RETIRED: &[&str] = &[];
+
+#[derive(Debug, PartialEq)]
+struct Installed {
+    executable: PathBuf,
+    environment: Vec<(String, String)>,
+    layout: String,
+}
 
 /// The definition this release would write for the installed service, when it differs.
 pub(crate) fn stale(path: &Path) -> Option<String> {
+    stale_among(path, RETIRED)
+}
+
+fn stale_among(path: &Path, retired: &[&str]) -> Option<String> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
 
     if !metadata.is_file() {
@@ -16,8 +30,14 @@ pub(crate) fn stale(path: &Path) -> Option<String> {
     }
 
     let current = std::fs::read_to_string(path).ok()?;
-    let (executable, environment) = parse(&current)?;
-    let expected = service_text(&executable, &environment);
+    let installed = parse(&current)?;
+    let layout = parse(&service_text(Path::new(""), &[]))?.layout;
+
+    if installed.layout != layout && !retired.contains(&installed.layout.as_str()) {
+        return None;
+    }
+
+    let expected = service_text(&installed.executable, &installed.environment);
 
     (expected != current).then_some(expected)
 }
@@ -28,8 +48,14 @@ pub(crate) fn refresh(path: &Path) -> Result<bool, PluginError> {
         return Ok(false);
     };
 
-    write(path, &expected)?;
-    reload(path)?;
+    #[cfg(target_os = "windows")]
+    install(path, &expected)?;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        secure(path, expected.as_bytes())?;
+        reload(path)?;
+    }
 
     Ok(true)
 }
@@ -49,13 +75,7 @@ pub(crate) fn reload(path: &Path) -> Result<(), PluginError> {
     }
 
     #[cfg(target_os = "windows")]
-    {
-        let definition = std::fs::read_to_string(path)?;
-        let (executable, environment) =
-            parse(&definition).ok_or("The service definition could not be read.")?;
-
-        windows_service_install(&executable, &environment, true, path, &definition)?;
-    }
+    install(path, &std::fs::read_to_string(path)?)?;
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     let _ = path;
@@ -63,19 +83,12 @@ pub(crate) fn reload(path: &Path) -> Result<(), PluginError> {
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
-fn write(path: &Path, definition: &str) -> Result<(), PluginError> {
-    secure(path, definition.as_bytes())?;
-
-    Ok(())
-}
-
+/// Windows keeps the definition in the service registry, so installing writes and reloads it.
 #[cfg(target_os = "windows")]
-fn write(path: &Path, definition: &str) -> Result<(), PluginError> {
-    let (executable, environment) =
-        parse(definition).ok_or("The service definition could not be read.")?;
+fn install(path: &Path, definition: &str) -> Result<(), PluginError> {
+    let installed = parse(definition).ok_or("The service definition could not be read.")?;
 
-    windows_service_install(&executable, &environment, true, path, definition)?;
+    windows_service_install(&installed.executable, &installed.environment, true, path, definition)?;
 
     Ok(())
 }
@@ -102,118 +115,169 @@ fn parse(definition: &str) -> Option<Installed> {
 fn systemd_unit(definition: &str) -> Option<Installed> {
     let mut executable = None;
     let mut environment = Vec::new();
+    let mut layout = String::new();
 
-    for line in definition.lines() {
-        if let Some(value) = line.strip_prefix("ExecStart=") {
-            executable = Some(PathBuf::from(unescape(quoted(value)?)));
-        } else if let Some(value) = line.strip_prefix("Environment=") {
-            let (name, value) = unescape(quoted(value)?)
-                .split_once('=')
-                .map(|(name, value)| (name.to_owned(), value.to_owned()))?;
+    for line in definition.split_inclusive('\n') {
+        let text = line.strip_suffix('\n').unwrap_or(line);
 
-            environment.push((name, value));
+        if let Some(value) = text.strip_prefix("ExecStart=") {
+            if executable.is_some() {
+                return None;
+            }
+
+            executable = Some(PathBuf::from(unescape(quoted(value)?, false)?));
+            layout.push_str("ExecStart=\n");
+        } else if let Some(value) = text.strip_prefix("Environment=") {
+            let assignment = unescape(quoted(value)?, true)?;
+            let (name, value) = assignment.split_once('=')?;
+
+            environment.push(variable(name, value)?);
+        } else {
+            layout.push_str(line);
         }
     }
 
-    Some((executable?, environment))
+    Some(Installed { executable: executable?, environment, layout })
 }
 
 fn quoted(value: &str) -> Option<&str> {
     value.strip_prefix('"')?.strip_suffix('"')
 }
 
-/// Reverses the systemd quoting Krabb applies: backslash escapes and doubled `%`.
-fn unescape(value: &str) -> String {
+/// Reverses exactly the systemd quoting Krabb applies, refusing anything it never writes.
+fn unescape(value: &str, environment: bool) -> Option<String> {
     let mut output = String::with_capacity(value.len());
-    let mut characters = value.chars().peekable();
+    let mut characters = value.chars();
 
     while let Some(character) = characters.next() {
-        match character {
-            '\\' => match characters.next() {
-                Some('n') => output.push('\n'),
-                Some(next) => output.push(next),
-                None => output.push('\\'),
+        let decoded = match character {
+            '\\' => match characters.next()? {
+                '\\' => '\\',
+                '"' => '"',
+                '$' if environment => '$',
+                'n' if environment => '\n',
+                _ => return None,
             },
 
-            '%' if characters.peek() == Some(&'%') => {
-                characters.next();
-                output.push('%');
-            }
+            '%' if environment => match characters.next()? {
+                '%' => '%',
+                _ => return None,
+            },
 
-            character => output.push(character),
-        }
+            '"' => return None,
+            '$' if environment => return None,
+            character => character,
+        };
+
+        output.push(decoded);
     }
 
-    output
+    Some(output)
 }
 
 /// Reads the program and environment from the launchd property list Krabb writes.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn launchd(definition: &str) -> Option<Installed> {
-    let program = between(definition, "<key>ProgramArguments</key><array><string>", "</string>")?;
-    let variables = between(definition, "<key>EnvironmentVariables</key><dict>", "</dict>")?;
+    let (program, rest) =
+        blank(definition, "<key>ProgramArguments</key><array><string>", "</string>")?;
+
+    let (inner, layout) = blank(&rest, "<key>EnvironmentVariables</key><dict>", "</dict>")?;
     let mut environment = Vec::new();
-    let mut rest = variables;
+    let mut variables = inner.as_str();
 
-    while let Some(start) = rest.find("<key>") {
-        let after = &rest[start + "<key>".len()..];
-        let name = after.split("</key>").next()?;
-        let value = between(after, "<string>", "</string>")?;
+    while !variables.is_empty() {
+        let (name, after) = variables.strip_prefix("<key>")?.split_once("</key>")?;
+        let (value, after) = after.strip_prefix("<string>")?.split_once("</string>")?;
 
-        environment.push((entities(name), entities(value)));
-        rest = &after[after.find("</string>")? + "</string>".len()..];
+        environment.push(variable(&entities(name)?, &entities(value)?)?);
+        variables = after;
     }
 
-    Some((PathBuf::from(entities(program)), environment))
+    Some(Installed { executable: PathBuf::from(entities(&program)?), environment, layout })
 }
 
 /// Reads the command and variables from the Windows service record Krabb writes.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn windows(definition: &str) -> Option<Installed> {
-    let command = between(definition, "<command>", "</command>")?;
+    let (command, rest) = blank(definition, "<command>", "</command>")?;
+    let (inner, layout) = blank(&rest, "<environment>", "</environment>")?;
     let mut environment = Vec::new();
-    let mut rest = definition;
+    let mut variables = inner.as_str();
 
-    while let Some(start) = rest.find("<variable name=\"") {
-        let after = &rest[start + "<variable name=\"".len()..];
-        let name = after.split('"').next()?;
-        let value = between(after, "value=\"", "\"/>")?;
+    while !variables.is_empty() {
+        let (name, after) = variables.strip_prefix("<variable name=\"")?.split_once('"')?;
+        let (value, after) = after.strip_prefix(" value=\"")?.split_once("\"/>")?;
 
-        environment.push((entities(name), entities(value)));
-        rest = &after[after.find("\"/>")? + 3..];
+        environment.push(variable(&entities(name)?, &entities(value)?)?);
+        variables = after;
     }
 
-    Some((PathBuf::from(entities(command)), environment))
+    Some(Installed { executable: PathBuf::from(entities(&command)?), environment, layout })
 }
 
-fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
-    let after = &text[text.find(start)? + start.len()..];
+/// Splits out the text between two markers, returning it and the text without it.
+fn blank(text: &str, start: &str, end: &str) -> Option<(String, String)> {
+    let (before, after) = text.split_once(start)?;
+    let (inner, after) = after.split_once(end)?;
 
-    Some(&after[..after.find(end)?])
+    Some((inner.to_owned(), format!("{before}{start}{end}{after}")))
 }
 
-/// Reverses the XML escaping Krabb applies, with `&amp;` last so escapes are not doubled.
-fn entities(value: &str) -> String {
-    value
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+/// Keeps only variable names a shell could set, so a refresh never writes a new directive.
+fn variable(name: &str, value: &str) -> Option<(String, String)> {
+    let mut characters = name.chars();
+    let first = characters.next()?;
+    let valid = (first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_');
+
+    valid.then(|| (name.to_owned(), value.to_owned()))
+}
+
+/// Reverses exactly the XML escaping Krabb applies, refusing anything it never writes.
+fn entities(value: &str) -> Option<String> {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(character) = rest.chars().next() {
+        if character == '&' {
+            let (entity, decoded) =
+                [("&amp;", '&'), ("&lt;", '<'), ("&gt;", '>'), ("&quot;", '"'), ("&apos;", '\'')]
+                    .into_iter()
+                    .find(|(entity, _)| rest.starts_with(entity))?;
+
+            output.push(decoded);
+            rest = &rest[entity.len()..];
+
+            continue;
+        }
+
+        if matches!(character, '<' | '>' | '"' | '\'') {
+            return None;
+        }
+
+        output.push(character);
+        rest = &rest[character.len_utf8()..];
+    }
+
+    Some(output)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn installed(definition: Option<Installed>) -> Option<(PathBuf, Vec<(String, String)>)> {
+        definition.map(|installed| (installed.executable, installed.environment))
+    }
+
     #[test]
     fn reads_every_service_format_krabb_writes() {
-        let unit = "[Service]\nExecStart=\"/opt/krabb \\\"daemon\\\"\"\nEnvironment=\"KRABB_HOME=/home/a b\"\nEnvironment=\"PATTERN=50%% \\$HOME\\nnext\"\nRestart=always\n";
+        let unit = "[Service]\nExecStart=\"/opt/krabb \\\"daemon\\\" 50%\"\nEnvironment=\"KRABB_HOME=/home/a b\"\nEnvironment=\"PATTERN=50%% \\$HOME\\nnext\"\nRestart=always\n";
 
         assert_eq!(
-            systemd_unit(unit),
+            installed(systemd_unit(unit)),
             Some((
-                PathBuf::from("/opt/krabb \"daemon\""),
+                PathBuf::from("/opt/krabb \"daemon\" 50%"),
                 vec![
                     ("KRABB_HOME".into(), "/home/a b".into()),
                     ("PATTERN".into(), "50% $HOME\nnext".into()),
@@ -221,10 +285,12 @@ mod tests {
             ))
         );
 
+        assert_eq!(systemd_unit(unit).unwrap().layout, "[Service]\nExecStart=\nRestart=always\n");
+
         let plist = "<plist><dict><key>ProgramArguments</key><array><string>/opt/k&amp;rabb</string></array><key>EnvironmentVariables</key><dict><key>KRABB_HOME</key><string>/Users/a &lt;b&gt;</string><key>EMPTY</key><string></string></dict></dict></plist>";
 
         assert_eq!(
-            launchd(plist),
+            installed(launchd(plist)),
             Some((
                 PathBuf::from("/opt/k&rabb"),
                 vec![("KRABB_HOME".into(), "/Users/a <b>".into()), ("EMPTY".into(), String::new()),]
@@ -234,21 +300,53 @@ mod tests {
         let record = "<service><command>C:\\Krabb\\krabb-daemon.exe</command><environment><variable name=\"KRABB_HOME\" value=\"C:\\a &quot;b&quot;\"/></environment></service>";
 
         assert_eq!(
-            windows(record),
+            installed(windows(record)),
             Some((
                 PathBuf::from("C:\\Krabb\\krabb-daemon.exe"),
                 vec![("KRABB_HOME".into(), "C:\\a \"b\"".into())]
             ))
         );
 
-        assert!(systemd_unit("[Service]\nRestart=always\n").is_none());
+        assert_eq!(
+            windows(record).unwrap().layout,
+            "<service><command></command><environment></environment></service>"
+        );
+    }
+
+    #[test]
+    fn refuses_definitions_krabb_did_not_write() {
+        for unit in [
+            "[Service]\nRestart=always\n",
+            "ExecStart=\"/a\" \"--verbose\"\n",
+            "ExecStart=\"/a\"\nExecStart=\"/b\"\n",
+            "ExecStart=\"/a\"\nEnvironment=\"A=1\" \"B=2\"\n",
+            "ExecStart=\"/a\"\nEnvironment=\"X\\nExecStartPre=/tmp/evil\\n=1\"\n",
+            "ExecStart=\"/a\"\nEnvironment=\"A=\\t\"\n",
+            "ExecStart=\"/a\"\nEnvironment=\"A=50%\"\n",
+            "ExecStart=\"/a\"\nEnvironment=\"A=$HOME\"\n",
+            "ExecStart=\"/a\\$\"\n",
+        ] {
+            assert!(systemd_unit(unit).is_none(), "{unit}");
+        }
+
         assert!(launchd("<plist/>").is_none());
         assert!(windows("<service/>").is_none());
+
+        for value in ["a & b", "a &copy;", "a \"b\"", "a 'b'"] {
+            assert!(entities(value).is_none(), "{value}");
+        }
+
+        let extra = "<dict><key>ProgramArguments</key><array><string>/a</string></array><key>EnvironmentVariables</key><dict><key>A</key><string>1</string><key>B</key></dict></dict>";
+
+        assert!(launchd(extra).is_none());
+        assert!(variable("1A", "").is_none());
+        assert!(variable("", "").is_none());
+        assert_eq!(variable("_A1", "x"), Some(("_A1".into(), "x".into())));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn refreshes_only_outdated_definitions_and_keeps_their_environment() {
+    fn refreshes_only_known_layouts_and_keeps_their_environment() {
         let root = crate::tests::test_root("service-definition");
         let path = root.join("krabb.service");
         let environment = vec![
@@ -264,14 +362,18 @@ mod tests {
         assert_eq!(stale(&path), None);
 
         let older = current.replace("Restart=always\n", "");
+        let retired = systemd_unit(&older).unwrap().layout;
 
         std::fs::write(&path, &older).unwrap();
 
-        assert_eq!(stale(&path), Some(current));
-
-        std::fs::write(&path, "[Service]\nExecStart=/bin/custom\n").unwrap();
-
         assert_eq!(stale(&path), None);
+        assert_eq!(stale_among(&path, &[retired.as_str()]), Some(current.clone()));
+
+        let edited = current.replace("Restart=always\n", "Restart=always\nNice=10\n");
+
+        std::fs::write(&path, &edited).unwrap();
+
+        assert_eq!(stale_among(&path, &[retired.as_str()]), None);
         assert_eq!(stale(&root.join("missing.service")), None);
 
         let _ = std::fs::remove_dir_all(root);

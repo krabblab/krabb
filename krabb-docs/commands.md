@@ -331,8 +331,9 @@ under `updates/recovery`. Saved credentials, `data/media`, and `data/workspaces`
 are not copied. The new host installs the staged plugins, migrates the home,
 rewrites an installed service definition that an older release wrote in an older
 format, keeping its executable and environment, and restarts a previously
-running service, which must answer within 60 seconds. A stopped service stays
-stopped. Any failure restores the recovery point and the service state.
+running service, which must answer within 60 seconds. A definition you edited
+by hand is never rewritten. A stopped service stays stopped. Any failure
+restores the recovery point and the service state.
 
 `krabb status` shows a retained recovery point. `krabb update --rollback`
 restores it without the network or the new daemon; if the new `krabb` cannot

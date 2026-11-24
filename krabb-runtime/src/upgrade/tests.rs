@@ -137,7 +137,7 @@ fn inspection(protocol: Option<Protocol>) -> stage::Inspection {
         version: "0.2.0".into(),
         schema: stage::Schema { from: 1, to: 1, steps: Vec::new() },
         protocol,
-        service: false,
+        definition: false,
     }
 }
 
@@ -257,7 +257,7 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
         "codex: stays at 0.1.0 (supported)",
         "home schema: 1 → 2 (1 migration)",
         "service: not installed",
-        "service definition: refreshed to the current format",
+        "service definition: refreshes to the current format",
         rollback.as_str(),
     ] {
         assert!(preview.text.contains(row), "{row}\n{}", preview.text);
@@ -493,10 +493,11 @@ async fn recovery_points_wait_for_plugin_changes_and_release_them() {
 }
 
 #[tokio::test]
-async fn rollback_restores_the_previous_service_definition() {
+async fn rollback_restores_only_the_installed_service_definition() {
     let root = temp_root("definition");
     let home = root.join("home");
     let unit = root.join("units/krabb.service");
+    let directory = snapshot::store(&home);
 
     fs::create_dir_all(unit.parent().unwrap()).unwrap();
     fs::create_dir_all(&home).unwrap();
@@ -504,12 +505,29 @@ async fn rollback_restores_the_previous_service_definition() {
     fs::write(&unit, "old unit").unwrap();
 
     let point = snapshot::create(&home, "0.1.0", "0.2.0", &[], Some(&unit), false).unwrap();
+    let saved = point.definition.as_ref().unwrap();
 
-    assert_eq!(point.definition.as_ref().unwrap().path, unit);
+    assert_eq!(saved.path, unit);
+    assert!(!snapshot::put_back(&directory, saved, &unit).unwrap());
 
     fs::write(&unit, "new unit").unwrap();
-    snapshot::restore(&home, &point, &root.join("none.service"), true).await.unwrap();
 
+    assert!(snapshot::put_back(&directory, saved, &unit).unwrap());
+    assert_eq!(fs::read_to_string(&unit).unwrap(), "old unit");
+
+    let elsewhere = root.join("units/other.service");
+    let error = snapshot::put_back(&directory, saved, &elsewhere).unwrap_err();
+
+    assert!(error.to_string().contains("did not save"), "{error}");
+
+    let mut tampered = serde_json::to_value(&point).unwrap();
+
+    tampered["definition"]["entries"][0]["path"] = "../escape".into();
+
+    let tampered = serde_json::from_value::<snapshot::Point>(tampered).unwrap();
+    let error = snapshot::restore(&home, &tampered, &unit, true).await.unwrap_err();
+
+    assert!(error.to_string().contains("did not save"), "{error}");
     assert_eq!(fs::read_to_string(&unit).unwrap(), "old unit");
 
     let legacy = serde_json::json!({

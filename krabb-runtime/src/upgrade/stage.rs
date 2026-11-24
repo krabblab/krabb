@@ -39,7 +39,7 @@ pub(super) struct Inspection {
     pub protocol: Option<Protocol>,
     /// Whether the downloaded host would rewrite the installed service definition.
     #[serde(default)]
-    pub service: bool,
+    pub definition: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

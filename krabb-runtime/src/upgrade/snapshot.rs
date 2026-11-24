@@ -28,15 +28,15 @@ pub(super) struct Point {
     pub created: u64,
     pub accepted: bool,
     pub service: bool,
-    pub binaries: Vec<Binary>,
+    pub binaries: Vec<Saved>,
     pub home: Vec<Entry>,
     /// The service definition before the update, when one was installed.
     #[serde(default)]
-    pub definition: Option<Binary>,
+    pub definition: Option<Saved>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(super) struct Binary {
+pub(super) struct Saved {
     pub path: PathBuf,
     pub entries: Vec<Entry>,
 }
@@ -78,7 +78,7 @@ pub(super) fn create(
             let entries =
                 recovery::save(parent, &directory.join("bin").join(index.to_string()), &[name])?;
 
-            saved.push(Binary { path: path.clone(), entries });
+            saved.push(Saved { path: path.clone(), entries });
         }
 
         let definition = match definition {
@@ -86,7 +86,7 @@ pub(super) fn create(
                 let (parent, name) = split(path)?;
                 let entries = recovery::save(parent, &directory.join("service"), &[name])?;
 
-                Some(Binary { path: path.to_path_buf(), entries })
+                Some(Saved { path: path.to_path_buf(), entries })
             }
 
             None => None,
@@ -132,6 +132,10 @@ pub(super) async fn restore(
     let plugins = changes(root)?;
     let uninstalled = revoked(root)?;
 
+    if let Some(saved) = &point.definition {
+        confined(saved, service)?;
+    }
+
     if service.is_file() && running()? {
         service_action_with(service, ServiceAction::Stop, json)?;
     }
@@ -149,15 +153,10 @@ pub(super) async fn restore(
 
     recovery::restore(root, &directory.join("home"), &point.home)?;
 
-    if let Some(definition) = &point.definition {
-        let (parent, _) = split(&definition.path)?;
-
-        recovery::restore(parent, &directory.join("service"), &definition.entries)?;
-
-        // Only the installed definition is registered with the service manager.
-        if definition.path == service_path() {
-            crate::definition::reload(&definition.path)?;
-        }
+    if let Some(saved) = &point.definition
+        && put_back(&directory, saved, service)?
+    {
+        crate::definition::reload(service)?;
     }
 
     for id in &uninstalled {
@@ -337,9 +336,42 @@ fn paths(root: &Path) -> Result<Vec<String>, PluginError> {
     Ok(paths)
 }
 
+/// Puts back the saved service definition. Returns whether it changed, so it needs a reload.
+pub(super) fn put_back(
+    directory: &Path,
+    saved: &Saved,
+    service: &Path,
+) -> Result<bool, PluginError> {
+    let name = confined(saved, service)?;
+    let store = directory.join("service");
+
+    if std::fs::read(store.join(&name)).ok() == std::fs::read(service).ok() {
+        return Ok(false);
+    }
+
+    let (parent, _) = split(service)?;
+
+    recovery::restore(parent, &store, &saved.entries)?;
+
+    Ok(true)
+}
+
+/// Refuses a recovery point that would write anywhere but the installed service definition.
+fn confined(saved: &Saved, service: &Path) -> Result<String, PluginError> {
+    let (_, name) = split(service)?;
+
+    match saved.entries.as_slice() {
+        [entry] if saved.path == service && entry.path == name && entry.present => Ok(name),
+
+        _ => Err("The recovery point names a service definition Krabb did not save, so it was \
+                  not restored."
+            .into()),
+    }
+}
+
 fn split(path: &Path) -> Result<(&Path, String), PluginError> {
-    let parent = path.parent().ok_or("Binary has no parent directory.")?;
-    let name = path.file_name().ok_or("Binary has no file name.")?;
+    let parent = path.parent().ok_or("The path has no parent directory.")?;
+    let name = path.file_name().ok_or("The path has no file name.")?;
 
     Ok((parent, name.to_string_lossy().into_owned()))
 }
