@@ -27,9 +27,8 @@ ACP, agent collaboration uses A2A, and user interfaces connect through AG-UI.
 
 ## Get Started
 
-Krabb builds for Linux, macOS, and Windows on x86_64 and ARM64. A platform is
-verified once every basic check in [COMPATIBILITY.md](COMPATIBILITY.md) passes;
-until its row there is complete, treat it as experimental.
+Krabb builds for Linux, macOS, and Windows on x86_64 and aarch64. A platform is
+experimental until its row in [COMPATIBILITY.md](COMPATIBILITY.md) is complete.
 
 Install the CLI and daemon on Linux or macOS:
 
