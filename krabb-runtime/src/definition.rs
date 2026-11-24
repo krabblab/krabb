@@ -42,6 +42,13 @@ fn stale_among(path: &Path, retired: &[&str]) -> Option<String> {
     (expected != current).then_some(expected)
 }
 
+/// The environment recorded in the installed definition, when Krabb can read it.
+pub(crate) fn environment(path: &Path) -> Option<Vec<(String, String)>> {
+    let definition = std::fs::read_to_string(path).ok()?;
+
+    parse(&definition).map(|installed| installed.environment)
+}
+
 /// Rewrites a stale definition and makes the service manager read it. Returns whether it did.
 pub(crate) fn refresh(path: &Path) -> Result<bool, PluginError> {
     let Some(expected) = stale(path) else {

@@ -20,10 +20,36 @@ pub(super) fn revoke(root: &Path, id: &str, lock: &Lock) -> Result<Revoked, Plug
     revoked.secrets = credentials::forget(&setup::path(root), &credentials::key_path(root), &names)
         .map_err(|error| failure(id, &revoked, error))?;
 
+    let copied = service_copy(root, &service_path(), &names)
+        .map_err(|error| failure(id, &revoked, error))?;
+
+    for name in copied {
+        if !revoked.secrets.contains(&name) {
+            revoked.secrets.push(name);
+        }
+    }
+
     revoked.keyring =
         credentials::forget_entry(id).map_err(|error| failure(id, &revoked, error))?;
 
     Ok(revoked)
+}
+
+/// Forgets names in the copy `krabb service install` makes of secrets set in its environment.
+fn service_copy(root: &Path, service: &Path, names: &[String]) -> Result<Vec<String>, PluginError> {
+    let copy = service_credentials_path(service);
+
+    if !copy.is_file() || copy == setup::path(root) {
+        return Ok(Vec::new());
+    }
+
+    let key = definition::environment(service)
+        .and_then(|environment| {
+            environment.into_iter().find(|(name, _)| name == "KRABB_CREDENTIALS_KEY")
+        })
+        .map_or_else(|| credentials::key_path(root), |(_, value)| PathBuf::from(value));
+
+    credentials::forget(&copy, &key, names)
 }
 
 fn failure(id: &str, revoked: &Revoked, error: PluginError) -> PluginError {

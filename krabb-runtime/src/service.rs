@@ -256,6 +256,14 @@ pub(crate) fn service_credentials_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.credentials.json"))
 }
 
+/// Deletes the secrets copy an install made for the service, which nothing else reads.
+pub(crate) fn remove_credential_copy(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(service_credentials_path(path)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
 pub(crate) fn service_at(
     path: &Path,
     command: ServiceCommand,
@@ -337,6 +345,15 @@ pub(crate) fn service_at_with_status(
             #[cfg(not(target_os = "windows"))]
             secure(path, definition.as_bytes())?;
 
+            let copy = service_path_value(service_credentials_path(path))?;
+
+            if !environment
+                .iter()
+                .any(|(name, value)| name == "KRABB_CREDENTIALS" && *value == copy)
+            {
+                remove_credential_copy(path)?;
+            }
+
             info!("Service installed.");
 
             if json {
@@ -372,6 +389,8 @@ pub(crate) fn service_at_with_status(
             if installed {
                 std::fs::remove_file(path)?;
             }
+
+            remove_credential_copy(path)?;
 
             if installed {
                 info!("Service uninstalled.");
