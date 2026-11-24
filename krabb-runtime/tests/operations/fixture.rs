@@ -306,13 +306,17 @@ impl Fixture {
             return "(no logs)".into();
         };
 
+        let mut paths = entries.flatten().map(|entry| entry.path()).collect::<Vec<_>>();
         let mut text = String::new();
 
-        for entry in entries.flatten() {
-            text.push_str(&fs::read_to_string(entry.path()).unwrap_or_default());
+        // Daily files sort by date, so the tail is the end of the latest one.
+        paths.sort();
+
+        for path in paths {
+            text.push_str(&fs::read_to_string(path).unwrap_or_default());
         }
 
-        let all = text.lines().collect::<Vec<_>>();
+        let all = text.lines().filter(|line| !line.contains(" TRACE ")).collect::<Vec<_>>();
 
         all[all.len().saturating_sub(lines)..].join("\n")
     }
