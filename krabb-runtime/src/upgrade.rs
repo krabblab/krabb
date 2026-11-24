@@ -81,6 +81,7 @@ fn inspect(root: &Path) -> Result<(), PluginError> {
             "version": VERSION,
             "schema": {"from": plan.from, "to": plan.to, "steps": plan.steps},
             "protocol": Protocol::CURRENT,
+            "definition": definition::stale(&service_path()).is_some(),
         })
     );
 
@@ -163,7 +164,15 @@ async fn update(
     stage::compatible(&staged, &inspection)?;
     space::check(root, &binaries, &staged)?;
 
-    let preview = preview(&version, &lock, &staged, &inspection.schema, &service, running);
+    let preview = preview(
+        &version,
+        &lock,
+        &staged,
+        &inspection.schema,
+        &service,
+        running,
+        inspection.definition,
+    );
 
     if json && !yes {
         println!("{}", serde_json::to_string_pretty(&preview.value)?);
@@ -184,8 +193,10 @@ async fn update(
         service_action_with(&service, ServiceAction::Stop, json)?;
     }
 
+    let installed = service.is_file().then_some(service.as_path());
+
     let point = match released(root).await {
-        Ok(()) => snapshot::create(root, VERSION, &version, &binaries, running).map_err(
+        Ok(()) => snapshot::create(root, VERSION, &version, &binaries, installed, running).map_err(
             |error| -> PluginError {
                 format!(
                     "Could not create the recovery point: {} The installation was not changed.",
@@ -452,6 +463,7 @@ fn preview(
     schema: &stage::Schema,
     service: &Path,
     running: bool,
+    definition: bool,
 ) -> Preview {
     let mut rows = vec![format!("krabb and krabb-daemon: {VERSION} → {version}")];
     let mut plugins = Vec::new();
@@ -557,6 +569,10 @@ fn preview(
 
     rows.push(interruption.into());
 
+    if definition {
+        rows.push("service definition: refreshes to the current format".into());
+    }
+
     let text = format!(
         "Update Krabb {VERSION} to {version}\n{}\n\nA recovery point is kept.\n`krabb update \
         --rollback` restores {VERSION}.",
@@ -574,6 +590,7 @@ fn preview(
         "refresh": refreshed,
         "schema": schema,
         "restart": running,
+        "definition": definition,
     });
 
     Preview { text, value }

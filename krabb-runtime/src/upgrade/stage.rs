@@ -43,6 +43,9 @@ pub(super) struct Inspection {
     /// Plugin protocol the downloaded host speaks; absent from releases that predate it.
     #[serde(default)]
     pub protocol: Option<Protocol>,
+    /// Whether the downloaded host would rewrite the installed service definition.
+    #[serde(default)]
+    pub definition: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

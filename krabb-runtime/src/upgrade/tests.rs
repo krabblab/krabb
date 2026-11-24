@@ -137,6 +137,7 @@ fn inspection(protocol: Option<Protocol>) -> stage::Inspection {
         version: "0.2.0".into(),
         schema: stage::Schema { from: 1, to: 1, steps: Vec::new() },
         protocol,
+        definition: false,
     }
 }
 
@@ -241,7 +242,8 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
 
     let schema = stage::Schema { from: 1, to: 2, steps: vec!["move".into()] };
 
-    let preview = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+    let preview =
+        preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false, true);
 
     let update = format!("Update Krabb {VERSION} to 0.2.0");
     let rollback = format!("`krabb update --rollback` restores {VERSION}");
@@ -255,6 +257,7 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
         "codex: stays at 0.1.0 (no longer in the plugin index)",
         "home schema: 1 → 2 (1 migration)",
         "service: not installed",
+        "service definition: refreshes to the current format",
         rollback.as_str(),
     ] {
         assert!(preview.text.contains(row), "{row}\n{}", preview.text);
@@ -330,7 +333,7 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
     assert_eq!(plan.plugins[0].pin, None);
 
     let schema = stage::Schema { from: 1, to: 1, steps: Vec::new() };
-    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false, false);
 
     assert!(shown.text.contains("echo: 0.1.0 → 0.2.0\n"), "{}", shown.text);
 
@@ -345,7 +348,8 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
 
         stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
 
-        let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+        let shown =
+            preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false, false);
         let row = format!("echo: stays at {version} ({reason})");
 
         assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
@@ -360,7 +364,7 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
 
     stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
 
-    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false, false);
 
     assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
     assert!(shown.text.contains("echo: stays at 0.1.0 (pinned to 0.3.0-rc.1)"), "{}", shown.text);
@@ -381,7 +385,7 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
 
     stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &offline).unwrap();
 
-    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false, false);
 
     assert!(
         shown.text.contains("echo: stays at 0.1.0 (plugin index unavailable)"),
@@ -412,7 +416,7 @@ fn staging_updates_every_official_plugin_except_pinned_ones() {
 
     stage::plugins(&mut staged, &lock, &inspection(Some(NEXT)), &load).unwrap();
 
-    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false);
+    let shown = preview("0.2.0", &lock, &staged, &schema, &root.join("none.service"), false, false);
 
     assert!(stage::plan(&staged.dir).unwrap().plugins.is_empty());
     assert!(shown.text.contains("echo: stays at 0.1.0 (pinned to a revision)"));
@@ -483,7 +487,7 @@ async fn recovery_points_restore_binaries_and_state_but_not_credentials() {
         fs::write(path, content).unwrap();
     }
 
-    let mut point = snapshot::create(&home, "0.1.0", "0.2.0", &binaries, false).unwrap();
+    let mut point = snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, false).unwrap();
 
     assert!(!snapshot::load(&home).unwrap().unwrap().accepted);
     assert!(point.home.iter().all(|entry| !entry.path.starts_with("data/media")));
@@ -525,7 +529,7 @@ async fn recovery_points_restore_binaries_and_state_but_not_credentials() {
 
     assert!(error.to_string().contains("nothing to roll back"));
 
-    let missing = snapshot::create(&home, "0.1.0", "0.2.0", &[bin.join("gone/krabb")], false);
+    let missing = snapshot::create(&home, "0.1.0", "0.2.0", &[bin.join("gone/krabb")], None, false);
 
     assert!(missing.is_ok());
 
@@ -556,7 +560,7 @@ visibility = [{ data = ["files"], resources = ["channels.echo"] }]
 
     assert!(!snapshot::store(&home).join("revoked.json").exists());
 
-    let mut point = snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+    let mut point = snapshot::create(&home, "0.1.0", "0.2.0", &[], None, false).unwrap();
 
     snapshot::accept(&home, &mut point).unwrap();
     snapshot::uninstalled(&home, "echo").unwrap();
@@ -580,9 +584,9 @@ visibility = [{ data = ["files"], resources = ["channels.echo"] }]
     assert!(restored.contains("older schema"), "{restored}");
     assert!(!snapshot::store(&home).exists());
 
-    snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+    snapshot::create(&home, "0.1.0", "0.2.0", &[], None, false).unwrap();
     snapshot::uninstalled(&home, "echo").unwrap();
-    snapshot::create(&home, "0.2.0", "0.3.0", &[], false).unwrap();
+    snapshot::create(&home, "0.2.0", "0.3.0", &[], None, false).unwrap();
 
     assert!(!snapshot::store(&home).join("revoked.json").exists());
 
@@ -598,7 +602,7 @@ async fn unreadable_uninstall_records_block_rollback_but_not_uninstall() {
 
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join("config.toml"), "model = 'old'").unwrap();
-    snapshot::create(&home, "0.1.0", "0.2.0", &[], false).unwrap();
+    snapshot::create(&home, "0.1.0", "0.2.0", &[], None, false).unwrap();
     fs::write(home.join("config.toml"), "model = 'new'").unwrap();
     krabb_file::save(&record, b"[\"../escape\"]").unwrap();
 
@@ -637,7 +641,7 @@ async fn recovery_points_wait_for_plugin_changes_and_release_them() {
 
     let busy = std::thread::spawn({
         let home = home.clone();
-        move || snapshot::create(&home, "0.1.0", "0.2.0", &[], false).map(drop)
+        move || snapshot::create(&home, "0.1.0", "0.2.0", &[], None, false).map(drop)
     });
 
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -650,6 +654,57 @@ async fn recovery_points_wait_for_plugin_changes_and_release_them() {
     snapshot::rollback(&home, &root.join("krabb.service"), true, true).await.unwrap();
 
     assert!(crate::lock_at(&home, ".plugins.lock").is_ok());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn rollback_restores_only_the_installed_service_definition() {
+    let root = temp_root("definition");
+    let home = root.join("home");
+    let unit = root.join("units/krabb.service");
+    let directory = snapshot::store(&home);
+
+    fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "").unwrap();
+    fs::write(&unit, "old unit").unwrap();
+
+    let point = snapshot::create(&home, "0.1.0", "0.2.0", &[], Some(&unit), false).unwrap();
+    let saved = point.definition.as_ref().unwrap();
+
+    assert_eq!(saved.path, unit);
+    assert!(!snapshot::put_back(&directory, saved, &unit).unwrap());
+
+    fs::write(&unit, "new unit").unwrap();
+
+    assert!(snapshot::put_back(&directory, saved, &unit).unwrap());
+    assert_eq!(fs::read_to_string(&unit).unwrap(), "old unit");
+
+    let elsewhere = root.join("units/other.service");
+
+    fs::write(&unit, "new unit").unwrap();
+
+    assert!(!snapshot::put_back(&directory, saved, &elsewhere).unwrap());
+    assert!(!elsewhere.exists());
+    assert_eq!(fs::read_to_string(&unit).unwrap(), "new unit");
+
+    let mut tampered = serde_json::to_value(&point).unwrap();
+
+    tampered["definition"]["entries"][0]["path"] = "../escape".into();
+
+    let tampered = serde_json::from_value::<snapshot::Point>(tampered).unwrap();
+    let error = snapshot::restore(&home, &tampered, &unit, true).await.unwrap_err();
+
+    assert!(error.to_string().contains("did not save"), "{error}");
+    assert_eq!(fs::read_to_string(&unit).unwrap(), "new unit");
+
+    let legacy = serde_json::json!({
+        "from": "0.1.0", "to": "0.2.0", "created": 1, "accepted": false, "service": false,
+        "binaries": [], "home": [],
+    });
+
+    assert!(serde_json::from_value::<snapshot::Point>(legacy).unwrap().definition.is_none());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -684,7 +739,7 @@ async fn detached_plugins_carry_across_the_restart_and_missing_ones_are_reported
     finish::carry(&root, &["telegram".into()]).unwrap();
     fs::write(root.join("config.toml"), "").unwrap();
 
-    let point = snapshot::create(&root, "0.1.0", "0.2.0", &[], false).unwrap();
+    let point = snapshot::create(&root, "0.1.0", "0.2.0", &[], None, false).unwrap();
 
     snapshot::restore(&root, &point, &root.join("none.service"), true).await.unwrap();
 
@@ -845,7 +900,7 @@ fn staging_keeps_pre_release_pins_on_pre_releases() {
 
     let schema = stage::Schema { from: 1, to: 1, steps: Vec::new() };
     let service = root.join("none.service");
-    let text = preview("0.2.0", &lock, &staged, &schema, &service, false).text;
+    let text = preview("0.2.0", &lock, &staged, &schema, &service, false, false).text;
 
     assert!(text.contains("echo: 0.1.0-rc.1 → 0.2.0 (pinned to pre-release 0.2.0-rc.1)"), "{text}");
 
@@ -860,7 +915,7 @@ fn staging_keeps_pre_release_pins_on_pre_releases() {
 
     assert_eq!(stage::plan(&staged.dir).unwrap().plugins[0].pin, None);
 
-    let text = preview("0.2.0", &lock, &staged, &schema, &service, false).text;
+    let text = preview("0.2.0", &lock, &staged, &schema, &service, false, false).text;
 
     assert!(
         text.contains("(pre-release pin to 0.1.0-rc.1 replaced by the stable release)"),
@@ -889,7 +944,7 @@ async fn failed_activation_restores_the_previous_installation() {
         fs::write(path, content).unwrap();
     }
 
-    let point = snapshot::create(&home, "0.1.0", "0.2.0", &binaries, false).unwrap();
+    let point = snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, false).unwrap();
 
     for (path, content) in [
         (home.join("config.toml"), "model = 'half migrated'"),

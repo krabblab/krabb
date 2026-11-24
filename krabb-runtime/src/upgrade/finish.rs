@@ -33,11 +33,32 @@ pub(super) async fn run(
         }
     }
 
+    let service = service_path();
+
+    let saved = snapshot::load(root)?
+        .and_then(|point| point.definition)
+        .is_some_and(|saved| saved.path == service);
+
+    if saved {
+        match definition::refresh(&service) {
+            Ok(true) if !json => {
+                eprintln!("Refreshed the service definition to the current format.")
+            }
+
+            Ok(_) => {}
+
+            Err(error) => eprintln!(
+                "The service definition could not be refreshed: {}",
+                sentence(error.to_string())
+            ),
+        }
+    }
+
     drop(offline_lock(root)?);
 
     if start {
         carry(root, &plan.detached)?;
-        service_action_with(&service_path(), ServiceAction::Start, json)?;
+        service_action_with(&service, ServiceAction::Start, json)?;
 
         let missing = missing(&plan.attached, &ready(root).await?);
 

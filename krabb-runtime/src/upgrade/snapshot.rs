@@ -28,12 +28,15 @@ pub(super) struct Point {
     pub created: u64,
     pub accepted: bool,
     pub service: bool,
-    pub binaries: Vec<Binary>,
+    pub binaries: Vec<Saved>,
     pub home: Vec<Entry>,
+    /// The service definition before the update, when one was installed.
+    #[serde(default)]
+    pub definition: Option<Saved>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(super) struct Binary {
+pub(super) struct Saved {
     pub path: PathBuf,
     pub entries: Vec<Entry>,
 }
@@ -56,6 +59,7 @@ pub(super) fn create(
     from: &str,
     to: &str,
     binaries: &[PathBuf],
+    definition: Option<&Path>,
     service: bool,
 ) -> Result<Point, PluginError> {
     let directory = store(root);
@@ -74,8 +78,19 @@ pub(super) fn create(
             let entries =
                 recovery::save(parent, &directory.join("bin").join(index.to_string()), &[name])?;
 
-            saved.push(Binary { path: path.clone(), entries });
+            saved.push(Saved { path: path.clone(), entries });
         }
+
+        let definition = match definition {
+            Some(path) => {
+                let (parent, name) = split(path)?;
+                let entries = recovery::save(parent, &directory.join("service"), &[name])?;
+
+                Some(Saved { path: path.to_path_buf(), entries })
+            }
+
+            None => None,
+        };
 
         let point = Point {
             from: from.to_owned(),
@@ -85,6 +100,7 @@ pub(super) fn create(
             service,
             binaries: saved,
             home,
+            definition,
         };
 
         write(root, &point)?;
@@ -116,6 +132,10 @@ pub(super) async fn restore(
     let plugins = changes(root)?;
     let uninstalled = revoked(root)?;
 
+    if let Some(saved) = &point.definition {
+        confined(saved)?;
+    }
+
     if service.is_file() && running()? {
         service_action_with(service, ServiceAction::Stop, json)?;
     }
@@ -132,6 +152,12 @@ pub(super) async fn restore(
     }
 
     recovery::restore(root, &directory.join("home"), &point.home)?;
+
+    if let Some(saved) = &point.definition
+        && put_back(&directory, saved, service)?
+    {
+        crate::definition::reload(service)?;
+    }
 
     for id in &uninstalled {
         crate::revoke::restored(root, id)?;
@@ -311,9 +337,54 @@ pub(super) fn paths(root: &Path) -> Result<Vec<String>, PluginError> {
     Ok(paths)
 }
 
+/// Puts back the saved service definition. Returns whether it changed, so it needs a reload.
+pub(super) fn put_back(
+    directory: &Path,
+    saved: &Saved,
+    service: &Path,
+) -> Result<bool, PluginError> {
+    let name = confined(saved)?;
+
+    if saved.path != service {
+        eprintln!(
+            "The service definition was saved at {}, but Krabb now uses {}, so it was not \
+             restored.",
+            saved.path.display(),
+            service.display()
+        );
+
+        return Ok(false);
+    }
+
+    let store = directory.join("service");
+
+    if std::fs::read(store.join(&name)).ok() == std::fs::read(service).ok() {
+        return Ok(false);
+    }
+
+    let (parent, _) = split(service)?;
+
+    recovery::restore(parent, &store, &saved.entries)?;
+
+    Ok(true)
+}
+
+/// Refuses a recovery point whose definition entry names anything but the saved file itself.
+fn confined(saved: &Saved) -> Result<String, PluginError> {
+    let (_, name) = split(&saved.path)?;
+
+    match saved.entries.as_slice() {
+        [entry] if entry.path == name && entry.present => Ok(name),
+
+        _ => Err("The recovery point names a service definition Krabb did not save, so it was \
+                  not restored."
+            .into()),
+    }
+}
+
 fn split(path: &Path) -> Result<(&Path, String), PluginError> {
-    let parent = path.parent().ok_or("Binary has no parent directory.")?;
-    let name = path.file_name().ok_or("Binary has no file name.")?;
+    let parent = path.parent().ok_or("The path has no parent directory.")?;
+    let name = path.file_name().ok_or("The path has no file name.")?;
 
     Ok((parent, name.to_string_lossy().into_owned()))
 }
