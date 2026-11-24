@@ -41,7 +41,8 @@ or `ready`, with the command to run next. Keep the daemon in the foreground unti
 replies and acknowledgements work, then move it to the
 [background service](#background-service). Configuration, conversations,
 credentials, and plugins live in `KRABB_HOME`; [Storage](storage.md) lists every
-location.
+location. If a reply does not arrive, start with
+[Troubleshooting](troubleshooting.md#check-the-installation).
 
 ## Manual Download
 
