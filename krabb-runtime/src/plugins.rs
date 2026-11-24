@@ -139,7 +139,11 @@ pub(crate) async fn plugin(
                         let next =
                             error.downcast_ref::<index::Unavailable>().map(|error| error.next());
 
-                        errors.push(serde_json::json!({"id": id, "error": error.to_string()}));
+                        errors.push(serde_json::json!({
+                            "id": id,
+                            "error": error.to_string(),
+                            "next": next,
+                        }));
 
                         outcomes.push(serde_json::json!({
                             "id": id,
@@ -187,7 +191,7 @@ pub(crate) async fn plugin(
                 if !errors.is_empty() {
                     println!();
                     std::io::stdout().flush()?;
-                    return Err(plugin_install_error(&errors, total, linked).into());
+                    return Err(plugin_install_error().into());
                 }
 
                 if !activation_errors.is_empty() {
@@ -211,8 +215,8 @@ pub(crate) async fn plugin(
                 };
 
                 return Err(format!(
-                    "Plugins were installed, but activation failed, as shown above.\nTheir \
-                     errors are in {}.\n{restart}",
+                    "Plugins were installed, but activation failed, as shown above.\nThe log \
+                     at {} has more detail.\n{restart}",
                     logging::application_log_path().display()
                 )
                 .into());
@@ -464,19 +468,9 @@ pub(crate) fn plugin_install_output(outcomes: &[serde_json::Value], linked: bool
     output
 }
 
-pub(crate) fn plugin_install_error(
-    errors: &[serde_json::Value],
-    total: usize,
-    linked: bool,
-) -> String {
-    let action = if linked { "link" } else { "install" };
-
-    format!(
-        "Could not {action} {} of {total} plugins, for the reasons shown above.\nThe log at {} has \
-         more detail.",
-        errors.len(),
-        logging::application_log_path().display()
-    )
+/// The line that ends a failed install, whose rows already name each reason and command.
+pub(crate) fn plugin_install_error() -> String {
+    format!("The log at {} has more detail.", logging::application_log_path().display())
 }
 
 pub(crate) fn plugin_log_hint(failure: &str) -> String {
@@ -490,8 +484,8 @@ pub(crate) fn plugin_service_guidance(installed: bool) -> &'static str {
     if installed {
         "Activate the new plugins with `krabb service restart`"
     } else {
-        "The Krabb service is not installed, so install it with `krabb service install` for full \
-         plugin functionality."
+        "The Krabb service is not installed.\nRun every plugin in the background with `krabb \
+         service install`"
     }
 }
 

@@ -194,7 +194,7 @@ pub(super) fn plugins(
 
             Err(error) => {
                 return Err(format!(
-                    "Krabb {} cannot load the installed {id} plugin: {} The installation was \
+                    "Krabb {} cannot load the installed {id} plugin.\n{}\nThe installation was \
                      not changed.",
                     inspection.version,
                     sentence(error.to_string())

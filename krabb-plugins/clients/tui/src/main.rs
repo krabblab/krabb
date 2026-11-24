@@ -2356,11 +2356,8 @@ async fn local_aware(home: String, method: String, params: Value) -> krabb_core:
 async fn require_daemon(home: &str) -> krabb_core::Result<()> {
     control(home, "status", serde_json::json!({})).await.map(|_| ()).map_err(|error| match error {
         ControlError::Unavailable(_) => krabb_core::Error::Denied(
-            concat!(
-                "The Krabb daemon is not running.\n",
-                "Start it with `krabb service start` or run `krabb-daemon`."
-            )
-            .into(),
+            concat!("The Krabb daemon is not running.\n", "Start it with `krabb service start`")
+                .into(),
         ),
         ControlError::Failed(error) => error,
     })

@@ -1392,9 +1392,7 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
         "Install the service with `krabb service install`"
     );
 
-    assert!(
-        next("failed to start", "krabb service restart").starts_with("The errors of codex are in ")
-    );
+    assert!(next("failed to start", "krabb service restart").starts_with("The log at "));
 
     let unready = serde_json::json!({
         "health": "unhealthy",
@@ -1403,7 +1401,8 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     });
 
     assert!(
-        super::status_text(&unready, 1).ends_with(".\nRestart it with `krabb service restart`")
+        super::status_text(&unready, 1)
+            .ends_with(" shows why codex failed.\nRestart codex with `krabb service restart`")
     );
 
     assert_eq!(state("tui", &entry("client"), true, Some(&active), true).0, "ready");
@@ -1555,8 +1554,8 @@ fn failed_installs_show_each_reason_and_next_command() {
                 serde_json::json!({
                     "id": "telegram",
                     "status": "failed",
-                    "error": "Plugin telegram has only pre-releases for this version of Krabb.",
-                    "next": "Install its pre-release with `krabb plugin install telegram --unstable`",
+                    "error": "No stable release of plugin telegram works with this version of Krabb.",
+                    "next": "Install the newest pre-release with `krabb plugin install telegram --unstable`",
                 }),
                 serde_json::json!({
                     "id": "nosuch",
@@ -1569,8 +1568,8 @@ fn failed_installs_show_each_reason_and_next_command() {
         ),
         "Installed 0 of 2 plugins\n\
          ├─ telegram installation failed\n\
-         │  ├─ Plugin telegram has only pre-releases for this version of Krabb.\n\
-         │  └─ Install its pre-release with `krabb plugin install telegram --unstable`\n\
+         │  ├─ No stable release of plugin telegram works with this version of Krabb.\n\
+         │  └─ Install the newest pre-release with `krabb plugin install telegram --unstable`\n\
          └─ nosuch installation failed\n   \
          ├─ Plugin nosuch is not in the official plugin index.\n   \
          └─ Check the ID\u{fffd}[2J."
@@ -1579,24 +1578,17 @@ fn failed_installs_show_each_reason_and_next_command() {
 
 #[test]
 fn plugin_install_failures_point_to_the_daily_application_log() {
-    let error = super::plugin_install_error(
-        &[serde_json::json!({"id": "telegram", "error": "source unavailable"})],
-        3,
-        false,
-    );
+    let log = super::logging::application_log_path().display().to_string();
 
-    assert!(error.starts_with("Could not install 1 of 3 plugins, for the reasons shown above.\n"));
-
-    assert!(error.contains(&super::logging::application_log_path().display().to_string()));
-    assert!(!error.contains("source unavailable"));
+    assert_eq!(super::plugin_install_error(), format!("The log at {log} has more detail."));
 }
 
 #[test]
 fn plugin_install_guidance_uses_the_service_state() {
     assert_eq!(
         super::plugin_service_guidance(false),
-        "The Krabb service is not installed, so install it with `krabb service install` for \
-         full plugin functionality."
+        "The Krabb service is not installed.\nRun every plugin in the background with `krabb \
+         service install`"
     );
 
     assert_eq!(

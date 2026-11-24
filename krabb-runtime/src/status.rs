@@ -326,7 +326,7 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
 
 fn restart(id: &str) -> String {
     format!(
-        "The errors of {id} are in {}.\nRestart it with `krabb service restart`",
+        "The log at {} shows why {id} failed.\nRestart {id} with `krabb service restart`",
         logging::application_log_path().display()
     )
 }

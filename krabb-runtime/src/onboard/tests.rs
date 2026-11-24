@@ -97,7 +97,7 @@ fn the_home_step_creates_or_keeps_the_home() {
 
     let error = guide.require_home().unwrap_err().to_string();
 
-    assert_eq!(error, "Krabb is not initialized.\nRun `krabb init home` first.");
+    assert_eq!(error, "Krabb is not initialized.\nCreate it with `krabb init home`");
 
     guide.home().unwrap();
 

@@ -240,7 +240,7 @@ impl Guide {
         if crate::home::regular_file_present(&self.root.join("config.toml")) {
             Ok(())
         } else {
-            Err("Krabb is not initialized.\nRun `krabb init home` first.".into())
+            Err("Krabb is not initialized.\nCreate it with `krabb init home`".into())
         }
     }
 
@@ -336,9 +336,9 @@ impl Guide {
         self.overridden(provider, &model)?;
 
         self.note(if applied {
-            "No restart needed; the running daemon uses it for new turns"
+            "No restart is needed, because the running daemon uses it for new turns"
         } else {
-            "No restart needed; it applies when the daemon starts"
+            "No restart is needed, because it applies when the daemon starts"
         });
 
         Ok(Flow::Next)
