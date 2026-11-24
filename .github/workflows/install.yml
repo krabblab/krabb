@@ -142,13 +142,15 @@ jobs:
 
           test -f "$release/$archive"
 
+          cd "$release"
+
           if command -v sha256sum >/dev/null 2>&1; then
-            hash=$(sha256sum "$release/$archive" | cut -d' ' -f1)
+            sha256sum "$archive" > SHA256SUMS
           else
-            hash=$(shasum -a 256 "$release/$archive" | cut -d' ' -f1)
+            shasum -a 256 "$archive" > SHA256SUMS
           fi
 
-          printf '%s  %s\n' "$hash" "$archive" > "$release/SHA256SUMS"
+          cd "$GITHUB_WORKSPACE"
 
           unstable=false
           case "$version" in *-*) unstable=true ;; esac
