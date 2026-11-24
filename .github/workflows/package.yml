@@ -13,6 +13,20 @@ on:
         required: true
         type: string
 
+  workflow_dispatch:
+    inputs:
+      names:
+        description: "Space-separated core or plugin IDs; each archive uses its own version."
+        required: true
+        type: string
+        default: core
+
+      artifact:
+        description: "Upload name prefix; the target triple is appended."
+        required: true
+        type: string
+        default: krabb-package
+
 permissions:
   contents: read
 
@@ -294,6 +308,43 @@ jobs:
           $reported = & "$env:LOCALAPPDATA/Krabb/bin/krabb.exe" version
           if ($LASTEXITCODE -ne 0) { throw "Installed CLI failed to start." }
           if ($reported -ne "krabb $version") { throw "Installed CLI reports '$reported'." }
+
+      - if: matrix.archive == 'zip' && contains(format(' {0} ', inputs.names), ' core ')
+        name: Validate Windows Service
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          $krabb = Join-Path $env:RUNNER_TEMP "krabb-local/Krabb/bin/krabb.exe"
+          $user = Join-Path $env:RUNNER_TEMP "krabb-service-user"
+
+          New-Item -ItemType Directory -Force -Path (Join-Path $user ".krabb") | Out-Null
+          $env:USERPROFILE = $user
+          $env:HOME = $user
+          $env:KRABB_HOME = Join-Path $user ".krabb"
+
+          function Invoke-Krabb {
+            $output = & $krabb @args
+            if ($LASTEXITCODE -ne 0) { throw "krabb $args failed: $output" }
+            return ($output | Out-String | ConvertFrom-Json)
+          }
+
+          $installed = Invoke-Krabb --json service install
+          if ($installed.status -ne "installed") { throw "Service install reported '$($installed.status)'." }
+          if (!(Test-Path $installed.path)) { throw "Service definition is missing at $($installed.path)." }
+
+          $status = Invoke-Krabb --json service status
+          if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
+          if (!(Get-Service -Name $status.name -ErrorAction SilentlyContinue)) {
+            throw "Windows has no $($status.name) service."
+          }
+
+          $removed = Invoke-Krabb --json service uninstall --yes
+          if ($removed.status -ne "uninstalled") { throw "Service uninstall reported '$($removed.status)'." }
+          if (Test-Path $installed.path) { throw "Service definition remains at $($installed.path)." }
+          if (Get-Service -Name $status.name -ErrorAction SilentlyContinue) {
+            throw "Windows still has the $($status.name) service."
+          }
 
       - name: Upload Archives
         uses: actions/upload-artifact@v7
