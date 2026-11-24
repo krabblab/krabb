@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release to install, such as 0.1.0; empty for the newest release"
+        description: "Release to pin, such as 0.1.0; empty for the installers' default (latest)"
         required: false
         type: string
         default: ""
@@ -25,6 +25,7 @@ jobs:
 
     outputs:
       version: ${{ steps.release.outputs.version }}
+      pin: ${{ steps.release.outputs.pin }}
       unstable: ${{ steps.release.outputs.unstable }}
       plugins: ${{ steps.index.outputs.plugins }}
 
@@ -40,17 +41,33 @@ jobs:
         run: |
           set -euo pipefail
 
+          pin=""
+
+          # Without a version, installers fetch the latest stable release; before the first
+          # one exists, pin the newest pre-release so the flow still runs.
           if [ -n "$REQUESTED" ]; then
             tag="v${REQUESTED#v}"
+            pin="${tag#v}"
+          elif tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null)
+          then
+            :
           else
-            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name')
+            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name // ""')
+            pin="${tag#v}"
+          fi
+
+          if [ -z "$tag" ]; then
+            echo "::error::No Krabb release is published."
+            exit 1
           fi
 
           prerelease=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.prerelease')
 
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
           echo "unstable=$prerelease" >> "$GITHUB_OUTPUT"
-          echo "Testing Krabb ${tag#v} (pre-release: $prerelease)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Testing Krabb ${tag#v} (pinned: ${pin:-no}, pre-release: $prerelease)." \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: List Official Plugins
         id: index
@@ -107,7 +124,8 @@ jobs:
             runner: windows-11-arm
 
     env:
-      KRABB_VERSION: ${{ needs.plan.outputs.version }}
+      KRABB_EXPECTED: ${{ needs.plan.outputs.version }}
+      KRABB_VERSION: ${{ needs.plan.outputs.pin }}
       KRABB_UNSTABLE: ${{ needs.plan.outputs.unstable }}
       KRABB_PLUGINS: ${{ needs.plan.outputs.plugins }}
 
@@ -141,7 +159,7 @@ jobs:
       - if: matrix.os != 'windows'
         name: Check Version
         shell: bash
-        run: test "$(krabb version)" = "krabb $KRABB_VERSION"
+        run: test "$(krabb version)" = "krabb $KRABB_EXPECTED"
 
       - if: matrix.os != 'windows'
         name: Initialize Home
@@ -225,7 +243,7 @@ jobs:
 
         run: |
           $reported = krabb version
-          if ($reported -ne "krabb $env:KRABB_VERSION") { throw "Installed CLI reports '$reported'." }
+          if ($reported -ne "krabb $env:KRABB_EXPECTED") { throw "Installed CLI reports '$reported'." }
 
       - if: matrix.os == 'windows'
         name: Initialize Home
@@ -266,7 +284,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { $failed += $id }
           }
 
-          $installed = (krabb --json plugin list | Out-String | ConvertFrom-Json).items.id
+          $listed = krabb --json plugin list
+          if ($LASTEXITCODE -ne 0) { throw "krabb plugin list failed." }
+          $installed = ($listed | Out-String | ConvertFrom-Json).items.id
 
           foreach ($id in $plugins) {
             if ($installed -notcontains $id) { $failed += "$id (not listed)" }
@@ -283,12 +303,27 @@ jobs:
 
         run: |
           $ErrorActionPreference = "Stop"
-          $installed = krabb --json service install | Out-String | ConvertFrom-Json
-          if (!(Test-Path $installed.path)) { throw "Service definition is missing at $($installed.path)." }
 
-          $status = krabb --json service status | Out-String | ConvertFrom-Json
-          if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
+          function Invoke-Krabb {
+            $output = krabb @args
+            if ($LASTEXITCODE -ne 0) { throw "krabb $args failed: $output" }
+            return ($output | Out-String | ConvertFrom-Json)
+          }
 
-          krabb service uninstall --yes
-          if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
+          $installed = Invoke-Krabb --json service install
+
+          try {
+            if (!(Test-Path $installed.path)) { throw "Service definition is missing at $($installed.path)." }
+
+            $status = Invoke-Krabb --json service status
+            if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
+            if (!(Get-Service -Name $status.name -ErrorAction SilentlyContinue)) {
+              throw "Windows has no $($status.name) service."
+            }
+          } finally {
+            krabb service uninstall --yes
+            if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
+          }
+
           if (Test-Path $installed.path) { throw "Service definition remains at $($installed.path)." }
+          if (Get-Service -Name Krabb -ErrorAction SilentlyContinue) { throw "Windows still has the Krabb service." }

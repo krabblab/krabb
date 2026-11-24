@@ -98,8 +98,9 @@ explicitly, and shows the reason.
 5. After publishing, run the Install workflow. It installs the release with the
    README commands on every target, runs `krabb init`, `krabb doctor`, and
    `krabb status`, installs every official plugin without setting it up, and
-   installs and removes the service. It also runs every Monday against the
-   newest release.
+   installs and removes the service. It also runs every Monday with the
+   installers' default, the latest stable release, or the newest pre-release
+   until a stable one exists.
 
 For a local installer smoke test, set `KRABB_RELEASE_BASE` to a `file://`
 directory containing the archives and `SHA256SUMS`, for example
