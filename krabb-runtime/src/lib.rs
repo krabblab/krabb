@@ -154,8 +154,16 @@ const BANNER: &str = concat!(
 
 const BANNER_COLUMNS: u16 = 41;
 
-pub(crate) fn banner(columns: u16) -> &'static str {
-    if columns < BANNER_COLUMNS { "\nKrabb" } else { BANNER }
+/// The help banner: the full logo when it fits, the name when narrow, and nothing when the
+/// output is not a terminal, so logs and scripts get only the help text.
+pub(crate) fn banner(columns: u16, terminal: bool) -> &'static str {
+    if !terminal {
+        ""
+    } else if columns < BANNER_COLUMNS {
+        "\nKrabb"
+    } else {
+        BANNER
+    }
 }
 
 pub(crate) fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
@@ -1899,12 +1907,19 @@ fn print_help_with_plugins(root: &Path) -> Result<(), PluginError> {
 }
 
 fn cli_command() -> clap::Command {
-    Cli::command().before_help(banner(terminal::columns()))
+    use std::io::IsTerminal;
+
+    Cli::command().before_help(banner(terminal::columns(), std::io::stdout().is_terminal()))
 }
 
 fn help_text_with_plugins(root: &Path) -> Result<String, PluginError> {
     let mut command = cli_command();
     let mut help = command.render_help().to_string();
+
+    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        help = help.trim_start_matches('\n').to_owned();
+    }
+
     let commands = available_commands(root)?;
 
     let (conditional, plugins): (BTreeMap<_, _>, BTreeMap<_, _>) =

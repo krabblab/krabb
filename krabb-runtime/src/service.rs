@@ -268,10 +268,16 @@ pub(crate) fn service_at_json(
     command: ServiceCommand,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let report = match command {
+        ServiceCommand::Remove(_) => ServiceReport::nested(json),
+        _ if json => ServiceReport::Json,
+        _ => ServiceReport::Text,
+    };
+
     service_at_with_mode(
         path,
         command,
-        |path, action| service_action_with(path, action, json),
+        |path, action| service_action_report(path, action, report),
         json,
     )
 }
@@ -1046,10 +1052,38 @@ pub(crate) fn service_action(
     service_action_with(path, action, false)
 }
 
+/// How a service action reports itself: as its own text or JSON result, or not at all when it is
+/// one step of a command whose single JSON document reports the whole outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceReport {
+    Text,
+    Json,
+    Silent,
+}
+
+impl ServiceReport {
+    /// The report for a step inside another command's output.
+    pub(crate) fn nested(json: bool) -> Self {
+        if json { Self::Silent } else { Self::Text }
+    }
+}
+
 pub(crate) fn service_action_with(
     path: &Path,
     action: ServiceAction,
     json: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    service_action_report(
+        path,
+        action,
+        if json { ServiceReport::Json } else { ServiceReport::Text },
+    )
+}
+
+pub(crate) fn service_action_report(
+    path: &Path,
+    action: ServiceAction,
+    report: ServiceReport,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if !path.is_file() {
         return Err("The service is not installed.".into());
@@ -1060,7 +1094,7 @@ pub(crate) fn service_action_with(
     if let Some(start) = service_action_start(action)
         && service_action_is_noop(start, previous)
     {
-        return service_action_message(action, Some(previous), json);
+        return service_action_message(action, Some(previous), report);
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -1151,7 +1185,8 @@ pub(crate) fn service_action_with(
         ServiceAction::Restart => "Restarting the Krabb service...",
     };
 
-    let spinner = if json { None } else { terminal::Spinner::start(message) };
+    let spinner =
+        if report == ServiceReport::Text { terminal::Spinner::start(message) } else { None };
 
     let output = command_output(std::process::Command::new(program).args(args))?;
     drop(spinner);
@@ -1175,13 +1210,13 @@ pub(crate) fn service_action_with(
         return Err(format!("Could not {action} the service: {}", sentence(detail)).into());
     }
 
-    service_action_message(action, None, json)
+    service_action_message(action, None, report)
 }
 
 pub(crate) fn service_action_message(
     action: ServiceAction,
     previous: Option<ServiceState>,
-    json: bool,
+    report: ServiceReport,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let action_name = match action {
         ServiceAction::Start => "start",
@@ -1205,7 +1240,7 @@ pub(crate) fn service_action_message(
         info!(action = action_name, "Service action completed.");
     }
 
-    if json {
+    if report == ServiceReport::Json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -1214,7 +1249,7 @@ pub(crate) fn service_action_message(
                 "status": status,
             }))?
         );
-    } else {
+    } else if report == ServiceReport::Text {
         println!("{}", service_action_text(action, previous));
     }
 

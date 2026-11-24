@@ -190,7 +190,7 @@ async fn update(
 
     if running {
         record(root, &mut staged).await?;
-        service_action_with(&service, ServiceAction::Stop, json)?;
+        service_action_report(&service, ServiceAction::Stop, ServiceReport::nested(json))?;
     }
 
     let installed = service.is_file().then_some(service.as_path());
@@ -215,7 +215,7 @@ async fn update(
 
         Err(error) => {
             if running {
-                service_action_with(&service, ServiceAction::Start, json)?;
+                service_action_report(&service, ServiceAction::Start, ServiceReport::nested(json))?;
             }
 
             return Err(error);

@@ -40,7 +40,12 @@ pub(crate) fn columns() -> u16 {
 }
 
 pub(crate) fn progress(message: impl Into<String>, json: bool) -> Option<Spinner> {
-    progress_to(message.into(), json, io::stderr().is_terminal(), Box::new(io::stderr()))
+    progress_to(message.into(), json, redraws(), Box::new(io::stderr()))
+}
+
+/// Whether progress may redraw its line: stderr is a terminal that understands line controls.
+fn redraws() -> bool {
+    io::stderr().is_terminal() && !std::env::var("TERM").is_ok_and(|term| term == "dumb")
 }
 
 fn progress_to(
@@ -71,7 +76,7 @@ pub(crate) struct Spinner {
 
 impl Spinner {
     pub(crate) fn start(message: impl Into<String>) -> Option<Self> {
-        if !io::stderr().is_terminal() {
+        if !redraws() {
             return None;
         }
 

@@ -5281,8 +5281,11 @@ fn service_actions_report_when_no_transition_is_needed() {
         (super::ServiceAction::Stop, None),
         (super::ServiceAction::Restart, None),
     ] {
-        super::service_action_message(action, previous, false).unwrap();
-        super::service_action_message(action, previous, true).unwrap();
+        for report in
+            [super::ServiceReport::Text, super::ServiceReport::Json, super::ServiceReport::Silent]
+        {
+            super::service_action_message(action, previous, report).unwrap();
+        }
     }
 }
 
@@ -6145,9 +6148,10 @@ fn narrow_terminals_get_a_banner_that_does_not_wrap() {
     let width = BANNER.lines().map(|line| line.chars().count()).max().unwrap();
 
     assert!(width < usize::from(BANNER_COLUMNS));
-    assert_eq!(banner(BANNER_COLUMNS), BANNER);
-    assert_eq!(banner(BANNER_COLUMNS - 1), "\nKrabb");
-    assert_eq!(banner(0), "\nKrabb");
+    assert_eq!(banner(BANNER_COLUMNS, true), BANNER);
+    assert_eq!(banner(BANNER_COLUMNS - 1, true), "\nKrabb");
+    assert_eq!(banner(0, true), "\nKrabb");
+    assert_eq!(banner(BANNER_COLUMNS, false), "");
 }
 
 #[test]

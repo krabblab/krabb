@@ -137,7 +137,7 @@ pub(super) async fn restore(
     }
 
     if service.is_file() && running()? {
-        service_action_with(service, ServiceAction::Stop, json)?;
+        service_action_report(service, ServiceAction::Stop, ServiceReport::nested(json))?;
     }
 
     released(root).await?;
@@ -171,7 +171,7 @@ pub(super) async fn restore(
     drop(plugins);
 
     if point.service && service.is_file() {
-        service_action_with(service, ServiceAction::Start, json)?;
+        service_action_report(service, ServiceAction::Start, ServiceReport::nested(json))?;
     }
 
     let _ = recovery::remove(&directory);
