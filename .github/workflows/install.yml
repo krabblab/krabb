@@ -12,6 +12,9 @@ on:
   schedule:
     - cron: "41 5 * * 1"
 
+  push:
+    branches: [flow]
+
   workflow_call:
     inputs:
       artifact:
@@ -244,6 +247,46 @@ jobs:
           fi
 
       - if: matrix.os != 'windows'
+        name: Start, Stop, And Restart The Daemon
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/daemon.log"
+
+          until_daemon() {
+            for _ in $(seq 1 60); do
+              [ "$(krabb --json status < /dev/null | jq -r .daemon)" = "$1" ] && return 0
+              sleep 1
+            done
+
+            echo "::error::The daemon did not become $1."
+            cat "$log"
+            return 1
+          }
+
+          krabb-daemon >> "$log" 2>&1 &
+          pid=$!
+          until_daemon running
+          krabb --json session new install-flow < /dev/null > /dev/null
+
+          kill "$pid"
+          wait "$pid" || true
+          until_daemon stopped
+
+          krabb-daemon >> "$log" 2>&1 &
+          pid=$!
+          until_daemon running
+
+          if ! krabb --json session list < /dev/null | jq -e '.items[] | select(.id == "install-flow")' > /dev/null; then
+            echo "::error::The session did not survive the restart."
+            exit 1
+          fi
+
+          kill "$pid"
+          wait "$pid" || true
+
+      - if: matrix.os != 'windows'
         name: Install And Remove The Service
         shell: bash
 
@@ -360,6 +403,49 @@ jobs:
             Write-Output "::error::Plugins that are not healthy: $($unhealthy.id -join ', ')"
             exit 1
           }
+
+      - if: matrix.os == 'windows'
+        name: Start, Stop, And Restart The Daemon
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:RUNNER_TEMP "daemon.out"
+          $err = Join-Path $env:RUNNER_TEMP "daemon.err"
+
+          function Wait-Daemon([string] $State) {
+            for ($i = 0; $i -lt 60; $i++) {
+              $reported = (krabb --json status | Out-String | ConvertFrom-Json).daemon
+              if ($reported -eq $State) { return }
+              Start-Sleep -Seconds 1
+            }
+
+            Get-Content $out, $err -ErrorAction SilentlyContinue
+            throw "The daemon did not become $State."
+          }
+
+          function Start-Daemon {
+            Start-Process krabb-daemon -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+          }
+
+          $daemon = Start-Daemon
+          Wait-Daemon "running"
+          krabb --json session new install-flow | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "krabb session new failed." }
+
+          Stop-Process -Id $daemon.Id
+          $daemon.WaitForExit()
+          Wait-Daemon "stopped"
+
+          $daemon = Start-Daemon
+          Wait-Daemon "running"
+          $listed = krabb --json session list
+          if ($LASTEXITCODE -ne 0) { throw "krabb session list failed." }
+          $ids = ($listed | Out-String | ConvertFrom-Json).items.id
+          if ($ids -notcontains "install-flow") { throw "The session did not survive the restart." }
+
+          Stop-Process -Id $daemon.Id
+          $daemon.WaitForExit()
 
       - if: matrix.os == 'windows'
         name: Install And Remove The Service
