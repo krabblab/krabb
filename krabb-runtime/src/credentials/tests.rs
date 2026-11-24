@@ -459,6 +459,32 @@ fn service_capture_preserves_custom_credential_and_key_paths() {
 }
 
 #[test]
+fn service_reinstall_replaces_the_credential_copy() {
+    let root = crate::tests::test_root("service-copy-replace");
+    let service = root.join("service");
+    let copy = crate::service_credentials_path(&service);
+    let key = root.join("credentials.key");
+
+    let install = |name: &str| {
+        let environment = BTreeMap::from([
+            (name.to_owned(), "synthetic-service-token".to_owned()),
+            ("KRABB_KEYRING".to_owned(), "0".to_owned()),
+        ]);
+
+        crate::service_environment_from(&service, root.clone(), &environment).unwrap();
+    };
+
+    install("KRABB_TELEGRAM_TOKEN");
+    install("KRABB_DISCORD_TOKEN");
+
+    let stored = read(&copy, &key).unwrap();
+
+    assert_eq!(stored.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN"]);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn service_capture_honors_required_keyring_instead_of_silently_downgrading() {
     let root = crate::tests::test_root("service-required-keyring");
     let service = root.join("service");

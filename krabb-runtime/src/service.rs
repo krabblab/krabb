@@ -203,6 +203,13 @@ pub(crate) fn service_environment_from(
         let preference =
             credentials::preference_from(environment.get("KRABB_KEYRING").map(String::as_str))?;
 
+        // Saving merges into an existing file, so start fresh to drop values of an older install.
+        match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+
+            _ => {}
+        }
+
         credentials::save(&path, &key, credentials, preference)?;
         values.push(("KRABB_CREDENTIALS".into(), service_path_value(path)?));
     } else if let Some(path) = configured.as_ref() {
@@ -256,8 +263,8 @@ pub(crate) fn service_credentials_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.credentials.json"))
 }
 
-/// Deletes the secrets copy an install made for the service, which nothing else reads.
-pub(crate) fn remove_credential_copy(path: &Path) -> std::io::Result<()> {
+/// Deletes the secrets copy `krabb service install` writes next to the service definition.
+pub(crate) fn remove_service_credentials(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(service_credentials_path(path)) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         result => result,
@@ -351,7 +358,7 @@ pub(crate) fn service_at_with_status(
                 .iter()
                 .any(|(name, value)| name == "KRABB_CREDENTIALS" && *value == copy)
             {
-                remove_credential_copy(path)?;
+                remove_service_credentials(path)?;
             }
 
             info!("Service installed.");
@@ -390,7 +397,7 @@ pub(crate) fn service_at_with_status(
                 std::fs::remove_file(path)?;
             }
 
-            remove_credential_copy(path)?;
+            remove_service_credentials(path)?;
 
             if installed {
                 info!("Service uninstalled.");

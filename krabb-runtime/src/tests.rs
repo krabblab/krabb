@@ -5217,9 +5217,9 @@ async fn manages_service_definition() {
 
         assert!(!path.exists());
 
-        #[cfg(not(windows))]
-
-        assert!(!copy.exists(), "uninstall must delete the service credential copy");
+        if cfg!(not(windows)) {
+            assert!(!copy.exists(), "uninstall must delete the service credential copy");
+        }
 
         fs::write(&copy, "orphaned copy").unwrap();
         service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();

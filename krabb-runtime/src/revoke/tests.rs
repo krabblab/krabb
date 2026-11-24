@@ -135,8 +135,19 @@ fn uninstall_also_forgets_the_service_credential_copy() {
     let service = root.join("units/krabb.service");
     let copy = service_credentials_path(&service);
 
+    let unit = |home: &Path| {
+        let environment = [
+            ("KRABB_HOME".to_owned(), home.display().to_string()),
+            ("KRABB_CREDENTIALS".to_owned(), copy.display().to_string()),
+            ("KRABB_CREDENTIALS_KEY".to_owned(), credentials::key_path(home).display().to_string()),
+        ];
+
+        service_text(Path::new("/usr/local/bin/krabb-daemon"), &environment)
+    };
+
+    std::fs::create_dir_all(root.join("other")).unwrap();
     std::fs::create_dir_all(service.parent().unwrap()).unwrap();
-    std::fs::write(&service, "[Service]\n").unwrap();
+    std::fs::write(&service, unit(&root.join("other"))).unwrap();
 
     credentials::save(
         &copy,
@@ -150,6 +161,10 @@ fn uninstall_also_forgets_the_service_credential_copy() {
     .unwrap();
 
     let names = ["KRABB_TELEGRAM_TOKEN".to_owned(), "KRABB_TELEGRAM_MODE".to_owned()];
+
+    assert!(service_copy(&root, &service, &names).unwrap().is_empty());
+
+    std::fs::write(&service, unit(&root)).unwrap();
 
     assert_eq!(service_copy(&root, &service, &names).unwrap(), ["KRABB_TELEGRAM_TOKEN"]);
 
