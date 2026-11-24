@@ -349,7 +349,7 @@ pub(crate) fn service_at_with_status(
                     }))?
                 );
             } else {
-                println!("The service has been installed.");
+                println!("The service has been installed.\nStart it with `krabb service start`.");
             }
         }
 
@@ -425,7 +425,10 @@ pub(crate) fn service_at_with_status(
 
         ServiceCommand::Restart => {
             if !path.is_file() {
-                return Err("The service is not installed.".into());
+                return Err(
+                    "The service is not installed.\nInstall it with `krabb service install`."
+                        .into(),
+                );
             }
 
             action(path, ServiceAction::Restart)?;
@@ -481,9 +484,7 @@ pub(crate) fn service_status_text(
         let next = match status {
             ServiceState::Inactive => "\n\nStart it with `krabb service start`.",
 
-            ServiceState::Failed => {
-                "\n\nCheck it with `krabb status`, then restart it with `krabb service restart`."
-            }
+            ServiceState::Failed => "\n\nRestart it with `krabb service restart`.",
 
             _ => "",
         };
@@ -1064,7 +1065,9 @@ pub(crate) fn service_action_with(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if !path.is_file() {
-        return Err("The service is not installed.".into());
+        return Err(
+            "The service is not installed.\nInstall it with `krabb service install`.".into()
+        );
     }
 
     let previous = service_manager_state()?;

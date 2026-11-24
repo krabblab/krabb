@@ -66,7 +66,12 @@ pub(crate) fn init(
                 })
             );
         } else {
-            println!("Krabb is already initialized at {}.", root.display());
+            let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
+
+            println!(
+                "Krabb is already initialized\n{home}\n\nAdd an intelligence provider with \
+                 `krabb init provider`."
+            );
         }
 
         return Ok(());
@@ -103,7 +108,8 @@ pub(crate) fn init(
         let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
 
         println!(
-            "Krabb is initialized\n{home}\n\nAdd an intelligence provider with `krabb init provider`."
+            "Krabb is initialized\n{home}\n\nAdd an intelligence provider with `krabb init \
+             provider`."
         );
     }
 

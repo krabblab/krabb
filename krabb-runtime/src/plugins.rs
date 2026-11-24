@@ -192,17 +192,18 @@ pub(crate) async fn plugin(
                             diagnostic(failure["error"].as_str().unwrap_or("Activation failed."))
                         );
                     }
-
-                    println!("\n{}", plugin_log_hint("failed activation"));
                 } else if installed.len() == total && !waiting_for_credentials && !quiet {
                     println!("\n{}", plugin_service_guidance(service_path().is_file()));
                 }
             }
 
             if !activation_errors.is_empty() {
-                return Err("Plugins were installed, but activation failed, as shown above.\n\
-                    If the daemon was upgraded, restart it with `krabb service restart`"
-                    .into());
+                return Err(format!(
+                    "Plugins were installed, but activation failed, as shown above.\nRestart them \
+                     with `krabb service restart`; their errors are in {}.",
+                    logging::application_log_path().display()
+                )
+                .into());
             }
         }
 
@@ -670,7 +671,7 @@ pub(crate) fn plugin_update_error(rows: &[serde_json::Value]) -> String {
 
 pub(crate) fn plugin_update_output(rows: &[serde_json::Value]) -> String {
     if rows.is_empty() {
-        return "No plugins to update.".into();
+        return format!("No plugins to update.\n{INSTALL_ONE}");
     }
 
     let updated = rows.iter().filter(|row| row["status"] == "updated").count();

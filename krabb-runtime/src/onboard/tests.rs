@@ -152,12 +152,12 @@ async fn choosing_no_channel_installs_nothing() {
 
 #[test]
 fn the_guide_ends_with_one_next_action() {
-    assert_eq!(finished(true, true), "Your Krabb is ready.\nChat with it with `krabb tui`.");
-
     assert_eq!(
-        finished(true, false),
-        "Your Krabb is ready.\nCheck every part with `krabb status`."
+        closing(true, true),
+        "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`."
     );
 
-    assert!(finished(false, true).ends_with("Add one with `krabb init provider`."));
+    assert_eq!(closing(true, false), "Your Krabb is ready.\nCheck every part with `krabb status`.");
+
+    assert!(closing(false, true).ends_with("Add one with `krabb init provider`."));
 }

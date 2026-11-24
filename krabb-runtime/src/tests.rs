@@ -1290,9 +1290,7 @@ fn status_reads_as_a_tree_with_one_next_action() {
              ├─ Runtime: stopped\n\
              ├─ Intelligence: configured (codex, gemini)\n\
              ├─ Channels: configured (telegram, discord)\n\
-             └─ Plugins: 0 installed\n\
-             \n\
-             Run `krabb doctor` for details.",
+             └─ Plugins: 0 installed",
             super::VERSION
         )
     );
@@ -1376,7 +1374,31 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     let failed = state("gemini", &model, true, Some(&active), true);
 
     assert_eq!(failed.0, "failed to start");
-    assert!(failed.1.unwrap().ends_with("then run krabb service restart"));
+    assert_eq!(failed.1.unwrap(), "krabb service restart");
+
+    let next = |state: &str, next: &str| {
+        let value =
+            serde_json::json!({"plugin_states": [{"id": "codex", "state": state, "next": next}]});
+        let text = super::status_text(&value, 1);
+
+        text.rsplit("\n\n").next().unwrap().to_owned()
+    };
+
+    assert_eq!(
+        next("configured", "krabb service start"),
+        "Start codex with `krabb service start`."
+    );
+
+    assert_eq!(
+        next("configured", "krabb service install"),
+        "Install the service with `krabb service install`."
+    );
+
+    assert!(
+        next("failed to start", "krabb service restart")
+            .starts_with("Restart codex with `krabb service restart`; its errors are in ")
+    );
+
     assert_eq!(state("tui", &entry("client"), true, Some(&active), true).0, "ready");
 
     let text = super::status_text(
@@ -1447,7 +1469,7 @@ fn formats_status_health_details_only_when_present() {
 
     assert!(text.ends_with(
         "├─ Plugins: 3 installed\n└─ Needs attention\n   ├─ Configuration is invalid\n   \
-         └─ Plugin commands have name conflicts\n\nRun `krabb doctor` for details."
+         └─ Plugin commands have name conflicts\n\nFind the invalid setting with `krabb doctor`."
     ));
 
     value["health_details"] = serde_json::json!([
@@ -2021,7 +2043,7 @@ fn schedule_list_shows_pending_state_and_exact_utc_time() {
 
     assert_eq!(
         super::format_schedule_list(&serde_json::json!({"items": []})),
-        "There are no schedules to list."
+        "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary."
     );
 
     let local = super::format_schedule_list(&serde_json::json!({
@@ -5353,6 +5375,16 @@ fn service_status_uses_clear_sentences() {
          Start it with `krabb service start`."
     );
 
+    assert!(
+        super::service_status_text(
+            "Krabb",
+            super::ServiceState::Failed,
+            Path::new("/home/user/krabb.service"),
+            true
+        )
+        .ends_with("\n\nRestart it with `krabb service restart`.")
+    );
+
     assert_eq!(
         super::service_status_text(
             "Krabb",
@@ -7150,7 +7182,7 @@ fn delivery_inventory_groups_details_and_pages() {
 
     assert_eq!(
         super::format_delivery_list(&serde_json::json!({"items": []}), 1).unwrap(),
-        "No pending deliveries."
+        "No pending deliveries.\nEvery reply has been delivered."
     );
 }
 

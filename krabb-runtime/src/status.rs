@@ -129,9 +129,7 @@ pub(crate) fn plugin_state(
 
         ("configured", Some(start.to_owned()))
     } else {
-        let log = logging::application_log_path();
-
-        ("failed to start", Some(format!("check {} then run krabb service restart", log.display())))
+        ("failed to start", Some("krabb service restart".to_owned()))
     };
 
     serde_json::json!({"id": id, "state": state, "next": next})
@@ -249,7 +247,7 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
         .into_iter()
         .flatten()
         .filter_map(serde_json::Value::as_str)
-        .map(|detail| capitalized(problem(detail)))
+        .map(|detail| advice(detail).0)
         .collect::<Vec<_>>();
 
     let mut parts = vec![
@@ -296,50 +294,65 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
 
     let details = value["health_details"].as_array().into_iter().flatten();
 
-    if let Some(command) = details.filter_map(serde_json::Value::as_str).find_map(remedy) {
-        return Some(match command {
-            "krabb init" => "Create the configuration with `krabb init`.".into(),
+    if let Some(next) =
+        details.filter_map(serde_json::Value::as_str).find_map(|detail| advice(detail).1)
+    {
+        return Some(next.into());
+    }
 
-            command if command.starts_with("krabb plugin install") => {
-                format!("Install a provider with `{command}`.")
+    value["plugin_states"].as_array().into_iter().flatten().find_map(|plugin| {
+        let id = plugin["id"].as_str().unwrap_or_default();
+        let next = plugin["next"].as_str()?;
+
+        Some(match (plugin["state"].as_str(), next) {
+            (Some("needs setup"), _) => format!("Set up {id} with `{next}`."),
+
+            (Some("configured"), "krabb service install") => {
+                "Install the service with `krabb service install`.".into()
             }
 
-            command => format!("Run `{command}` next."),
-        });
-    }
+            (Some("configured"), _) => format!("Start {id} with `{next}`."),
 
-    for plugin in value["plugin_states"].as_array().into_iter().flatten() {
-        let id = plugin["id"].as_str().unwrap_or_default();
-
-        let Some(next) = plugin["next"].as_str() else {
-            continue;
-        };
-
-        return Some(match plugin["state"].as_str() {
-            Some("needs setup") => format!("Set up {id} with `{next}`."),
-            Some("configured") => format!("Start {id} with `{next}`."),
-            _ => format!("{}.", capitalized(next)),
-        });
-    }
-
-    (value["health"] == "unhealthy").then(|| "Run `krabb doctor` for details.".into())
+            _ => format!(
+                "Restart {id} with `{next}`; its errors are in {}.",
+                logging::application_log_path().display()
+            ),
+        })
+    })
 }
 
-/// A health detail without the command it names in `(run `...`)`.
-fn problem(detail: &str) -> &str {
-    detail.split_once(" (run `").map_or(detail, |(problem, _)| problem)
-}
+/// How the text output names a health detail, and the one command that resolves it.
+fn advice(detail: &str) -> (String, Option<&'static str>) {
+    let (problem, next) = match detail {
+        "configuration is missing (run `krabb init`)" => {
+            ("Configuration is missing", "Create the configuration with `krabb init`.")
+        }
 
-/// The command a health detail names in `(run `...`)`.
-fn remedy(detail: &str) -> Option<&str> {
-    detail.split_once(" (run `")?.1.strip_suffix("`)")
-}
+        "configuration is invalid" => {
+            ("Configuration is invalid", "Find the invalid setting with `krabb doctor`.")
+        }
 
-fn capitalized(text: &str) -> String {
-    let mut characters = text.chars();
+        "no intelligence plugin is installed (run `krabb plugin install <provider>`)" => (
+            "No intelligence plugin is installed",
+            "Install a provider with `krabb plugin install <provider>`.",
+        ),
 
-    characters
-        .next()
-        .map(|first| first.to_uppercase().chain(characters).collect())
-        .unwrap_or_default()
+        "selected intelligence plugin is not ready" => (
+            "The selected intelligence plugin is not ready",
+            "Set it up with `krabb init provider`.",
+        ),
+
+        "no channel is ready or the selected channel is not ready" => {
+            ("No channel is ready", "Set one up with `krabb init channel`.")
+        }
+
+        "plugin commands have name conflicts" => (
+            "Plugin commands have name conflicts",
+            "Uninstall one of the conflicting plugins with `krabb plugin uninstall <id>`.",
+        ),
+
+        detail => return (sentence(detail).trim_end_matches('.').to_owned(), None),
+    };
+
+    (problem.into(), Some(next))
 }

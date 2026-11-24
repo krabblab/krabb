@@ -538,7 +538,7 @@ pub(crate) fn local_session_json(
 pub(crate) fn session_text(value: &serde_json::Value) -> String {
     let mut lines = vec![
         format!("Session: {}", value["id"].as_str().unwrap_or("unknown")),
-        format!("Model: {}", value["model"].as_str().unwrap_or("unknown")),
+        format!("Intelligence: {}", value["model"].as_str().unwrap_or("unknown")),
         format!("Status: {}", value["status"].as_str().unwrap_or("unknown")),
     ];
 

@@ -466,15 +466,15 @@ impl Guide {
         let ready = ready_provider(&self.root)?.is_some();
         let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
 
-        println!("{}", finished(ready, terminal));
+        println!("{}", closing(ready, terminal));
         Ok(())
     }
 }
 
 /// How the guide ends: whether the Krabb can answer, then the one command to run next.
-fn finished(ready: bool, terminal: bool) -> &'static str {
+fn closing(ready: bool, terminal: bool) -> &'static str {
     match (ready, terminal) {
-        (true, true) => "Your Krabb is ready.\nChat with it with `krabb tui`.",
+        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.",
         (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`.",
 
         (false, _) => {
