@@ -94,7 +94,8 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
   arrow keys. Without a terminal, take the choice from a flag instead.
 - Say each thing once. Instead of repeating a summary or printing a file's contents,
   print the command that shows them.
-- End with the next action as a runnable command, with no period after the command.
+- End with the next action as a runnable command, and end that sentence with a period
+  like any other.
 - Mark finished steps with `✓` and a full sentence that names the kind of thing, such as
   `✓ Installed openai provider.`
 - Set headers, prompts, and the selection in bold Coral, hints in faint text, examples

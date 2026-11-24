@@ -742,7 +742,7 @@ where
                     Ok(value) => format_status(&value),
 
                     Err(error) if daemon_unavailable(&error) => {
-                        "Runtime: stopped.\nStart it with `krabb service start`\n> ".into()
+                        "Runtime: stopped.\nStart it with `krabb service start`.\n> ".into()
                     }
 
                     Err(error) => format!("Runtime status unavailable: {}.\n> ", sentence(error.to_string())),
@@ -2356,7 +2356,7 @@ async fn local_aware(home: String, method: String, params: Value) -> krabb_core:
 async fn require_daemon(home: &str) -> krabb_core::Result<()> {
     control(home, "status", serde_json::json!({})).await.map(|_| ()).map_err(|error| match error {
         ControlError::Unavailable(_) => krabb_core::Error::Denied(
-            concat!("The Krabb daemon is not running.\n", "Start it with `krabb service start`")
+            concat!("The Krabb daemon is not running.\n", "Start it with `krabb service start`.")
                 .into(),
         ),
         ControlError::Failed(error) => error,
@@ -5110,7 +5110,7 @@ const NO_SCHEDULES: &str =
     "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.\n> ";
 
 /// The empty plugin list, worded as the CLI words it.
-const NO_PLUGINS: &str = "No plugins installed.\nInstall one with `krabb plugin install <id>`";
+const NO_PLUGINS: &str = "No plugins installed.\nInstall one with `krabb plugin install <id>`.";
 
 fn format_plugins(value: &Value, page: usize) -> String {
     let Some(items) = value["items"].as_array() else {
@@ -8739,12 +8739,12 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
     #[test]
     fn formats_denied_cli_errors_without_debug_wrappers() {
         let error = krabb_core::Error::Denied(
-            "The Krabb daemon is not running.\nStart it with `krabb service start`".into(),
+            "The Krabb daemon is not running.\nStart it with `krabb service start`.".into(),
         );
 
         assert_eq!(
             super::cli_error_message(&error),
-            "The Krabb daemon is not running.\nStart it with `krabb service start`"
+            "The Krabb daemon is not running.\nStart it with `krabb service start`."
         );
     }
 

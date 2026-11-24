@@ -170,7 +170,7 @@ pub(crate) fn doctor_at(
         }
     } else if fix {
         if repairs.is_empty() {
-            println!("No repairs were needed.\nCheck the runtime and plugins with `krabb status`");
+            println!("No repairs were needed.\nCheck the runtime and plugins with `krabb status`.");
         } else {
             let descriptions = repairs
                 .iter()
@@ -234,9 +234,9 @@ fn doctor_text(root: &Path, checks: &Checks, installed: usize, healthy: bool) ->
     ];
 
     let next = if healthy {
-        "Check that the runtime and plugins are running with `krabb status`"
+        "Check that the runtime and plugins are running with `krabb status`."
     } else {
-        "Restore the missing local state with `krabb doctor --fix`"
+        "Restore the missing local state with `krabb doctor --fix`."
     };
 
     format!("The local installation {headline}\n{}\n\n{next}", format_tree_list(&parts))
@@ -265,7 +265,7 @@ mod tests {
              ├─ KLAW.md instructions: present\n\
              └─ Plugins: 2 installed, integrity checks passed, protocol {protocol}\n\
              \n\
-             Check that the runtime and plugins are running with `krabb status`"
+             Check that the runtime and plugins are running with `krabb status`."
             )
         );
 
@@ -274,6 +274,6 @@ mod tests {
 
         assert!(text.starts_with("The local installation needs repair\n"), "{text}");
         assert!(text.contains("├─ Workspace: missing\n"), "{text}");
-        assert!(text.ends_with("\n\nRestore the missing local state with `krabb doctor --fix`"));
+        assert!(text.ends_with("\n\nRestore the missing local state with `krabb doctor --fix`."));
     }
 }

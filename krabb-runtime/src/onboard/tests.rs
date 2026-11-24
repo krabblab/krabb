@@ -97,7 +97,7 @@ fn the_home_step_creates_or_keeps_the_home() {
 
     let error = guide.require_home().unwrap_err().to_string();
 
-    assert_eq!(error, "Krabb is not initialized.\nCreate it with `krabb init home`");
+    assert_eq!(error, "Krabb is not initialized.\nCreate it with `krabb init home`.");
 
     guide.home().unwrap();
 
@@ -154,12 +154,12 @@ async fn choosing_no_channel_installs_nothing() {
 fn the_guide_ends_with_one_next_action() {
     assert_eq!(
         closing(true, true),
-        "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`"
+        "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`."
     );
 
-    assert_eq!(closing(true, false), "Your Krabb is ready.\nCheck every part with `krabb status`");
+    assert_eq!(closing(true, false), "Your Krabb is ready.\nCheck every part with `krabb status`.");
 
-    assert!(closing(false, true).ends_with("Add one with `krabb init provider`"));
+    assert!(closing(false, true).ends_with("Add one with `krabb init provider`."));
 }
 
 #[test]

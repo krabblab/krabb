@@ -119,7 +119,7 @@ fn unstable_selection_includes_pre_releases_but_not_withdrawn_versions() {
 
     assert_eq!(
         error.downcast_ref::<Unavailable>().unwrap().next(),
-        "Install the newest pre-release with `krabb plugin install echo --unstable`"
+        "Install the newest pre-release with `krabb plugin install echo --unstable`."
     );
 
     let withdrawn = index(vec![release("0.1.0-rc.1", (0, 1), Some("broken"))]);
@@ -135,7 +135,7 @@ fn unstable_selection_includes_pre_releases_but_not_withdrawn_versions() {
 
     assert_eq!(
         error.downcast_ref::<Unavailable>().unwrap().next(),
-        "See every release with `krabb plugin versions echo`"
+        "See every release with `krabb plugin versions echo`."
     );
 }
 

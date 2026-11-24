@@ -420,14 +420,14 @@ fn select_for<'a>(
     let (target, extension) = releases::target(os, arch).ok_or_else(|| {
         format!(
             "Official plugins are not published for {os} ({arch}).\nInstall a local build with \
-             `krabb plugin install {id} --source <path>`"
+             `krabb plugin install {id} --source <path>`."
         )
     })?;
 
     let releases = index.plugins.get(id).ok_or_else(|| {
         format!(
             "Plugin {id} is not in the official plugin index.\nCheck the ID, or install a local \
-             build with `krabb plugin install {id} --source <path>`"
+             build with `krabb plugin install {id} --source <path>`."
         )
     })?;
 
@@ -437,14 +437,14 @@ fn select_for<'a>(
                 releases.iter().find(|release| release.version == version).ok_or_else(|| {
                     format!(
                         "Plugin {id} has no version {version}.\nSee every release with \
-                         `krabb plugin versions {id}`"
+                         `krabb plugin versions {id}`."
                     )
                 })?;
 
             if !protocol.compatible(release.protocol) {
                 return Err(format!(
                     "Plugin {id} {version} needs plugin protocol {}.{}, which this version of \
-                     Krabb does not support.\nSee every release with `krabb plugin versions {id}`",
+                     Krabb does not support.\nSee every release with `krabb plugin versions {id}`.",
                     release.protocol.major, release.protocol.minor
                 )
                 .into());
@@ -474,7 +474,7 @@ fn select_for<'a>(
                 .ok_or_else(|| {
                     format!(
                         "No release of plugin {id} has a build for {target}.\nInstall a local \
-                         build with `krabb plugin install {id} --source <path>`"
+                         build with `krabb plugin install {id} --source <path>`."
                     )
                 })?
         }
@@ -483,7 +483,7 @@ fn select_for<'a>(
     let artifact = release.artifacts.get(target).ok_or_else(|| {
         format!(
             "Plugin {id} {} has no build for {target}.\nInstall a local build with `krabb plugin \
-             install {id} --source <path>`",
+             install {id} --source <path>`.",
             release.version
         )
     })?;
@@ -522,11 +522,11 @@ impl Unavailable {
     pub(crate) fn next(&self) -> String {
         if self.prerelease {
             format!(
-                "Install the newest pre-release with `krabb plugin install {} --unstable`",
+                "Install the newest pre-release with `krabb plugin install {} --unstable`.",
                 self.id
             )
         } else {
-            format!("See every release with `krabb plugin versions {}`", self.id)
+            format!("See every release with `krabb plugin versions {}`.", self.id)
         }
     }
 }
@@ -698,7 +698,7 @@ pub(crate) fn versions(home: &Path, id: &str, json: bool) -> Result<(), Error> {
         .collect::<Vec<_>>();
 
     println!(
-        "Versions of {id}\n{}\n\nInstall one with `krabb plugin install {id}@VERSION`\nVersions \
+        "Versions of {id}\n{}\n\nInstall one with `krabb plugin install {id}@VERSION`.\nVersions \
          other than the latest are used at your own risk.",
         format_tree_list(&lines)
     );

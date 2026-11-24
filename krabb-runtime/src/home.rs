@@ -104,7 +104,7 @@ pub(crate) fn init(
 
         println!(
             "Krabb is initialized\n{home}\n\nAdd an intelligence provider with `krabb init \
-             provider`"
+             provider`."
         );
     }
 
@@ -345,9 +345,9 @@ fn already(root: &Path) -> String {
     let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
 
     let next = if matches!(crate::onboard::ready_provider(root), Ok(Some(_))) {
-        "Check every part with `krabb status`"
+        "Check every part with `krabb status`."
     } else {
-        "Add an intelligence provider with `krabb init provider`"
+        "Add an intelligence provider with `krabb init provider`."
     };
 
     format!("Krabb is already initialized\n{home}\n\n{next}")
@@ -366,11 +366,11 @@ mod tests {
         let text = already(&root);
 
         assert!(text.starts_with("Krabb is already initialized\n└─ Home: "), "{text}");
-        assert!(text.ends_with("\n\nAdd an intelligence provider with `krabb init provider`"));
+        assert!(text.ends_with("\n\nAdd an intelligence provider with `krabb init provider`."));
 
         std::fs::write(root.join("config.toml"), "provider = [").unwrap();
 
-        assert!(already(&root).ends_with("`krabb init provider`"));
+        assert!(already(&root).ends_with("`krabb init provider`."));
 
         let _ = std::fs::remove_dir_all(root);
     }

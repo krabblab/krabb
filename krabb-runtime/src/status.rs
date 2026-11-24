@@ -289,7 +289,7 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
 /// The one command that moves the installation forward, as a sentence.
 fn next_action(value: &serde_json::Value) -> Option<String> {
     if value["recovery"]["from"].is_string() && value["recovery"]["accepted"] != true {
-        return Some("Undo the unfinished update with `krabb update --rollback`".into());
+        return Some("Undo the unfinished update with `krabb update --rollback`.".into());
     }
 
     let plugins = value["plugin_states"].as_array().into_iter().flatten();
@@ -312,13 +312,13 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
         let next = plugin["next"].as_str()?;
 
         Some(match (plugin["state"].as_str(), next) {
-            (Some("needs setup"), _) => format!("Set up {id} with `{next}`"),
+            (Some("needs setup"), _) => format!("Set up {id} with `{next}`."),
 
             (Some("configured"), "krabb service install") => {
-                "Install the service with `krabb service install`".into()
+                "Install the service with `krabb service install`.".into()
             }
 
-            (Some("configured"), _) => format!("Start {id} with `{next}`"),
+            (Some("configured"), _) => format!("Start {id} with `{next}`."),
             _ => restart(id),
         })
     })
@@ -326,7 +326,7 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
 
 fn restart(id: &str) -> String {
     format!(
-        "The log at {} shows why {id} failed.\nRestart {id} with `krabb service restart`",
+        "The log at {} shows why {id} failed.\nRestart {id} with `krabb service restart`.",
         logging::application_log_path().display()
     )
 }
@@ -335,30 +335,30 @@ fn restart(id: &str) -> String {
 fn advice(detail: &str) -> (String, Option<&'static str>) {
     let (problem, next) = match detail {
         "configuration is missing (run `krabb init`)" => {
-            ("Configuration is missing", "Create the configuration with `krabb init`")
+            ("Configuration is missing", "Create the configuration with `krabb init`.")
         }
 
         "configuration is invalid" => {
-            ("Configuration is invalid", "Find the invalid setting with `krabb doctor`")
+            ("Configuration is invalid", "Find the invalid setting with `krabb doctor`.")
         }
 
         "no intelligence plugin is installed (run `krabb plugin install <provider>`)" => (
             "No intelligence plugin is installed",
-            "Install a provider with `krabb plugin install <provider>`",
+            "Install a provider with `krabb plugin install <provider>`.",
         ),
 
         "selected intelligence plugin is not ready" => (
             "The selected intelligence plugin is not ready",
-            "Set it up with `krabb init provider`",
+            "Set it up with `krabb init provider`.",
         ),
 
         "no channel is ready or the selected channel is not ready" => {
-            ("No channel is ready", "Set one up with `krabb init channel`")
+            ("No channel is ready", "Set one up with `krabb init channel`.")
         }
 
         "plugin commands have name conflicts" => (
             "Plugin commands have name conflicts",
-            "Uninstall one of the conflicting plugins with `krabb plugin uninstall <id>`",
+            "Uninstall one of the conflicting plugins with `krabb plugin uninstall <id>`.",
         ),
 
         detail => return (sentence(detail).trim_end_matches('.').to_owned(), None),

@@ -409,7 +409,7 @@ pub(crate) fn service_at_with_status(
                     }))?
                 );
             } else {
-                println!("The service has been installed.\nStart it with `krabb service start`");
+                println!("The service has been installed.\nStart it with `krabb service start`.");
             }
         }
 
@@ -488,7 +488,8 @@ pub(crate) fn service_at_with_status(
         ServiceCommand::Restart => {
             if !path.is_file() {
                 return Err(
-                    "The service is not installed.\nInstall it with `krabb service install`".into(),
+                    "The service is not installed.\nInstall it with `krabb service install`."
+                        .into(),
                 );
             }
 
@@ -543,16 +544,16 @@ pub(crate) fn service_status_text(
         let definition = format_tree_list(&[format!("Definition: {}", path.display())]);
 
         let next = match status {
-            ServiceState::Inactive => "\n\nStart it with `krabb service start`",
+            ServiceState::Inactive => "\n\nStart it with `krabb service start`.",
 
-            ServiceState::Failed => "\n\nRestart it with `krabb service restart`",
+            ServiceState::Failed => "\n\nRestart it with `krabb service restart`.",
 
             _ => "",
         };
 
         format!("The {name} service is {state}\n{definition}{next}")
     } else {
-        format!("The {name} service is not installed.\nInstall it with `krabb service install`")
+        format!("The {name} service is not installed.\nInstall it with `krabb service install`.")
     }
 }
 
@@ -1142,7 +1143,9 @@ pub(crate) fn service_action_with(
     report: ServiceReport,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if !path.is_file() {
-        return Err("The service is not installed.\nInstall it with `krabb service install`".into());
+        return Err(
+            "The service is not installed.\nInstall it with `krabb service install`.".into()
+        );
     }
 
     let previous = service_manager_state()?;

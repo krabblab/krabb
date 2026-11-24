@@ -248,7 +248,7 @@ Krabb 0.1.0 is healthy
 └─ Plugins: 1 installed
    └─ codex: configured
 
-Start codex with `krabb service start`
+Start codex with `krabb service start`.
 ```
 
 A headline sentence comes first, then a tree of parts and their details, then,
