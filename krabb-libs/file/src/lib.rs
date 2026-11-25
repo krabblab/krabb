@@ -27,7 +27,6 @@ const SERVICE_SID: &str = "S-1-5-80-3700705418-1466718386-3227256717-750624257-2
 
 const CREDENTIAL_LIMIT: u64 = 1024 * 1024;
 
-#[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -45,11 +44,7 @@ pub fn load(path: impl AsRef<Path>, limit: u64) -> io::Result<Option<Vec<u8>>> {
 
     match recover(path) {
         Ok(()) => {}
-        Err(error)
-            if matches!(error.kind(), io::ErrorKind::NotADirectory | io::ErrorKind::NotFound) =>
-        {
-            return Ok(None);
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => return Ok(None),
 
         Err(error) => return Err(error),
     }
@@ -110,7 +105,17 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
 
     let owner = options.open(&live)?;
 
-    owner.lock()?;
+    match owner.lock() {
+        Ok(()) => {}
+
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {}
+
+        Err(error) => {
+            let _ = fs::remove_file(&live);
+
+            return Err(error);
+        }
+    }
 
     let result = (|| {
         let mut options = OpenOptions::new();
@@ -157,17 +162,15 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
         Ok::<(), io::Error>(())
     })();
 
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+
     let _ = fs::remove_file(&live);
 
     drop(owner);
 
-    if let Err(error) = result {
-        let _ = fs::remove_file(&temporary);
-
-        return Err(error);
-    }
-
-    Ok(())
+    result
 }
 
 /// The file a saving process holds locked while its transaction for PATH is in progress.
@@ -175,19 +178,28 @@ fn live(path: &Path, nonce: impl std::fmt::Display) -> std::path::PathBuf {
     path.with_file_name(format!(".{}.live-{}", name(path), nonce))
 }
 
-/// Whether another process still holds the transaction with this NONCE open. A missing file
-/// means the writer finished, crashed before it existed, or predates these files.
-fn in_progress(path: &Path, nonce: &str) -> io::Result<bool> {
-    let file = match OpenOptions::new().write(true).open(live(path, nonce)) {
+/// Whether another process may still hold the transaction with this NONCE open. A missing file
+/// means the writer finished, crashed before it existed, or predates these files. When the
+/// state cannot be told, the transaction is left alone for a later recovery.
+fn in_progress(path: &Path, nonce: &str) -> bool {
+    let file = match File::open(live(path, nonce)) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
     };
 
     match file.try_lock() {
-        Ok(()) => Ok(false),
-        Err(fs::TryLockError::WouldBlock) => Ok(true),
-        Err(fs::TryLockError::Error(error)) => Err(error),
+        Ok(()) => false,
+        Err(fs::TryLockError::Error(error)) if error.kind() == io::ErrorKind::Unsupported => false,
+        Err(_) => true,
+    }
+}
+
+/// Treat a file that another recovery already moved or removed as handled.
+fn settled(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
 }
 
@@ -327,7 +339,13 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
             continue;
         }
 
-        let transaction: Transaction = match serde_json::from_slice(&fs::read(&journal)?) {
+        let content = match fs::read(&journal) {
+            Ok(content) => content,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+
+        let transaction: Transaction = match serde_json::from_slice(&content) {
             Ok(transaction) => transaction,
 
             Err(_) => {
@@ -357,7 +375,7 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
 
         let nonce = suffix.unwrap_or_default();
 
-        if in_progress(path, nonce)? {
+        if in_progress(path, nonce) {
             continue;
         }
 
@@ -367,9 +385,9 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
         match transaction.phase.as_str() {
             "backed_up" if !regular(path) => {
                 if regular(&temporary) {
-                    fs::rename(&temporary, path)?;
+                    settled(fs::rename(&temporary, path))?;
                 } else if regular(&backup) {
-                    fs::rename(&backup, path)?;
+                    settled(fs::rename(&backup, path))?;
                 }
             }
 
@@ -377,19 +395,15 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
                 let _ = fs::remove_file(&temporary);
             }
 
-            "prepared" if !regular(path) && regular(&backup) => {
-                fs::rename(&backup, path)?;
-            }
-
-            "installed" if !regular(path) && regular(&backup) => {
-                fs::rename(&backup, path)?;
+            "prepared" | "installed" if !regular(path) && regular(&backup) => {
+                settled(fs::rename(&backup, path))?;
             }
 
             _ => {}
         }
 
         if regular(path) {
-            private(path)?;
+            settled(private(path))?;
         }
 
         let _ = fs::remove_file(temporary);
@@ -825,11 +839,13 @@ mod tests {
         save(&path, b"0").unwrap();
 
         std::thread::scope(|scope| {
-            scope.spawn(|| {
-                while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    load(&path, 16).unwrap();
-                }
-            });
+            for _ in 0..3 {
+                scope.spawn(|| {
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        assert!(load(&path, 16).unwrap().is_some(), "the file never goes missing");
+                    }
+                });
+            }
 
             for revision in 1..=300 {
                 save(&path, revision.to_string()).unwrap();
