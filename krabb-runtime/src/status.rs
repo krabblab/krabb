@@ -17,15 +17,13 @@ pub(crate) async fn status_command(
 }
 
 pub(crate) async fn status_at(root: &Path) -> Result<serde_json::Value, PluginError> {
-    let active = active_at(root).await?;
-
-    status_with(root, active)
+    status_with(root, runtime_at(root).await?)
 }
 
 /// The status of the home at ROOT, given the plugins a running daemon loaded.
 pub(crate) fn status_with(
     root: &Path,
-    active: Option<Vec<String>>,
+    runtime: Option<Runtime>,
 ) -> Result<serde_json::Value, PluginError> {
     let config_text = load_config_text(root)?;
     let config_present = config_text.is_some();
@@ -35,19 +33,11 @@ pub(crate) fn status_with(
 
     let lock = load_lock_at(root)?;
     let installed = lock.plugins.len();
+    let active = runtime.as_ref().map(|runtime| runtime.active.clone());
     let config = load_config_at(root).unwrap_or_default();
     let (model, _) = selection::current(&config, (None, None), (None, None));
     let loaded = |id: &str| active.as_ref().is_some_and(|ids| ids.iter().any(|item| item == id));
-
-    // Credential checks decrypt the store and may run a sign-in probe, so do each once.
-    let configured = lock
-        .plugins
-        .keys()
-        .filter(|id| !loaded(id))
-        .map(|id| {
-            (id.as_str(), ready_at(id, Some(&setup::path(root)), &credentials::key_path(root)))
-        })
-        .collect::<BTreeMap<_, _>>();
+    let configured = configured_at(root, &lock, active.as_deref());
 
     let available = |id: &str| {
         if active.is_some() { loaded(id) } else { configured.get(id).copied().unwrap_or(false) }
@@ -84,17 +74,7 @@ pub(crate) fn status_with(
     let health_details = explain(health_details, config_present, models_installed);
     let daemon = if active.is_some() { "running" } else { "stopped" };
 
-    let service = service_path().is_file();
-
-    let states = lock
-        .plugins
-        .iter()
-        .map(|(id, entry)| {
-            let configured = configured.get(id.as_str()).copied().unwrap_or(false);
-
-            plugin_state(id, entry, configured, active.as_deref(), service)
-        })
-        .collect::<Vec<_>>();
+    let states = states(root, &lock, &configured, runtime);
 
     if health == "healthy" {
         debug!(health, daemon, "Status check completed.");
@@ -115,33 +95,134 @@ pub(crate) fn status_with(
     }))
 }
 
+/// Each installed plugin's place on the installed, configured, running, and ready path.
+pub(crate) fn plugin_states(root: &Path, lock: &Lock, runtime: Option<Runtime>) -> Vec<Value> {
+    let active = runtime.as_ref().map(|runtime| runtime.active.clone());
+    let configured = configured_at(root, lock, active.as_deref());
+
+    states(root, lock, &configured, runtime)
+}
+
+/// Whether each plugin the daemon did not load has its credentials.
+///
+/// Credential checks decrypt the store and may run a sign-in probe, so each runs once.
+fn configured_at(root: &Path, lock: &Lock, active: Option<&[String]>) -> BTreeMap<String, bool> {
+    let loaded = |id: &str| active.is_some_and(|ids| ids.iter().any(|item| item == id));
+
+    lock.plugins
+        .keys()
+        .filter(|id| !loaded(id))
+        .map(|id| {
+            let ready = ready_at(id, Some(&setup::path(root)), &credentials::key_path(root));
+
+            (id.clone(), ready)
+        })
+        .collect()
+}
+
+fn states(
+    root: &Path,
+    lock: &Lock,
+    configured: &BTreeMap<String, bool>,
+    runtime: Option<Runtime>,
+) -> Vec<Value> {
+    let service = service_path().is_file();
+    let active = runtime.as_ref().map(|runtime| runtime.active.clone());
+    let failures = runtime.as_ref().map(|runtime| runtime.failures.clone()).unwrap_or_default();
+
+    // A running daemon checks programs with the service's PATH, which may differ from this one.
+    let missing =
+        runtime.map_or_else(|| requirement::missing(root, lock), |runtime| runtime.missing);
+
+    lock.plugins
+        .iter()
+        .map(|(id, entry)| {
+            let configured = configured.get(id).copied().unwrap_or(false);
+
+            let observed = Observed {
+                active: active.as_deref(),
+                failure: failures.get(id),
+                missing: missing.get(id).map(String::as_str),
+            };
+
+            plugin_state(id, entry, configured, &observed, service)
+        })
+        .collect()
+}
+
+/// What the daemon, or this process when none runs, observed about one plugin.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Observed<'a> {
+    /// The plugins a running daemon loaded; none when the daemon is stopped.
+    pub active: Option<&'a [String]>,
+    /// Why the daemon could not start the plugin, when it tried and failed.
+    pub failure: Option<&'a StartFailure>,
+    /// How to install a program the plugin needs and cannot find.
+    pub missing: Option<&'a str>,
+}
+
 /// Places one installed plugin on the installed, configured, running, and ready path.
 ///
-/// Each state other than ready names the command that moves the plugin forward. Clients
-/// run when the user opens them, so the daemon never reports them as failed.
+/// Each state other than ready names the next step, as a command or, for a missing
+/// program, as the plugin's own install help. Clients run when the user opens them, so the
+/// daemon never reports them as failed.
 pub(crate) fn plugin_state(
     id: &str,
     entry: &Entry,
     configured: bool,
-    active: Option<&[String]>,
+    observed: &Observed,
     service: bool,
 ) -> serde_json::Value {
     let client = entry.capabilities.iter().all(|capability| capability == "client");
-    let loaded = active.is_some_and(|ids| ids.iter().any(|item| item == id));
+    let loaded = observed.active.is_some_and(|ids| ids.iter().any(|item| item == id));
+    let mut reason = None;
 
-    let (state, next) = if loaded || (client && configured) {
+    // Status only checks credentials of plugins that did not load, so `configured` is false
+    // for loaded ones; a missing program matters once the plugin is set up either way.
+    let (state, next) = if let Some(help) = observed.missing.filter(|_| loaded || configured) {
+        ("missing program", Some(help.to_owned()))
+    } else if loaded || (client && configured) {
         ("ready", None)
     } else if !configured {
         ("needs setup", Some(format!("krabb plugin setup {id}")))
-    } else if active.is_none() {
+    } else if observed.active.is_none() {
         let start = if service { "krabb service start" } else { "krabb service install" };
 
         ("configured", Some(start.to_owned()))
     } else {
-        ("failed to start", Some("krabb service restart".to_owned()))
+        reason = observed.failure.map(|failure| failure.reason.as_str());
+
+        let next = if observed.failure.is_some_and(|failure| failure.setup) {
+            format!("krabb plugin setup {id}")
+        } else {
+            "krabb service restart".to_owned()
+        };
+
+        ("failed to start", Some(next))
     };
 
-    serde_json::json!({"id": id, "state": state, "next": next})
+    serde_json::json!({"id": id, "state": state, "reason": reason, "next": next})
+}
+
+/// One plugin list item with its runtime state, as the CLI and the TUI show it.
+///
+/// A missing binary always wins, and a plugin status does not know, such as a folder
+/// outside the lock, is only `installed`.
+pub(crate) fn listed(mut item: Value, states: &[Value], binary: bool) -> Value {
+    let state = states.iter().find(|state| state["id"] == item["id"]);
+
+    item["health"] = match (binary, state) {
+        (false, _) => "missing".into(),
+        (true, Some(state)) => state["state"].clone(),
+        (true, None) => "installed".into(),
+    };
+
+    if let Some(state) = state.filter(|_| binary) {
+        item["reason"] = state["reason"].clone();
+        item["next"] = state["next"].clone();
+    }
+
+    item
 }
 
 pub(crate) fn status_health(
@@ -243,11 +324,16 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
         .into_iter()
         .flatten()
         .map(|plugin| {
-            format!(
+            let line = format!(
                 "{}: {}",
                 plugin["id"].as_str().unwrap_or_default(),
                 plugin["state"].as_str().unwrap_or_default()
-            )
+            );
+
+            match plugin["reason"].as_str() {
+                Some(reason) => format!("{line} ({})", reason.trim_end_matches('.')),
+                None => line,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -294,9 +380,25 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
 
     let plugins = value["plugin_states"].as_array().into_iter().flatten();
 
-    // A plugin that did not load also makes its capability "not ready"; restarting is the cure.
+    // A plugin that did not load also makes its capability "not ready", so its cause comes first.
     if let Some(plugin) = plugins.clone().find(|plugin| plugin["state"] == "failed to start") {
-        return Some(restart(plugin["id"].as_str().unwrap_or_default()));
+        let id = plugin["id"].as_str().unwrap_or_default();
+
+        return Some(match plugin["next"].as_str() {
+            Some(next) if next.starts_with("krabb plugin setup") => {
+                format!("Set up {id} again with `{next}`.")
+            }
+
+            _ => restart(id),
+        });
+    }
+
+    if let Some(help) = plugins
+        .clone()
+        .find(|plugin| plugin["state"] == "missing program")
+        .and_then(|plugin| plugin["next"].as_str())
+    {
+        return Some(help.to_owned());
     }
 
     let details = value["health_details"].as_array().into_iter().flatten();
