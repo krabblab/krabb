@@ -14,3 +14,8 @@ label = "Bot account"
 help = "The linked bot account's phone number with + and country code, or its account ID."
 example = "+15551234567"
 required = true
+
+[[requires]]
+program = "signal-cli"
+setting = "KRABB_SIGNAL_COMMAND"
+help = "Install signal-cli from https://github.com/AsamK/signal-cli#installation."

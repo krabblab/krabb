@@ -13,7 +13,14 @@ pub(crate) async fn plugin(
 
         PluginCommand::Check(args) => setup::check::command(&home(), &args.id, json).await?,
 
-        PluginCommand::List(output) => list(output.page, output.json || json)?,
+        PluginCommand::List(output) => {
+            let root = home();
+
+            let runtime = runtime_at(&root).await?;
+
+            list_at(&root, runtime, output.page, output.json || json)?;
+        }
+
         PluginCommand::Detach(args) => lifecycle::run(&home(), &args.id, false, json).await?,
         PluginCommand::Attach(args) => lifecycle::run(&home(), &args.id, true, json).await?,
 
@@ -264,7 +271,13 @@ pub(crate) async fn plugin(
                             .map(|version| format!("@v{version}"))
                             .unwrap_or_default();
 
-                        display_rows.push(format!("{id}{version} successfully uninstalled"));
+                        let details = cleanup_failures(&outcome)
+                            .into_iter()
+                            .flat_map(|(error, next)| std::iter::once(error).chain(next))
+                            .collect();
+
+                        display_rows
+                            .push((format!("{id}{version} successfully uninstalled"), details));
                         outcomes.push(outcome);
                     }
 
@@ -279,7 +292,8 @@ pub(crate) async fn plugin(
                             .map(|version| format!("@v{version}"))
                             .unwrap_or_default();
 
-                        display_rows.push(format!("{id}{version} uninstallation failed"));
+                        display_rows
+                            .push((format!("{id}{version} uninstallation failed"), Vec::new()));
 
                         errors.push(serde_json::json!({
                             "id": id,
@@ -298,17 +312,9 @@ pub(crate) async fn plugin(
                             .into());
                     }
 
-                    let outcome = &outcomes[0];
-
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "action": "uninstall",
-                            "id": outcome["id"],
-                            "status": "uninstalled",
-                            "unloaded": outcome["unloaded"],
-                            "purged": outcome["purged"],
-                        }))?
+                        serde_json::to_string_pretty(&plugin_uninstall_json(&outcomes[0]))?
                     );
                 } else {
                     println!(
@@ -629,17 +635,52 @@ pub(crate) fn plugin_uninstall_output(outcome: &Value) -> String {
         details.push(format!("Revoked {grants} sharing {noun}."));
     }
 
-    if !details.is_empty() {
+    let mut entries = details.into_iter().map(|detail| (detail, Vec::new())).collect::<Vec<_>>();
+
+    entries.extend(cleanup_failures(outcome));
+
+    if !entries.is_empty() {
         output.push('\n');
 
-        output.push_str(&format_tree_list(&details));
+        output.push_str(&format_tree(&entries));
     }
 
     output
 }
 
-pub(crate) fn plugin_uninstall_batch_output(rows: &[String], total: usize) -> String {
-    let successful = rows.iter().filter(|row| row.ends_with("successfully uninstalled")).count();
+/// The `--json` result of uninstalling one plugin.
+pub(crate) fn plugin_uninstall_json(outcome: &Value) -> Value {
+    serde_json::json!({
+        "action": "uninstall",
+        "id": outcome["id"],
+        "status": "uninstalled",
+        "unloaded": outcome["unloaded"],
+        "purged": outcome["purged"],
+        "revoked": outcome["revoked"],
+    })
+}
+
+/// Each cleanup step an uninstall could not finish, with its next action nested beneath it.
+fn cleanup_failures(outcome: &Value) -> Vec<(String, Vec<String>)> {
+    outcome["revoked"]["failures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|failure| {
+            let error = failure["error"].as_str()?.to_owned();
+            let next = failure["next"].as_str()?.to_owned();
+
+            Some((error, vec![next]))
+        })
+        .collect()
+}
+
+pub(crate) fn plugin_uninstall_batch_output(
+    rows: &[(String, Vec<String>)],
+    total: usize,
+) -> String {
+    let successful =
+        rows.iter().filter(|(row, _)| row.ends_with("successfully uninstalled")).count();
 
     let heading = if successful == total {
         format!("Uninstalled {successful} {}.", if successful == 1 { "plugin" } else { "plugins" })
@@ -651,7 +692,7 @@ pub(crate) fn plugin_uninstall_batch_output(rows: &[String], total: usize) -> St
 
     if !rows.is_empty() {
         output.push('\n');
-        output.push_str(&format_tree_list(rows));
+        output.push_str(&format_tree(rows));
     }
 
     if successful < total {
@@ -745,11 +786,59 @@ pub(crate) async fn activate_at(
 pub(crate) async fn active_at(
     root: &Path,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(runtime_at(root).await?.map(|runtime| runtime.active))
+}
+
+/// What a running daemon reports about its plugins, from its own environment.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Runtime {
+    pub active: Vec<String>,
+    /// Why each plugin the daemon could not start failed.
+    pub failures: BTreeMap<String, StartFailure>,
+    /// The help of a program each plugin needs that the daemon cannot find.
+    pub missing: BTreeMap<String, String>,
+}
+
+pub(crate) async fn runtime_at(root: &Path) -> Result<Option<Runtime>, PluginError> {
     let Some(value) = control_at("plugin.active", serde_json::json!({}), root).await? else {
         return Ok(None);
     };
 
-    Ok(Some(active_ids(value)?))
+    Ok(Some(runtime(value)?))
+}
+
+/// Reads failures and missing programs leniently: an older daemon sends neither, and odd
+/// entries are dropped. Text is cleaned again because it is printed to this terminal.
+pub(crate) fn runtime(value: serde_json::Value) -> Result<Runtime, PluginError> {
+    let entries = |key: &str| {
+        value[key]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(id, _)| valid(id))
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let failures = entries("failures")
+        .into_iter()
+        .filter_map(|(id, entry)| {
+            let failure = serde_json::from_value::<StartFailure>(entry).ok()?;
+
+            Some((id, StartFailure { reason: reason(&failure.reason), ..failure }))
+        })
+        .collect();
+
+    let missing = entries("missing")
+        .into_iter()
+        .filter_map(|(id, help)| {
+            let help = help.as_str().filter(|help| requirement::visible(help))?.trim().to_owned();
+
+            Some((id, help))
+        })
+        .collect();
+
+    Ok(Runtime { active: active_ids(value)?, failures, missing })
 }
 
 pub(crate) fn active_ids(value: serde_json::Value) -> Result<Vec<String>, PluginError> {

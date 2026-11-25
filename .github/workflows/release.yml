@@ -180,9 +180,18 @@ jobs:
     with:
       artifact: krabb-v${{ needs.prepare.outputs.version }}
 
+  # A release that cannot update an earlier build or roll back to it is never published.
+  update:
+    name: Update
+    needs: [prepare, package]
+    uses: ./.github/workflows/update.yml
+
+    with:
+      artifact: krabb-v${{ needs.prepare.outputs.version }}
+
   publish:
     name: Publish
-    needs: [prepare, checksum, install]
+    needs: [prepare, checksum, install, update]
     uses: ./.github/workflows/publish.yml
 
     permissions:
