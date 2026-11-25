@@ -914,6 +914,19 @@ pub(crate) fn windows_service_recovery() -> Result<(), Box<dyn std::error::Error
         .into());
     }
 
+    // Restart actions run only after crashes unless this flag also covers a daemon that stops
+    // with an error, as one does after it restores an interrupted update.
+    let flagged =
+        command_output(std::process::Command::new("sc.exe").args(["failureflag", "Krabb", "1"]))?;
+
+    if !flagged.status.success() {
+        return Err(format!(
+            "Could not configure service recovery. {}",
+            windows_command_detail(&flagged)
+        )
+        .into());
+    }
+
     Ok(())
 }
 

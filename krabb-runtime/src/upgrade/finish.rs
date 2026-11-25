@@ -9,6 +9,10 @@ pub(super) async fn run(
     start: bool,
     json: bool,
 ) -> Result<(), PluginError> {
+    // Held until activation ends, so recovery never undoes it even when the update that
+    // started it has died.
+    let _finishing = lock_at(root, interrupted::FINISH_LOCK)?;
+
     let plan = stage::plan(dir)?;
 
     if plan.version != VERSION {
@@ -80,14 +84,9 @@ pub(super) async fn run(
         report.unloaded = missing;
     }
 
-    // The report only adds detail to the result, so failing to save it never undoes the update.
-    let saved = serde_json::to_vec(&report)
-        .map_err(std::io::Error::from)
-        .and_then(|bytes| krabb_file::save(dir.join(REPORT), bytes));
-
-    if let Err(error) = saved {
-        eprintln!("The update report could not be saved: {}", sentence(error.to_string()));
-    }
+    // Recovery reads the report as proof that activation finished, so it is written last and
+    // failing to save it fails activation. Later releases must keep both rules.
+    krabb_file::save(dir.join(REPORT), serde_json::to_vec(&report)?)?;
 
     Ok(())
 }
@@ -110,6 +109,12 @@ pub(super) struct Report {
 const REPORT: &str = "finish.json";
 
 const REPORT_LIMIT: u64 = 64 * 1024;
+
+/// Whether the new host finished activating. Existence alone decides, so a report a later
+/// release writes in another format still counts.
+pub(super) fn reported(dir: &Path) -> bool {
+    std::fs::symlink_metadata(dir.join(REPORT)).is_ok_and(|metadata| metadata.is_file())
+}
 
 /// The report the new host left in DIR, or none from a release that writes no report.
 pub(super) fn report(dir: &Path) -> Option<Report> {

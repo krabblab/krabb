@@ -1104,3 +1104,257 @@ fn failures_end_with_one_next_action() {
             .ends_with("detail.\nUninstall it with `krabb plugin uninstall echo` before updating.")
     );
 }
+
+/// A home and two binaries as an update to 0.2.0 from 0.1.0 leaves them at each phase.
+fn interrupted_update(name: &str) -> (PathBuf, PathBuf, [PathBuf; 2]) {
+    let root = temp_root(name);
+    let home = root.join("home");
+    let bin = root.join("bin");
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let binaries = [bin.join(format!("krabb{suffix}")), bin.join(format!("krabb-daemon{suffix}"))];
+
+    for (path, content) in [
+        (home.join("config.toml"), "model = 'old'"),
+        (home.join("plugins.lock"), "{}"),
+        (binaries[0].clone(), "old krabb"),
+        (binaries[1].clone(), "old daemon"),
+    ] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    (root, home, binaries)
+}
+
+fn intent(home: &Path) {
+    interrupted::intend(
+        home,
+        &interrupted::Intent { from: "0.1.0".into(), to: "0.2.0".into(), service: true },
+    )
+    .unwrap();
+}
+
+/// A service path with no definition, so recovery never reaches a real service manager.
+fn no_service(root: &Path) -> PathBuf {
+    root.join("none.service")
+}
+
+#[tokio::test]
+async fn an_update_cut_off_after_staging_changes_nothing_and_says_so() {
+    let (root, home, binaries) = interrupted_update("cut-staging");
+
+    intent(&home);
+
+    let outcome = interrupted::recover_locked(&home, &no_service(&root), "0.1.0", Caller::Command)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!((outcome.from.as_str(), outcome.kept.as_str()), ("0.1.0", "0.1.0"));
+    assert!(!outcome.finished() && !outcome.restored);
+    assert!(outcome.notice().ends_with("so Krabb 0.1.0 stays installed."), "{}", outcome.notice());
+    assert!(!home.join("updates/intent.json").exists());
+    assert_eq!(interrupted::outcome(&home), Some(outcome));
+    assert_eq!(fs::read_to_string(&binaries[0]).unwrap(), "old krabb");
+
+    let service = no_service(&root);
+    let again = interrupted::recover_locked(&home, &service, "0.1.0", Caller::Command).await;
+
+    assert_eq!(again.unwrap(), None, "nothing is left to recover");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn an_update_cut_off_before_activation_finished_restores_the_previous_version() {
+    // After the recovery point, after each binary swap, and during activation.
+    let phases: [(&str, &[usize], &str); 4] = [
+        ("cut-point", &[], "0.1.0"),
+        ("cut-first-swap", &[0], "0.2.0"),
+        ("cut-second-swap", &[0, 1], "0.2.0"),
+        ("cut-activation", &[0, 1], "0.2.0"),
+    ];
+
+    for (name, swapped, running) in phases {
+        let (root, home, binaries) = interrupted_update(name);
+
+        intent(&home);
+
+        snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, true).unwrap();
+        interrupted::clear_intent(&home).unwrap();
+
+        for index in swapped {
+            fs::write(&binaries[*index], "new").unwrap();
+        }
+
+        if name == "cut-activation" {
+            fs::write(home.join("config.toml"), "model = 'half migrated'").unwrap();
+            fs::create_dir_all(home.join("updates/v0.2.0")).unwrap();
+        }
+
+        let outcome =
+            interrupted::recover_locked(&home, &no_service(&root), running, Caller::Command)
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(outcome.kept, "0.1.0", "{name}");
+        assert_eq!(fs::read_to_string(&binaries[0]).unwrap(), "old krabb", "{name}");
+        assert_eq!(fs::read_to_string(&binaries[1]).unwrap(), "old daemon", "{name}");
+        assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "model = 'old'");
+        assert!(snapshot::load(&home).unwrap().is_none(), "{name}");
+        assert!(outcome.notice().contains("Krabb 0.1.0 was restored"), "{name}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+/// The state a host leaves when it finished activating but its update died before accepting.
+fn finished_update(name: &str) -> (PathBuf, PathBuf, [PathBuf; 2]) {
+    let (root, home, binaries) = interrupted_update(name);
+
+    snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, true).unwrap();
+
+    for binary in &binaries {
+        fs::write(binary, "new").unwrap();
+    }
+
+    fs::create_dir_all(home.join("updates/v0.2.0")).unwrap();
+    krabb_file::save(home.join("updates/v0.2.0/finish.json"), b"{}").unwrap();
+
+    (root, home, binaries)
+}
+
+#[tokio::test]
+async fn an_update_whose_activation_finished_is_kept_whichever_binary_recovers() {
+    for host in ["0.2.0", "0.1.0"] {
+        let (root, home, binaries) = finished_update(&format!("cut-finished-{host}"));
+        let service = no_service(&root);
+
+        let outcome = interrupted::recover_locked(&home, &service, host, Caller::Daemon)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(outcome.finished(), "{host}");
+        assert!(!outcome.restored, "{host}");
+        assert_eq!(fs::read_to_string(&binaries[0]).unwrap(), "new", "{host}");
+        assert!(snapshot::load(&home).unwrap().unwrap().accepted, "{host}");
+        assert!(!home.join("updates/v0.2.0").exists(), "the staged release is removed");
+        assert!(outcome.notice().contains("so it was kept"), "{host}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[tokio::test]
+async fn a_manual_reinstall_or_an_odd_record_is_left_to_an_explicit_rollback() {
+    let (root, home, binaries) = interrupted_update("cut-reinstalled");
+    let service = no_service(&root);
+
+    snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, true).unwrap();
+
+    let error = interrupted::recover_locked(&home, &service, "0.3.0", Caller::Command)
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.ends_with("Restore the previous version with `krabb update --rollback`."));
+    assert!(snapshot::load(&home).unwrap().is_some_and(|point| !point.accepted));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn an_unreadable_intent_is_dropped_instead_of_blocking_every_start() {
+    let (root, home, _) = interrupted_update("cut-unreadable");
+    let service = no_service(&root);
+
+    krabb_file::save(home.join("updates/intent.json"), br#"{"from":"\u001b[2J"}"#).unwrap();
+
+    let outcome = interrupted::recover_locked(&home, &service, "0.1.0", Caller::Daemon).await;
+
+    assert_eq!(outcome.unwrap(), None);
+    assert!(!home.join("updates/intent.json").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn a_running_update_is_never_recovered_underneath_it() {
+    let (root, home, binaries) = interrupted_update("cut-live");
+
+    snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, false).unwrap();
+
+    let service = no_service(&root);
+
+    // The update itself, then an activation whose update died, each hold a lock.
+    for lock in [".update.lock", interrupted::FINISH_LOCK] {
+        let _held = lock_at(&home, lock).unwrap();
+        let command = interrupted::recover(&home, &service, Caller::Command).await;
+
+        assert!(command.unwrap_err().to_string().starts_with("An update or its recovery"));
+        assert_eq!(interrupted::recover(&home, &service, Caller::Daemon).await.unwrap(), None);
+        assert!(snapshot::load(&home).unwrap().is_some_and(|point| !point.accepted), "{lock}");
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn commands_settle_what_an_update_left_and_wait_while_one_runs() {
+    let (root, home, binaries) = interrupted_update("before-command");
+    let service = no_service(&root);
+
+    assert!(interrupted::before_command(&home, &service, true).await.is_ok(), "nothing to do");
+
+    interrupted::intend(
+        &home,
+        &interrupted::Intent { from: VERSION.into(), to: "9.9.9".into(), service: false },
+    )
+    .unwrap();
+
+    interrupted::before_command(&home, &service, true).await.unwrap();
+
+    assert_eq!(interrupted::outcome(&home).unwrap().kept, VERSION);
+    assert!(!home.join("updates/intent.json").exists());
+
+    // A record recovery may not act on is left in place, and the command still runs.
+    snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, false).unwrap();
+
+    assert!(interrupted::before_command(&home, &service, true).await.is_ok());
+    assert!(snapshot::load(&home).unwrap().is_some_and(|point| !point.accepted));
+
+    let _update = lock_at(&home, ".update.lock").unwrap();
+    let busy = interrupted::before_command(&home, &service, true).await.unwrap_err();
+
+    assert!(busy.to_string().starts_with("An update or its recovery is still running."));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn an_update_settles_an_earlier_interruption_first() {
+    let (root, home, _) = interrupted_update("before-update");
+    let service = no_service(&root);
+
+    interrupted::intend(
+        &home,
+        &interrupted::Intent { from: VERSION.into(), to: "9.9.9".into(), service: false },
+    )
+    .unwrap();
+
+    {
+        let _finishing = lock_at(&home, interrupted::FINISH_LOCK).unwrap();
+
+        assert!(interrupted::before_update(&home, &service, true).await.is_err());
+        assert!(home.join("updates/intent.json").exists());
+    }
+
+    interrupted::before_update(&home, &service, true).await.unwrap();
+
+    assert!(!home.join("updates/intent.json").exists());
+    assert!(interrupted::outcome(&home).is_some());
+
+    let _ = fs::remove_dir_all(root);
+}

@@ -1855,6 +1855,12 @@ fn error_causes(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let json = cli.json;
 
+    // Unit tests run commands against the developer's own home and service, which recovery
+    // must never restore or start; recovery itself is tested on temporary homes.
+    if recovers(&cli.command) && !cfg!(test) {
+        upgrade::before_command(&home(), &service_path(), json).await?;
+    }
+
     if schema_gated(&cli.command) {
         schema::check(&home())?;
     }
@@ -1905,6 +1911,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(())
+}
+
+/// `update` settles an interrupted update itself, and version or completion output must not
+/// wait on one.
+fn recovers(command: &Command) -> bool {
+    !matches!(command, Command::Version(_) | Command::Completion { .. } | Command::Update(_))
 }
 
 fn schema_gated(command: &Command) -> bool {
