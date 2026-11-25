@@ -103,6 +103,14 @@ explicitly, and shows the reason.
    the branch or tag chosen under "Use workflow from", latest `main` by default, and
    also runs every Monday against `main`. To test another commit, push a branch or tag
    at it first.
+6. Release also runs the Update workflow on the same archives before publishing. On
+   every target it installs the same source built as version `0.0.0-previous`, sets up
+   official plugins and the service, and serves releases from local `file://`
+   directories. An update whose daemon cannot start must restore the previous binaries,
+   state, and service; the real update must keep the service ready and a detached
+   plugin detached; and the recovery point's `krabb update --rollback` must restore the
+   previous build while the new daemon cannot start. It also runs from the Actions tab
+   and every Monday against `main`.
 
 For a local installer smoke test, set `KRABB_RELEASE_BASE` to a `file://`
 directory containing the archives and `SHA256SUMS`, for example
@@ -112,7 +120,8 @@ directory, and installers reject other release-base schemes.
 The Package workflow checks every archive and installer it builds. On both
 Windows targets it also installs the service in an isolated home, checks its
 status, and removes it. Run it from the Actions tab with `core` to check
-packaging without releasing.
+packaging without releasing. Its optional version input builds Krabb at another
+workspace version; the Update workflow uses it for its previous build.
 
 Release scripts are intentionally explicit. They do not publish crates,
 containers, or services, and they must not receive credentials through command

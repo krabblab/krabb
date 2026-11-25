@@ -13,6 +13,12 @@ on:
         required: true
         type: string
 
+      version:
+        description: "Workspace version to build Krabb at instead of its own, for update tests."
+        required: false
+        type: string
+        default: ""
+
   workflow_dispatch:
     inputs:
       names:
@@ -26,6 +32,12 @@ on:
         required: true
         type: string
         default: krabb-package
+
+      version:
+        description: "Workspace version to build Krabb at instead of its own, for update tests."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -95,6 +107,34 @@ jobs:
 
         with:
           targets: ${{ matrix.target }}
+
+      # Cargo refreshes the workspace entries in Cargo.lock, so the locked build accepts it.
+      - if: inputs.version != ''
+        name: Override Workspace Version
+        shell: bash
+
+        env:
+          KRABB_VERSION: ${{ inputs.version }}
+
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$KRABB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version '$KRABB_VERSION' is not a valid release version."
+            exit 1
+          fi
+
+          awk -v version="$KRABB_VERSION" '
+            /^\[/ { section = $0 }
+            section ~ /^\[workspace\.package\]/ && /^version = "/ { $0 = "version = \"" version "\"" }
+            { print }
+          ' Cargo.toml > Cargo.toml.new
+
+          mv Cargo.toml.new Cargo.toml
+          cargo metadata --format-version 1 > /dev/null
+          test "$(bash krabb-scripts/version.sh)" = "$KRABB_VERSION"
+          tr -d '\r' < Cargo.lock | grep -A1 -x 'name = "krabb"' |
+            grep -qx "version = \"$KRABB_VERSION\""
 
       - if: matrix.archive == 'tar.gz'
         name: Build Unix Archives

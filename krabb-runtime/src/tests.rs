@@ -1352,8 +1352,13 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     let model = entry("model");
     let active = vec!["openai".to_owned()];
 
-    let state = |id, entry, configured, active, service| {
-        let value = super::plugin_state(id, entry, configured, active, service);
+    let state = |id, entry, configured, active: Option<&Vec<String>>, service| {
+        let observed = super::status::Observed {
+            active: active.map(Vec::as_slice),
+            ..super::status::Observed::default()
+        };
+
+        let value = super::plugin_state(id, entry, configured, &observed, service);
 
         (value["state"].as_str().unwrap().to_owned(), value["next"].as_str().map(str::to_owned))
     };
@@ -1377,6 +1382,45 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     assert_eq!(failed.0, "failed to start");
     assert_eq!(failed.1.unwrap(), "krabb service restart");
 
+    let observe = |failure, missing| super::status::Observed {
+        active: Some(active.as_slice()),
+        failure,
+        missing,
+    };
+
+    let failure = super::StartFailure::new("Gemini rejected the API key (401).");
+
+    let rejected =
+        super::plugin_state("gemini", &model, true, &observe(Some(&failure), None), true);
+
+    assert_eq!(rejected["state"], "failed to start");
+    assert_eq!(rejected["reason"], "Gemini rejected the API key (401).");
+    assert_eq!(rejected["next"], "krabb plugin setup gemini");
+
+    let help = "Install signal-cli from https://github.com/AsamK/signal-cli#installation.";
+    let signal = entry("channel");
+
+    for (configured, expected) in [(true, "missing program"), (false, "needs setup")] {
+        let value =
+            super::plugin_state("signal", &signal, configured, &observe(None, Some(help)), true);
+
+        assert_eq!(value["state"], expected);
+    }
+
+    let loaded = vec!["signal".to_owned()];
+
+    let missing = super::status::Observed {
+        active: Some(loaded.as_slice()),
+        failure: None,
+        missing: Some(help),
+    };
+
+    assert_eq!(
+        super::plugin_state("signal", &signal, false, &missing, true)["next"],
+        help,
+        "a loaded plugin that cannot find its program is not ready"
+    );
+
     let next = |state: &str, next: &str| {
         let value =
             serde_json::json!({"plugin_states": [{"id": "codex", "state": state, "next": next}]});
@@ -1396,6 +1440,21 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     );
 
     assert!(next("failed to start", "krabb service restart").starts_with("The log at "));
+
+    assert_eq!(
+        next("failed to start", "krabb plugin setup codex"),
+        "Set up codex again with `krabb plugin setup codex`."
+    );
+
+    assert_eq!(next("missing program", help), help);
+
+    let reasoned = super::status_text(
+        &serde_json::json!({"plugin_states": [{"id": "gemini", "state": "failed to start",
+            "reason": "Gemini rejected the API key (401).", "next": "krabb plugin setup gemini"}]}),
+        1,
+    );
+
+    assert!(reasoned.contains("gemini: failed to start (Gemini rejected the API key (401))"));
 
     let unready = serde_json::json!({
         "health": "unhealthy",
@@ -1683,26 +1742,71 @@ fn plugin_uninstall_details_follow_the_summary_without_an_empty_line() {
     );
 
     assert_eq!(
+        super::plugin_uninstall_output(&serde_json::json!({
+            "id": "telegram",
+            "revoked": {"secrets": [], "keyring": false, "grants": 1, "cleanup": "partial",
+                "failures": [{"step": "service_credentials",
+                    "error": "Could not remove telegram's values from the service credential copy \
+                        /home/owner/.config/systemd/user/krabb.service.credentials.json: \
+                        Permission denied (os error 13).",
+                    "next": "Run `krabb service uninstall` to remove the copy."}]}
+        })),
+        concat!(
+            "Uninstalled plugin telegram.\n",
+            "├─ Revoked 1 sharing grant.\n",
+            "└─ Could not remove telegram's values from the service credential copy \
+                /home/owner/.config/systemd/user/krabb.service.credentials.json: \
+                Permission denied (os error 13).\n",
+            "   └─ Run `krabb service uninstall` to remove the copy."
+        )
+    );
+
+    let partial = serde_json::json!({
+        "id": "telegram", "version": "0.8.2", "status": "uninstalled", "unloaded": true,
+        "purged": null,
+        "revoked": {"secrets": [], "keyring": false, "grants": 0, "cleanup": "partial",
+            "failures": [{"step": "service_credentials", "error": "Could not remove them.",
+                "next": "Run `krabb service uninstall` to remove the copy."}]}
+    });
+
+    assert_eq!(
+        super::plugin_uninstall_json(&partial),
+        serde_json::json!({
+            "action": "uninstall", "id": "telegram", "status": "uninstalled", "unloaded": true,
+            "purged": null, "revoked": partial["revoked"]
+        })
+    );
+
+    assert_eq!(
         super::plugin_uninstall_batch_output(
             &[
-                "codex@v0.1.0 successfully uninstalled".into(),
-                "telegram@v0.8.2 successfully uninstalled".into(),
+                ("codex@v0.1.0 successfully uninstalled".into(), Vec::new()),
+                (
+                    "telegram@v0.8.2 successfully uninstalled".into(),
+                    vec![
+                        "Could not remove telegram's values from the service credential copy."
+                            .into(),
+                        "Run `krabb service uninstall` to remove the copy.".into(),
+                    ],
+                ),
             ],
             2,
         ),
         concat!(
             "Uninstalled 2 plugins.\n",
             "├─ codex@v0.1.0 successfully uninstalled\n",
-            "└─ telegram@v0.8.2 successfully uninstalled"
+            "└─ telegram@v0.8.2 successfully uninstalled\n",
+            "   ├─ Could not remove telegram's values from the service credential copy.\n",
+            "   └─ Run `krabb service uninstall` to remove the copy."
         )
     );
 
     assert_eq!(
         super::plugin_uninstall_batch_output(
             &[
-                "tools uninstallation failed".into(),
-                "scheduler uninstallation failed".into(),
-                "foo uninstallation failed".into(),
+                ("tools uninstallation failed".into(), Vec::new()),
+                ("scheduler uninstallation failed".into(), Vec::new()),
+                ("foo uninstallation failed".into(), Vec::new()),
             ],
             3,
         ),
@@ -4207,6 +4311,7 @@ fn validates_manifests_and_environment() {
         check: false,
         commands: Vec::new(),
         state: None,
+        requires: Vec::new(),
     };
 
     assert!(manifest.validate().is_ok());
@@ -4279,6 +4384,7 @@ fn validates_manifests_and_environment() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &Config::default(),
         test_home,
@@ -4325,6 +4431,7 @@ fn validates_manifests_and_environment() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &config,
         test_home,
@@ -4346,6 +4453,7 @@ fn validates_manifests_and_environment() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &Config::default(),
         test_home,
@@ -4376,6 +4484,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &Config::default(),
         Path::new("/tmp/krabb-home"),
@@ -5754,6 +5863,7 @@ fn manifest_round_trips() {
         check: false,
         commands: Vec::new(),
         state: None,
+        requires: Vec::new(),
     };
 
     let text = toml::to_string(&value).unwrap();
@@ -7126,7 +7236,7 @@ fn plugin_list_rejects_invalid_visible_manifests() {
     fs::create_dir_all(root.join("plugins/broken")).unwrap();
     fs::write(root.join("plugins/broken/krabb-plugin.toml"), "broken = true\n").unwrap();
 
-    assert!(super::list_at(&root, 1, true).is_err());
+    assert!(super::list_at(&root, None, 1, true).is_err());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -7149,12 +7259,12 @@ fn formats_plugin_inventory_as_a_tree() {
 
     assert_eq!(
         output,
-        "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Binary is present (credentials not checked)\n   ├─ Capabilities include model, vision\n   ├─ Uses protocol version 0.1\n   ├─ Commands include codex\n   └─ Permissions include network, process"
+        "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Ready\n   ├─ Capabilities include model, vision\n   ├─ Uses protocol version 0.1\n   ├─ Commands include codex\n   └─ Permissions include network, process"
     );
 }
 
 #[test]
-fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
+fn plugin_inventory_describes_each_runtime_state_with_its_next_step() {
     let manifest: super::Manifest = toml::from_str(
             "id = 'telegram'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['channel']\nsecrets = ['KRABB_TELEGRAM_TOKEN']\n",
         )
@@ -7164,7 +7274,7 @@ fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
     let output = super::format_plugin_list(std::slice::from_ref(&item), 1).unwrap();
 
     assert_eq!(item["setup_command"], "krabb plugin setup telegram");
-    assert!(output.contains("Binary is present (credentials not checked)"));
+    assert!(output.contains("Ready"));
     assert!(output.contains("Set up credentials with `krabb plugin setup telegram`"));
     assert!(!output.contains("Health is ready"));
     assert_eq!(item["commands"], serde_json::json!([]));
@@ -7173,6 +7283,38 @@ fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
     let output = super::format_plugin_list(&[item], 1).unwrap();
 
     assert!(output.contains("Binary is missing, so reinstall the plugin from its source"));
+
+    let line = |health: &str, reason: Option<&str>, next: Option<&str>| {
+        let mut item = super::plugin_summary(&manifest, health);
+
+        item["reason"] = reason.into();
+        item["next"] = next.into();
+
+        let output = super::format_plugin_list(&[item], 1).unwrap();
+
+        output.lines().nth(2).unwrap().trim_start_matches("   ├─ ").to_owned()
+    };
+
+    assert_eq!(line("installed", None, None), "Installed");
+    assert_eq!(line("needs setup", None, Some("krabb plugin setup telegram")), "Needs setup");
+
+    assert_eq!(
+        line("configured", None, Some("krabb service start")),
+        "Configured, but the runtime is not running, so run `krabb service start`"
+    );
+
+    assert_eq!(
+        line("failed to start", Some("Rejected."), Some("krabb plugin setup telegram")),
+        "Failed to start: Rejected, so run `krabb plugin setup telegram`"
+    );
+
+    assert_eq!(line("failed to start", None, None), "Failed to start");
+    assert_eq!(line("missing program", None, None), "Missing a program it runs");
+
+    assert_eq!(
+        line("missing program", None, Some("Install signal-cli.")),
+        "Missing a program it runs: Install signal-cli"
+    );
 }
 
 #[test]
@@ -9184,8 +9326,8 @@ async fn manages_local_sessions_and_plugins() {
             .is_symlink()
     );
 
-    super::list_at(&root, 1, true).unwrap();
-    super::list_at(&root, 1, false).unwrap();
+    super::list_at(&root, None, 1, true).unwrap();
+    super::list_at(&root, None, 1, false).unwrap();
 
     let lock = super::load_lock_at(&root).unwrap();
 
@@ -9298,7 +9440,7 @@ async fn manages_local_sessions_and_plugins() {
 
     assert!(super::installed_at(&root).is_empty());
 
-    super::list_at(&root, 1, false).unwrap();
+    super::list_at(&root, None, 1, false).unwrap();
 
     assert!(
         super::remove_at(super::PluginRemove { id: "missing".into(), yes: false }, &root).is_err()
@@ -13494,4 +13636,69 @@ fn plugins_cannot_register_current_or_earlier_host_tool_names() {
 
     assert_eq!(super::aliases::current("read", serde_json::json!({}), owned).0, "read");
     assert_eq!(super::aliases::current("write", serde_json::json!({}), owned).0, "file_write");
+}
+
+#[test]
+fn start_failures_are_one_clean_line_and_name_setup_only_for_rejected_credentials() {
+    let failure = super::StartFailure::new(
+        "KRABB_GEMINI_API_KEY: abc123 was rejected (401 Unauthorized).\nRun it \u{1b}[2J again.",
+    );
+
+    assert!(failure.setup);
+    assert!(!failure.reason.contains('\n'));
+    assert!(!failure.reason.contains('\u{1b}'));
+    assert!(!failure.reason.contains("abc123"), "{}", failure.reason);
+
+    assert!(!super::StartFailure::new("Plugin binary was not found: gemini.").setup);
+    assert!(!super::StartFailure::new("Listening on port 4013 failed.").setup);
+    assert!(super::StartFailure::new("Telegram answered 403.").setup);
+    assert!(super::reason(&"x".repeat(1_000)).len() <= 304);
+}
+
+#[test]
+fn an_older_daemon_reply_still_lists_its_plugins_and_odd_entries_are_dropped() {
+    let older = super::runtime(serde_json::json!({"items": ["codex"]})).unwrap();
+
+    assert_eq!(older.active, ["codex"]);
+    assert!(older.failures.is_empty() && older.missing.is_empty());
+
+    let current = super::runtime(serde_json::json!({
+        "items": ["codex"],
+        "failures": {
+            "gemini": {"reason": "Rejected.\nAgain.", "setup": true},
+            "../escape": {"reason": "Nope.", "setup": false},
+            "telegram": "an older shape",
+        },
+        "missing": {
+            "signal": "Install signal-cli.",
+            "tools": "Install \u{1b}[2J it.",
+            "slack": 7,
+        },
+    }))
+    .unwrap();
+
+    assert_eq!(current.failures.len(), 1);
+    assert_eq!(current.failures["gemini"].reason, "Rejected. Again.");
+    assert!(current.failures["gemini"].setup);
+    assert_eq!(current.missing, BTreeMap::from([("signal".into(), "Install signal-cli.".into())]));
+}
+
+#[test]
+fn list_items_take_the_runtime_state_unless_the_binary_is_gone() {
+    let states = [serde_json::json!({"id": "gemini", "state": "failed to start",
+        "reason": "Rejected.", "next": "krabb plugin setup gemini"})];
+
+    let item = |id: &str| serde_json::json!({"id": id, "health": "installed"});
+
+    let failed = super::status::listed(item("gemini"), &states, true);
+
+    assert_eq!(failed["health"], "failed to start");
+    assert_eq!(failed["reason"], "Rejected.");
+    assert_eq!(failed["next"], "krabb plugin setup gemini");
+
+    let gone = super::status::listed(item("gemini"), &states, false);
+
+    assert_eq!(gone["health"], "missing");
+    assert!(gone.get("reason").is_none());
+    assert_eq!(super::status::listed(item("stray"), &states, true)["health"], "installed");
 }

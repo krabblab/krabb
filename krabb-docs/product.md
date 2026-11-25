@@ -150,6 +150,8 @@ their model is explicitly pinned; their history is preserved.
   replayed.
 - Plugin attach/detach controls runtime membership without uninstalling; start/stop and
   add/remove alias attach/detach and install/uninstall. Force cleanup is explicit.
+  Uninstall revokes the plugin's secrets and sharing grants and reports any cleanup step
+  it could not finish.
   Delivery dropping supports all pages and exact
   channel filtering, with one confirmation and a durable batch update. Terminal dropped
   history does not block uninstall.

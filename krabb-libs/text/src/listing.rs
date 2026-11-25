@@ -58,14 +58,29 @@ pub fn format_plugin_list(items: &[Value], page: usize, size: usize) -> Result<S
             format!("Permissions include {permissions}")
         };
 
-        let binary = match health {
-            "ready" => "Binary is present (credentials not checked)".into(),
-            "missing" => "Binary is missing, so reinstall the plugin from its source".into(),
+        let reason = item["reason"].as_str().map(|reason| reason.trim_end_matches('.'));
+        let next = item["next"].as_str().map(|next| next.trim_end_matches('.'));
+
+        let run = |text: &str| match next {
+            Some(next) => format!("{text}, so run `{next}`"),
+            None => text.to_owned(),
+        };
+
+        let state = match (health, reason, next) {
+            ("ready", ..) => "Ready".into(),
+            ("installed", ..) => "Installed".into(),
+            ("missing", ..) => "Binary is missing, so reinstall the plugin from its source".into(),
+            ("needs setup", ..) => "Needs setup".into(),
+            ("configured", ..) => run("Configured, but the runtime is not running"),
+            ("failed to start", Some(reason), _) => run(&format!("Failed to start: {reason}")),
+            ("failed to start", None, _) => run("Failed to start"),
+            ("missing program", _, Some(help)) => format!("Missing a program it runs: {help}"),
+            ("missing program", _, None) => "Missing a program it runs".into(),
             _ => format!("Health is {health}"),
         };
 
         let mut details =
-            vec![binary, capabilities, format!("Uses protocol version {protocol}"), commands];
+            vec![state, capabilities, format!("Uses protocol version {protocol}"), commands];
 
         if let Some(command) = item["setup_command"].as_str() {
             details.push(format!("Set up credentials with `{command}`"));

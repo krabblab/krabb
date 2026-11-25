@@ -587,14 +587,16 @@ where
             .await?;
     }
 
-    let inventory = host(home.clone(), "plugin.list".into(), serde_json::json!({}))
+    // Startup only needs to know which plugins are installed, not each one's runtime state.
+    let inventory = host(home.clone(), "plugin.list".into(), serde_json::json!({"states": false}))
         .await
         .unwrap_or(Value::Null);
 
     let model_plugin_available = inventory["items"].as_array().is_some_and(|items| {
         items.iter().any(|item| {
+            // Installed in any state: the daemon reports why it is not ready on its own.
             item["id"] == plugin
-                && item["health"] == "ready"
+                && item["health"] != "missing"
                 && item["capabilities"].as_array().is_some_and(|capabilities| {
                     capabilities.iter().any(|capability| capability == "model")
                 })
@@ -5179,7 +5181,9 @@ fn local_plugin_list(home: &str) -> Value {
                 .and_then(|bytes| toml::from_str::<Value>(&String::from_utf8_lossy(&bytes)).ok())
                 .unwrap_or(Value::Null);
 
-            let health = if plugin_binary_path(home, &id).is_file() { "ready" } else { "missing" };
+            // Without the daemon only the binary can be checked, which does not make it ready.
+            let health =
+                if plugin_binary_path(home, &id).is_file() { "installed" } else { "missing" };
 
             let filled = |value: &Value| match value {
                 Value::Array(items) => !items.is_empty(),
@@ -6484,8 +6488,8 @@ mod tests {
                 }),
                 1
             ),
-            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Binary is present \
-             (credentials not checked)\n   ├─ Capabilities include model, vision\n   ├─ Uses \
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Ready\n   ├─ Capabilities \
+             include model, vision\n   ├─ Uses \
              protocol version 0.1\n   ├─ Commands include codex\n   ├─ Set up credentials with \
              `krabb plugin setup codex`\n   └─ Permissions include network, process"
         );
@@ -8264,8 +8268,8 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         assert!(text.contains("There are not enough earlier turns to compact."));
 
         assert!(text.contains(
-            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@vunknown\n   ├─ Binary is present \
-             (credentials not checked)\n   ├─ Capabilities include model\n   ├─ Uses protocol \
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@vunknown\n   ├─ Ready\n   ├─ Capabilities \
+             include model\n   ├─ Uses protocol \
              version 0.0\n   ├─ No commands\n   └─ No permissions"
         ));
 
