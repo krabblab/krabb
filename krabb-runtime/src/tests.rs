@@ -13367,10 +13367,7 @@ fn failures_without_their_own_next_action_point_to_debug_output() {
 }
 
 #[tokio::test]
-async fn the_legacy_job_tool_name_is_reserved_and_checked_against_the_task_control_schema() {
-    assert!(super::HOST_TOOLS.contains(&super::tasks::CONTROL));
-    assert!(super::HOST_TOOLS.contains(&super::tasks::LEGACY_CONTROL));
-
+async fn legacy_job_calls_are_validated_against_the_task_control_schema() {
     let sessions = Arc::new(Mutex::new(super::state::Store::default()));
 
     {

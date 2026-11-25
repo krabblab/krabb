@@ -618,7 +618,7 @@ remain available for legacy tasks using the message tool.
 
 One run produces one stored result and independent durable deliveries. Use
 `krabb delivery list`, then retry an uncertain delivery only after checking whether
-it arrived. Retrying delivery does not rerun the scheduled run or resend successful targets.
+it arrived. Retrying delivery does not repeat the run or resend to targets that succeeded.
 
 Use `krabb schedule help` for full syntax. The
 [Scheduler guide](../krabb-plugins/scheduler/README.md) covers task

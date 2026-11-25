@@ -109,8 +109,8 @@ failed, timed-out, cancelled, interrupted, and handed-off attempts. Dropped futu
 observations with unknown usage; rejected admission has no execution observation. Recent failures
 reduce estimator confidence without granting resources. Durable inference allowance accounting is
 stored separately in the task catalog. Each admitted call reserves before dispatch, settles
-confirmed occupied time after completion, and retains uncertain exposure after interruption. Task ceilings
-remain binding across retries and restart. Owned tool/approval waiting has a separate meter
+confirmed occupied time after completion, and retains uncertain exposure after interruption. Task
+ceilings remain binding across retries and restart. Owned tool/approval waiting has a separate meter
 boundary; waiting does not become confirmed active inference usage. Authenticated local IPC grants
 can increase a settled tracked ceiling within host policy, with task revision checks, account
 sequence checks, and durable receipts. Pending accounts are protected from retention. Ordinary model

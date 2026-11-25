@@ -69,31 +69,32 @@ has a frozen destination plan and a separate receipt per target. A result is sav
 before its deliveries are published together in the catalog. Delivery failure does
 not cause another model execution.
 
-Catalog version 15 stores foreground and background tasks, checkpoints, captured endpoint identities
+Catalog version 16 stores foreground and background tasks, checkpoints, captured endpoint identities
 and permissions, recovery phases, and pending notifications. It also keeps each saved task's pending
 approval: the exact proposed tool call, its bounded description, and the recorded decision. It also
 retains operation admission intent, opaque handles, receipts, and monitoring backoff. Minimal and
 extended background execution share this catalog and its private journals; runner does not introduce
 another task database. Typed retry reasons and earliest retry times survive controls and restart.
 Upgrading a legacy pending retry without a known reason blocks for review, preserving its input,
-checkpoint, and prior use. Versions 1 through 14 remain readable; older writers reject version 15
-rather than discard task state. Foreground task admission saves the task and its private context
-together. A foreground journal keeps only its own turn messages and prompts plus a reference to the
-last conversation message it covers; it reads the conversation up to that point instead of copying
-it. Loading an older catalog converts saved copies whose messages are still in their conversation.
-The catalog references immutable task journals under `data/tasks/`. When backing up a stopped
-runtime, include that directory and `data/sessions/` together, along with any referenced workspace
-and attachment data. A checkpoint and its tool receipt commit together. Client messages and channel
-outbox entries commit with their notification receipt, so delivery recovery does not re-execute the
-goal. At most 64 task records are retained; capacity reclaims terminal records whose notifications
-are published and protects active, paused, and blocked work. Commands carry expected revisions and
-durable receipts; bounded receipt retention still rejects stale commands after old receipts expire.
-Manual pauses remain paused after restart. Legacy paused blockers migrate to the explicit blocked
-state. Worker generations fence checkpoint, tool, draft, and compaction writes after a stop or a
-later execution. Control receipts appear in the conversation transcript and are omitted from the
-model's working context. Operation handles are inspected after restart without starting the external
-work again. A lost start receipt blocks the task for review. Cancelled tasks with outstanding
-operations and tasks with uncertain effects remain protected from eviction.
+checkpoint, and prior use. Versions 1 through 15 remain readable; new tasks are saved as
+`task-<digits>`, and older writers reject version 16 rather than discard task state. Foreground task
+admission saves the task and its private context together. A foreground journal keeps only its own
+turn messages and prompts plus a reference to the last conversation message it covers; it reads the
+conversation up to that point instead of copying it. Loading an older catalog converts saved copies
+whose messages are still in their conversation. The catalog references immutable task journals under
+`data/tasks/`. When backing up a stopped runtime, include that directory and `data/sessions/`
+together, along with any referenced workspace and attachment data. A checkpoint and its tool receipt
+commit together. Client messages and channel outbox entries commit with their notification receipt,
+so delivery recovery does not re-execute the goal. At most 64 task records are retained; capacity
+reclaims terminal records whose notifications are published and protects active, paused, and blocked
+work. Commands carry expected revisions and durable receipts; bounded receipt retention still
+rejects stale commands after old receipts expire. Manual pauses remain paused after restart. Legacy
+paused blockers migrate to the explicit blocked state. Worker generations fence checkpoint, tool,
+draft, and compaction writes after a stop or a later execution. Control receipts appear in the
+conversation transcript and are omitted from the model's working context. Operation handles are
+inspected after restart without starting the external work again. A lost start receipt blocks the
+task for review. Cancelled tasks with outstanding operations and tasks with uncertain effects remain
+protected from eviction.
 
 Accepted foreground and queued client requests retain the source user-message ID. `task.receipt`
 reads the matching task and verified result without another model call or a journal rewrite. Full

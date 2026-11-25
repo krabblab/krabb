@@ -388,8 +388,12 @@ pub struct Store {
     pub(super) record_limit: Option<u64>,
 }
 
-/// Version 16 saves new tasks as `task-<digits>`, which earlier releases reject as invalid.
+/// Version 16 may hold `task-<digits>` IDs, so earlier releases refuse it rather than misread them.
 const CATALOG_VERSION: u8 = 16;
+
+const RESERVED: &str = "Task and schedule session IDs are reserved.\nChoose a session ID that does \
+    not start with `task-`, `job-`, or `schedule-`.";
+
 pub(crate) const SYSTEM_CONTEXT: &str = "krabb-context-";
 /// The delivery ID suffix of a best-effort progress notice.
 pub(crate) const PROGRESS: &str = "-progress";
@@ -758,17 +762,22 @@ impl Store {
             ));
         }
 
-        let reserved = match kind {
-            SessionKind::Conversation => is_schedule_session(&id) || is_task_session(&id),
-            SessionKind::Schedule => !is_schedule_session(&id),
-            SessionKind::Task | SessionKind::Foreground => !is_task_session(&id),
+        let (reserved, message) = match kind {
+            SessionKind::Conversation => {
+                (is_schedule_session(&id) || is_task_session(&id), RESERVED)
+            }
+
+            SessionKind::Schedule => {
+                (!is_schedule_session(&id), "Scheduled session ID is invalid.")
+            }
+
+            SessionKind::Task | SessionKind::Foreground => {
+                (!is_task_session(&id), "Task session ID is invalid.")
+            }
         };
 
         if reserved {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Task and schedule session IDs are reserved.\nChoose another name.",
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message));
         }
 
         if model.trim().is_empty() {
@@ -922,15 +931,12 @@ impl Store {
         if session.is_work() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "A scheduled session cannot be renamed.",
+                "A task or scheduled session cannot be renamed.",
             ));
         }
 
         if is_schedule_session(target) || is_task_session(target) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Task and schedule session IDs are reserved.\nChoose another name.",
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, RESERVED));
         }
 
         if session.channel.is_some() {
@@ -2077,10 +2083,7 @@ impl Store {
         })?;
 
         if is_schedule_session(target) || is_task_session(target) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Task and schedule session IDs are reserved.\nChoose another name.",
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, RESERVED));
         }
 
         if self.user_session_count() >= LIMIT {
