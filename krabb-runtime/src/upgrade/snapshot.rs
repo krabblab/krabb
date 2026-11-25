@@ -188,7 +188,9 @@ pub(super) async fn rollback(
 ) -> Result<(), PluginError> {
     let Some(point) = load(root)? else {
         return Err(
-            "No update recovery point is retained, so there is nothing to roll back.".into()
+            "No update recovery point is retained, so there is nothing to roll back.\nCheck the \
+             installed version with `krabb status`."
+                .into(),
         );
     };
 
@@ -301,7 +303,9 @@ fn revoked(root: &Path) -> Result<Vec<String>, PluginError> {
 
     if ids.len() > REVOKED_PLUGINS {
         return Err(
-            "Too many plugins were uninstalled since the update to roll back safely.".into()
+            "Too many plugins were uninstalled since the update to roll back safely.\nKeep this \
+             version, or restore the home from a backup."
+                .into(),
         );
     }
 

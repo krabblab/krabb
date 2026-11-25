@@ -802,7 +802,8 @@ fn sentence(value: impl Into<String>) -> String {
 
 fn format_cli_error(message: &str) -> String {
     if message.trim().is_empty() {
-        return "The command could not be completed.".into();
+        return "The command could not be completed.\nRun it again with `--debug` for details."
+            .into();
     }
 
     terminal::printable(&message.lines().map(str::trim_start).collect::<Vec<_>>().join("\n"))

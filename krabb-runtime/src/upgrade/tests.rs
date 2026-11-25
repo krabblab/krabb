@@ -872,7 +872,11 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
     .unwrap_err();
 
     assert!(error.to_string().contains("cannot load the installed echo plugin"), "{error}");
-    assert!(error.to_string().ends_with("The installation was not changed."));
+
+    assert!(error.to_string().ends_with(
+        "The installation was not changed.\nSee every release of the plugin with `krabb plugin \
+         versions echo`."
+    ));
 
     let mut linked = Lock::default();
 
@@ -1013,4 +1017,15 @@ fn a_json_host_error_folds_into_one_error_and_keeps_warnings() {
     assert_eq!(reported("{\"error\":\"Broken.\"}"), ("", Some("Broken.".into())));
     assert_eq!(reported("only a warning\n"), ("only a warning\n", None));
     assert_eq!(reported("note\n{\"other\":1}"), ("note\n{\"other\":1}", None));
+}
+
+#[test]
+fn failures_before_any_change_end_with_the_retry() {
+    let error = super::unchanged("Archive exceeds the size limit.".into()).to_string();
+
+    assert_eq!(
+        error,
+        "Archive exceeds the size limit.\nThe installation was not changed.\nTry again with \
+         `krabb update`."
+    );
 }

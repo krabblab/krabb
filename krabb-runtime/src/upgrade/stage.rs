@@ -195,7 +195,8 @@ pub(super) fn plugins(
             Err(error) => {
                 return Err(format!(
                     "Krabb {} cannot load the installed {id} plugin.\n{}\nThe installation was \
-                     not changed.",
+                     not changed.\nSee every release of the plugin with `krabb plugin versions \
+                     {id}`.",
                     inspection.version,
                     sentence(error.to_string())
                 )
@@ -286,7 +287,8 @@ pub(super) fn inspect(krabb: &Path, root: &Path) -> Result<Inspection, PluginErr
 
     if !output.status.success() {
         return Err(format!(
-            "The downloaded Krabb could not run on this system: {}",
+            "The downloaded Krabb could not run on this system: {}\nReport it at \
+             https://github.com/krabblab/krabb/issues.",
             sentence(redact(&output.stderr))
         )
         .into());

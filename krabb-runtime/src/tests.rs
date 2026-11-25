@@ -7289,7 +7289,10 @@ fn cli_errors_keep_all_message_lines_flush_left() {
         "Could not update plugins.\n\nThe tools plugin could not be updated.\nBinary missing."
     );
 
-    assert_eq!(super::format_cli_error(""), "The command could not be completed.");
+    assert_eq!(
+        super::format_cli_error(""),
+        "The command could not be completed.\nRun it again with `--debug` for details."
+    );
 }
 
 #[test]
