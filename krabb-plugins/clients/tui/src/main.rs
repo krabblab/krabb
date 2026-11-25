@@ -4873,6 +4873,7 @@ where
 
         // A daemon from an older release answers without the report.
         Ok(_) => format_status(true),
+
         Err(krabb_core::Error::Denied(message)) if message == "Method not found." => {
             format_status(true)
         }
