@@ -343,13 +343,28 @@ jobs:
 
         run: |
           set -euo pipefail
+
+          # The service step runs the unit under the runner's own systemd user manager.
+          if [ "$RUNNER_OS" = Linux ]; then
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            export XDG_CONFIG_HOME="$KRABB_RUNNER_HOME/.config"
+          fi
+
+          krabb --json service install > /dev/null
+          krabb service start
           sh uninstall.sh
 
-          for path in "$KRABB_PREFIX/bin/krabb" "$KRABB_PREFIX/bin/krabb-daemon" "$KRABB_HOME/plugins"; do
+          if [ "$RUNNER_OS" = Linux ] && systemctl --user is-active --quiet krabb.service; then
+            echo "::error::Uninstall left the service running."
+            exit 1
+          fi
+
+          for path in "$KRABB_PREFIX/bin/krabb" "$KRABB_PREFIX/bin/krabb-daemon"; do
             if [ -e "$path" ]; then echo "::error::Uninstall left $path."; exit 1; fi
           done
 
           test -f "$KRABB_HOME/config.toml"
+          test -d "$KRABB_HOME/plugins"
           sh uninstall.sh --purge --yes
 
           left=$(find "$HOME" "$KRABB_RUNNER_HOME/.config/systemd" -iname '*krabb*' 2>/dev/null || true)
@@ -545,14 +560,19 @@ jobs:
           $ErrorActionPreference = "Stop"
           $bin = Join-Path $env:LOCALAPPDATA "Krabb\bin"
 
+          krabb --json service install | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "krabb service install failed." }
+
           pwsh -NoProfile -File .\uninstall.ps1
           if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 failed." }
+          if (Get-Service -Name Krabb -ErrorAction SilentlyContinue) { throw "Uninstall left the Krabb service." }
 
-          foreach ($path in "$bin\krabb.exe", "$bin\krabb-daemon.exe", "$env:KRABB_HOME\plugins") {
+          foreach ($path in "$bin\krabb.exe", "$bin\krabb-daemon.exe") {
             if (Test-Path $path) { throw "Uninstall left $path." }
           }
 
           if (!(Test-Path "$env:KRABB_HOME\config.toml")) { throw "Uninstall removed the configuration." }
+          if (!(Test-Path "$env:KRABB_HOME\plugins")) { throw "Uninstall removed the plugins." }
           $path = [Environment]::GetEnvironmentVariable("Path", "User")
           if (($path -split ";") -contains $bin) { throw "Uninstall left $bin in the user PATH." }
 

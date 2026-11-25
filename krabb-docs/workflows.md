@@ -262,10 +262,10 @@ without changes.
 ## Uninstall
 
 Remove Krabb with the uninstall script for your system. By default it removes only the
-software: the service, the `krabb` and `krabb-daemon` binaries, installed plugin code,
-downloaded updates, and on Windows the `PATH` entry. `KRABB_HOME` stays with your
-settings, credentials, and conversations, so installing Krabb again picks up where you
-left off.
+program: its background service, the `krabb` and `krabb-daemon` binaries, downloaded
+updates, and on Windows the `PATH` entry. `KRABB_HOME` stays with your plugins,
+settings, credentials, conversations, and recovery points, so installing Krabb again
+picks up where you left off.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.sh | sh
@@ -276,11 +276,11 @@ irm https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.ps1 | iex
 ```
 
 To leave nothing of Krabb on the machine, purge it. Purging also deletes `KRABB_HOME`,
-the credential entries Krabb saved in the OS keyring, and the database and memory files
-at custom `KRABB_DB` and `KRABB_MEMORY` paths. It asks for confirmation first; pass
-`--yes`, or `-Yes` in PowerShell, to skip it in scripts. Folders that Krabb did not
-create, such as a project used as `KRABB_ROOT` or a `KRABB_MEDIA` folder, are listed
-but never deleted.
+the key Krabb saved in the OS keyring for its credentials, and the files Krabb created
+at custom `KRABB_DB`, `KRABB_MEMORY`, `KRABB_CREDENTIALS`, and `KRABB_CREDENTIALS_KEY`
+paths. It asks for confirmation first; pass `--yes`, or `-Yes` in PowerShell, to skip it
+in scripts. Folders Krabb did not create, such as a project used as `KRABB_ROOT`, a
+`KRABB_MEDIA` folder, or a Codex profile, are listed but never deleted.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.sh | sh -s -- --purge
@@ -290,8 +290,11 @@ curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.sh | 
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.ps1))) -Purge
 ```
 
-Both scripts print what they removed and what they kept. They work even when the
-`krabb` binary no longer runs. To remove a single plugin instead, run
+Both scripts print what they removed and what they kept, and work even when the `krabb`
+binary no longer runs. They take the home and store paths from the installed service, so
+they clean up the installation that is really running. A service that runs another
+Krabb, such as a build installed elsewhere, is left alone, and so is a `KRABB_HOME` that
+does not look like a Krabb home. To remove a single plugin instead, run
 `krabb plugin uninstall <id> -y`, which also removes its saved secrets and its sharing
 grants.
 
@@ -311,9 +314,8 @@ Uninstall cannot reach access that lives outside Krabb:
   `credentials.json` or `credentials.key`.
 - **Shared names.** A secret that another installed plugin also declares stays
   saved until that plugin is uninstalled too.
-- **OS keyring.** With `KRABB_KEYRING=1`, the key that encrypts saved credentials
-  stays in the OS keyring even after you delete `KRABB_HOME`. Remove its Krabb
-  entry with your keyring manager.
-- **Data outside the home.** Stores at custom paths such as `KRABB_DB`,
-  `KRABB_MEMORY`, or `KRABB_ROOT`, and logins kept by other tools, such as Codex's
-  own sign-in, stay until you delete them.
+- **OS keyring.** Deleting `KRABB_HOME` by hand leaves the key that encrypts saved
+  credentials in the OS keyring; purging removes it. Secrets you stored in the keyring
+  yourself under `it.airscript.krabb` stay; remove them with your keyring manager.
+- **Data outside the home.** Folders such as `KRABB_ROOT` and logins kept by other
+  tools, such as Codex's own sign-in, stay until you delete them.
