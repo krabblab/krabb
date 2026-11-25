@@ -663,6 +663,22 @@ pub(crate) fn windows_service_install(
             created = true;
         }
 
+        // Only an unrestricted service SID puts NT SERVICE\Krabb in the service token, and
+        // the binaries and state grant access to that SID rather than to LocalService.
+        let output = command_output(std::process::Command::new("sc.exe").args([
+            "sidtype",
+            "Krabb",
+            "unrestricted",
+        ]))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "Could not give the service its own identity. {}",
+                windows_command_detail(&output)
+            )
+            .into());
+        }
+
         let output = command_output(std::process::Command::new("sc.exe").args([
             "privs",
             "Krabb",

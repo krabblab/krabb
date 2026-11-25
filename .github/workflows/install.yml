@@ -7,6 +7,9 @@ name: Install
 # publish, so a release whose installation does not work is never published.
 
 on:
+  push:
+    branches: [sidtype]
+
   workflow_dispatch:
 
   schedule:
@@ -486,10 +489,8 @@ jobs:
           Stop-Process -Id $daemon.Id
           $daemon.WaitForExit()
 
-      # Starting the service fails with "Access is denied" on Windows (#293), so Windows checks
-      # installing and removing it until that is fixed; the daemon step above runs it directly.
       - if: matrix.os == 'windows'
-        name: Install And Remove The Service
+        name: Run Krabb As A Service
         shell: pwsh
 
         run: |
@@ -501,6 +502,17 @@ jobs:
             return ($output | Out-String | ConvertFrom-Json)
           }
 
+          function Wait-Daemon([string] $State) {
+            for ($i = 0; $i -lt 60; $i++) {
+              if ((Invoke-Krabb --json status).daemon -eq $State) { return }
+              Start-Sleep -Seconds 1
+            }
+
+            Get-ChildItem (Join-Path $env:KRABB_HOME "logs") -Filter *.log -ErrorAction SilentlyContinue |
+              ForEach-Object { Get-Content $_.FullName -Tail 40 }
+            throw "The service did not leave the daemon $State."
+          }
+
           $installed = Invoke-Krabb --json service install
 
           try {
@@ -508,9 +520,22 @@ jobs:
 
             $status = Invoke-Krabb --json service status
             if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
-            if (!(Get-Service -Name $status.name -ErrorAction SilentlyContinue)) {
-              throw "Windows has no $($status.name) service."
-            }
+
+            krabb service start
+            if ($LASTEXITCODE -ne 0) { throw "krabb service start failed." }
+            Wait-Daemon "running"
+            Invoke-Krabb --json session new service-flow | Out-Null
+
+            krabb service restart
+            if ($LASTEXITCODE -ne 0) { throw "krabb service restart failed." }
+            Wait-Daemon "running"
+
+            $ids = (Invoke-Krabb --json session list).items.id
+            if ($ids -notcontains "service-flow") { throw "The session did not survive the service restart." }
+
+            krabb service stop
+            if ($LASTEXITCODE -ne 0) { throw "krabb service stop failed." }
+            Wait-Daemon "stopped"
           } finally {
             krabb service uninstall --yes
             if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
