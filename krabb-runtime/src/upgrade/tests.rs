@@ -1218,7 +1218,7 @@ async fn an_update_whose_activation_finished_is_kept() {
     }
 
     fs::create_dir_all(home.join("updates/v0.2.0")).unwrap();
-    krabb_file::save(home.join("updates/v0.2.0/finish.json"), b"{}".to_vec()).unwrap();
+    krabb_file::save(home.join("updates/v0.2.0/finish.json"), b"{}").unwrap();
 
     let service = no_service(&root);
     let older = interrupted::recover_locked(&home, &service, "0.1.0", Caller::Daemon).await;
@@ -1238,7 +1238,7 @@ async fn an_update_whose_activation_finished_is_kept() {
     }
 
     fs::create_dir_all(home.join("updates/v0.2.0")).unwrap();
-    krabb_file::save(home.join("updates/v0.2.0/finish.json"), b"{}".to_vec()).unwrap();
+    krabb_file::save(home.join("updates/v0.2.0/finish.json"), b"{}").unwrap();
 
     let outcome = interrupted::recover_locked(&home, &no_service(&root), "0.2.0", Caller::Daemon)
         .await
