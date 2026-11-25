@@ -1,5 +1,5 @@
 id = "a2a"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 capabilities = ["agent"]
 permissions = ["network"]
 secrets = ["KRABB_A2A_TOKEN"]
