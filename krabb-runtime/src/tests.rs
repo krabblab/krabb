@@ -13365,3 +13365,28 @@ fn failures_without_their_own_next_action_point_to_debug_output() {
 
     assert_eq!(super::conclude(link.into()), link);
 }
+
+#[test]
+fn status_reports_an_interrupted_update_with_one_next_action() {
+    let undone = serde_json::json!({
+        "health": "healthy",
+        "plugin_states": [],
+        "recovered": {"from": "0.1.0", "to": "0.2.0", "kept": "0.1.0", "at": 1},
+    });
+
+    let text = super::status_text(&undone, 0);
+
+    assert!(text.contains("Interrupted update: undone, Krabb 0.1.0 restored"), "{text}");
+    assert!(text.ends_with("\n\nTry the update again with `krabb update 0.2.0`."), "{text}");
+
+    let kept = serde_json::json!({
+        "health": "healthy",
+        "plugin_states": [],
+        "recovered": {"from": "0.1.0", "to": "0.2.0", "kept": "0.2.0", "at": 1},
+    });
+
+    let text = super::status_text(&kept, 0);
+
+    assert!(text.contains("Interrupted update: finished, Krabb 0.2.0 kept"), "{text}");
+    assert!(!text.contains("krabb update 0.2.0"), "{text}");
+}

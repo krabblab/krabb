@@ -1155,9 +1155,10 @@ async fn an_update_cut_off_after_staging_only_brings_the_service_back() {
     assert_eq!(interrupted::outcome(&home), Some(outcome));
     assert_eq!(fs::read_to_string(&binaries[0]).unwrap(), "old krabb");
 
-    let again = interrupted::recover_locked(&home, &no_service(&root), "0.1.0", Caller::Command);
+    let service = no_service(&root);
+    let again = interrupted::recover_locked(&home, &service, "0.1.0", Caller::Command).await;
 
-    assert_eq!(again.await.unwrap(), None, "nothing is left to recover");
+    assert_eq!(again.unwrap(), None, "nothing is left to recover");
 
     let _ = fs::remove_dir_all(root);
 }
@@ -1217,12 +1218,14 @@ async fn an_update_whose_activation_finished_is_kept() {
     }
 
     fs::create_dir_all(home.join("updates/v0.2.0")).unwrap();
-    fs::write(home.join("updates/v0.2.0/finish.json"), "{}").unwrap();
+    krabb_file::save(home.join("updates/v0.2.0/finish.json"), b"{}".to_vec()).unwrap();
 
-    let older = interrupted::recover_locked(&home, &no_service(&root), "0.1.0", Caller::Daemon);
+    let service = no_service(&root);
+    let older = interrupted::recover_locked(&home, &service, "0.1.0", Caller::Daemon).await;
 
     // Only the new host can tell that its own activation finished.
-    assert_eq!(older.await.unwrap().unwrap().kept, "0.1.0");
+
+    assert_eq!(older.unwrap().unwrap().kept, "0.1.0");
 
     let _ = fs::remove_dir_all(root);
 
@@ -1235,7 +1238,7 @@ async fn an_update_whose_activation_finished_is_kept() {
     }
 
     fs::create_dir_all(home.join("updates/v0.2.0")).unwrap();
-    fs::write(home.join("updates/v0.2.0/finish.json"), "{}").unwrap();
+    krabb_file::save(home.join("updates/v0.2.0/finish.json"), b"{}".to_vec()).unwrap();
 
     let outcome = interrupted::recover_locked(&home, &no_service(&root), "0.2.0", Caller::Daemon)
         .await
