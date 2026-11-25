@@ -8,7 +8,7 @@ pub(super) struct Revoked {
     pub(super) keyring: bool,
     pub(super) grants: usize,
     pub(super) cleanup: Cleanup,
-    /// Steps that failed after the plugin was already removable, so the uninstall still succeeds.
+    /// Steps that failed without stopping the uninstall, each with its next action.
     pub(super) failures: Vec<Failure>,
 }
 
@@ -42,12 +42,12 @@ pub(super) fn revoke(root: &Path, id: &str, lock: &Lock) -> Result<Revoked, Plug
 fn revoke_with(root: &Path, id: &str, lock: &Lock, service: &Path) -> Result<Revoked, PluginError> {
     let mut revoked = Revoked::default();
 
-    revoked.grants = grants(root, id).map_err(|error| failure(id, &revoked, error))?;
+    revoked.grants = grants(root, id).map_err(|error| abort(id, &revoked, error))?;
 
     let names = secrets(lock, id);
 
     revoked.secrets = credentials::forget(&setup::path(root), &credentials::key_path(root), &names)
-        .map_err(|error| failure(id, &revoked, error))?;
+        .map_err(|error| abort(id, &revoked, error))?;
 
     let copied = service_copy(root, service, &names).unwrap_or_else(|error| {
         revoked.fail(
@@ -57,7 +57,7 @@ fn revoke_with(root: &Path, id: &str, lock: &Lock, service: &Path) -> Result<Rev
                 service_credentials_path(service).display(),
                 sentence(error.to_string())
             ),
-            "Run `krabb service install` to rewrite the copy without them.".into(),
+            "Run `krabb service uninstall` to remove the copy.".into(),
         );
 
         Vec::new()
@@ -69,8 +69,7 @@ fn revoke_with(root: &Path, id: &str, lock: &Lock, service: &Path) -> Result<Rev
         }
     }
 
-    revoked.keyring =
-        credentials::forget_entry(id).map_err(|error| failure(id, &revoked, error))?;
+    revoked.keyring = credentials::forget_entry(id).map_err(|error| abort(id, &revoked, error))?;
 
     Ok(revoked)
 }
@@ -105,7 +104,7 @@ fn service_copy(root: &Path, service: &Path, names: &[String]) -> Result<Vec<Str
     credentials::forget(&copy, &key, names)
 }
 
-fn failure(id: &str, revoked: &Revoked, error: PluginError) -> PluginError {
+fn abort(id: &str, revoked: &Revoked, error: PluginError) -> PluginError {
     let done = if revoked.grants > 0 {
         format!("\nRemoved {} sharing grant(s) already.", revoked.grants)
     } else {

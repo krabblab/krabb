@@ -262,7 +262,13 @@ pub(crate) async fn plugin(
                             .map(|version| format!("@v{version}"))
                             .unwrap_or_default();
 
-                        display_rows.push(format!("{id}{version} successfully uninstalled"));
+                        let details = cleanup_failures(&outcome)
+                            .into_iter()
+                            .flat_map(|(error, next)| std::iter::once(error).chain(next))
+                            .collect();
+
+                        display_rows
+                            .push((format!("{id}{version} successfully uninstalled"), details));
                         outcomes.push(outcome);
                     }
 
@@ -277,7 +283,8 @@ pub(crate) async fn plugin(
                             .map(|version| format!("@v{version}"))
                             .unwrap_or_default();
 
-                        display_rows.push(format!("{id}{version} uninstallation failed"));
+                        display_rows
+                            .push((format!("{id}{version} uninstallation failed"), Vec::new()));
 
                         errors.push(serde_json::json!({
                             "id": id,
@@ -296,17 +303,9 @@ pub(crate) async fn plugin(
                             .into());
                     }
 
-                    let outcome = &outcomes[0];
-
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "action": "uninstall",
-                            "id": outcome["id"],
-                            "status": "uninstalled",
-                            "unloaded": outcome["unloaded"],
-                            "purged": outcome["purged"],
-                        }))?
+                        serde_json::to_string_pretty(&plugin_uninstall_json(&outcomes[0]))?
                     );
                 } else {
                     println!(
@@ -629,12 +628,7 @@ pub(crate) fn plugin_uninstall_output(outcome: &Value) -> String {
 
     let mut entries = details.into_iter().map(|detail| (detail, Vec::new())).collect::<Vec<_>>();
 
-    for failure in revoked["failures"].as_array().into_iter().flatten() {
-        let error = failure["error"].as_str().unwrap_or("A cleanup step failed.").to_owned();
-        let next = failure["next"].as_str().map(str::to_owned).into_iter().collect();
-
-        entries.push((error, next));
-    }
+    entries.extend(cleanup_failures(outcome));
 
     if !entries.is_empty() {
         output.push('\n');
@@ -645,8 +639,39 @@ pub(crate) fn plugin_uninstall_output(outcome: &Value) -> String {
     output
 }
 
-pub(crate) fn plugin_uninstall_batch_output(rows: &[String], total: usize) -> String {
-    let successful = rows.iter().filter(|row| row.ends_with("successfully uninstalled")).count();
+/// The `--json` result of uninstalling one plugin.
+pub(crate) fn plugin_uninstall_json(outcome: &Value) -> Value {
+    serde_json::json!({
+        "action": "uninstall",
+        "id": outcome["id"],
+        "status": "uninstalled",
+        "unloaded": outcome["unloaded"],
+        "purged": outcome["purged"],
+        "revoked": outcome["revoked"],
+    })
+}
+
+/// Each cleanup step an uninstall could not finish, with its next action nested beneath it.
+fn cleanup_failures(outcome: &Value) -> Vec<(String, Vec<String>)> {
+    outcome["revoked"]["failures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|failure| {
+            let error = failure["error"].as_str()?.to_owned();
+            let next = failure["next"].as_str()?.to_owned();
+
+            Some((error, vec![next]))
+        })
+        .collect()
+}
+
+pub(crate) fn plugin_uninstall_batch_output(
+    rows: &[(String, Vec<String>)],
+    total: usize,
+) -> String {
+    let successful =
+        rows.iter().filter(|(row, _)| row.ends_with("successfully uninstalled")).count();
 
     let heading = if successful == total {
         format!("Uninstalled {successful} {}.", if successful == 1 { "plugin" } else { "plugins" })
@@ -658,7 +683,7 @@ pub(crate) fn plugin_uninstall_batch_output(rows: &[String], total: usize) -> St
 
     if !rows.is_empty() {
         output.push('\n');
-        output.push_str(&format_tree_list(rows));
+        output.push_str(&format_tree(rows));
     }
 
     if successful < total {

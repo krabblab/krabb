@@ -110,6 +110,7 @@ fn uninstall_revokes_only_the_plugin_grants_and_exclusive_secrets() {
     assert_eq!(left.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN", "KRABB_SHARED"]);
     assert_eq!(revoke(&root, "telegram", &lock()).unwrap(), Revoked::default());
     assert_eq!(revoke(&root, "missing", &lock()).unwrap(), Revoked::default());
+    assert_eq!(serde_json::to_value(Revoked::default()).unwrap()["cleanup"], "complete");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -209,6 +210,7 @@ fn an_unwritable_service_credential_copy_is_reported_as_partial_cleanup() {
     let blocked = copy.with_file_name(format!(".{name}.lock"));
 
     let _ = std::fs::remove_file(&blocked);
+
     std::fs::create_dir_all(&blocked).unwrap();
 
     let revoked = revoke_with(&root, "telegram", &lock(), &service).unwrap();
@@ -217,16 +219,12 @@ fn an_unwritable_service_credential_copy_is_reported_as_partial_cleanup() {
     assert_eq!(revoked.failures.len(), 1);
     assert_eq!(revoked.failures[0].step, "service_credentials");
     assert!(revoked.failures[0].error.contains(&copy.display().to_string()));
-    assert_eq!(
-        revoked.failures[0].next,
-        "Run `krabb service install` to rewrite the copy without them."
-    );
+    assert_eq!(revoked.failures[0].next, "Run `krabb service uninstall` to remove the copy.");
 
     let json = serde_json::to_value(&revoked).unwrap();
 
     assert_eq!(json["cleanup"], "partial");
     assert_eq!(json["failures"][0]["step"], "service_credentials");
-    assert_eq!(serde_json::to_value(Revoked::default()).unwrap()["cleanup"], "complete");
 
     let _ = std::fs::remove_dir_all(root);
 }

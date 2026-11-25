@@ -1687,38 +1687,67 @@ fn plugin_uninstall_details_follow_the_summary_without_an_empty_line() {
             "id": "telegram",
             "revoked": {"secrets": [], "keyring": false, "grants": 1, "cleanup": "partial",
                 "failures": [{"step": "service_credentials",
-                    "error": "Could not remove telegram's values from the service credential copy.",
-                    "next": "Run `krabb service install` to rewrite the copy without them."}]}
+                    "error": "Could not remove telegram's values from the service credential copy \
+                        /home/owner/.config/systemd/user/krabb.service.credentials.json: \
+                        Permission denied (os error 13).",
+                    "next": "Run `krabb service uninstall` to remove the copy."}]}
         })),
         concat!(
             "Uninstalled plugin telegram.\n",
             "├─ Revoked 1 sharing grant.\n",
-            "└─ Could not remove telegram's values from the service credential copy.\n",
-            "   └─ Run `krabb service install` to rewrite the copy without them."
+            "└─ Could not remove telegram's values from the service credential copy \
+                /home/owner/.config/systemd/user/krabb.service.credentials.json: \
+                Permission denied (os error 13).\n",
+            "   └─ Run `krabb service uninstall` to remove the copy."
         )
+    );
+
+    let partial = serde_json::json!({
+        "id": "telegram", "version": "0.8.2", "status": "uninstalled", "unloaded": true,
+        "purged": null,
+        "revoked": {"secrets": [], "keyring": false, "grants": 0, "cleanup": "partial",
+            "failures": [{"step": "service_credentials", "error": "Could not remove them.",
+                "next": "Run `krabb service uninstall` to remove the copy."}]}
+    });
+
+    assert_eq!(
+        super::plugin_uninstall_json(&partial),
+        serde_json::json!({
+            "action": "uninstall", "id": "telegram", "status": "uninstalled", "unloaded": true,
+            "purged": null, "revoked": partial["revoked"]
+        })
     );
 
     assert_eq!(
         super::plugin_uninstall_batch_output(
             &[
-                "codex@v0.1.0 successfully uninstalled".into(),
-                "telegram@v0.8.2 successfully uninstalled".into(),
+                ("codex@v0.1.0 successfully uninstalled".into(), Vec::new()),
+                (
+                    "telegram@v0.8.2 successfully uninstalled".into(),
+                    vec![
+                        "Could not remove telegram's values from the service credential copy."
+                            .into(),
+                        "Run `krabb service uninstall` to remove the copy.".into(),
+                    ],
+                ),
             ],
             2,
         ),
         concat!(
             "Uninstalled 2 plugins.\n",
             "├─ codex@v0.1.0 successfully uninstalled\n",
-            "└─ telegram@v0.8.2 successfully uninstalled"
+            "└─ telegram@v0.8.2 successfully uninstalled\n",
+            "   ├─ Could not remove telegram's values from the service credential copy.\n",
+            "   └─ Run `krabb service uninstall` to remove the copy."
         )
     );
 
     assert_eq!(
         super::plugin_uninstall_batch_output(
             &[
-                "tools uninstallation failed".into(),
-                "scheduler uninstallation failed".into(),
-                "foo uninstallation failed".into(),
+                ("tools uninstallation failed".into(), Vec::new()),
+                ("scheduler uninstallation failed".into(), Vec::new()),
+                ("foo uninstallation failed".into(), Vec::new()),
             ],
             3,
         ),
