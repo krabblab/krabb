@@ -9,7 +9,10 @@ function Show-Usage {
 
 function Stop-Install([string] $Message) {
     [Console]::Error.WriteLine("[ERROR] $Message")
-    exit 2
+
+    # Under `irm | iex` the script runs in the user's own session, where exit would close it.
+    if ($PSCommandPath) { exit 2 }
+    throw "Krabb was not installed."
 }
 
 function Write-Install([string] $Message) {
@@ -103,12 +106,19 @@ function Stop-Prerelease([string]$Directory) {
 
     $path = Join-Path $Directory "releases.json"
     try { Get-Release $list $path } catch { return }
-    $newest = @(Get-Content -Raw $path | ConvertFrom-Json)[0].tag_name -replace '^v', ''
-    if (-not $newest) { return }
+    try { $release = @(Get-Content -Raw $path | ConvertFrom-Json)[0] } catch { return }
 
-    Stop-Install ("No stable Krabb release is published yet. The newest pre-release is $newest.`n" +
-        "Install it by setting KRABB_VERSION first in the same window:`n" +
-        "  `$env:KRABB_VERSION = '$newest'; irm $script | iex")
+    # A stable newest release means the download failed for another reason.
+    if ($release.prerelease -ne $true) { return }
+
+    # The tag goes into a command the user copies, so it must be a plain version.
+    $newest = "$($release.tag_name)" -replace '^v', ''
+    if ($newest -notmatch $pattern) { return }
+
+    Stop-Install ("No stable Krabb release is published yet.`n" +
+        "The newest pre-release is $newest; install it with this command:`n" +
+        "  `$env:KRABB_VERSION = '$newest'; irm $script | iex`n" +
+        "Set KRABB_VERSION first in the same window so the installer receives it.")
 }
 
 $name = "krabb"

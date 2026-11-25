@@ -195,8 +195,19 @@ class Installers(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('No stable Krabb release is published yet', result.stderr)
-        self.assertIn('The newest pre-release is 0.1.0-rc.1.', result.stderr)
+        self.assertIn('The newest pre-release is 0.1.0-rc.1;', result.stderr)
         self.assertIn('KRABB_VERSION', result.stderr)
+
+        for release in ['"v0.1.0", "prerelease": false', '"v0.1.0;rm -rf ~", "prerelease": true']:
+            with self.subTest(release=release):
+                releases.write_text(f'[{{"tag_name": {release}}}]\n')
+
+                result = self.run_installer('core', KRABB_VERSION='',
+                                            KRABB_RELEASE_LIST=releases.as_uri())
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn('pre-release', result.stderr)
+                self.assertIn('Cannot download SHA256SUMS', result.stderr)
 
     def test_plugins_are_delegated_to_the_plugin_index(self):
         result = self.run_installer('tools', KRABB_VERSION='', KRABB_RELEASE_BASE='')
