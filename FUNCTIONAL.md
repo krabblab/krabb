@@ -12,7 +12,7 @@ do not add status prose, dates, versions, evidence links, or notes. Leave partia
 untested, or unsupported checks unchecked.
 
 A checked component has passed on at least one platform. Track basic operation
-per OS/architecture in [Compatibility](COMPATIBILITY.md).
+per operating system in [Compatibility](COMPATIBILITY.md).
 
 ## Crates
 

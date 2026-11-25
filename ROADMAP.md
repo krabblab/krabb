@@ -267,10 +267,10 @@ agent identities, roles, and delegation introduced by later milestones.
   from this release's completion criteria. Existing draft code does not establish
   released support; graduate automation, interoperability, and speech through
   their later milestones.
-- Keep the six OS/architecture combinations in the basic compatibility matrix:
-  x86_64 and aarch64 on each of Linux, macOS, and Windows. They are six targets,
-  not six architectures. Require the basic functional flow on each target claimed
-  as supported; a successful build alone is insufficient.
+- Keep one row per operating system in the basic compatibility matrix: Linux,
+  macOS, and Windows. A check passes once the basic functional flow works on that
+  system, on any of its x86_64 and aarch64 targets; a successful build alone is
+  insufficient.
 - Run detailed component functionality once per component, independently of the
   platform matrix. Add focused target-specific checks for native dependencies,
   service management, process containment, paths, permissions, and packaging rather
