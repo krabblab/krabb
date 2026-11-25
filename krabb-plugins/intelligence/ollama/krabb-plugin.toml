@@ -3,6 +3,7 @@ version = "0.1.0-rc.1"
 capabilities = ["model", "vision", "context"]
 permissions = ["network"]
 secrets = ["KRABB_OLLAMA_API_KEY"]
+check = true
 
 [[settings]]
 name = "KRABB_OLLAMA_HOST"

@@ -11,6 +11,8 @@ pub(crate) async fn plugin(
             setup::run(options, &home(), json).await?;
         }
 
+        PluginCommand::Check(args) => setup::check::command(&home(), &args.id, json).await?,
+
         PluginCommand::List(output) => {
             let root = home();
 
