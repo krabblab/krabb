@@ -15,8 +15,7 @@ Semantic Versioning.
 - Let Krabb turn its own tools, shell, or approval on or off when you ask and approve.
 - Install official plugins from the plugin index without a source checkout.
 - List and install any published plugin version with `krabb plugin versions`.
-- Guide setup prompts and test the connection after saving.
-- Rerun a plugin's connection test with `krabb plugin check`.
+- Install pre-release plugins with `krabb plugin install --unstable`.
 - Recover interrupted home upgrades automatically.
 - Update Krabb and every installed plugin with `krabb update`.
 - Uninstall Krabb with one script, and purge every trace of it with `--purge`.
@@ -24,6 +23,7 @@ Semantic Versioning.
 - Update busy plugins live without pausing other channels or conversations.
 - Revoke a plugin's secrets and grants on uninstall.
 - Guide setup prompts and test the connection after saving.
+- Rerun a plugin's connection test with `krabb plugin check`.
 - Use shared slash commands in every channel and client.
 - Compact a conversation with `/compact` and answer again in chat channels with `/again`.
 - Show context use in `/status` and let Krabb explain how it works.
