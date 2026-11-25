@@ -17,7 +17,7 @@ Use these guides to install, configure, operate, and extend Krabb.
 13. [Release](release.md) — packaging, checksums, and publication gates.
 14. [License](license.md) — Apache-2.0 rationale and contribution terms.
 15. [Product](product.md) — capabilities, boundaries, and engineering principles.
-16. [Compatibility](../COMPATIBILITY.md) — basic checklist per operating system.
+16. [Compatibility](../COMPATIBILITY.md) — basic checklist per operating system and architecture.
 17. [Functional Test Matrix](../FUNCTIONAL.md) — tested crates and plugins across platforms.
 18. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.
 19. [Storage](storage.md) — home layout, ownership, retention, and migration.

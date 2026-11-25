@@ -1,8 +1,8 @@
 # Compatibility
 
-Track functional checks on each operating system. Mark `[x]` only after the
-check passes on that system, on any supported architecture; builds, unit tests, and protocol
-handshakes alone do not qualify. Record results only by ticking the existing
+Track functional checks on each operating system and on each architecture. Mark
+`[x]` only after the check passes on that system or architecture; builds, unit
+tests, and protocol handshakes alone do not qualify. Record results only by ticking the existing
 checkboxes; do not add status prose, dates, versions, evidence links, or notes.
 
 ## Checklist
@@ -17,8 +17,9 @@ channel for external integrations.
 - **Client:** Connect through a client, such as the TUI, and complete an interaction.
 - **Plugins:** Successfully install at least one plugin.
 
-Tick each check separately for every operating system tested. A completed row
-means the basic checks passed. Track individual crates and plugins in the
+Tick each check separately in both tables: once for the operating system and once
+for the architecture of the machine tested. A completed row means the basic checks
+passed. Track individual crates and plugins in the
 [functional test matrix](FUNCTIONAL.md).
 
 | System  | Setup | Daemon | Intelligence | Channel | Client | Plugins |
@@ -26,6 +27,11 @@ means the basic checks passed. Track individual crates and plugins in the
 | Linux   | [x]   | [x]    | [x]          | [x]     | [x]    | [x]     |
 | macOS   | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
 | Windows | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
+
+| Architecture | Setup | Daemon | Intelligence | Channel | Client | Plugins |
+| ------------ | ----- | ------ | ------------ | ------- | ------ | ------- |
+| x86_64       | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
+| aarch64      | [x]   | [x]    | [x]          | [x]     | [x]    | [x]     |
 
 See [workflows](krabb-docs/workflows.md), [providers](krabb-docs/providers.md),
 [commands](krabb-docs/commands.md), and [safety](krabb-docs/safety.md) for instructions.
