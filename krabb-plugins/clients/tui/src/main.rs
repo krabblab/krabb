@@ -24,6 +24,7 @@ use krabb_core::{
 use base64::Engine;
 #[cfg(test)]
 use krabb_core::types::ToolSpec;
+use krabb_text::tree::format_tree_entry;
 use serde_json::Value;
 #[cfg(test)]
 use std::sync::Arc;
@@ -738,15 +739,7 @@ where
             }
 
             if line == "/status" {
-                let text = match host(home.clone(), "status".into(), serde_json::json!({})).await {
-                    Ok(value) => format_status(&value),
-
-                    Err(error) if daemon_unavailable(&error) => {
-                        "Runtime: stopped.\nStart it with `krabb service start`.\n> ".into()
-                    }
-
-                    Err(error) => format!("Runtime status unavailable: {}.\n> ", sentence(error.to_string())),
-                };
+                let text = status_screen(&home, host).await;
 
                 output.write_all(text.as_bytes()).await?;
                 output.flush().await?;
@@ -2148,7 +2141,7 @@ fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
         ("/task [pause|resume|cancel|approve|deny <id>]", "List or control saved tasks."),
         ("/task steer|defer|extend <id> <value>", "Redirect, delay, or extend a task."),
         ("/history list|clear|help", "Show or clear saved TUI input history."),
-        ("/status", "Show whether the background runtime is running."),
+        ("/status", "Show the runtime, intelligence, channels, and plugins."),
         ("/plugin [page]", "Browse installed plugins."),
         ("/session help", "Show session commands."),
         ("/new <id>", "Create and switch to a session."),
@@ -2554,7 +2547,7 @@ fn daemon_unavailable(error: &krabb_core::Error) -> bool {
                 | std::io::ErrorKind::TimedOut
                 | std::io::ErrorKind::BrokenPipe
         ),
-        krabb_core::Error::Denied(message) => message == "The daemon did not respond in time.",
+        krabb_core::Error::Denied(message) => message == transport::EXPIRED,
         _ => false,
     }
 }
@@ -4860,10 +4853,43 @@ fn format_approval_notice(
     message
 }
 
-fn format_status(value: &Value) -> String {
-    let running = value["running"].as_bool().unwrap_or(false);
-    let sessions = value["sessions"].as_u64().unwrap_or(0);
-    format!("Runtime: {}\nSessions: {sessions}\n> ", if running { "running" } else { "stopped" })
+/// The status screen `krabb status` prints, as the daemon renders it.
+async fn status_screen<C, F>(home: &str, host: C) -> String
+where
+    C: Fn(String, String, Value) -> F,
+    F: Future<Output = krabb_core::Result<Value>>,
+{
+    match host(home.into(), "status.report".into(), serde_json::json!({})).await {
+        Ok(value) if value["text"].is_string() => {
+            format!("{}\n> ", value["text"].as_str().unwrap_or_default())
+        }
+
+        // A slow daemon is still running, so only a refused connection means it stopped.
+        Err(krabb_core::Error::Denied(message)) if message == transport::EXPIRED => {
+            format!("Runtime status unavailable: {message}\n> ")
+        }
+
+        Err(error) if daemon_unavailable(&error) => format_status(false),
+
+        // A daemon from an older release answers without the report.
+        Ok(_) => format_status(true),
+
+        Err(krabb_core::Error::Denied(message)) if message == "Method not found." => {
+            format_status(true)
+        }
+
+        Err(error) => format!("Runtime status unavailable: {}.\n> ", sentence(error.to_string())),
+    }
+}
+
+/// The status screen when the daemon cannot render the one `krabb status` prints.
+fn format_status(running: bool) -> String {
+    let runtime = if running { "running" } else { "stopped" };
+
+    format!(
+        "Krabb {}\n└─ Runtime: {runtime}\n\nSee the full status with `krabb status`.\n> ",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 fn format_approval(value: &Value) -> String {
@@ -5109,96 +5135,13 @@ fn format_session_archive(id: &str, archived: bool, changed: bool) -> String {
 const NO_SCHEDULES: &str =
     "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.\n> ";
 
-/// The empty plugin list, worded as the CLI words it.
-const NO_PLUGINS: &str = "No plugins installed.\nInstall one with `krabb plugin install <id>`.";
-
+/// The plugin list exactly as `krabb plugin list` prints it.
 fn format_plugins(value: &Value, page: usize) -> String {
-    let Some(items) = value["items"].as_array() else {
-        return NO_PLUGINS.into();
-    };
+    let items = value["items"].as_array().map(Vec::as_slice).unwrap_or_default();
 
-    if items.is_empty() {
-        return NO_PLUGINS.into();
+    match krabb_text::listing::format_plugin_list(items, page, PLUGIN_LIST_PAGE_SIZE) {
+        Ok(text) | Err(text) => text,
     }
-
-    let mut items = items.iter().collect::<Vec<_>>();
-
-    items.sort_by_key(|item| item["id"].as_str().unwrap_or("unknown"));
-
-    let total = items.len();
-    let pages = total.div_ceil(PLUGIN_LIST_PAGE_SIZE);
-
-    if page == 0 || page > pages {
-        return format!("Page {page} is out of range, because plugins have {pages} pages.");
-    }
-
-    let start = (page - 1) * PLUGIN_LIST_PAGE_SIZE;
-    let end = (start + PLUGIN_LIST_PAGE_SIZE).min(total);
-    let mut output = format!("Plugins | {}–{} of {total} | page {page}/{pages}:", start + 1, end);
-
-    for (index, item) in items[start..end].iter().enumerate() {
-        let id = item["id"].as_str().unwrap_or("unknown");
-        let version = item["version"].as_str().unwrap_or("unknown");
-        let health = item["health"].as_str().unwrap_or("unknown");
-
-        let protocol = format!(
-            "{}.{}",
-            item["protocol"]["major"].as_u64().unwrap_or_default(),
-            item["protocol"]["minor"].as_u64().unwrap_or_default()
-        );
-
-        let capabilities = format_string_list(&item["capabilities"]);
-        let permissions = format_string_list(&item["permissions"]);
-
-        let commands = item["commands"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|command| command["name"].as_str())
-            .collect::<Vec<_>>();
-
-        let commands = if commands.is_empty() { "none".into() } else { commands.join(", ") };
-
-        let separator = if index == 0 { "\n" } else { "\n\n" };
-
-        let metadata = [
-            format!("health: {health}"),
-            format!("capabilities: {capabilities}"),
-            format!("protocol: {protocol}"),
-            format!("commands: {commands}"),
-            format!("permissions: {permissions}"),
-        ];
-
-        output.push_str(&format!(
-            "{separator}{}",
-            format_tree_entry(&format!("{id} | v{version}"), &metadata, index + 1 == end - start)
-        ));
-    }
-
-    output
-}
-
-fn format_tree_entry(label: &str, metadata: &[String], is_last: bool) -> String {
-    let root_branch = if is_last { "└─" } else { "├─" };
-
-    let child_prefix = if is_last { "   " } else { "│  " };
-
-    let mut lines = vec![format!("{root_branch} {label}")];
-
-    lines.extend(metadata.iter().enumerate().map(|(index, detail)| {
-        let branch = if index + 1 == metadata.len() { "└─" } else { "├─" };
-
-        format!("{child_prefix}{branch} {detail}")
-    }));
-
-    lines.join("\n")
-}
-
-fn format_string_list(value: &Value) -> String {
-    let values =
-        value.as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>();
-
-    if values.is_empty() { "none".into() } else { values.join(", ") }
 }
 
 fn local_plugin_list(home: &str) -> Value {
@@ -5235,6 +5178,15 @@ fn local_plugin_list(home: &str) -> Value {
 
             let health = if plugin_binary_path(home, &id).is_file() { "ready" } else { "missing" };
 
+            let filled = |value: &Value| match value {
+                Value::Array(items) => !items.is_empty(),
+                Value::Object(items) => !items.is_empty(),
+                _ => false,
+            };
+
+            let setup = (filled(&manifest["secrets"]) || filled(&manifest["settings"]))
+                .then(|| format!("krabb plugin setup {id}"));
+
             Some(serde_json::json!({
                 "id": id,
                 "version": manifest["version"],
@@ -5243,6 +5195,7 @@ fn local_plugin_list(home: &str) -> Value {
                 "commands": manifest["commands"],
                 "permissions": manifest["permissions"],
                 "health": health,
+                "setup_command": setup,
             }))
         })
         .collect::<Vec<_>>();
@@ -6108,15 +6061,60 @@ mod tests {
         assert!(!protocol_error.is_unavailable());
     }
 
+    #[tokio::test]
+    async fn status_shows_the_daemon_screen_and_falls_back_without_it() {
+        let screen = "Krabb 0.1.0 is healthy\n└─ Runtime: running";
+
+        let reported = super::status_screen("home", |_, method, _| async move {
+            assert_eq!(method, "status.report");
+
+            Ok(serde_json::json!({"text": "Krabb 0.1.0 is healthy\n└─ Runtime: running"}))
+        })
+        .await;
+
+        assert_eq!(reported, format!("{screen}\n> "));
+
+        let older = super::status_screen("home", |_, _, _| async {
+            Err(krabb_core::Error::Denied("Method not found.".into()))
+        })
+        .await;
+
+        assert_eq!(older, super::format_status(true));
+
+        let stopped = super::status_screen("home", |_, _, _| async {
+            Err(krabb_core::Error::Io(std::io::ErrorKind::ConnectionRefused.into()))
+        })
+        .await;
+
+        assert_eq!(stopped, super::format_status(false));
+
+        let failed = super::status_screen("home", |_, _, _| async {
+            Err(krabb_core::Error::Denied("the store is locked".into()))
+        })
+        .await;
+
+        assert_eq!(failed, "Runtime status unavailable: The store is locked.\n> ");
+
+        let slow =
+            super::status_screen("home", |_, _, _| async { Err(super::transport::expired()) })
+                .await;
+
+        assert_eq!(slow, "Runtime status unavailable: The daemon did not respond in time.\n> ");
+    }
+
     #[test]
-    fn formats_status() {
-        let text = super::format_status(&serde_json::json!({"running": true, "sessions": 2}));
+    fn formats_status_without_the_daemon_report() {
+        let version = env!("CARGO_PKG_VERSION");
 
-        assert_eq!(text, "Runtime: running\nSessions: 2\n> ");
+        assert_eq!(
+            super::format_status(false),
+            format!(
+                "Krabb {version}\n└─ Runtime: stopped\n\nSee the full status with `krabb \
+                 status`.\n> "
+            )
+        );
 
-        let text = super::format_status(&serde_json::json!({"running": false}));
-
-        assert_eq!(text, "Runtime: stopped\nSessions: 0\n> ");
+        assert!(super::format_status(true).contains("└─ Runtime: running\n"));
     }
 
     #[test]
@@ -6439,7 +6437,34 @@ mod tests {
     }
 
     #[test]
-    fn formats_plugins() {
+    fn offline_plugins_name_their_setup_command() {
+        let home = std::env::temp_dir().join(format!("krabb-tui-offline-{}", std::process::id()));
+        let plugins = home.join("plugins");
+
+        krabb_file::save(
+            plugins.join("telegram/krabb-plugin.toml"),
+            "id = 'telegram'\nversion = '0.1.0'\nsecrets = ['KRABB_TELEGRAM_TOKEN']\n",
+        )
+        .unwrap();
+
+        krabb_file::save(
+            plugins.join("echo/krabb-plugin.toml"),
+            "id = 'echo'\nversion = '0.1.0'\n",
+        )
+        .unwrap();
+
+        let inventory = super::local_plugin_list(&home.to_string_lossy());
+        let items = inventory["items"].as_array().unwrap();
+
+        assert_eq!(items[0]["id"], "echo");
+        assert_eq!(items[0]["setup_command"], serde_json::Value::Null);
+        assert_eq!(items[1]["setup_command"], "krabb plugin setup telegram");
+
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn formats_plugins_as_the_cli_does() {
         assert_eq!(
             super::format_plugins(
                 &serde_json::json!({
@@ -6450,12 +6475,16 @@ mod tests {
                         "protocol": {"major": 0, "minor": 1},
                         "capabilities": ["model", "vision"],
                         "commands": [{"name": "codex"}],
-                        "permissions": ["network", "process"]
+                        "permissions": ["network", "process"],
+                        "setup_command": "krabb plugin setup codex"
                     }]
                 }),
                 1
             ),
-            "Plugins | 1–1 of 1 | page 1/1:\n└─ codex | v1.2.3\n   ├─ health: ready\n   ├─ capabilities: model, vision\n   ├─ protocol: 0.1\n   ├─ commands: codex\n   └─ permissions: network, process"
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Binary is present \
+             (credentials not checked)\n   ├─ Capabilities include model, vision\n   ├─ Uses \
+             protocol version 0.1\n   ├─ Commands include codex\n   ├─ Set up credentials with \
+             `krabb plugin setup codex`\n   └─ Permissions include network, process"
         );
 
         let items = (0..9)
@@ -6472,15 +6501,22 @@ mod tests {
         let first_page = super::format_plugins(&inventory, 1);
         let second_page = super::format_plugins(&inventory, 2);
 
-        assert!(first_page.contains("Plugins | 1–5 of 9 | page 1/2:"));
-        assert!(first_page.contains("├─ plugin-00"));
-        assert!(first_page.contains("page 1/2:\n├─ plugin-00"));
-        assert!(first_page.contains("│  └─ permissions: none\n\n├─ plugin-01"));
+        assert!(first_page.starts_with("Plugins (1–5 of 9, page 1 of 2)\n├─ plugin-00@v1.0.0"));
+        assert!(first_page.contains("│  └─ No permissions\n\n├─ plugin-01"));
         assert!(!first_page.contains("plugin-05"));
-        assert!(second_page.contains("Plugins | 6–9 of 9 | page 2/2:"));
+        assert!(second_page.starts_with("Plugins (6–9 of 9, page 2 of 2)"));
         assert!(second_page.contains("└─ plugin-08"));
         assert!(!second_page.contains("plugin-00"));
-        assert!(super::format_plugins(&inventory, 3).contains("plugins have 2 pages"));
+
+        assert_eq!(
+            super::format_plugins(&inventory, 3),
+            "Page 3 is out of range for plugins, which has pages 1 to 2."
+        );
+
+        assert_eq!(
+            super::format_plugins(&serde_json::json!({"items": []}), 1),
+            "No plugins installed.\nInstall one with `krabb plugin install <id>`."
+        );
     }
 
     #[test]
@@ -8218,14 +8254,16 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
 
         assert_eq!(text.matches("Reply").count(), 1);
         assert!(text.contains("Current model: base."));
-        assert!(text.contains("Runtime status unavailable"));
+        assert!(text.contains("└─ Runtime: running\n\nSee the full status with `krabb status`."));
         assert!(text.contains("Pending approvals:"));
         assert!(text.contains("Approval accepted."));
         assert!(text.contains("Approval denied."));
         assert!(text.contains("There are not enough earlier turns to compact."));
 
         assert!(text.contains(
-            "Plugins | 1–1 of 1 | page 1/1:\n└─ codex | vunknown\n   ├─ health: ready\n   ├─ capabilities: model\n   ├─ protocol: 0.0\n   ├─ commands: none\n   └─ permissions: none"
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@vunknown\n   ├─ Binary is present \
+             (credentials not checked)\n   ├─ Capabilities include model\n   ├─ Uses protocol \
+             version 0.0\n   ├─ No commands\n   └─ No permissions"
         ));
 
         assert!(text.contains("Created session two."));

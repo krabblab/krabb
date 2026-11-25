@@ -17,6 +17,16 @@ pub(crate) async fn status_command(
 }
 
 pub(crate) async fn status_at(root: &Path) -> Result<serde_json::Value, PluginError> {
+    let active = active_at(root).await?;
+
+    status_with(root, active)
+}
+
+/// The status of the home at ROOT, given the plugins a running daemon loaded.
+pub(crate) fn status_with(
+    root: &Path,
+    active: Option<Vec<String>>,
+) -> Result<serde_json::Value, PluginError> {
     let config_text = load_config_text(root)?;
     let config_present = config_text.is_some();
     let config_ok = config_text.is_some_and(|text| {
@@ -27,7 +37,6 @@ pub(crate) async fn status_at(root: &Path) -> Result<serde_json::Value, PluginEr
     let installed = lock.plugins.len();
     let config = load_config_at(root).unwrap_or_default();
     let (model, _) = selection::current(&config, (None, None), (None, None));
-    let active = active_at(root).await?;
     let loaded = |id: &str| active.as_ref().is_some_and(|ids| ids.iter().any(|item| item == id));
 
     // Credential checks decrypt the store and may run a sign-in probe, so do each once.
@@ -268,16 +277,7 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
         parts.push(("Needs attention".into(), details));
     }
 
-    let tree = parts
-        .iter()
-        .enumerate()
-        .map(|(index, (label, details))| {
-            format_tree_entry(label, details, index + 1 == parts.len())
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let mut output = format!("Krabb {version} {headline}\n{tree}");
+    let mut output = format!("Krabb {version} {headline}\n{}", format_tree(&parts));
 
     if let Some(next) = next_action(value) {
         output.push_str(&format!("\n\n{next}"));

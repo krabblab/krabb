@@ -62,11 +62,12 @@ disabling colors preserves emphasis. Input and system command output remain lite
 
 Use `/help` for commands available in the current session. Common commands:
 
-- `/status`, `/approval`, `/approvals`, `/approve <id>`, `/deny <id>` manage
-  daemon status and pending approvals.
+- `/status` shows the same status as `krabb status`, and `/plugin` lists plugins
+  as `krabb plugin list` does.
+- `/approval`, `/approvals`, `/approve <id>`, and `/deny <id>` manage pending
+  approvals.
 - `/session`, `/new`, `/model`, and `/workspace` manage conversation context.
-- `/plugin`, `/deliveries`, `/retry`, and `/drop` inspect plugin and delivery
-  state.
+- `/deliveries`, `/retry`, and `/drop` inspect delivery state.
 - `/schedule`, `/memory`, and `/data` are available when their plugins are
   installed. Use `/data value` for simple session values; `/store` remains a
   compatibility alias.

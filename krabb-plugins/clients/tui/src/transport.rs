@@ -54,8 +54,11 @@ impl Deadline {
     }
 }
 
+/// The error a control call gives when the daemon is running but does not answer in time.
+pub(super) const EXPIRED: &str = "The daemon did not respond in time.";
+
 pub(super) fn expired() -> Error {
-    Error::Denied("The daemon did not respond in time.".into())
+    Error::Denied(EXPIRED.into())
 }
 
 #[cfg(test)]

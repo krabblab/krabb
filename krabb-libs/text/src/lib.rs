@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
 mod citation;
+pub mod listing;
+pub mod tree;
+
 pub use citation::citation;
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd as End};

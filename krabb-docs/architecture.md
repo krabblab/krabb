@@ -154,7 +154,9 @@ they use. Plugins do not connect to Core at runtime. They implement its
 Status queries the authenticated `plugin.active` inventory to report the daemon's
 loaded intelligence and channels. It does not recheck their credentials in the
 CLI's environment. Without a daemon, status falls back to local configuration
-readiness. The JSON capability fields are `intelligence` and `channels`.
+readiness. The JSON capability fields are `intelligence` and `channels`. The daemon
+renders the same status for the TUI's `/status` through the `status.report` IPC
+method, so channel and credential readiness there reflect the daemon's environment.
 
 The TUI is a terminal client, not a second agent runtime. It submits turns over
 authenticated local IPC; the daemon selects the model plugin, applies tool and
