@@ -41,7 +41,34 @@ struct Transaction {
 
 pub fn load(path: impl AsRef<Path>, limit: u64) -> io::Result<Option<Vec<u8>>> {
     let path = path.as_ref();
+    let mut attempt = 1;
 
+    loop {
+        match read(path, limit) {
+            Err(error) if replacing(&error) && attempt < REPLACE_ATTEMPTS => {
+                attempt += 1;
+
+                std::thread::sleep(REPLACE_WAIT);
+            }
+
+            result => return result,
+        }
+    }
+}
+
+/// How often a read retries while Windows replaces the file, and how long it waits between.
+const REPLACE_ATTEMPTS: u32 = 50;
+const REPLACE_WAIT: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Whether an error is Windows refusing a file that another process is replacing right now.
+/// Only errors from the operating system count, never the checks this crate reports itself.
+fn replacing(error: &io::Error) -> bool {
+    cfg!(windows)
+        && error.raw_os_error().is_some()
+        && matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied)
+}
+
+fn read(path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
     match recover(path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotADirectory => return Ok(None),
@@ -89,11 +116,11 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
 
     reject_link(path)?;
 
-    let nonce = nonce();
-    let temporary = path.with_file_name(format!(".{}.tmp-{}", name(path), nonce));
-    let backup = path.with_file_name(format!(".{}.backup-{}", name(path), nonce));
-    let journal = path.with_file_name(format!(".{}.txn-{}", name(path), nonce));
-    let live = live(path, nonce);
+    let stamp = stamp();
+    let temporary = path.with_file_name(format!(".{}.tmp-{}", name(path), stamp));
+    let backup = path.with_file_name(format!(".{}.backup-{}", name(path), stamp));
+    let journal = path.with_file_name(format!(".{}.txn-{}", name(path), stamp));
+    let live = live(path, stamp);
 
     // Held for the whole save, so another process's recovery leaves this transaction alone
     // while it is in progress. The operating system releases it if this process dies.
@@ -174,15 +201,15 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
 }
 
 /// The file a saving process holds locked while its transaction for PATH is in progress.
-fn live(path: &Path, nonce: impl std::fmt::Display) -> std::path::PathBuf {
-    path.with_file_name(format!(".{}.live-{}", name(path), nonce))
+fn live(path: &Path, stamp: impl std::fmt::Display) -> std::path::PathBuf {
+    path.with_file_name(format!(".{}.live-{}", name(path), stamp))
 }
 
 /// Whether another process may still hold the transaction with this NONCE open. A missing file
 /// means the writer finished, crashed before it existed, or predates these files. When the
 /// state cannot be told, the transaction is left alone for a later recovery.
-fn in_progress(path: &Path, nonce: &str) -> bool {
-    let file = match File::open(live(path, nonce)) {
+fn in_progress(path: &Path, stamp: &str) -> bool {
+    let file = match File::open(live(path, stamp)) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
         Err(_) => return true,
@@ -339,9 +366,10 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
             continue;
         }
 
+        // A journal that vanished or is being replaced belongs to a writer that is still busy.
         let content = match fs::read(&journal) {
             Ok(content) => content,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound || replacing(&error) => continue,
             Err(error) => return Err(error),
         };
 
@@ -373,9 +401,9 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
             ));
         }
 
-        let nonce = suffix.unwrap_or_default();
+        let stamp = suffix.unwrap_or_default();
 
-        if in_progress(path, nonce) {
+        if in_progress(path, stamp) {
             continue;
         }
 
@@ -409,7 +437,7 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
         let _ = fs::remove_file(temporary);
         let _ = fs::remove_file(backup);
         let _ = fs::remove_file(journal);
-        let _ = fs::remove_file(live(path, nonce));
+        let _ = fs::remove_file(live(path, stamp));
     }
 
     Ok(())
@@ -493,7 +521,7 @@ fn regular(path: &Path) -> bool {
 
 fn write_journal(path: &Path, transaction: &Transaction) -> io::Result<()> {
     let bytes = serde_json::to_vec(transaction).map_err(io::Error::other)?;
-    let temporary = path.with_file_name(format!(".journal-{}-{}", name(path), nonce()));
+    let temporary = path.with_file_name(format!(".journal-{}-{}", name(path), stamp()));
     let mut options = OpenOptions::new();
 
     options.write(true).create_new(true);
@@ -539,7 +567,7 @@ fn name(path: &Path) -> String {
     path.file_name().and_then(|value| value.to_str()).unwrap_or("state").into()
 }
 
-fn nonce() -> u128 {
+fn stamp() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_nanos())
 }
 
