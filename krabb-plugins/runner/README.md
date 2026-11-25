@@ -1,5 +1,9 @@
 # Runner
 
+> **Experimental:** This plugin is not fully tested and is outside the supported
+> v0.1 scope. See the [functional test matrix](../../FUNCTIONAL.md) for the
+> components included in v0.1.
+
 Runner provides optional extended execution for background requests. Install it with:
 
 ```sh

@@ -125,13 +125,14 @@ when a reply does not arrive.
 | --- | --- | --- |
 | Intelligence | Connects Krabb to the models it thinks with. | OpenAI, Anthropic, Gemini, OpenRouter, Codex, Ollama |
 | Channels | Connects Krabb to chat channels for receiving and sending messages. | Telegram, Discord, WhatsApp, Signal, Slack |
-| Agent Interoperability | Connects external agents and local agent clients. | ACP, A2A, AG-UI |
-| Tools | Provides filesystem, Git, shell, browser, and desktop operations under host policy. | Tools, Browser, Computer |
-| MCP | Connects MCP servers and exposes their tools and resources. | MCP |
+| Agent Interoperability | Connects external agents and local agent clients. | ACP, A2A, AG-UI (experimental) |
+| Tools | Provides filesystem, Git, shell, browser, and desktop operations under host policy. | Tools; Browser, Computer (experimental) |
+| MCP | Connects MCP servers and exposes their tools and resources. | MCP (experimental) |
 | Memory | Saves and searches scoped agent memories. | Memory |
 | Scheduling | Creates and runs scheduled agent tasks. | Scheduler |
+| Background Execution | Runs extended background operations through external agents. | Runner (experimental) |
 | Storage | Persists values, leases, and delivery state. | SQLite |
-| Speech | Transcribes voice recordings with a local Whisper-compatible executable. | Whisper |
+| Speech | Transcribes voice recordings with a local Whisper-compatible executable. | Whisper (experimental) |
 | Terminal Client | Provides an interactive terminal interface to the daemon. | TUI |
 
 Plugins outside the [v0.1 functional test matrix](FUNCTIONAL.md) are experimental,
