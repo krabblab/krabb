@@ -155,7 +155,7 @@ pub(crate) async fn answer(
     scheduled_destination: Option<AuthorizedDestination>,
     schedule_run_id: Option<u64>,
     run: Option<krabb_core::task::Run>,
-) -> Result<jobs::Answer, PluginError> {
+) -> Result<tasks::Answer, PluginError> {
     let mut registry = tool_registry(plugins, tools_enabled, shell_enabled).await?;
 
     let foreground = if let Some(workspace) = workspace.filter(|_| run.is_none()) {
@@ -164,7 +164,7 @@ pub(crate) async fn answer(
         if store.sessions.get(session).is_some_and(|session| {
             session.kind == state::SessionKind::Conversation && session.source.is_some()
         }) {
-            let context = jobs::capture(
+            let context = tasks::capture(
                 &store,
                 &provider.hello.id,
                 model,
@@ -176,9 +176,9 @@ pub(crate) async fn answer(
                 tools_enabled,
                 shell_enabled,
             )?;
-            Some(jobs::Foreground::admit(
+            Some(tasks::Foreground::admit(
                 &mut store,
-                Arc::clone(&plugins.jobs),
+                Arc::clone(&plugins.tasks),
                 &context,
                 messages.clone(),
                 cancel,
@@ -239,7 +239,7 @@ pub(crate) async fn answer(
 
         let mut store = sessions.lock().map_err(|_| state::POISONED)?;
 
-        if run.as_ref().is_none_or(|run| store.check_job_step(&run.id, run.generation).is_ok()) {
+        if run.as_ref().is_none_or(|run| store.check_task_step(&run.id, run.generation).is_ok()) {
             Ok(store.compact(session, &compacted)?)
         } else {
             Ok(false)
@@ -272,20 +272,22 @@ pub(crate) async fn answer(
 
         foreground.settle(&mut store, &result, stop.is_signaled() || cancel.requested())?;
 
-        let job = store.jobs.get(&foreground.run.id).ok_or_else(|| {
+        let task = store.tasks.get(&foreground.run.id).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "The foreground task was removed.")
         })?;
 
         if result.is_err()
             || matches!(
-                job.status,
-                state::JobStatus::Paused | state::JobStatus::Blocked | state::JobStatus::Cancelled
+                task.status,
+                state::TaskStatus::Paused
+                    | state::TaskStatus::Blocked
+                    | state::TaskStatus::Cancelled
             )
-            || job.status == state::JobStatus::Waiting && !job.observing()
+            || task.status == state::TaskStatus::Waiting && !task.observing()
         {
-            return Err(Box::new(jobs::Failure::new(
-                job.id.clone(),
-                job.status,
+            return Err(Box::new(tasks::Failure::new(
+                task.id.clone(),
+                task.status,
                 result.err().unwrap_or_else(|| "The task was stopped.".into()),
             )));
         }
@@ -305,7 +307,7 @@ pub(crate) async fn answer(
 
     let restart = requested && !handed_off;
 
-    result.map(|model| jobs::Answer { model, foreground, restart })
+    result.map(|model| tasks::Answer { model, foreground, restart })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -363,7 +365,7 @@ pub(crate) async fn answer_with_registry(
     }
 
     if let Some(run) = &registry.run {
-        sessions.lock().map_err(|_| state::POISONED)?.check_job_step(&run.id, run.generation)?;
+        sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
     }
 
     if isolated {
@@ -507,8 +509,8 @@ pub(crate) async fn answer_with_registry(
         registry.specs.push(task.clone());
 
         specs.push(task);
-        registry.specs.push(jobs::control_tool());
-        specs.push(jobs::control_tool());
+        registry.specs.push(tasks::control_tool());
+        specs.push(tasks::control_tool());
         registry.specs.push(slash::spec());
         specs.push(slash::spec());
         messages.insert(0, routing::context(session));
@@ -518,15 +520,15 @@ pub(crate) async fn answer_with_registry(
             routing::stamp(request);
         }
     } else {
-        registry.route.kind.send_replace(if registry.execution == state::SessionKind::Job {
+        registry.route.kind.send_replace(if registry.execution == state::SessionKind::Task {
             routing::Kind::Background
         } else {
             routing::Kind::Thoughtful
         });
 
-        if registry.execution == state::SessionKind::Job {
-            registry.specs.push(jobs::checkpoint_tool());
-            specs.push(jobs::checkpoint_tool());
+        if registry.execution == state::SessionKind::Task {
+            registry.specs.push(tasks::checkpoint_tool());
+            specs.push(tasks::checkpoint_tool());
         }
     }
 
@@ -624,10 +626,10 @@ pub(crate) async fn answer_with_registry(
     }
 
     if let Some(run) = &registry.run
-        && jobs::input::oversized(&*sessions.lock().map_err(|_| state::POISONED)?, &run.id)
+        && tasks::input::oversized(&*sessions.lock().map_err(|_| state::POISONED)?, &run.id)
     {
-        registry.specs.push(jobs::input::tool());
-        specs.push(jobs::input::tool());
+        registry.specs.push(tasks::input::tool());
+        specs.push(tasks::input::tool());
     }
 
     let mut handoff = registry.route.handoff.subscribe();
@@ -681,7 +683,7 @@ pub(crate) async fn answer_with_registry(
             sessions
                 .lock()
                 .map_err(|_| state::POISONED)?
-                .check_job_step(&run.id, run.generation)?;
+                .check_task_step(&run.id, run.generation)?;
         }
 
         let profile = admission.profile.clone();
@@ -743,7 +745,7 @@ pub(crate) async fn answer_with_registry(
             deadline.min(generation_started + Duration::from_millis(limits.total_millis))
         });
 
-        let legacy_bound = if registry.execution == state::SessionKind::Job {
+        let legacy_bound = if registry.execution == state::SessionKind::Task {
             routing::STEP_LIMIT
         } else {
             TURN_LIMIT
@@ -1038,6 +1040,12 @@ pub(crate) async fn answer_with_registry(
             parsed.timing = None;
         }
 
+        for event in &mut parsed.events {
+            if let Event::Tool { name, .. } = event {
+                *name = tasks::canonical(name).into();
+            }
+        }
+
         if let Some(account) = &mut account {
             account.complete()?;
         }
@@ -1064,7 +1072,7 @@ pub(crate) async fn answer_with_registry(
         keep_one_mutation(&mut parsed.events);
 
         if parsed.text.len() > TEXT_LIMIT {
-            if registry.execution == state::SessionKind::Job {
+            if registry.execution == state::SessionKind::Task {
                 return Err(failure::blocked(
                     "The result exceeds the message limit; use an authorized file artifact or a \
                         bounded final result.",
@@ -1103,7 +1111,7 @@ pub(crate) async fn answer_with_registry(
                 .into());
         }
 
-        if registry.execution == state::SessionKind::Job
+        if registry.execution == state::SessionKind::Task
             && !parsed.events.iter().any(|event| matches!(event, Event::Tool { .. }))
         {
             if let Some(error) = parsed.events.iter().find_map(|event| {
@@ -1129,7 +1137,7 @@ pub(crate) async fn answer_with_registry(
             let prompt = {
                 let mut store = sessions.lock().map_err(|_| state::POISONED)?;
                 store.push_turn(session, registry.run.as_ref(), draft.clone())?;
-                jobs::checkpoint_prompt(&store, session)?
+                tasks::checkpoint_prompt(&store, session)?
             };
 
             let prompt = Message {
@@ -1556,9 +1564,9 @@ pub(crate) fn merge_stream(reply: &mut ModelReply, notes: Vec<Request>) {
 }
 
 pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
-    match name {
+    match tasks::canonical(name) {
         "checkpoint" | "input" => false,
-        "job" => args["action"] != "list",
+        tasks::CONTROL => args["action"] != "list",
         "task" => matches!(args["kind"].as_str(), Some("background")),
         "write"
         | "patch"

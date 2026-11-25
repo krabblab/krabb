@@ -42,7 +42,7 @@ pub(super) fn cleanup(params: &Value, state: &State) -> io::Result<Value> {
         || session.status == "working"
         || session.inflight.is_some()
         || !session.queued.is_empty()
-        || store.jobs.values().any(|job| job.origin.session == request.id && job.protected())
+        || store.tasks.values().any(|task| task.origin.session == request.id && task.protected())
     {
         return Ok(json!({"id":request.id,"deleted":false}));
     }
@@ -80,7 +80,7 @@ pub(super) fn receipt(params: &Value, state: &State) -> io::Result<Value> {
         return Err(invalid("The client does not own this conversation."));
     }
 
-    let Some(job) = find(&store, &source, &lookup.session, &lookup.request)? else {
+    let Some(task) = find(&store, &source, &lookup.session, &lookup.request)? else {
         return Ok(match store.retired_request(&source, &lookup.session, &lookup.request) {
             Some(retired) => json!({"found":true,"expired":true,
                 "task":{"id":retired.task,"state":retired.state}}),
@@ -89,14 +89,14 @@ pub(super) fn receipt(params: &Value, state: &State) -> io::Result<Value> {
     };
 
     let text = matches!(
-        job.status,
-        super::super::state::JobStatus::Reporting | super::super::state::JobStatus::Completed
+        task.status,
+        super::super::state::TaskStatus::Reporting | super::super::state::TaskStatus::Completed
     )
-    .then_some(job.result.as_deref())
+    .then_some(task.result.as_deref())
     .flatten();
 
-    Ok(json!({"found":true,"task":{"id":job.id,"state":job.status},
-        "provider":job.provider,"text":text}))
+    Ok(json!({"found":true,"task":{"id":task.id,"state":task.status},
+        "provider":task.provider,"text":text}))
 }
 
 pub(super) fn find<'a>(
@@ -104,11 +104,11 @@ pub(super) fn find<'a>(
     source: &crate::sharing::Principal,
     session: &str,
     request: &str,
-) -> io::Result<Option<&'a crate::state::Job>> {
-    let mut matches = store.jobs.values().filter(|job| {
-        job.origin.session == session
-            && &job.origin.source() == source
-            && job.request.as_deref() == Some(request)
+) -> io::Result<Option<&'a crate::state::Task>> {
+    let mut matches = store.tasks.values().filter(|task| {
+        task.origin.session == session
+            && &task.origin.source() == source
+            && task.request.as_deref() == Some(request)
     });
 
     let first = matches.next();
@@ -200,7 +200,7 @@ mod tests {
             )
             .unwrap();
         store.reserve("conversation", "owner".into()).unwrap();
-        let context = crate::jobs::capture(
+        let context = crate::tasks::capture(
             &store,
             "fixture",
             "model",
@@ -213,15 +213,15 @@ mod tests {
             false,
         )
         .unwrap();
-        let task = crate::routing::Route {
+        let route = crate::routing::Route {
             kind: crate::routing::Kind::Fast,
             message: String::new(),
             instruction: "Prepare a verified report.".into(),
         };
 
-        let job = crate::jobs::record(&task, &context).unwrap();
+        let task = crate::tasks::record(&route, &context).unwrap();
         let history = store.sessions["conversation"].context();
-        let run = store.admit_foreground(job, history).unwrap();
+        let run = store.admit_foreground(task, history).unwrap();
         drop(store);
         (state, run)
     }
@@ -290,7 +290,7 @@ mod tests {
         forged["owner"] = json!("admin");
 
         assert!(receipt(&forged, &state).is_err());
-        assert_eq!(state.sessions.lock().unwrap().jobs.len(), 1);
+        assert_eq!(state.sessions.lock().unwrap().tasks.len(), 1);
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
@@ -314,10 +314,10 @@ mod tests {
 
         {
             let mut store = state.sessions.lock().unwrap();
-            let job = store.jobs.get_mut(&run.id).unwrap();
+            let task = store.tasks.get_mut(&run.id).unwrap();
 
-            job.status = crate::state::JobStatus::Completed;
-            job.result = Some("The verified report.".into());
+            task.status = crate::state::TaskStatus::Completed;
+            task.result = Some("The verified report.".into());
         }
 
         let finished = replay(&request, &state, "conversation", krabb_core::client::TUI, "fixture")
@@ -334,9 +334,9 @@ mod tests {
 
         {
             let mut store = state.sessions.lock().unwrap();
-            let job = store.jobs.get_mut(&run.id).unwrap();
-            job.status = crate::state::JobStatus::Completed;
-            job.result = Some("The verified report.".into());
+            let task = store.tasks.get_mut(&run.id).unwrap();
+            task.status = crate::state::TaskStatus::Completed;
+            task.result = Some("The verified report.".into());
         }
 
         let legacy = IpcRequest::call(
@@ -387,10 +387,10 @@ mod tests {
 
         {
             let mut store = state.sessions.lock().unwrap();
-            let job = store.jobs.get_mut(&run.id).unwrap();
-            job.status = crate::state::JobStatus::Completed;
-            job.result = Some("The verified report.".into());
-            store.retire_job(&run.id);
+            let task = store.tasks.get_mut(&run.id).unwrap();
+            task.status = crate::state::TaskStatus::Completed;
+            task.result = Some("The verified report.".into());
+            store.retire_task(&run.id);
             store.sessions.get_mut("conversation").unwrap().messages.clear();
             store.save().unwrap();
         }
@@ -420,7 +420,7 @@ mod tests {
         {
             let store = state.sessions.lock().unwrap();
 
-            assert!(store.jobs.is_empty());
+            assert!(store.tasks.is_empty());
             assert_eq!(store.retired.len(), 1);
         }
 
@@ -460,7 +460,7 @@ mod tests {
 
         assert_eq!(store.sessions["conversation"].messages, vec![message]);
         assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert_eq!(store.jobs.len(), 1);
+        assert_eq!(store.tasks.len(), 1);
     }
 
     #[test]
@@ -483,7 +483,7 @@ mod tests {
         changed["text"] = json!("Replace it with a different task.");
 
         assert!(super::super::tasks::enqueue(&changed, &state).is_err());
-        assert_eq!(state.sessions.lock().unwrap().jobs.len(), 1);
+        assert_eq!(state.sessions.lock().unwrap().tasks.len(), 1);
         assert!(state.sessions.lock().unwrap().sessions["conversation"].messages.is_empty());
     }
 
@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(response["replayed"], true);
         assert_eq!(response["task"]["id"], run.id);
         assert_eq!(response["text"], "Verified report, exactly once.");
-        assert_eq!(state.sessions.lock().unwrap().jobs.len(), 1);
+        assert_eq!(state.sessions.lock().unwrap().tasks.len(), 1);
 
         let mut changed = request;
         changed.params["plugin"] = json!("another-provider");
@@ -531,18 +531,18 @@ mod tests {
     }
 
     #[test]
-    fn an_already_admitted_request_cannot_create_a_second_task_with_a_fresh_job_id() {
+    fn an_already_admitted_request_cannot_create_a_second_task_with_a_fresh_task_id() {
         let (state, run) = fixture();
         let mut store = state.sessions.lock().unwrap();
-        let mut another = store.jobs[&run.id].clone();
-        another.id = "job-999999".into();
+        let mut another = store.tasks[&run.id].clone();
+        another.id = "task-999999".into();
         let history = store.sessions["conversation"].context();
 
         let error = store.admit_foreground(another, history).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(store.jobs.len(), 1);
-        assert!(!store.sessions.contains_key("job-999999"));
+        assert_eq!(store.tasks.len(), 1);
+        assert!(!store.sessions.contains_key("task-999999"));
     }
 
     #[test]
@@ -550,9 +550,9 @@ mod tests {
         let (state, run) = fixture();
         {
             let mut store = state.sessions.lock().unwrap();
-            let mut duplicate = store.jobs[&run.id].clone();
-            duplicate.id = "job-999999".into();
-            store.jobs.insert(duplicate.id.clone(), duplicate);
+            let mut duplicate = store.tasks[&run.id].clone();
+            duplicate.id = "task-999999".into();
+            store.tasks.insert(duplicate.id.clone(), duplicate);
         }
 
         assert!(receipt(&query(), &state).is_err());
@@ -566,7 +566,7 @@ mod tests {
             .is_err()
         );
 
-        assert_eq!(state.sessions.lock().unwrap().jobs.len(), 2);
+        assert_eq!(state.sessions.lock().unwrap().tasks.len(), 2);
     }
 
     #[test]
@@ -578,9 +578,9 @@ mod tests {
         {
             let mut store = state.sessions.lock().unwrap();
             store.set_status("conversation", "idle").unwrap();
-            let job = store.jobs.get_mut(&run.id).unwrap();
-            job.status = crate::state::JobStatus::Cancelled;
-            job.uncertain = true;
+            let task = store.tasks.get_mut(&run.id).unwrap();
+            task.status = crate::state::TaskStatus::Cancelled;
+            task.uncertain = true;
 
             assert!(store.remove("conversation").is_err());
         }
@@ -589,7 +589,7 @@ mod tests {
         assert!(state.sessions.lock().unwrap().sessions.contains_key("conversation"));
         {
             let mut store = state.sessions.lock().unwrap();
-            store.jobs.get_mut(&run.id).unwrap().uncertain = false;
+            store.tasks.get_mut(&run.id).unwrap().uncertain = false;
             store
                 .queue(
                     "conversation",
@@ -692,7 +692,7 @@ mod tests {
         {
             let store = state.sessions.lock().unwrap();
 
-            assert_eq!(store.jobs.len(), 1);
+            assert_eq!(store.tasks.len(), 1);
             assert_eq!(store.sessions["turn"].status, "idle");
             assert!(!store.sessions["turn"].reservation_active);
             assert_eq!(
@@ -749,7 +749,7 @@ mod tests {
             assert_eq!(store.sessions["turn"].status, "idle");
             assert!(!store.sessions["turn"].reservation_active);
             assert!(store.sessions["turn"].reservation_owner.is_none());
-            assert_eq!(store.jobs.len(), 1);
+            assert_eq!(store.tasks.len(), 1);
             store.reserve("turn", "later-owner".into()).unwrap();
         }
 
@@ -757,7 +757,7 @@ mod tests {
             sessions: &state.sessions,
             id: "turn",
             owner: "owner".into(),
-            wake: &state.plugins.jobs.wake,
+            wake: &state.plugins.tasks.wake,
             release: true,
         };
 

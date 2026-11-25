@@ -119,7 +119,7 @@ impl Intake {
     }
 
     fn key(&self, prefix: &str) -> String {
-        format!("{prefix}-{}", jobs::dialog::key(&self.session, &self.id))
+        format!("{prefix}-{}", tasks::dialog::key(&self.session, &self.id))
     }
 
     fn author(&self) -> &str {
@@ -559,9 +559,9 @@ fn status(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginError> {
     };
 
     let tasks = store
-        .jobs
+        .tasks
         .values()
-        .filter(|job| job.origin.session == caller.session && !job.status.terminal())
+        .filter(|task| task.origin.session == caller.session && !task.status.terminal())
         .count();
 
     let mut text = format!(
@@ -1234,7 +1234,7 @@ fn task(host: &Host<'_>, caller: &Caller<'_>, arguments: &str) -> Result<String,
         return Ok("There are no unfinished tasks in this conversation.".into());
     }
 
-    Ok(jobs::dialog::message(&mut store, &input, &host.plugins.jobs)?
+    Ok(tasks::dialog::message(&mut store, &input, &host.plugins.tasks)?
         .unwrap_or_else(|| "Send /task to list tasks.".into()))
 }
 

@@ -78,7 +78,8 @@ where
             && task.id.len() <= 128
             && task
                 .id
-                .strip_prefix("job-")
+                .strip_prefix("task-")
+                .or_else(|| task.id.strip_prefix("job-"))
                 .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
     }) else {
         return Err(krabb_core::Error::Protocol("Invalid task receipt identity.".into()));
@@ -166,7 +167,7 @@ mod tests {
     #[test]
     fn a_failed_task_without_a_result_keeps_the_original_error() {
         let receipt =
-            |state: &str, text: &str| json!({"task":{"id":"job-1","state":state},"text":text});
+            |state: &str, text: &str| json!({"task":{"id":"task-1","state":state},"text":text});
 
         assert!(!useful(&receipt("failed", "")));
         assert!(!useful(&receipt("cancelled", "")));
@@ -224,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn an_expired_receipt_is_reported_without_a_fabricated_result() {
         let expired = lookup(
-            &json!({"found":true,"expired":true,"task":{"id":"job-1","state":"completed"}})
+            &json!({"found":true,"expired":true,"task":{"id":"task-1","state":"completed"}})
                 .to_string(),
             "conversation",
             "stable-1",
@@ -239,7 +240,7 @@ mod tests {
 
         assert!(
             lookup(
-                &json!({"found":true,"expired":true,"task":{"id":"job-1","state":"completed"},
+                &json!({"found":true,"expired":true,"task":{"id":"task-1","state":"completed"},
                     "text":"Invented."})
                 .to_string(),
                 "conversation",
@@ -254,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_preserves_actual_state_and_rejects_fabricated_or_malformed_results() {
         let saved = lookup(
-            &json!({"found":true,"task":{"id":"job-1","state":"completed"},
+            &json!({"found":true,"task":{"id":"task-1","state":"completed"},
             "text":"The exact saved report."})
             .to_string(),
             "conversation",
@@ -267,6 +268,11 @@ mod tests {
 
         assert_eq!(saved["text"], "The exact saved report.");
         assert!(notice(&saved).unwrap().contains("completed"));
+
+        let legacy = json!({"found":true,"task":{"id":"job-1","state":"completed"},"text":"Old."});
+
+        assert!(lookup(&legacy.to_string(), "conversation", "stable-1", host).await.is_ok());
+
         assert!(
             lookup(&json!({"found":false}).to_string(), "conversation", "stable-1", host)
                 .await
@@ -277,10 +283,11 @@ mod tests {
         for value in [
             json!(null),
             json!({"found":true}),
-            json!({"found":false,"task":{"id":"job-1","state":"running"}}),
-            json!({"found":true,"task":{"id":"job-1","state":"invented"}}),
+            json!({"found":false,"task":{"id":"task-1","state":"running"}}),
+            json!({"found":true,"task":{"id":"task-1","state":"invented"}}),
             json!({"found":true,"task":{"id":"foreign-task","state":"completed"}}),
-            json!({"found":true,"task":{"id":"job-1","state":"running"},"text":"Not verified."}),
+            json!({"found":true,"task":{"id":"task-","state":"completed"}}),
+            json!({"found":true,"task":{"id":"task-1","state":"running"},"text":"Not verified."}),
         ] {
             assert!(lookup(&value.to_string(), "conversation", "stable-1", host).await.is_err());
         }

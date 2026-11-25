@@ -7331,7 +7331,7 @@ mod tests {
             assert_eq!(params["text"], "Explain the second dataset");
             assert_eq!(params["client"], krabb_core::client::TUI);
 
-            return Ok(json!({"task":"job-queued", "status":"queued"}));
+            return Ok(json!({"task":"task-queued", "status":"queued"}));
         }
 
         if method == "task.message" {
@@ -7339,12 +7339,12 @@ mod tests {
             assert_eq!(params["client"], krabb_core::client::TUI);
             assert_eq!(params["session"], "default");
 
-            if params["text"] == "/task defer job-42 2030-11-12T09:00 Europe/Rome" {
+            if params["text"] == "/task defer task-42 2030-11-12T09:00 Europe/Rome" {
                 return Ok(json!({"handled":true,
                     "text":"Resume saved for 2030-11-12 09:00 Europe/Rome."}));
             }
 
-            assert_eq!(params["text"], "/task pause job-42");
+            assert_eq!(params["text"], "/task pause task-42");
 
             return Ok(
                 json!({"handled":true, "text":"Pause requested. The current step is stopping \
@@ -7505,7 +7505,7 @@ mod tests {
                 let state = std::fs::read_to_string(root.join("state")).unwrap();
                 let text = (state == "completed").then_some("The exact saved report.");
 
-                return Ok(json!({"found":true,"task":{"id":"job-1","state":state},"text":text}));
+                return Ok(json!({"found":true,"task":{"id":"task-1","state":state},"text":text}));
             }
 
             mock_control(home, method, params).await
@@ -7535,7 +7535,7 @@ mod tests {
                 assert_eq!(reply, "The exact saved report.");
             } else {
                 assert!(reply.contains(state));
-                assert!(reply.contains("job-1"));
+                assert!(reply.contains("task-1"));
             }
 
             assert_eq!(std::fs::read_to_string(home.join("generated")).unwrap(), "1");
@@ -7567,7 +7567,7 @@ mod tests {
             params: serde_json::Value,
         ) -> krabb_core::Result<serde_json::Value> {
             if method == "task.receipt" {
-                return Ok(json!({"found":true,"task":{"id":"job-1","state":"completed"},
+                return Ok(json!({"found":true,"task":{"id":"task-1","state":"completed"},
                     "text":"The exact saved report."}));
             }
 
@@ -7652,7 +7652,7 @@ mod tests {
                 assert_eq!(params["request"], "stable-1");
 
                 return Ok(
-                    json!({"found":true,"task":{"id":"job-42","state":"waiting"},"text":null}),
+                    json!({"found":true,"task":{"id":"task-42","state":"waiting"},"text":null}),
                 );
             }
 
@@ -7690,7 +7690,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(notice, super::EngineEvent::ControlNotice(text)
-            if text.contains("job-42") && text.contains("waiting")));
+            if text.contains("task-42") && text.contains("waiting")));
 
         input.write_all(b"/quit\n").await.unwrap();
         engine.await.unwrap().unwrap();
@@ -7731,7 +7731,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
-        input.write_all(b"/task pause job-42\n").await.unwrap();
+        input.write_all(b"/task pause task-42\n").await.unwrap();
 
         let mut text = String::new();
 
@@ -7814,13 +7814,13 @@ mod tests {
                 .unwrap(),
             Some(super::EngineEvent::InputQueued {
                 input: "Explain the second dataset".into(),
-                receipt: "Request saved as job-queued.".into(),
+                receipt: "Request saved as task-queued.".into(),
             })
         );
 
         assert!(!engine.is_finished());
 
-        input.write_all(b"/task pause job-42\n").await.unwrap();
+        input.write_all(b"/task pause task-42\n").await.unwrap();
 
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())
@@ -7833,7 +7833,7 @@ mod tests {
 
         assert!(!engine.is_finished());
 
-        input.write_all(b"/task defer job-42 2030-11-12T09:00 Europe/Rome\n").await.unwrap();
+        input.write_all(b"/task defer task-42 2030-11-12T09:00 Europe/Rome\n").await.unwrap();
 
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(2), notifications.recv())

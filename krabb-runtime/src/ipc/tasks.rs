@@ -23,7 +23,7 @@ pub(super) fn defer(params: &Value, state: &State) -> io::Result<Value> {
         serde_json::from_value(params.clone()).map_err(io::Error::other)?;
 
     apply(state, &request.id, |store| {
-        store.defer_job(&request.id, &request.command, crate::unix_seconds())
+        store.defer_task(&request.id, &request.command, crate::unix_seconds())
     })
 }
 
@@ -37,14 +37,14 @@ fn apply<R: serde::Serialize>(
         let mut store = state.sessions.lock().map_err(lock)?;
         let receipt = control(&mut store)?;
 
-        (receipt, store.jobs[id].status)
+        (receipt, store.tasks[id].status)
     };
 
     if current.stopping() {
-        state.plugins.jobs.cancel(id);
+        state.plugins.tasks.cancel(id);
     }
 
-    state.plugins.jobs.wake.notify_one();
+    state.plugins.tasks.wake.notify_one();
 
     Ok(json!({"id":id, "receipt":receipt, "current":current}))
 }
@@ -65,30 +65,30 @@ pub(super) fn grant(params: &Value, state: &State) -> io::Result<Value> {
         &request.grant,
         Some(state.config.inference.task_ceiling_millis()),
     )?;
-    let job = &store.jobs[&request.id];
+    let task = &store.tasks[&request.id];
 
-    Ok(json!({"id":request.id,"receipt":receipt,"current":job.status,
-        "inference":job.budget.as_ref().map(crate::accounting::view)}))
+    Ok(json!({"id":request.id,"receipt":receipt,"current":task.status,
+        "inference":task.budget.as_ref().map(crate::accounting::view)}))
 }
 
 pub(super) fn list(state: &State) -> io::Result<Value> {
     let store = state.sessions.lock().map_err(lock)?;
-    Ok(json!({"items":store.jobs.values().map(|job| json!({
-        "id":job.id, "status":job.status, "revision":job.revision,
-        "goal":super::super::clip(job.instruction.clone(), SUMMARY_LIMIT),
-        "checkpoint":super::super::clip(job.checkpoint.clone(), SUMMARY_LIMIT),
-        "steps":job.step, "uncertain":job.uncertain,
-        "retry":job.retry,
-        "resume":job.deferred.as_ref().map(|receipt| &receipt.command.when),
-        "sequence":job.budget.as_ref().map(|budget| budget.sequence),
-        "inference":job.budget.as_ref().map(crate::accounting::view),
+    Ok(json!({"items":store.tasks.values().map(|task| json!({
+        "id":task.id, "status":task.status, "revision":task.revision,
+        "goal":super::super::clip(task.instruction.clone(), SUMMARY_LIMIT),
+        "checkpoint":super::super::clip(task.checkpoint.clone(), SUMMARY_LIMIT),
+        "steps":task.step, "uncertain":task.uncertain,
+        "retry":task.retry,
+        "resume":task.deferred.as_ref().map(|receipt| &receipt.command.when),
+        "sequence":task.budget.as_ref().map(|budget| budget.sequence),
+        "inference":task.budget.as_ref().map(crate::accounting::view),
     })).collect::<Vec<_>>()}))
 }
 
 pub(super) fn control(params: &Value, state: &State) -> io::Result<Value> {
     let request: Control = serde_json::from_value(params.clone()).map_err(io::Error::other)?;
 
-    apply(state, &request.id, |store| store.control_job(&request.id, &request.command))
+    apply(state, &request.id, |store| store.control_task(&request.id, &request.command))
 }
 
 #[derive(Deserialize)]
@@ -151,8 +151,8 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
         content: vec![Content::Text { text: request.text.clone() }],
     };
 
-    if let Some(job) = super::requests::find(store, &principal, &request.session, &request.id)? {
-        let saved = store.sessions.get(&job.id).and_then(|journal| {
+    if let Some(task) = super::requests::find(store, &principal, &request.session, &request.id)? {
+        let saved = store.sessions.get(&task.id).and_then(|journal| {
             journal
                 .messages
                 .iter()
@@ -161,7 +161,7 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
         });
 
         let matches = if let Some(input_identity) =
-            job.input.as_ref().filter(|input| input.fingerprint.is_some())
+            task.input.as_ref().filter(|input| input.fingerprint.is_some())
         {
             input_identity.matches(&input)?
         } else {
@@ -171,11 +171,11 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
             })
         };
 
-        if !matches || job.provider != request.plugin {
+        if !matches || task.provider != request.plugin {
             return Err(io::Error::other("This request identity is already in use."));
         }
 
-        return Ok(json!({"task":job.id,"status":job.status,"replayed":true}));
+        return Ok(json!({"task":task.id,"status":task.status,"replayed":true}));
     }
 
     if store.retired_request(&principal, &request.session, &request.id).is_some() {
@@ -197,10 +197,10 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
 
     history.push(input.clone());
 
-    let task = routing::Route {
+    let route = routing::Route {
         kind: routing::Kind::Fast,
         message: String::new(),
-        instruction: jobs::goal(request.text),
+        instruction: tasks::goal(request.text),
     };
 
     let run = store.atomic(|store| {
@@ -208,7 +208,7 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
             store.client(&request.session, &request.client)?;
         }
 
-        let context = jobs::capture(
+        let context = tasks::capture(
             store,
             &request.plugin,
             &model,
@@ -222,12 +222,12 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
         )
         .map_err(io::Error::other)?;
 
-        let job = jobs::record(&task, &context).map_err(io::Error::other)?;
+        let task = tasks::record(&route, &context).map_err(io::Error::other)?;
 
-        store.queue_foreground(job, history, input)
+        store.queue_foreground(task, history, input)
     })?;
 
-    state.plugins.jobs.wake.notify_one();
+    state.plugins.tasks.wake.notify_one();
     Ok(json!({"task":run.id,"status":"queued","replayed":false}))
 }
 
@@ -261,11 +261,12 @@ pub(super) fn message(params: &Value, state: &State) -> io::Result<Value> {
         content: vec![super::super::Content::Text { text: request.text }],
     };
 
-    let key = super::super::jobs::dialog::key(&input.session, &input.id);
+    let key = super::super::tasks::dialog::key(&input.session, &input.id);
     let replayed = session.commands.iter().any(|control| control.id == key);
 
-    let Some(reply) = super::super::jobs::dialog::message(&mut store, &input, &state.plugins.jobs)
-        .map_err(io::Error::other)?
+    let Some(reply) =
+        super::super::tasks::dialog::message(&mut store, &input, &state.plugins.tasks)
+            .map_err(io::Error::other)?
     else {
         return Ok(json!({"handled":false}));
     };
@@ -291,7 +292,7 @@ mod tests {
         let mut store = state.sessions.lock().unwrap();
         store.ensure("conversation", "model").unwrap();
         store.client("conversation", krabb_core::client::TUI).unwrap();
-        let context = crate::jobs::capture(
+        let context = crate::tasks::capture(
             &store,
             "fixture",
             "model",
@@ -304,12 +305,12 @@ mod tests {
             false,
         )
         .unwrap();
-        let task = crate::routing::Route::parse(
+        let route = crate::routing::Route::parse(
             json!({"kind":"background", "message":"I will prepare the report.",
             "instruction":"Research and complete the report."}),
         )
         .unwrap();
-        let id = crate::jobs::enqueue(&mut store, &task, &context).unwrap();
+        let id = crate::tasks::enqueue(&mut store, &route, &context).unwrap();
         drop(store);
         (state, id)
     }
@@ -317,7 +318,7 @@ mod tests {
     #[test]
     fn a_request_for_an_uninstalled_provider_is_refused_before_it_is_saved() {
         let (state, _) = fixture("queued-uninstalled-provider");
-        let jobs = state.sessions.lock().unwrap().jobs.len();
+        let tasks = state.sessions.lock().unwrap().tasks.len();
 
         let request = json!({
             "session":"conversation", "client":krabb_core::client::TUI, "plugin":"absent",
@@ -327,7 +328,7 @@ mod tests {
         let error = enqueue(&request, &state).unwrap_err();
 
         assert!(error.to_string().contains("not installed"), "{error}");
-        assert_eq!(state.sessions.lock().unwrap().jobs.len(), jobs);
+        assert_eq!(state.sessions.lock().unwrap().tasks.len(), tasks);
     }
 
     #[test]
@@ -364,14 +365,14 @@ mod tests {
         assert_eq!(enqueue(&request, &state).unwrap()["replayed"], true);
         let store = state.sessions.lock().unwrap();
 
-        assert_eq!(store.jobs.len(), 2);
+        assert_eq!(store.tasks.len(), 2);
         assert_eq!(
             store.sessions["conversation"].reservation_owner.as_deref(),
             Some("active-owner")
         );
 
-        assert_eq!(store.jobs[&previous].status, crate::state::JobStatus::Queued);
-        assert_eq!(store.jobs[task].request.as_deref(), Some("new-question"));
+        assert_eq!(store.tasks[&previous].status, crate::state::TaskStatus::Queued);
+        assert_eq!(store.tasks[task].request.as_deref(), Some("new-question"));
         assert_eq!(
             store.sessions[task].context().last().unwrap().content[0].render(),
             "Explain the second dataset."
@@ -380,7 +381,7 @@ mod tests {
 
         let recovered =
             crate::state::Store::load(state.home.join("data/sessions/index.json")).unwrap();
-        assert_eq!(recovered.jobs[task].status, crate::state::JobStatus::Queued);
+        assert_eq!(recovered.tasks[task].status, crate::state::TaskStatus::Queued);
         assert!(recovered.sessions["conversation"].queued.is_empty());
         let mut changed = request;
         changed["text"] = json!("A different question");
@@ -396,11 +397,11 @@ mod tests {
             "plugin":"fixture", "id":"large-question", "text":text});
         let receipt = enqueue(&request, &state).unwrap();
         let store = state.sessions.lock().unwrap();
-        let job = &store.jobs[receipt["task"].as_str().unwrap()];
+        let task = &store.tasks[receipt["task"].as_str().unwrap()];
 
-        assert!(job.instruction.len() <= crate::TOOL_ARGS_LIMIT);
+        assert!(task.instruction.len() <= crate::TOOL_ARGS_LIMIT);
         assert_eq!(
-            store.resolved_context(&job.id).unwrap().last().unwrap().content[0].render(),
+            store.resolved_context(&task.id).unwrap().last().unwrap().content[0].render(),
             text
         );
         drop(store);
@@ -421,8 +422,8 @@ mod tests {
         assert!(enqueue(&request, &state).is_err());
         let store = state.sessions.lock().unwrap();
 
-        assert_eq!(store.jobs.len(), 1);
-        assert_eq!(store.jobs[&previous].status, crate::state::JobStatus::Queued);
+        assert_eq!(store.tasks.len(), 1);
+        assert_eq!(store.tasks[&previous].status, crate::state::TaskStatus::Queued);
         assert_eq!(store.sessions["conversation"].messages, messages);
     }
 
@@ -437,7 +438,7 @@ mod tests {
         assert_eq!(first["replayed"], false);
         assert!(first["text"].as_str().unwrap().contains("paused"));
         assert_eq!(message(&request, &state).unwrap()["replayed"], true);
-        assert_eq!(state.sessions.lock().unwrap().jobs[&id].revision, 1);
+        assert_eq!(state.sessions.lock().unwrap().tasks[&id].revision, 1);
 
         let mut changed = request;
         changed["text"] = json!(format!("/task cancel {id}"));
@@ -447,8 +448,8 @@ mod tests {
 
         assert!(message(&changed, &state).is_err());
         assert_eq!(
-            state.sessions.lock().unwrap().jobs[&id].status,
-            crate::state::JobStatus::Paused
+            state.sessions.lock().unwrap().tasks[&id].status,
+            crate::state::TaskStatus::Paused
         );
 
         assert_eq!(
@@ -483,8 +484,8 @@ mod tests {
 
         assert!(control(&forged, &state).is_err());
         assert_eq!(
-            state.sessions.lock().unwrap().jobs[&id].status,
-            crate::state::JobStatus::Paused
+            state.sessions.lock().unwrap().tasks[&id].status,
+            crate::state::TaskStatus::Paused
         );
     }
 
@@ -519,8 +520,8 @@ mod tests {
             } else {
                 assert_eq!(response.error.unwrap().code, 401);
                 assert_eq!(
-                    state.sessions.lock().unwrap().jobs[&id].status,
-                    crate::state::JobStatus::Queued
+                    state.sessions.lock().unwrap().tasks[&id].status,
+                    crate::state::TaskStatus::Queued
                 );
             }
         }
@@ -561,7 +562,7 @@ mod tests {
 
             if token == "invalid" {
                 assert_eq!(response.error.unwrap().code, 401);
-                assert!(state.sessions.lock().unwrap().jobs[&id].deferred.is_none());
+                assert!(state.sessions.lock().unwrap().tasks[&id].deferred.is_none());
             } else {
                 let result = response.result.unwrap();
 
@@ -576,7 +577,7 @@ mod tests {
             }
         }
 
-        assert_eq!(state.sessions.lock().unwrap().jobs[&id].deferrals.len(), 1);
+        assert_eq!(state.sessions.lock().unwrap().tasks[&id].deferrals.len(), 1);
         assert_eq!(state.slots.available_permits(), 0);
         state.stop.signal();
         timeout(Duration::from_secs(1), server).await.unwrap().unwrap().unwrap();
@@ -591,13 +592,13 @@ mod tests {
         state.config.inference.task_ceiling_seconds = 2;
         let grant = {
             let mut store = state.sessions.lock().unwrap();
-            let job = store.claim_job(&id, crate::unix_seconds()).unwrap();
-            let run = krabb_core::task::Run { id: id.clone(), generation: job.step };
+            let task = store.claim_task(&id, crate::unix_seconds()).unwrap();
+            let run = krabb_core::task::Run { id: id.clone(), generation: task.step };
             let reserved = store.reserve_budget(&run, 1_000, Some(1_000)).unwrap();
             store.settle_budget(&id, reserved, None).unwrap();
-            let revision = store.jobs[&id].revision;
+            let revision = store.tasks[&id].revision;
             store
-                .control_job(
+                .control_task(
                     &id,
                     &krabb_core::task::Command {
                         id: "pause-before-grant".into(),
@@ -607,10 +608,10 @@ mod tests {
                     },
                 )
                 .unwrap();
-            store.finish_job_control(&id, run.generation).unwrap();
+            store.finish_task_control(&id, run.generation).unwrap();
             krabb_core::execution::budget::Grant {
                 id: "grant-1".into(),
-                revision: store.jobs[&id].revision,
+                revision: store.tasks[&id].revision,
                 sequence: reserved.id,
                 limit_millis: 2_000,
             }
@@ -640,7 +641,7 @@ mod tests {
             if token == "invalid" {
                 assert_eq!(response.error.unwrap().code, 401);
                 assert_eq!(
-                    state.sessions.lock().unwrap().jobs[&id].budget.as_ref().unwrap().limit_millis,
+                    state.sessions.lock().unwrap().tasks[&id].budget.as_ref().unwrap().limit_millis,
                     Some(1_000)
                 );
             } else {
@@ -653,21 +654,21 @@ mod tests {
         }
         {
             let mut store = state.sessions.lock().unwrap();
-            let before = store.jobs[&id].budget.clone();
+            let before = store.tasks[&id].budget.clone();
 
             assert!(
-                crate::jobs::control(
+                crate::tasks::control(
                     &mut store,
                     &json!({"action":"budget","id":id,"limit_millis":3_000}),
                     "conversation",
                     None,
-                    &state.plugins.jobs,
+                    &state.plugins.tasks,
                     false
                 )
                 .is_err()
             );
 
-            assert_eq!(store.jobs[&id].budget, before);
+            assert_eq!(store.tasks[&id].budget, before);
         }
 
         assert_eq!(state.slots.available_permits(), 0);

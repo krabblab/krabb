@@ -1,6 +1,6 @@
 use super::*;
 use krabb_core::operation::{self, Query, Receipt, Spec, Start};
-use state::JobStatus;
+use state::TaskStatus;
 
 pub(crate) const RUNNER: &str = "runner";
 const DECLARATIONS: usize = 16;
@@ -199,8 +199,8 @@ pub(crate) async fn start(
 
     let previous = {
         let mut store = sessions.lock().map_err(|_| crate::state::POISONED)?;
-        let job = store.job(&run.id)?;
-        let previous = (job.unsafe_step, job.next);
+        let task = store.task(&run.id)?;
+        let previous = (task.unsafe_step, task.next);
 
         store.prepare_operation(run, &offer.plugin, offer.spec.clone(), start.clone())?;
         previous
@@ -249,16 +249,16 @@ pub(crate) async fn start(
     }
 
     registry.route.handoff.send_replace(Some(message.into()));
-    plugins.jobs.wake.notify_one();
+    plugins.tasks.wake.notify_one();
     Ok(ToolResult::text("The operation receipt is saved. The host will monitor its handle."))
 }
 
 pub(crate) async fn monitor(
-    context: &jobs::Context,
-    job: &state::Job,
+    context: &tasks::Context,
+    task: &state::Task,
     cancel: &Cancellation,
 ) -> Result<(), PluginError> {
-    let operation = job.operation.as_ref().ok_or("Operation not found.")?;
+    let operation = task.operation.as_ref().ok_or("Operation not found.")?;
     let key = &operation.start.id;
 
     if operation.phase == state::OperationPhase::Dispatching {
@@ -266,7 +266,7 @@ pub(crate) async fn monitor(
             .sessions
             .lock()
             .map_err(|_| crate::state::POISONED)?
-            .abandon_operation(&job.id, key)?;
+            .abandon_operation(&task.id, key)?;
         return Ok(());
     }
 
@@ -274,7 +274,7 @@ pub(crate) async fn monitor(
 
     if receipt.state.terminal() {
         context.sessions.lock().map_err(|_| crate::state::POISONED)?.collect_operation(
-            &job.id,
+            &task.id,
             key,
             unix_seconds(),
         )?;
@@ -283,7 +283,7 @@ pub(crate) async fn monitor(
 
     let Some(plugin) = context.plugins.get(&operation.plugin).await else {
         context.sessions.lock().map_err(|_| crate::state::POISONED)?.fail_operation_poll(
-            &job.id,
+            &task.id,
             key,
             unix_seconds(),
         )?;
@@ -301,11 +301,11 @@ pub(crate) async fn monitor(
             .sessions
             .lock()
             .map_err(|_| crate::state::POISONED)?
-            .exceed_operation(&job.id, key)?;
+            .exceed_operation(&task.id, key)?;
     }
 
     let cancelling = (exceeded
-        || matches!(job.status, JobStatus::Cancelling | JobStatus::Cancelled))
+        || matches!(task.status, TaskStatus::Cancelling | TaskStatus::Cancelled))
         && operation.spec.cancel
         && !operation.cancel_sent;
 
@@ -314,7 +314,7 @@ pub(crate) async fn monitor(
             .sessions
             .lock()
             .map_err(|_| crate::state::POISONED)?
-            .record_operation_cancel(&job.id, key)?;
+            .record_operation_cancel(&task.id, key)?;
     }
 
     let query = Query {
@@ -323,7 +323,7 @@ pub(crate) async fn monitor(
     };
 
     let request = Request::call(
-        job.step.saturating_mul(1_000).saturating_add(900),
+        task.step.saturating_mul(1_000).saturating_add(900),
         if cancelling { operation::CANCEL } else { operation::INSPECT },
         serde_json::to_value(query)?,
     );
@@ -343,30 +343,30 @@ pub(crate) async fn monitor(
     let mut store = context.sessions.lock().map_err(|_| crate::state::POISONED)?;
 
     if cancelling && !result.as_ref().is_ok_and(|response| response.error.is_none()) {
-        store.retry_operation_cancel(&job.id, key)?;
+        store.retry_operation_cancel(&task.id, key)?;
     }
 
     match result.and_then(|response| read_receipt(response, "Operation inspection")) {
         Ok(receipt) => {
             let terminal = receipt.state.terminal();
 
-            if let Err(error) = store.accept_operation(&job.id, key, receipt, None, unix_seconds())
+            if let Err(error) = store.accept_operation(&task.id, key, receipt, None, unix_seconds())
             {
                 debug!(operation=key, error=%diagnostic(error.to_string()), "Operation receipt was \
                     rejected.");
-                store.fail_operation_poll(&job.id, key, unix_seconds())?;
+                store.fail_operation_poll(&task.id, key, unix_seconds())?;
                 return Ok(());
             }
 
             if terminal {
-                store.collect_operation(&job.id, key, unix_seconds())?;
+                store.collect_operation(&task.id, key, unix_seconds())?;
             }
         }
 
         Err(error) => {
             debug!(operation=key, error=%diagnostic(error.to_string()), "Operation inspection will \
                 retry.");
-            store.fail_operation_poll(&job.id, key, unix_seconds())?;
+            store.fail_operation_poll(&task.id, key, unix_seconds())?;
         }
     }
 

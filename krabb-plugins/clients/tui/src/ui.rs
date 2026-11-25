@@ -1119,6 +1119,7 @@ fn message_timestamp(id: &str) -> Option<String> {
         ["tui", "system", "interaction", "assistant", timestamp, ..]
         | ["tui", "system", "notice", timestamp, ..]
         | ["schedule", "notice", "at", timestamp, ..]
+        | ["task", "notice", "at", timestamp, ..]
         | ["job", "notice", "at", timestamp, ..]
         | ["progress", "at", timestamp, ..] => *timestamp,
         _ => return None,
@@ -5276,6 +5277,10 @@ mod tests {
 
         assert_eq!(nanoseconds, milliseconds);
         assert_eq!(scheduled, milliseconds);
+        assert_eq!(
+            super::message_timestamp("task-notice-at-1700000000000-task-7-event-2"),
+            milliseconds
+        );
         assert_eq!(
             super::message_timestamp("job-notice-at-1700000000000-job-7-event-2"),
             milliseconds

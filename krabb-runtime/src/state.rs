@@ -1,16 +1,16 @@
 pub(crate) mod dialog;
-mod jobs;
 mod journals;
 mod replies;
 mod runs;
+mod tasks;
 
-pub(crate) use jobs::{
-    CHECKPOINT_LIMIT as JOB_CHECKPOINT_LIMIT, Input, Job, JobStatus, OperationPhase,
+pub(crate) use tasks::{
+    CHECKPOINT_LIMIT as TASK_CHECKPOINT_LIMIT, Input, OperationPhase, Task, TaskStatus,
     TokensExhausted,
 };
 
 #[cfg(all(test, unix))]
-pub(crate) use jobs::Approval;
+pub(crate) use tasks::Approval;
 
 pub use runs::{Receipt, Run, Target};
 
@@ -142,7 +142,8 @@ pub enum SessionKind {
     Conversation,
     Foreground,
     Schedule,
-    Job,
+    #[serde(rename = "job")]
+    Task,
 }
 
 impl SessionKind {
@@ -358,8 +359,8 @@ pub enum DeliveryStatus {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Store {
     pub sessions: BTreeMap<String, Session>,
-    #[serde(default)]
-    pub jobs: BTreeMap<String, Job>,
+    #[serde(default, rename = "jobs")]
+    pub tasks: BTreeMap<String, Task>,
     #[serde(default)]
     pub runs: BTreeMap<String, Run>,
     #[serde(default)]
@@ -375,7 +376,7 @@ pub struct Store {
     #[serde(default)]
     pub seen: BTreeMap<String, u64>,
     #[serde(default)]
-    pub(crate) retired: Vec<jobs::retired::Retired>,
+    pub(crate) retired: Vec<tasks::retired::Retired>,
     #[serde(skip)]
     path: Option<PathBuf>,
     #[serde(skip)]
@@ -398,8 +399,8 @@ const RETRY_VERSION: u8 = 11;
 #[derive(Debug, Deserialize, Serialize)]
 struct SessionIndex {
     version: u8,
-    #[serde(default)]
-    jobs: BTreeMap<String, Job>,
+    #[serde(default, rename = "jobs")]
+    tasks: BTreeMap<String, Task>,
     #[serde(default)]
     journals: BTreeSet<String>,
     #[serde(default)]
@@ -412,7 +413,7 @@ struct SessionIndex {
     #[serde(default)]
     deliveries: Option<DeliveryIndex>,
     #[serde(default)]
-    retired: Vec<jobs::retired::Retired>,
+    retired: Vec<tasks::retired::Retired>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -467,7 +468,7 @@ impl Store {
         let mut store: Self =
             serde_json::from_value(document.clone()).map_err(std::io::Error::other)?;
 
-        let mut changed = store.migrate_jobs(None);
+        let mut changed = store.migrate_tasks(None);
 
         changed |= migrate_schedule_sessions(&mut store, document.get("sessions"));
 
@@ -493,14 +494,14 @@ impl Store {
     }
 
     fn normalize_restart(&mut self) -> std::io::Result<bool> {
-        self.validate_jobs()?;
+        self.validate_tasks()?;
 
-        let mut changed = self.recover_jobs()?;
+        let mut changed = self.recover_tasks()?;
         let mut managed: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
 
-        for job in self.jobs.values() {
-            if let Some(request) = &job.request {
-                managed.entry(job.origin.session.clone()).or_default().insert(request.clone());
+        for task in self.tasks.values() {
+            if let Some(request) = &task.request {
+                managed.entry(task.origin.session.clone()).or_default().insert(request.clone());
             }
         }
 
@@ -530,8 +531,8 @@ impl Store {
             }
 
             if session.kind == SessionKind::Conversation && session.scheduled {
-                session.kind = if self.jobs.contains_key(id) {
-                    SessionKind::Job
+                session.kind = if self.tasks.contains_key(id) {
+                    SessionKind::Task
                 } else {
                     SessionKind::Schedule
                 };
@@ -626,10 +627,10 @@ impl Store {
         schedules.sort_by_key(|session| session.updated);
 
         let origins = self
-            .jobs
+            .tasks
             .values()
-            .filter(|job| job.protected())
-            .map(|job| job.origin.session.as_str())
+            .filter(|task| task.protected())
+            .map(|task| task.origin.session.as_str())
             .collect::<BTreeSet<_>>();
 
         let discarded = users
@@ -639,7 +640,7 @@ impl Store {
             .chain(
                 schedules
                     .iter()
-                    .filter(|session| !self.jobs.get(&session.id).is_some_and(Job::protected))
+                    .filter(|session| !self.tasks.get(&session.id).is_some_and(Task::protected))
                     .take(schedules.len().saturating_sub(WORK_SESSION_LIMIT)),
             )
             .map(|session| session.id.clone())
@@ -673,13 +674,13 @@ impl Store {
     }
 
     /// Upgrades saved tasks from an older catalog `version`; a legacy document has none.
-    fn migrate_jobs(&mut self, version: Option<u8>) -> bool {
+    fn migrate_tasks(&mut self, version: Option<u8>) -> bool {
         let older = |target| version.is_none_or(|version| version < target);
         let mut changed = false;
 
         if older(ACCOUNT_VERSION) {
-            for job in self.jobs.values_mut().filter(|job| job.budget.is_none()) {
-                job.budget = Some(krabb_core::execution::budget::Budget::legacy());
+            for task in self.tasks.values_mut().filter(|task| task.budget.is_none()) {
+                task.budget = Some(krabb_core::execution::budget::Budget::legacy());
                 changed = true;
             }
         }
@@ -696,7 +697,7 @@ impl Store {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        self.validate_jobs()?;
+        self.validate_tasks()?;
 
         let Some(path) = &self.path else {
             return Ok(());
@@ -757,9 +758,9 @@ impl Store {
         }
 
         let reserved = match kind {
-            SessionKind::Conversation => is_schedule_session(&id) || is_job_session(&id),
+            SessionKind::Conversation => is_schedule_session(&id) || is_task_session(&id),
             SessionKind::Schedule => !is_schedule_session(&id),
-            SessionKind::Job | SessionKind::Foreground => !is_job_session(&id),
+            SessionKind::Task | SessionKind::Foreground => !is_task_session(&id),
         };
 
         if reserved {
@@ -841,14 +842,14 @@ impl Store {
         self.ensure_work(id.into(), model.into(), SessionKind::Schedule)
     }
 
-    pub fn ensure_job(&mut self, id: &str, model: &str) -> std::io::Result<()> {
-        self.ensure_work(id.into(), model.into(), SessionKind::Job)
+    pub fn ensure_task(&mut self, id: &str, model: &str) -> std::io::Result<()> {
+        self.ensure_work(id.into(), model.into(), SessionKind::Task)
     }
 
     fn ensure_work(&mut self, id: String, model: String, kind: SessionKind) -> std::io::Result<()> {
         if !(match kind {
             SessionKind::Schedule => is_schedule_session(&id),
-            SessionKind::Job | SessionKind::Foreground => is_job_session(&id),
+            SessionKind::Task | SessionKind::Foreground => is_task_session(&id),
             SessionKind::Conversation => false,
         }) {
             return Err(std::io::Error::new(
@@ -874,7 +875,7 @@ impl Store {
                 .values()
                 .filter(|session| session.is_work())
                 .filter(|session| session.status != "working" && session.inflight.is_none())
-                .filter(|session| !self.jobs.get(&session.id).is_some_and(Job::protected))
+                .filter(|session| !self.tasks.get(&session.id).is_some_and(Task::protected))
                 .min_by_key(|session| session.updated)
                 .map(|session| session.id.clone())
                 .ok_or_else(|| {
@@ -924,7 +925,7 @@ impl Store {
             ));
         }
 
-        if is_schedule_session(target) || is_job_session(target) {
+        if is_schedule_session(target) || is_task_session(target) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Scheduled session IDs are reserved.",
@@ -968,11 +969,11 @@ impl Store {
             store.sessions.remove(source);
             store.sessions.insert(target.to_owned(), session);
 
-            for job in store.jobs.values_mut().filter(|job| job.origin.session == source) {
-                job.origin.session = target.into();
+            for task in store.tasks.values_mut().filter(|task| task.origin.session == source) {
+                task.origin.session = target.into();
 
-                if matches!(job.origin.source(), krabb_core::scope::Principal::Client(_)) {
-                    job.origin.chat = target.into();
+                if matches!(task.origin.source(), krabb_core::scope::Principal::Client(_)) {
+                    task.origin.chat = target.into();
                 }
             }
 
@@ -2074,7 +2075,7 @@ impl Store {
             std::io::Error::new(std::io::ErrorKind::NotFound, "Source session was not found.")
         })?;
 
-        if is_schedule_session(target) || is_job_session(target) {
+        if is_schedule_session(target) || is_task_session(target) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Scheduled session IDs are reserved.",
@@ -2164,7 +2165,7 @@ impl Store {
             self.clear(id, "cancelled")?;
         }
 
-        self.cancel_jobs(id)?;
+        self.cancel_tasks(id)?;
         Ok(())
     }
 
@@ -2177,7 +2178,7 @@ impl Store {
         &mut self,
         id: &str,
         phase: &str,
-        task: Option<&str>,
+        task_id: Option<&str>,
     ) -> std::io::Result<()> {
         if !matches!(phase, "safe" | "unsafe") {
             return Err(std::io::Error::new(
@@ -2194,7 +2195,10 @@ impl Store {
         };
 
         if phase == "unsafe"
-            && self.jobs.get(task.unwrap_or(id)).is_some_and(|job| job.status != JobStatus::Running)
+            && self
+                .tasks
+                .get(task_id.unwrap_or(id))
+                .is_some_and(|task| task.status != TaskStatus::Running)
         {
             return Err(std::io::Error::other("The task is stopping or no longer active."));
         }
@@ -2213,18 +2217,18 @@ impl Store {
             }
 
             if phase == "unsafe"
-                && let Some(job) = store.jobs.get_mut(task.unwrap_or(id))
+                && let Some(task) = store.tasks.get_mut(task_id.unwrap_or(id))
             {
-                job.unsafe_step = true;
+                task.unsafe_step = true;
             }
         })
     }
 
     pub fn remove(&mut self, id: &str) -> std::io::Result<()> {
         if self
-            .jobs
+            .tasks
             .values()
-            .any(|job| (job.id == id || job.origin.session == id) && job.protected())
+            .any(|task| (task.id == id || task.origin.session == id) && task.protected())
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -2578,7 +2582,7 @@ impl Store {
         let previous = self.sessions.clone();
 
         let runs = self.runs.clone();
-        let jobs = self.jobs.clone();
+        let tasks = self.tasks.clone();
         let outbox = self.outbox.clone();
         let dead = self.dead.clone();
         let offsets = self.offsets.clone();
@@ -2593,7 +2597,7 @@ impl Store {
         if let Err(error) = self.save() {
             self.sessions = previous;
             self.runs = runs;
-            self.jobs = jobs;
+            self.tasks = tasks;
             self.outbox = outbox;
             self.dead = dead;
             self.offsets = offsets;
@@ -2647,8 +2651,10 @@ fn is_schedule_session(id: &str) -> bool {
     })
 }
 
-fn is_job_session(id: &str) -> bool {
-    id.strip_prefix("job-")
+/// Whether `id` names a background task; earlier releases saved tasks as `job-<digits>`.
+pub(crate) fn is_task_session(id: &str) -> bool {
+    id.strip_prefix("task-")
+        .or_else(|| id.strip_prefix("job-"))
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
@@ -3019,7 +3025,7 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
         ));
     }
 
-    if index.journals.iter().any(|id| !index.sessions.contains_key(id) || !is_job_session(id)) {
+    if index.journals.iter().any(|id| !index.sessions.contains_key(id) || !is_task_session(id)) {
         return Err(std::io::Error::other("Invalid task journal catalog."));
     }
 
@@ -3028,16 +3034,16 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
     let mut store = Store {
         path: Some(path.to_path_buf()),
         runs: index.runs,
-        jobs: index.jobs,
+        tasks: index.tasks,
         retired: index.retired,
         ..Store::default()
     };
 
     store.validate_runs()?;
 
-    let mut changed = store.migrate_jobs(Some(index.version));
+    let mut changed = store.migrate_tasks(Some(index.version));
 
-    store.validate_jobs()?;
+    store.validate_tasks()?;
     store.validate_retired()?;
 
     for (id, key) in index.sessions {
@@ -3066,7 +3072,7 @@ fn load_catalog(path: &Path) -> std::io::Result<Store> {
             || session_record_key(&record) != key
             || session.isolated.as_ref() != index.isolated.get(&id)
             || index.journals.contains(&id)
-                && !matches!(session.kind, SessionKind::Job | SessionKind::Foreground)
+                && !matches!(session.kind, SessionKind::Task | SessionKind::Foreground)
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -3314,7 +3320,7 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
                 path,
                 id,
                 session.isolated.as_ref(),
-                matches!(session.kind, SessionKind::Job | SessionKind::Foreground),
+                matches!(session.kind, SessionKind::Task | SessionKind::Foreground),
             )?
             .join(format!("{key}.json")),
             bytes,
@@ -3360,11 +3366,11 @@ fn stage_catalog(path: &Path, store: &Store) -> std::io::Result<SessionIndex> {
             .sessions
             .iter()
             .filter(|(_, session)| {
-                matches!(session.kind, SessionKind::Job | SessionKind::Foreground)
+                matches!(session.kind, SessionKind::Task | SessionKind::Foreground)
             })
             .map(|(id, _)| id.clone())
             .collect(),
-        jobs: store.jobs.clone(),
+        tasks: store.tasks.clone(),
         retired: store.retired.clone(),
         runs: store.runs.clone(),
         isolated: store
@@ -3558,7 +3564,7 @@ mod tests {
     fn missing_tasks_and_conversations_report_one_message_each() {
         let store = Store::default();
 
-        assert_eq!(store.job("job-1").unwrap_err().to_string(), "Task not found.");
+        assert_eq!(store.task("task-1").unwrap_err().to_string(), "Task not found.");
         assert_eq!(store.session("absent").unwrap_err().to_string(), "Conversation not found.");
     }
 
@@ -3577,16 +3583,16 @@ mod tests {
         let mut store = Store::default();
 
         store.create("main", "model").unwrap();
-        store.ensure_job("job-1", "model").unwrap();
+        store.ensure_task("task-1", "model").unwrap();
 
         assert!(store.append_progress("absent", "Checking.").is_err());
 
         store.append_progress("main", "Checking.").unwrap();
-        store.begin("job-1", message(1, "job-1")).unwrap();
-        store.append_progress("job-1", "Checking.").unwrap();
+        store.begin("task-1", message(1, "task-1")).unwrap();
+        store.append_progress("task-1", "Checking.").unwrap();
 
         assert!(store.sessions["main"].messages.is_empty());
-        assert_eq!(store.sessions["job-1"].messages.len(), 1);
+        assert_eq!(store.sessions["task-1"].messages.len(), 1);
 
         store.begin("main", message(2, "main")).unwrap();
         store.append_progress("main", "Checking.").unwrap();
@@ -3712,12 +3718,12 @@ mod tests {
         std::fs::write(&directory, "not a directory").unwrap();
 
         let result = store.change(|store| {
-            store.retired.push(super::jobs::retired::Retired {
+            store.retired.push(super::tasks::retired::Retired {
                 session: "main".into(),
                 source: crate::sharing::Principal::Client("tui".into()),
                 request: "request".into(),
                 task: "task".into(),
-                state: super::JobStatus::Completed,
+                state: super::TaskStatus::Completed,
             });
         });
 

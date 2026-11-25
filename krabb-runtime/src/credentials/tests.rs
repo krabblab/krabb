@@ -222,7 +222,7 @@ fn shared_installation_keys_serialize_across_different_credential_files() {
     let root = crate::tests::test_root("shared-key");
     let key = root.join("keys/master");
 
-    let jobs = (0..4)
+    let tasks = (0..4)
         .map(|index| {
             let path = root.join(format!("store-{index}"));
             let key = key.clone();
@@ -234,8 +234,8 @@ fn shared_installation_keys_serialize_across_different_credential_files() {
         })
         .collect::<Vec<_>>();
 
-    for job in jobs {
-        job.join().unwrap();
+    for task in tasks {
+        task.join().unwrap();
     }
 
     fs::remove_dir_all(root).unwrap();

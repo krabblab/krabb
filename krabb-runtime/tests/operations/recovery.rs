@@ -11,8 +11,8 @@ pub async fn saved_handle() {
     let id = fixture.admit().await;
 
     let accepted = fixture
-        .until(&id, "saved running handle", |job| {
-            job["status"] == "waiting" && job["operation"]["receipt"]["state"] == "running"
+        .until(&id, "saved running handle", |task| {
+            task["status"] == "waiting" && task["operation"]["receipt"]["state"] == "running"
         })
         .await;
 
@@ -35,8 +35,8 @@ pub async fn saved_handle() {
     assert!(response["text"].as_str().unwrap().contains("stopping safely"));
 
     let stopping = fixture
-        .until(&id, "pause requested with a retained handle", |job| {
-            job["status"] == "pausing" && job["operation"]["receipt"]["state"] == "running"
+        .until(&id, "pause requested with a retained handle", |task| {
+            task["status"] == "pausing" && task["operation"]["receipt"]["state"] == "running"
         })
         .await;
 
@@ -58,8 +58,8 @@ pub async fn saved_handle() {
     assert_ne!(fixture.adapter(), adapter);
 
     let paused = fixture
-        .until(&id, "collected result while paused after restart", |job| {
-            job["status"] == "paused" && job["operation"]["phase"] == "collected"
+        .until(&id, "collected result while paused after restart", |task| {
+            task["status"] == "paused" && task["operation"]["phase"] == "collected"
         })
         .await;
 
@@ -93,7 +93,7 @@ pub async fn saved_handle() {
 
     assert_eq!(resumed["handled"], true);
 
-    fixture.until(&id, "verified final result", |job| job["status"] == "completed").await;
+    fixture.until(&id, "verified final result", |task| task["status"] == "completed").await;
 
     assert_eq!(fixture.effects("SendMessage"), 1);
     assert_eq!(generations(&fixture), 2);
@@ -135,8 +135,8 @@ pub async fn lost_start() {
     let id = fixture.admit().await;
 
     fixture
-        .until(&id, "persisted intent before remote acceptance", |job| {
-            job["operation"]["phase"] == "dispatching"
+        .until(&id, "persisted intent before remote acceptance", |task| {
+            task["operation"]["phase"] == "dispatching"
                 && fixture.home.join("backend/accepted").exists()
         })
         .await;
@@ -148,8 +148,8 @@ pub async fn lost_start() {
     fixture.start_host().await;
 
     let blocked = fixture
-        .until(&id, "uncertain start blocked after restart", |job| {
-            job["status"] == "blocked" && job["uncertain"] == true
+        .until(&id, "uncertain start blocked after restart", |task| {
+            task["status"] == "blocked" && task["uncertain"] == true
         })
         .await;
 
@@ -167,7 +167,7 @@ pub async fn lost_start() {
         .unwrap();
 
     assert!(resumed["text"].as_str().unwrap().contains("not applied"));
-    assert_eq!(fixture.job(&id)["status"], "blocked");
+    assert_eq!(fixture.task(&id)["status"], "blocked");
     assert_eq!(fixture.effects("SendMessage"), 1);
     assert_eq!(generations(&fixture), 1);
 
@@ -179,8 +179,8 @@ pub async fn lost_cancel() {
     let id = fixture.admit().await;
 
     fixture
-        .until(&id, "saved operation before cancellation", |job| {
-            job["status"] == "waiting" && job["operation"]["receipt"]["state"] == "running"
+        .until(&id, "saved operation before cancellation", |task| {
+            task["status"] == "waiting" && task["operation"]["receipt"]["state"] == "running"
         })
         .await;
 
@@ -198,9 +198,9 @@ pub async fn lost_cancel() {
     assert!(receipt["text"].as_str().unwrap().contains("stopping safely"));
 
     fixture
-        .until(&id, "backend accepted cancellation before its receipt", |job| {
-            job["status"] == "cancelling"
-                && job["operation"]["cancel_sent"] == true
+        .until(&id, "backend accepted cancellation before its receipt", |task| {
+            task["status"] == "cancelling"
+                && task["operation"]["cancel_sent"] == true
                 && fixture.home.join("backend/cancel-requested").exists()
         })
         .await;
@@ -213,8 +213,8 @@ pub async fn lost_cancel() {
     fs::write(fixture.home.join("backend/release-cancel"), "release").unwrap();
     fixture.start_host().await;
     fixture
-        .until(&id, "cancel reconciliation without claiming terminal settlement", |job| {
-            job["status"] == "cancelling" && fixture.effects("GetTask") > queries
+        .until(&id, "cancel reconciliation without claiming terminal settlement", |task| {
+            task["status"] == "cancelling" && fixture.effects("GetTask") > queries
         })
         .await;
 
@@ -224,8 +224,8 @@ pub async fn lost_cancel() {
 
     fs::write(fixture.home.join("backend/state"), "cancelled").unwrap();
     fixture
-        .until(&id, "verified backend cancellation", |job| {
-            job["status"] == "cancelled" && job["operation"]["phase"] == "collected"
+        .until(&id, "verified backend cancellation", |task| {
+            task["status"] == "cancelled" && task["operation"]["phase"] == "collected"
         })
         .await;
 
@@ -255,7 +255,7 @@ pub async fn missing_card() {
     let id = fixture.admit().await;
 
     let blocked = fixture
-        .until(&id, "missing card rejected before dispatch", |job| job["status"] == "blocked")
+        .until(&id, "missing card rejected before dispatch", |task| task["status"] == "blocked")
         .await;
 
     assert_eq!(fixture.effects("SendMessage"), 0);
@@ -270,7 +270,7 @@ pub async fn missing_card() {
     fixture.start_host().await;
 
     let restored = fixture
-        .until(&id, "blocked admission survives restart", |job| job["status"] == "blocked")
+        .until(&id, "blocked admission survives restart", |task| task["status"] == "blocked")
         .await;
 
     assert_eq!(restored["budget"], budget);

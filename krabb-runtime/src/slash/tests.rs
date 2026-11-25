@@ -263,7 +263,7 @@ async fn read_only_commands_describe_this_conversation() {
 
     let tool = caller("telegram-5", Origin::Tool);
 
-    for action in ["approve job-1", "deny job-1"] {
+    for action in ["approve task-1", "deny task-1"] {
         let args = serde_json::json!({"name": "task", "arguments": action});
 
         assert!(call(&fixture.host(), &tool, &args).await.unwrap().starts_with("Only the user"));
@@ -709,7 +709,7 @@ fn again_needs_a_text_question_with_a_reply() {
     assert!(last_exchange(&[question(image), reply.clone()]).unwrap_err().contains("text"));
 
     let notice = Message {
-        sender: Some("job".into()),
+        sender: Some("task".into()),
         ..answer(session, "notice", Role::Assistant, Content::Text { text: "Done.".into() })
     };
 

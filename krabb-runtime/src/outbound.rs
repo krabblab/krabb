@@ -450,7 +450,7 @@ pub(crate) async fn queue_during_turn(
     sessions: &Arc<Mutex<state::Store>>,
     offset: &mut i64,
     call: &mut u64,
-    control: Option<&jobs::Signals>,
+    control: Option<&tasks::Signals>,
     host: Option<(&slash::Host<'_>, ApprovalMode)>,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let Some(id) = event_id(&event["id"]) else {
@@ -593,7 +593,7 @@ pub(crate) async fn queue_during_turn(
     let controlled = if commanded {
         true
     } else if let Some(signals) = control {
-        jobs::dialog::channel(
+        tasks::dialog::channel(
             &mut *sessions.lock().map_err(|_| state::POISONED)?,
             signals,
             channel_id,

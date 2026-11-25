@@ -159,5 +159,5 @@ fn scheduler_describes_available_execution_capabilities() {
 
     assert!(schedule_listing_allowed(crate::state::SessionKind::Conversation));
     assert!(!schedule_listing_allowed(crate::state::SessionKind::Schedule));
-    assert!(!schedule_listing_allowed(crate::state::SessionKind::Job));
+    assert!(!schedule_listing_allowed(crate::state::SessionKind::Task));
 }

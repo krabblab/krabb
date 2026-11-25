@@ -89,11 +89,11 @@ pub(super) fn tool(background: bool) -> ToolSpec {
                 generation needs a contextual acknowledgement: call with kind thoughtful and one \
                 brief contextual message in the user's language. For substantial autonomous work \
                 requiring multiple stages, choose background with a contextual acknowledgement and \
-                a self-contained goal before side effects. The host saves a durable job, continues \
+                a self-contained goal before side effects. The host saves a durable task, continues \
                 it in checkpointed steps without an overall lifetime deadline, and delivers \
                 important updates and completion automatically. No scheduler plugin is needed. Do \
                 not promise a handoff until this tool succeeds. Background execution is {}. Do not \
-                use this tool inside a background or scheduled job.",
+                use this tool inside a background or scheduled task.",
             if background {
                 "available under the configured approval policy"
             } else {
@@ -129,7 +129,7 @@ pub(super) fn context(session: &str) -> Message {
                 one brief contextual progress message in the user's language, then do the work. \
                 Substantial requests requiring multiple stages should use the task tool's \
                 background mode before starting work when available; the host delivers the \
-                finished result automatically. Do not invent a background job or promise later \
+                finished result automatically. Do not invent a background task or promise later \
                 delivery when a handoff fails or is unavailable. Do not add canned \
                 acknowledgements to fast answers."
                 .into(),
@@ -261,10 +261,11 @@ mod tests {
         assert!(clock().render().starts_with("Current host time: "));
         assert!(mutating("task", &json!({"kind":"background"})));
         assert!(!mutating("task", &json!({"kind":"thoughtful"})));
-        assert!(mutating("job", &json!({"action":"defer"})));
-        assert!(mutating("job", &json!({"action":"extend"})));
+        assert!(mutating("task_control", &json!({"action":"defer"})));
+        assert!(mutating("task_control", &json!({"action":"extend"})));
+        assert!(mutating("task_control", &json!({"action":"pause"})));
+        assert!(!mutating("task_control", &json!({"action":"list"})));
         assert!(mutating("job", &json!({"action":"pause"})));
-        assert!(!mutating("job", &json!({"action":"list"})));
     }
 
     #[tokio::test(start_paused = true)]

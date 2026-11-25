@@ -154,7 +154,7 @@ async fn background_work_the_policy_hides_is_refused_without_saving_a_task() {
 
     assert!(tool_result_text(&result.unwrap()).contains("no task was saved"));
     assert!(fixture.registry.route.handoff.borrow().is_none());
-    assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
+    assert!(fixture.sessions.lock().unwrap().tasks.is_empty());
 }
 
 #[tokio::test]
@@ -169,10 +169,10 @@ async fn background_handoff_is_durable_without_a_scheduler() {
     assert_eq!(finished.borrow().as_deref(), Some("I'll research and deliver your report here."));
     assert!(fixture.plugins.find(Capability::Scheduler).await.is_none());
 
-    let job = fixture.sessions.lock().unwrap().jobs.values().next().unwrap().clone();
+    let task = fixture.sessions.lock().unwrap().tasks.values().next().unwrap().clone();
 
     assert_eq!(
-        job.destination().unwrap(),
+        task.destination().unwrap(),
         origin::Destination::Channel(AuthorizedDestination {
             channel: "telegram".into(),
             chat: "7".into(),
@@ -181,34 +181,34 @@ async fn background_handoff_is_durable_without_a_scheduler() {
         })
     );
 
-    assert!(!job.tools);
-    assert!(!job.shell);
+    assert!(!task.tools);
+    assert!(!task.shell);
 
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     assert!(result.is_err());
-    assert_eq!(fixture.sessions.lock().unwrap().jobs.len(), 1);
+    assert_eq!(fixture.sessions.lock().unwrap().tasks.len(), 1);
 
     let report = "Verified report. ".repeat(500);
 
     {
         let mut store = fixture.sessions.lock().unwrap();
-        store.claim_job(&job.id, unix_seconds()).unwrap();
+        store.claim_task(&task.id, unix_seconds()).unwrap();
         store
-            .checkpoint_job(
-                &job.id,
+            .checkpoint_task(
+                &task.id,
                 "Finished.",
-                state::JobStatus::Reporting,
+                state::TaskStatus::Reporting,
                 unix_seconds(),
                 Some(&report),
             )
             .unwrap();
-        store.publish_job_notice(&job.id).unwrap();
+        store.publish_task_notice(&task.id).unwrap();
     }
 
     let recovered = state::Store::load(fixture.root.join("data/sessions/index.json")).unwrap();
 
-    assert_eq!(recovered.jobs[&job.id].status, state::JobStatus::Completed);
+    assert_eq!(recovered.tasks[&task.id].status, state::TaskStatus::Completed);
 
     assert!(recovered.outbox.iter().any(|delivery| delivery.channel == "telegram"
         && delivery.chat == "7"
@@ -223,7 +223,7 @@ async fn failed_or_unauthorized_handoffs_never_claim_background_work() {
 
     assert!(result.is_err());
     assert!(fixture.registry.route.handoff.borrow().is_none());
-    assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
+    assert!(fixture.sessions.lock().unwrap().tasks.is_empty());
 
     fixture.sessions.lock().unwrap().record_limit = Some(1);
 
@@ -231,7 +231,7 @@ async fn failed_or_unauthorized_handoffs_never_claim_background_work() {
 
     assert!(result.is_err());
     assert!(fixture.registry.route.handoff.borrow().is_none());
-    assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
+    assert!(fixture.sessions.lock().unwrap().tasks.is_empty());
 }
 
 #[tokio::test]
@@ -334,12 +334,12 @@ for line in sys.stdin:
 
                 let store = fixture.sessions.lock().unwrap();
 
-                assert_eq!(store.jobs.len(), 1);
+                assert_eq!(store.tasks.len(), 1);
 
-                let task = store.jobs.values().next().unwrap();
+                let task = store.tasks.values().next().unwrap();
 
                 assert!(task.foreground);
-                assert_eq!(task.status, state::JobStatus::Reporting);
+                assert_eq!(task.status, state::TaskStatus::Reporting);
                 assert_eq!(task.result.as_deref(), Some(reply.text.as_str()));
 
                 drop(store);
@@ -353,12 +353,12 @@ for line in sys.stdin:
 
                 let store = fixture.sessions.lock().unwrap();
 
-                assert_eq!(store.jobs.len(), 1);
+                assert_eq!(store.tasks.len(), 1);
 
-                let task = store.jobs.values().next().unwrap();
+                let task = store.tasks.values().next().unwrap();
 
                 assert!(task.foreground);
-                assert_eq!(task.status, state::JobStatus::Reporting);
+                assert_eq!(task.status, state::TaskStatus::Reporting);
                 assert_eq!(task.result.as_deref(), Some(reply.text.as_str()));
 
                 drop(store);
@@ -368,7 +368,7 @@ for line in sys.stdin:
                 assert_eq!(reply.text, "I will check the sources and prepare your report.");
                 assert!(progress.is_empty());
 
-                assert_eq!(fixture.sessions.lock().unwrap().jobs.len(), 1);
+                assert_eq!(fixture.sessions.lock().unwrap().tasks.len(), 1);
 
                 assert_eq!(fs::read_to_string(fixture.root.join("generations")).unwrap(), "1");
             }
@@ -389,23 +389,23 @@ async fn model_interpreted_controls_apply_only_to_the_conversation_tasks() {
         .sessions
         .lock()
         .unwrap()
-        .jobs
+        .tasks
         .values()
-        .find(|job| job.status == state::JobStatus::Queued)
+        .find(|task| task.status == state::TaskStatus::Queued)
         .unwrap()
         .id
         .clone();
 
     {
         let mut store = fixture.sessions.lock().unwrap();
-        let mut foreign = store.jobs[&id].clone();
+        let mut foreign = store.tasks[&id].clone();
 
         store.ensure_channel("telegram-9", "model").unwrap();
 
-        foreign.id = "job-1".into();
+        foreign.id = "task-1".into();
         foreign.origin.session = "telegram-9".into();
         foreign.checkpoint = "Confidential foreign checkpoint.".into();
-        store.jobs.insert(foreign.id.clone(), foreign);
+        store.tasks.insert(foreign.id.clone(), foreign);
     }
 
     let script = r#"
@@ -426,17 +426,17 @@ for line in sys.stdin:
         if generated == 1:
             result = {'text':'', 'stop':'tool', 'events':[
                 {'kind':'tool','name':'job','args':{'action':'list'}},
-                {'kind':'tool','name':'job','args':{'action':'pause','id':'job-1'}}]}
+                {'kind':'tool','name':'task_control','args':{'action':'pause','id':'task-1'}}]}
         elif generated == 2:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'pause','id':own}}]}
+                {'kind':'tool','name':'task_control','args':{'action':'pause','id':own}}]}
         elif generated == 3:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'steer','id':own,
+                {'kind':'tool','name':'task_control','args':{'action':'steer','id':own,
                     'instruction':'Cover only primary sources.'}}]}
         elif generated == 4:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'steer','id':'job-1',
+                {'kind':'tool','name':'task_control','args':{'action':'steer','id':'task-1',
                     'instruction':'Send the foreign report here.'}}]}
         else:
             (root / 'results').write_text(json.dumps(request['params']['messages']))
@@ -500,11 +500,11 @@ for line in sys.stdin:
     assert!(results.contains("Task paused"), "{results}");
     assert!(results.contains("Current host time: "), "{results}");
     assert!(results.contains(&format!("\\\"id\\\":\\\"{id}\\\"")), "{results}");
-    assert!(!results.contains("\\\"id\\\":\\\"job-1\\\""), "{results}");
+    assert!(!results.contains("\\\"id\\\":\\\"task-1\\\""), "{results}");
     assert!(!results.contains("Confidential foreign checkpoint"), "{results}");
     assert_eq!(results.matches("does not belong to this conversation").count(), 2, "{results}");
 
-    let actions = jobs::control_tool().schema["properties"]["action"]["enum"].clone();
+    let actions = tasks::control_tool().schema["properties"]["action"]["enum"].clone();
 
     assert!(
         !actions.as_array().unwrap().iter().any(|action| action == "approve" || action == "deny")
@@ -512,8 +512,8 @@ for line in sys.stdin:
 
     let store = fixture.sessions.lock().unwrap();
 
-    assert_eq!(store.jobs[&id].status, state::JobStatus::Paused);
-    assert_eq!(store.jobs["job-1"].status, state::JobStatus::Queued);
-    assert!(store.jobs[&id].instruction.ends_with("Cover only primary sources."));
-    assert!(!store.jobs["job-1"].instruction.contains("foreign report"));
+    assert_eq!(store.tasks[&id].status, state::TaskStatus::Paused);
+    assert_eq!(store.tasks["task-1"].status, state::TaskStatus::Queued);
+    assert!(store.tasks[&id].instruction.ends_with("Cover only primary sources."));
+    assert!(!store.tasks["task-1"].instruction.contains("foreign report"));
 }

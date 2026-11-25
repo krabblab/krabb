@@ -62,9 +62,9 @@ pub(crate) async fn serve_inner(
     let plugins = Plugins {
         config: Arc::new(config.clone()),
         inference: inference::History::open(root),
-        jobs: Arc::new(jobs::Signals {
+        tasks: Arc::new(tasks::Signals {
             ceiling: Some(config.inference.task_ceiling_millis()),
-            ..jobs::Signals::default()
+            ..tasks::Signals::default()
         }),
         ..Plugins::default()
     };
@@ -149,7 +149,7 @@ pub(crate) async fn serve_inner(
 
     let storage_task = tokio::spawn(storage::maintain(root.to_owned(), Arc::clone(&stop)));
 
-    let jobs_task = tokio::spawn(jobs::run(jobs::Context {
+    let tasks_task = tokio::spawn(tasks::run(tasks::Context {
         plugins: plugins.clone(),
         sessions: Arc::clone(&sessions),
         stop: Arc::clone(&stop),
@@ -185,8 +185,8 @@ pub(crate) async fn serve_inner(
     let _ = storage_task.await;
     debug!("Stopping the scheduler.");
     let _ = scheduler_task.await;
-    debug!("Stopping background jobs.");
-    let _ = jobs_task.await;
+    debug!("Stopping background tasks.");
+    let _ = tasks_task.await;
     debug!("Stopping local IPC.");
     let _ = ipc_task.await;
     debug!("Stopping plugins.");

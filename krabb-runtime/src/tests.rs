@@ -8262,16 +8262,16 @@ fn output_tokens_count_payloads_rather_than_their_debug_form() {
 fn prepares_approval_text_and_channel_requests() {
     assert!(
         super::approval_text(
-            "job",
-            &serde_json::json!({"action":"steer", "id":"job-1", "instruction":"Use v2."})
+            "task_control",
+            &serde_json::json!({"action":"steer", "id":"task-1", "instruction":"Use v2."})
         )
-        .contains("steer task job-1 with instruction: Use v2.")
+        .contains("steer task task-1 with instruction: Use v2.")
     );
 
     assert!(
         super::approval_text(
             "job",
-            &serde_json::json!({"action":"extend", "id":"job-1",
+            &serde_json::json!({"action":"extend", "id":"task-1",
                 "minutes":30})
         )
         .contains("by 30 minutes")

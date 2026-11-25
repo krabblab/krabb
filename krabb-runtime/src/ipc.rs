@@ -398,7 +398,7 @@ impl<'a> Reservation<'a> {
             sessions: &state.sessions,
             id,
             owner: owner.into(),
-            wake: &state.plugins.jobs.wake,
+            wake: &state.plugins.tasks.wake,
             release: false,
         })
     }
@@ -552,7 +552,7 @@ async fn session_answer(
         sessions: &state.sessions,
         id,
         owner,
-        wake: &state.plugins.jobs.wake,
+        wake: &state.plugins.tasks.wake,
         release: true,
     };
 
@@ -783,13 +783,13 @@ async fn session_answer(
     let response = match result {
         Ok(reply) => IpcResponse::ok(request.id, json!({"done": true, "text": reply.text})),
 
-        Err(error) if error.is::<super::jobs::Failure>() => {
-            let failure = error.downcast_ref::<super::jobs::Failure>().unwrap();
+        Err(error) if error.is::<super::tasks::Failure>() => {
+            let failure = error.downcast_ref::<super::tasks::Failure>().unwrap();
             let published = state
                 .sessions
                 .lock()
                 .map_err(lock)
-                .and_then(|mut sessions| sessions.publish_job_notice(&failure.id));
+                .and_then(|mut sessions| sessions.publish_task_notice(&failure.id));
 
             match published {
                 Ok(()) => IpcResponse::ok(
@@ -1729,11 +1729,11 @@ async fn cancel(request: &IpcRequest, state: &State) -> IpcResponse {
             return IpcResponse::fail(request.id, -32000, error.to_string());
         }
 
-        for job in sessions.jobs.values().filter(|job| {
-            (job.origin.session == id || job.id == id)
-                && (!current_only || job.status == crate::state::JobStatus::Cancelling)
+        for task in sessions.tasks.values().filter(|task| {
+            (task.origin.session == id || task.id == id)
+                && (!current_only || task.status == crate::state::TaskStatus::Cancelling)
         }) {
-            state.plugins.jobs.cancel(&job.id);
+            state.plugins.tasks.cancel(&task.id);
         }
 
         if active {
@@ -3598,7 +3598,7 @@ for line in sys.stdin:
             let (_, mut output) = server.into_split();
             let answering = Arc::clone(&state);
 
-            let task = tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 super::session_answer(
                     &IpcRequest::call(
                         7,
@@ -3644,7 +3644,7 @@ for line in sys.stdin:
 
             wait_for_tui_request(&state, 0).await;
             crate::cancellation(&state.cancels, "turn").request();
-            tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), handle).await.unwrap().unwrap().unwrap();
             state.plugins.get("fixture").await.unwrap().stop().await.unwrap();
             std::fs::remove_dir_all(&state.home).unwrap();
         }
@@ -3660,7 +3660,7 @@ for line in sys.stdin:
         let (_, mut output) = server.into_split();
         let answering = Arc::clone(&state);
 
-        let task = tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             super::session_answer(
                 &IpcRequest::call(
                     7,
@@ -3682,7 +3682,7 @@ for line in sys.stdin:
 
         wait_for_tui_request(&state, 2).await;
         advance_tui_time(81).await;
-        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), handle).await.unwrap().unwrap().unwrap();
 
         let mut reader = BufReader::new(client);
 
@@ -3711,17 +3711,17 @@ for line in sys.stdin:
                     .starts_with("The request failed. Its saved task will retry no earlier than ")
             );
 
-            assert_eq!(sessions.jobs.len(), 1);
-            assert!(sessions.jobs.values().all(|job| job.result.is_none()));
-            let job = sessions.jobs.values().next().unwrap();
+            assert_eq!(sessions.tasks.len(), 1);
+            assert!(sessions.tasks.values().all(|task| task.result.is_none()));
+            let task = sessions.tasks.values().next().unwrap();
 
-            assert_eq!(job.failures, 1);
+            assert_eq!(task.failures, 1);
             assert_eq!(
-                job.retry.as_ref().unwrap().failure.kind,
+                task.retry.as_ref().unwrap().failure.kind,
                 krabb_core::failure::Kind::TimedOut
             );
 
-            assert!(job.retry.as_ref().unwrap().at > super::super::unix_seconds());
+            assert!(task.retry.as_ref().unwrap().at > super::super::unix_seconds());
 
             assert_eq!(session.status, "idle");
             assert!(!session.reservation_active);
