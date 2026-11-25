@@ -257,7 +257,7 @@ their model is explicitly pinned; their history is preserved.
 - Acceptance flows cover a Telegram DM with text/image/voice/tools/memory/
   scheduler, a Discord thread with authorization and a worktree, provider
   switching without history loss, core-only diagnostics, and update rollback.
-  Track basic functionality per OS/architecture in [Compatibility](../COMPATIBILITY.md)
+  Track basic functionality per operating system and architecture in [Compatibility](../COMPATIBILITY.md)
   and each user-testable crate or plugin once in the
   [functional test matrix](../FUNCTIONAL.md). Record verified
   functional success only by ticking existing checkboxes; do not add status
