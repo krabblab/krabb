@@ -75,8 +75,7 @@ async fn generate(
     };
 
     if method == krabb_core::execution::INFO {
-        let host =
-            std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+        let host = host();
 
         let profile = execution::profile(
             &host,
@@ -90,9 +89,20 @@ async fn generate(
         return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
     }
 
+    if method == "check" {
+        let mut request = client.get(format!("{}/api/tags", host().trim_end_matches('/')));
+
+        if let Some(key) = credential() {
+            request = request.bearer_auth(key);
+        }
+
+        krabb_http::accepted(request, "Ollama").await?;
+
+        return Ok(Some(Response::ok(id, json!({}))));
+    }
+
     if method == "model.info" {
-        let host =
-            std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+        let host = host();
 
         let model = model::resolve(params["model"].as_str().unwrap_or("default"), &host);
 
@@ -114,9 +124,12 @@ async fn generate(
 
     let input: ModelRequest = serde_json::from_value(params)?;
 
-    let host = std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+    generate_at(client, id, input, &host(), &mut emitter).await
+}
 
-    generate_at(client, id, input, &host, &mut emitter).await
+/// The Ollama server Krabb talks to: a local or self-hosted one, or Ollama's cloud.
+fn host() -> String {
+    std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into())
 }
 
 async fn generate_at(

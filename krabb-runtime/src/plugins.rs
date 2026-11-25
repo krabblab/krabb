@@ -11,6 +11,8 @@ pub(crate) async fn plugin(
             setup::run(options, &home(), json).await?;
         }
 
+        PluginCommand::Check(args) => setup::check::command(&home(), &args.id, json).await?,
+
         PluginCommand::List(output) => list(output.page, output.json || json)?,
         PluginCommand::Detach(args) => lifecycle::run(&home(), &args.id, false, json).await?,
         PluginCommand::Attach(args) => lifecycle::run(&home(), &args.id, true, json).await?,

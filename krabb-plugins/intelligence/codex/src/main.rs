@@ -75,6 +75,12 @@ async fn generate_with_session(
         Request::Note { .. } => return Ok(None),
     };
 
+    if method == "check" {
+        codex::check().await?;
+
+        return Ok(Some(Response::ok(id, json!({}))));
+    }
+
     if method == "command" {
         let text = codex::command(&params, emitter).await?;
 

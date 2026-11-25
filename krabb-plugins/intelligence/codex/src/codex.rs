@@ -25,6 +25,25 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(890);
 
 const COMMAND_HELP: &str = "Manage Codex sign-in and models.\n\nUsage: krabb codex <COMMAND>\n\nCommands:\n  login [--device]  Sign in to your Codex account.\n  status            Show whether Codex is signed in.\n  logout            Sign out of Codex.\n  models            List models available to this Codex account.\n  help              Show this help.\n\nRun `krabb codex <command> --help` for command-specific help.";
 
+/// Confirms the Codex executable starts and has a signed-in account, without a model turn.
+pub async fn check() -> krabb_core::Result<()> {
+    check_with(binary(), codex_home()).await
+}
+
+async fn check_with(binary: OsString, home: Option<PathBuf>) -> krabb_core::Result<()> {
+    let mut server = Server::start_with(binary, home).await?;
+
+    server.initialize().await?;
+
+    let result = server.call("account/read", json!({})).await?;
+
+    if result["account"].is_null() {
+        return Err(denied("Codex is not signed in.\nSign in with `krabb codex login`."));
+    }
+
+    Ok(())
+}
+
 pub async fn command(params: &Value, mut emitter: Emitter) -> krabb_core::Result<String> {
     command_with(params, &mut emitter, binary(), codex_home()).await
 }

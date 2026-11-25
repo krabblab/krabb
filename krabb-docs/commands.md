@@ -21,6 +21,7 @@ krabb update --rollback [-y|--yes] [--json]
 krabb completion <bash|fish|powershell|zsh>
 krabb plugin list [<page>] [--json]
 krabb plugin setup <id> [--no-activate] [--json]
+krabb plugin check <id> [--json]
 krabb <id> setup [--no-activate] [--json]
 krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [--unstable] [-y|--yes] [--json]
 krabb plugin versions <id> [--json]

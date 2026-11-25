@@ -386,13 +386,8 @@ async fn plugin_main() -> krabb_core::Result<()> {
     let inbox = load_inbox()?;
     let app = App { client, queue: Arc::new(Mutex::new(inbox)) };
 
-    let listener = TcpListener::bind(listen()).await.map_err(|error| {
-        krabb_core::Error::Denied(format!("WhatsApp webhook listener failed: {error}."))
-    })?;
-
-    let webhook = app.clone();
-
-    tokio::spawn(async move { webhook_loop(listener, webhook).await });
+    // Only the daemon polls, so a connection test never takes the port of the running plugin.
+    let webhook = Arc::new(tokio::sync::OnceCell::new());
 
     serve_with(
         Hello {
@@ -405,7 +400,15 @@ async fn plugin_main() -> krabb_core::Result<()> {
         },
         move |request| {
             let app = app.clone();
-            async move { call(&app, request).await }
+            let webhook = Arc::clone(&webhook);
+
+            async move {
+                if matches!(&request, Request::Call { method, .. } if method == "poll") {
+                    webhook.get_or_try_init(|| listen_for_webhooks(app.clone())).await?;
+                }
+
+                call(&app, request).await
+            }
         },
     )
     .await
@@ -430,6 +433,18 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
                 .ok_or_else(|| krabb_core::Error::Denied("ack.sequence is required.".into()))?;
             app.queue.lock().await.acknowledge(sequence)?;
             json!({"acknowledged": true})
+        }
+
+        "check" => {
+            let request = app
+                .client
+                .get(format!("{}/{}", graph_url()?.trim_end_matches('/'), phone()?))
+                .query(&[("fields", "id")])
+                .bearer_auth(token()?);
+
+            krabb_http::accepted(request, "WhatsApp").await?;
+
+            json!({})
         }
 
         "send" => send(app, &params).await?,
@@ -1183,6 +1198,17 @@ fn chunks(value: &str, limit: usize) -> Vec<String> {
     }
 
     output
+}
+
+#[cfg(not(test))]
+async fn listen_for_webhooks(app: App) -> krabb_core::Result<()> {
+    let listener = TcpListener::bind(listen()).await.map_err(|error| {
+        krabb_core::Error::Denied(format!("WhatsApp webhook listener failed: {error}."))
+    })?;
+
+    tokio::spawn(async move { webhook_loop(listener, app).await });
+
+    Ok(())
 }
 
 #[cfg(not(test))]

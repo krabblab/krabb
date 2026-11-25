@@ -1304,12 +1304,16 @@ fn checked(name: &str, check: bool, reply: &str) -> PathBuf {
 
     let hello = r#"{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"probe","version":"0.1.0","capabilities":["channel"]}}"#;
 
+    // A plugin that never answers stands in for a connection test that hangs.
+    let answer =
+        if reply == "silent" { "sleep 30".to_owned() } else { format!("printf '%s\\n' '{reply}'") };
+
     fs::write(
         &binary,
         format!(
             "#!/bin/sh\n[ -n \"$KRABB_PROBE_TOKEN\" ] || exit 3\nwhile IFS= read -r line; do\n\
              case \"$line\" in\n*hello*) printf '%s\\n' '{hello}' ;;\n\
-             *'\"check\"'*) printf '%s\\n' '{reply}' ;;\n\
+             *'\"check\"'*) {answer} ;;\n\
              *shutdown*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":9999,\"result\":{{\"ok\":true}}}}'; exit 0 ;;\n\
              esac\ndone\n"
         ),
@@ -1379,13 +1383,65 @@ async fn connection_tests_never_show_the_account_or_fail_setup() {
     let result = check::run(&older, "probe").await;
 
     assert_eq!(result, json!({"status": "skipped"}));
-    assert_eq!(check::line(&result), None);
+    assert_eq!(
+        check::line(&result).unwrap(),
+        "This plugin has no connection test, so its settings cannot be confirmed now."
+    );
 
     let undeclared = checked("check-undeclared", false, "never sent");
 
     assert_eq!(check::run(&undeclared, "probe").await, json!({"status": "skipped"}));
 
-    for root in [passed, failed, older, undeclared] {
+    let hung = checked("check-hung", true, "silent");
+
+    assert_eq!(
+        check::run_within(&hung, "probe", std::time::Duration::from_millis(500)).await,
+        json!({"status": "failed", "detail": "The connection test timed out."})
+    );
+
+    for root in [passed, failed, older, undeclared, hung] {
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rerunning_a_connection_test_ends_a_failure_with_one_next_action() {
+    let passed = checked("check-command-passed", true, r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+
+    assert!(check::command(&passed, "probe", false).await.is_ok());
+    assert!(check::command(&passed, "probe", true).await.is_ok());
+
+    let rejected = checked(
+        "check-command-rejected",
+        true,
+        r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Token was rejected."}}"#,
+    );
+
+    let error = check::command(&rejected, "probe", false).await.unwrap_err().to_string();
+
+    assert_eq!(
+        error,
+        "The probe connection test failed: Token was rejected.\nChange its settings with \
+         `krabb plugin setup probe`."
+    );
+
+    let guided = checked(
+        "check-command-guided",
+        true,
+        r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Codex is not signed in.\nSign in with `krabb codex login`."}}"#,
+    );
+
+    let error = check::command(&guided, "probe", true).await.unwrap_err().to_string();
+
+    assert!(error.ends_with("Sign in with `krabb codex login`."), "{error}");
+    assert_eq!(error.matches('`').count(), 2, "only the plugin's own next action: {error}");
+
+    let missing = check::command(&passed, "absent", false).await.unwrap_err().to_string();
+
+    assert!(missing.ends_with("List installed plugins with `krabb plugin list`."), "{missing}");
+
+    for root in [passed, rejected, guided] {
         let _ = fs::remove_dir_all(root);
     }
 }
