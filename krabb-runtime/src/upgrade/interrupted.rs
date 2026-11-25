@@ -323,6 +323,12 @@ pub(crate) async fn before_command(
                 eprintln!("{}", recovery_failure(&error));
             }
 
+            // Recovery may have replaced this binary before a later step failed, such as
+            // starting the service; the command must not run on the restored home.
+            if let Some(outcome) = outcome(root).filter(|outcome| outcome.kept != VERSION) {
+                return Err(format!("Run the command again to use Krabb {}.", outcome.kept).into());
+            }
+
             return Ok(());
         }
     };

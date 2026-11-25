@@ -275,8 +275,12 @@ async fn update(
             };
 
             // A service that did not start keeps the intent, so the next command starts it.
-            if restarted.is_ok() {
-                interrupted::clear_intent(root)?;
+            match restarted {
+                Ok(()) => interrupted::clear_intent(root)?,
+
+                Err(restart) => {
+                    warn!(error = %diagnostic(sentence(restart.to_string())), "The service did not start again.");
+                }
             }
 
             return Err(error);
