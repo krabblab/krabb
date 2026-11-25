@@ -1546,6 +1546,7 @@ pub(crate) async fn forward_stream(
         Some(Event::Tool { name, args, .. }) => {
             StreamNotice::Tool(aliases::name(&name, &args, |_| true).into())
         }
+
         Some(Event::Error { .. } | Event::Context { .. }) | None => return Ok(()),
     };
 

@@ -500,6 +500,7 @@ mod tests {
         assert!(
             text.contains("you may use the settings_change tool; the owner approves each change.")
         );
+
         assert!(text.contains("Restart only when they ask to apply it now."));
     }
 

@@ -2087,6 +2087,7 @@ async fn serve_read_only_tool(
             .as_array()
             .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"))
             .unwrap_or_default(),
+
         "file_search" => {
             serde_json::to_string_pretty(&result["hits"]).unwrap_or_else(|_| "[]".into())
         }

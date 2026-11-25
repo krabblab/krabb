@@ -149,6 +149,7 @@ mod tests {
             self::name("operation_runner_delegate", &json!({}), owned),
             "operation_runner_delegate"
         );
+
         assert_eq!(self::name("write", &json!({}), owned), "file_write");
         assert_eq!(self::name("task", &json!({}), |_| true), "task_classify");
         assert_eq!(self::name("job", &json!({"action":"pause"}), |_| true), "task_pause");

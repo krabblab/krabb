@@ -68,6 +68,7 @@ const ALIASES: [(&str, &str); 8] = [
     ("git", "git_run"),
     ("shell", "shell_run"),
 ];
+
 const COMMAND_LIMIT: Duration = Duration::from_secs(120);
 static SEARCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static FETCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -2659,6 +2660,7 @@ mod tests {
         assert!(output.unwrap_err().to_string().contains("Shell containment requires"));
 
         assert!(call(&approved, Request::call(2, "file_read", json!({}))).await.is_err());
+
         assert!(
             call(&approved, Request::call(3, "file_write", json!({"path": "x"}))).await.is_err()
         );
