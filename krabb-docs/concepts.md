@@ -125,12 +125,12 @@ and scheduled work; a waiting background request runs after at most three
 consecutive conversation turns. A busy single-slot provider still answers one
 request at a time. Task token limits are supported; currency cost limits are not.
 
-Background requests can become durable host jobs under the conversation's
-approval policy, without enabling the scheduler. Each job saves checkpoints and
+Background requests can become durable background tasks under the conversation's
+approval policy, without enabling the scheduler. Each task saves checkpoints and
 continues automatically in bounded steps. Negotiated inference uses the adaptive
 allowance; legacy inference and ordinary tool calls retain their ten-minute
-background limit. Durable external operations can outlive a step. A job can span days;
-there is no overall lifetime deadline. Waiting jobs do not call the intelligence
+background limit. Durable external operations can outlive a step. A task can span days;
+there is no overall lifetime deadline. Waiting tasks do not call the intelligence
 provider until their next step is due.
 
 Minimal background execution uses ordinary agent turns without another executor.
@@ -142,15 +142,15 @@ work needs an available capability before it can start.
 
 Krabb confirms the handoff only after saving the goal. It posts important milestones, decisions,
 blockers, and completion to the originating client session or channel conversation. Routine waiting
-messages are suppressed. Ask about your jobs or request pause, resume, cancellation, or changes in
+messages are suppressed. Ask about your tasks or request pause, resume, cancellation, or changes in
 the same conversation; no status request is needed to keep work running. Cancelling the originating
-session also cancels its jobs. Jobs retain their captured tool, shell, workspace, and approval
-limits. Safe interrupted steps resume; an uncertain tool action pauses the job to prevent duplicate
+session also cancels its tasks. Tasks retain their captured tool, shell, workspace, and approval
+limits. Safe interrupted steps resume; an uncertain tool action pauses the task to prevent duplicate
 effects. A missing permission or required user decision also pauses it. Supply the requested
-clarification in the same conversation to resume a blocked job. Jobs with uncertain action outcomes
-stay blocked for review. A pause or cancellation of a running job first reports that stopping was
+clarification in the same conversation to resume a blocked task. Tasks with uncertain action outcomes
+stay blocked for review. A pause or cancellation of a running task first reports that stopping was
 requested; a paused state is reached only after the active step settles. Manual pauses preserve the
-saved goal and survive restart. Changing a paused job preserves the pause; changing a running job
+saved goal and survive restart. Changing a paused task preserves the pause; changing a running task
 stops its current step and queues continuation with the updated instruction.
 
 ## Delivery

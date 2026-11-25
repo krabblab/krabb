@@ -85,7 +85,7 @@ The catalog references immutable task journals under `data/tasks/`. When backing
 runtime, include that directory and `data/sessions/` together, along with any referenced workspace
 and attachment data. A checkpoint and its tool receipt commit together. Client messages and channel
 outbox entries commit with their notification receipt, so delivery recovery does not re-execute the
-goal. At most 64 job records are retained; capacity reclaims terminal records whose notifications
+goal. At most 64 task records are retained; capacity reclaims terminal records whose notifications
 are published and protects active, paused, and blocked work. Commands carry expected revisions and
 durable receipts; bounded receipt retention still rejects stale commands after old receipts expire.
 Manual pauses remain paused after restart. Legacy paused blockers migrate to the explicit blocked
@@ -176,4 +176,4 @@ reject old/new conflicts, back up original data, update attachment references,
 and publish newly hashed immutable records before catalog references. It must not
 edit hash-named records in place. An interrupted migration leaves `.migration.json`;
 the next exclusive owner restores the recovery point before opening state. Keep
-backups until you have checked chats, pending deliveries, memory, and scheduled jobs.
+backups until you have checked chats, pending deliveries, memory, and schedules.

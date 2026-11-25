@@ -101,14 +101,14 @@ metadata lookup, prediction, context preparation, and dispatch; queue waiting do
 not reset the caller deadline. Summary calls and final generation receive the
 remaining admitted allowance. Ollama applies it to HTTP and stream timers, and
 provider restart invalidates cached execution metadata. Legacy providers retain
-one-, five-, and ten-minute class allowances. Jobs have no overall lifetime limit.
+one-, five-, and ten-minute class allowances. Tasks have no overall lifetime limit.
 
 Timing observations are a bounded, reconstructible cache, independent of task state and authority.
 They contain phase measurements and token counts, not prompts. A bounded trace records completed,
 failed, timed-out, cancelled, interrupted, and handed-off attempts. Dropped futures retain censored
 observations with unknown usage; rejected admission has no execution observation. Recent failures
 reduce estimator confidence without granting resources. Durable inference allowance accounting is
-stored separately in the job catalog. Each admitted call reserves before dispatch, settles confirmed
+stored separately in the task catalog. Each admitted call reserves before dispatch, settles confirmed
 occupied time after completion, and retains uncertain exposure after interruption. Task ceilings
 remain binding across retries and restart. Owned tool/approval waiting has a separate meter
 boundary; waiting does not become confirmed active inference usage. Authenticated local IPC grants
@@ -130,7 +130,7 @@ Foreground and background execution share host task records. Foreground admissio
 persists a private context journal, and a saved result can be delivered after a
 lost client connection without running inference again. The host does not parse
 natural language. The model interprets task requests in any language and calls the
-`job` tool; the host enforces conversation scope, approval policy, revisions, and
+`task_control` tool; the host enforces conversation scope, approval policy, revisions, and
 allowance limits.
 Exact `/task` commands are the language-neutral fallback: authenticated
 `task.message` and channel intake apply them outside ordinary work admission, so
@@ -295,7 +295,7 @@ three consecutive interactive admissions while they wait. Expired waiters leave 
 consecutive failures block for review; productive checkpoints reset the streak. Retry waits and
 cumulative inference charges survive pause/resume and restart. Unknown, permanent, and uncertain
 failures do not authorize automatic retry. Interruptions after a possible mutation pause instead of
-replaying the action. Job status, checkpoints, and pending notices survive restart. Tool receipts
+replaying the action. Task status, checkpoints, and pending notices survive restart. Tool receipts
 and checkpoint transitions share an atomic snapshot.
 
 Client and channel identities use the normalized `Principal` type. Local client notifications append
@@ -304,7 +304,7 @@ are shared constants, and additional client identities use the same typed path. 
 remain readable for compatibility. Authenticated local IPC exposes `task.list`, `task.control`, and
 `task.defer`; commands include a stable command ID and expected revision. This path has separate
 admission capacity and bypasses inference and plugin update locks. Local daemon authority can
-inspect or control saved jobs; channel tools remain restricted to the originating conversation.
+inspect or control saved tasks; channel tools remain restricted to the originating conversation.
 `task.receipt` finds an admitted client request by conversation and stable user-message ID without
 inference, including when the provider is unavailable. Foreground and queued admission share
 identity checks; conflicting retained identities require review. The TUI uses this path after a lost

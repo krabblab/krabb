@@ -157,9 +157,9 @@ mod tests {
     #[test]
     fn only_the_exact_prefix_is_a_task_command() {
         assert!(command("/task"));
-        assert!(command("  /task pause job-3 "));
-        assert!(command("/task\tpause job-3"));
-        assert!(command("/task\u{a0}pause job-3"));
+        assert!(command("  /task pause task-3 "));
+        assert!(command("/task\tpause task-3"));
+        assert!(command("/task\u{a0}pause task-3"));
         assert!(!command("/tasks"));
         assert!(!command("pause the report"));
         assert!(!command("metti in pausa /task"));
