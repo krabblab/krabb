@@ -92,7 +92,7 @@ pub(super) fn goal(text: String) -> String {
 
 pub(super) fn enqueue(
     store: &mut state::Store,
-    task: &tasks::Task,
+    task: &routing::Route,
     context: &Value,
 ) -> Result<String, PluginError> {
     let job = record(task, context)?;
@@ -102,7 +102,7 @@ pub(super) fn enqueue(
     Ok(id)
 }
 
-pub(super) fn record(task: &tasks::Task, context: &Value) -> Result<Job, PluginError> {
+pub(super) fn record(task: &routing::Route, context: &Value) -> Result<Job, PluginError> {
     let origin: origin::Origin = serde_json::from_value(context["origin"].clone())?;
 
     Ok(Job {

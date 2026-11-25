@@ -83,7 +83,7 @@ impl Fixture {
         )
         .unwrap();
 
-        let task = tasks::Task::parse(json!({
+        let task = routing::Route::parse(json!({
             "kind":"background", "message":"I'll prepare your report and return here.",
             "instruction":"Research and complete the report with verified sources."
         }))

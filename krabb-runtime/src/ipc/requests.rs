@@ -213,8 +213,8 @@ mod tests {
             false,
         )
         .unwrap();
-        let task = crate::tasks::Task {
-            kind: crate::tasks::Kind::Fast,
+        let task = crate::routing::Route {
+            kind: crate::routing::Kind::Fast,
             message: String::new(),
             instruction: "Prepare a verified report.".into(),
         };

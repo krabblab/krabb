@@ -88,6 +88,7 @@ mod process;
 mod recovery;
 mod releases;
 mod revoke;
+mod routing;
 mod schedules;
 mod sessions;
 mod style;
@@ -130,7 +131,6 @@ mod sources;
 pub(crate) mod state;
 mod status;
 mod storage;
-mod tasks;
 pub(crate) mod terminal;
 mod turns;
 mod updates;
@@ -284,7 +284,7 @@ struct ToolRegistry {
     owners: BTreeMap<String, String>,
     operations: BTreeMap<String, operations::Offer>,
     cleanup: process::Cleanup,
-    task: Arc<tasks::State>,
+    route: Arc<routing::State>,
     source: Option<sharing::Principal>,
     execution: state::SessionKind,
     run: Option<krabb_core::task::Run>,

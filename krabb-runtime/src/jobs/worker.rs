@@ -300,7 +300,7 @@ async fn step(context: &Context, job: Job) -> Result<(), PluginError> {
     let monitoring = job.observing();
 
     let result = if monitoring {
-        operations::monitor(context, &job, &cancel).await.map(|_| tasks::reply(String::new()))
+        operations::monitor(context, &job, &cancel).await.map(|_| routing::reply(String::new()))
     } else {
         execute(context, &job, &cancel).await
     };
@@ -587,8 +587,8 @@ mod tests {
     use super::*;
 
     fn job() -> Job {
-        let task = tasks::Task {
-            kind: tasks::Kind::Background,
+        let task = routing::Route {
+            kind: routing::Kind::Background,
             message: "Working on it.".into(),
             instruction: "Write the report.".into(),
         };

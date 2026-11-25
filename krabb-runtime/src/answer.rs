@@ -196,7 +196,7 @@ pub(crate) async fn answer(
 
     let cleanup = registry.cleanup.clone();
     let restart = Arc::clone(&registry.restart);
-    let task = Arc::clone(&registry.task);
+    let route = Arc::clone(&registry.route);
 
     let mut result = answer_with_registry(
         provider,
@@ -292,7 +292,7 @@ pub(crate) async fn answer(
     }
 
     let requested = restart.load(std::sync::atomic::Ordering::Acquire);
-    let handed_off = task.handoff.borrow().is_some();
+    let handed_off = route.handoff.borrow().is_some();
 
     // A turn that handed its work to a background task must not restart under that task.
     if requested && handed_off {
@@ -500,9 +500,9 @@ pub(crate) async fn answer_with_registry(
                 .get(session)
                 .is_some_and(|session| session.source.is_some() || session.origin.is_some());
 
-        registry.task.background.store(background, std::sync::atomic::Ordering::Relaxed);
+        registry.route.background.store(background, std::sync::atomic::Ordering::Relaxed);
 
-        let task = tasks::tool(background);
+        let task = routing::tool(background);
 
         registry.specs.push(task.clone());
 
@@ -511,17 +511,17 @@ pub(crate) async fn answer_with_registry(
         specs.push(jobs::control_tool());
         registry.specs.push(slash::spec());
         specs.push(slash::spec());
-        messages.insert(0, tasks::context(session));
+        messages.insert(0, routing::context(session));
 
         if let Some(request) = messages.iter_mut().rev().find(|message| message.role == Role::User)
         {
-            tasks::stamp(request);
+            routing::stamp(request);
         }
     } else {
-        registry.task.kind.send_replace(if registry.execution == state::SessionKind::Job {
-            tasks::Kind::Background
+        registry.route.kind.send_replace(if registry.execution == state::SessionKind::Job {
+            routing::Kind::Background
         } else {
-            tasks::Kind::Thoughtful
+            routing::Kind::Thoughtful
         });
 
         if registry.execution == state::SessionKind::Job {
@@ -588,12 +588,12 @@ pub(crate) async fn answer_with_registry(
 
             *call += 1;
 
-            if let Some(text) = registry.task.handoff.borrow().clone() {
+            if let Some(text) = registry.route.handoff.borrow().clone() {
                 sessions
                     .lock()
                     .map_err(|_| state::POISONED)?
                     .retire_approval(&run.id, &approval.id)?;
-                return Ok(tasks::reply(text));
+                return Ok(routing::reply(text));
             }
 
             format!(
@@ -630,9 +630,9 @@ pub(crate) async fn answer_with_registry(
         specs.push(jobs::input::tool());
     }
 
-    let mut handoff = registry.task.handoff.subscribe();
+    let mut handoff = registry.route.handoff.subscribe();
 
-    let mut kind = registry.task.kind.subscribe();
+    let mut kind = registry.route.kind.subscribe();
     let started = tokio::time::Instant::now();
 
     let compaction = provider.supports(Capability::Context)
@@ -744,7 +744,7 @@ pub(crate) async fn answer_with_registry(
         });
 
         let legacy_bound = if registry.execution == state::SessionKind::Job {
-            tasks::STEP_LIMIT
+            routing::STEP_LIMIT
         } else {
             TURN_LIMIT
         };
@@ -890,7 +890,7 @@ pub(crate) async fn answer_with_registry(
         let mut receiver_closed = false;
 
         let reply = loop {
-            let legacy = if compaction && *kind.borrow() == tasks::Kind::Fast {
+            let legacy = if compaction && *kind.borrow() == routing::Kind::Fast {
                 TURN_LIMIT
             } else {
                 kind.borrow().limit()
@@ -915,7 +915,7 @@ pub(crate) async fn answer_with_registry(
                 _ = handoff.changed() => {
                     if let Some(text) = handoff.borrow_and_update().clone() {
                         trace.outcome(krabb_core::execution::policy::Outcome::Yielded);
-                        return Ok(tasks::reply(text));
+                        return Ok(routing::reply(text));
                     }
                 }
 
@@ -1273,8 +1273,8 @@ pub(crate) async fn answer_with_registry(
 
             *call += 1;
 
-            if let Some(text) = registry.task.handoff.borrow().clone() {
-                return Ok(tasks::reply(text));
+            if let Some(text) = registry.route.handoff.borrow().clone() {
+                return Ok(routing::reply(text));
             }
 
             let mut content: Vec<Content> = output

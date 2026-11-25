@@ -27,7 +27,7 @@ impl Kind {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Task {
+pub(super) struct Route {
     pub kind: Kind,
     #[serde(default)]
     pub message: String,
@@ -35,7 +35,7 @@ pub(super) struct Task {
     pub instruction: String,
 }
 
-impl Task {
+impl Route {
     pub fn parse(value: Value) -> Result<Self, PluginError> {
         let mut task: Self = serde_json::from_value(value)?;
 
@@ -208,9 +208,9 @@ mod tests {
 
     #[test]
     fn task_modes_require_context_without_accepting_destinations() {
-        assert_eq!(Task::parse(json!({"kind":"fast"})).unwrap().kind, Kind::Fast);
+        assert_eq!(Route::parse(json!({"kind":"fast"})).unwrap().kind, Kind::Fast);
 
-        let task = Task::parse(json!({
+        let task = Route::parse(json!({
             "kind":"thoughtful", "message":"  I'll verify today's releases.  "
         }))
         .unwrap();
@@ -226,11 +226,11 @@ mod tests {
             json!({"kind":"background", "message":"I'll prepare it.", "instruction":" "}),
             json!({"kind":"fast", "destinations":[]}),
         ] {
-            assert!(Task::parse(invalid).is_err());
+            assert!(Route::parse(invalid).is_err());
         }
 
         assert!(
-            Task::parse(json!({
+            Route::parse(json!({
                 "kind":"background", "message":"I'll prepare it.",
                 "instruction":"x".repeat(TEXT_LIMIT + 1)
             }))

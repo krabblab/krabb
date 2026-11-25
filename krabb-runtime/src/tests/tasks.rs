@@ -32,9 +32,9 @@ impl Fixture {
             )
             .unwrap();
 
-        let registry = ToolRegistry { specs: vec![tasks::tool(true)], ..ToolRegistry::default() };
+        let registry = ToolRegistry { specs: vec![routing::tool(true)], ..ToolRegistry::default() };
 
-        registry.task.background.store(true, std::sync::atomic::Ordering::Relaxed);
+        registry.route.background.store(true, std::sync::atomic::Ordering::Relaxed);
 
         Self { root, sessions: Arc::new(Mutex::new(store)), plugins: Plugins::default(), registry }
     }
@@ -104,7 +104,7 @@ async fn thoughtful_messages_are_generated_once_without_tool_permissions() {
     assert!(matches!(notices.recv().await, Some(StreamNotice::Progress(text))
         if text == "I'll compare the release notes."));
 
-    assert!(fixture.registry.task.handoff.borrow().is_none());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
 
     let saved = |store: &state::Store| {
         store.sessions["telegram-7"]
@@ -141,26 +141,26 @@ async fn thoughtful_messages_are_generated_once_without_tool_permissions() {
 
     result.unwrap();
 
-    assert_eq!(*fixture.registry.task.kind.borrow(), crate::tasks::Kind::Thoughtful);
+    assert_eq!(*fixture.registry.route.kind.borrow(), crate::routing::Kind::Thoughtful);
 }
 
 #[tokio::test]
 async fn background_work_the_policy_hides_is_refused_without_saving_a_task() {
     let fixture = Fixture::new();
 
-    fixture.registry.task.background.store(false, std::sync::atomic::Ordering::Relaxed);
+    fixture.registry.route.background.store(false, std::sync::atomic::Ordering::Relaxed);
 
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     assert!(tool_result_text(&result.unwrap()).contains("no task was saved"));
-    assert!(fixture.registry.task.handoff.borrow().is_none());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
     assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
 }
 
 #[tokio::test]
 async fn background_handoff_is_durable_without_a_scheduler() {
     let fixture = Fixture::new();
-    let mut finished = fixture.registry.task.handoff.subscribe();
+    let mut finished = fixture.registry.route.handoff.subscribe();
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     result.unwrap();
@@ -222,7 +222,7 @@ async fn failed_or_unauthorized_handoffs_never_claim_background_work() {
     let (result, _) = fixture.classify(background(), ApprovalMode::Off).await;
 
     assert!(result.is_err());
-    assert!(fixture.registry.task.handoff.borrow().is_none());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
     assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
 
     fixture.sessions.lock().unwrap().record_limit = Some(1);
@@ -230,7 +230,7 @@ async fn failed_or_unauthorized_handoffs_never_claim_background_work() {
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     assert!(result.is_err());
-    assert!(fixture.registry.task.handoff.borrow().is_none());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
     assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
 }
 

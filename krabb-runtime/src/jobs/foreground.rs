@@ -26,7 +26,7 @@ impl Foreground {
             });
 
         let instruction = goal(instruction);
-        let task = tasks::Task { kind: tasks::Kind::Fast, message: String::new(), instruction };
+        let task = routing::Route { kind: routing::Kind::Fast, message: String::new(), instruction };
         let job = record(&task, context)?;
         let id = job.id.clone();
         let cancel = Arc::new(cancel.clone());

@@ -146,7 +146,7 @@ pub(crate) fn reply(error: &(dyn std::error::Error + 'static), retrying: bool) -
         return format!("{detail} I will retry automatically.");
     }
 
-    let Some(detail) = detail else { return tasks::ERROR.into() };
+    let Some(detail) = detail else { return routing::ERROR.into() };
 
     let next = match failure.kind {
         Kind::Denied | Kind::Missing | Kind::Invalid => {
@@ -186,7 +186,7 @@ pub(crate) fn settle(
     }
 
     let reason = match core(error) {
-        _ if failure.kind == Kind::Unknown => tasks::ERROR.into(),
+        _ if failure.kind == Kind::Unknown => routing::ERROR.into(),
 
         Some(krabb_core::Error::Denied(reason) | krabb_core::Error::Limit(reason)) => {
             reason.clone()
@@ -269,8 +269,8 @@ mod tests {
 
         assert_eq!(reply(throttled.as_ref(), false), "Slow down. Please retry.");
         assert_eq!(reply(throttled.as_ref(), true), "Slow down. I will retry automatically.");
-        assert_eq!(reply(unknown.as_ref(), false), tasks::ERROR);
-        assert_eq!(reply(host.as_ref(), false), tasks::ERROR);
+        assert_eq!(reply(unknown.as_ref(), false), routing::ERROR);
+        assert_eq!(reply(host.as_ref(), false), routing::ERROR);
 
         assert_eq!(
             reply(host.as_ref(), true),

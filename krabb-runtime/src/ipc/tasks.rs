@@ -197,8 +197,8 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
 
     history.push(input.clone());
 
-    let task = tasks::Task {
-        kind: tasks::Kind::Fast,
+    let task = routing::Route {
+        kind: routing::Kind::Fast,
         message: String::new(),
         instruction: jobs::goal(request.text),
     };
@@ -304,7 +304,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let task = crate::tasks::Task::parse(
+        let task = crate::routing::Route::parse(
             json!({"kind":"background", "message":"I will prepare the report.",
             "instruction":"Research and complete the report."}),
         )

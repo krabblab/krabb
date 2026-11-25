@@ -172,7 +172,7 @@ pub(crate) async fn start(
     let run = registry.run.as_ref().ok_or("A durable task is required for an operation.")?;
     let message = args["message"]
         .as_str()
-        .filter(|text| !text.trim().is_empty() && text.len() <= tasks::MESSAGE_LIMIT)
+        .filter(|text| !text.trim().is_empty() && text.len() <= routing::MESSAGE_LIMIT)
         .ok_or("A contextual acknowledgement of at most 2,000 bytes is required.")?;
 
     let start = Start {
@@ -248,7 +248,7 @@ pub(crate) async fn start(
         }
     }
 
-    registry.task.handoff.send_replace(Some(message.into()));
+    registry.route.handoff.send_replace(Some(message.into()));
     plugins.jobs.wake.notify_one();
     Ok(ToolResult::text("The operation receipt is saved. The host will monitor its handle."))
 }

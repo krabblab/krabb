@@ -101,8 +101,8 @@ async fn queued_questions_wait_for_the_active_turn_and_use_its_completed_context
             false,
         )
         .unwrap();
-        let task = tasks::Task {
-            kind: tasks::Kind::Fast,
+        let task = routing::Route {
+            kind: routing::Kind::Fast,
             message: String::new(),
             instruction: "Explain the second dataset.".into(),
         };
@@ -379,8 +379,8 @@ fn interrupting_the_current_turn_preserves_independent_queued_requests() {
     )
     .unwrap();
 
-    let task = tasks::Task {
-        kind: tasks::Kind::Fast,
+    let task = routing::Route {
+        kind: routing::Kind::Fast,
         message: String::new(),
         instruction: "Another question".into(),
     };

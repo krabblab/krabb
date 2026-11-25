@@ -644,7 +644,7 @@ pub(crate) async fn execute_tool_with_registry(
     schedule_run_id: Option<u64>,
     tool_call: usize,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
-    if registry.task.handoff.borrow().is_some() {
+    if registry.route.handoff.borrow().is_some() {
         return Err("The background task is already saved; do not repeat its work.".into());
     }
 
@@ -671,7 +671,7 @@ pub(crate) async fn execute_tool_with_registry(
             .lock()
             .map_err(|_| state::POISONED)?
             .request_approval(run, id, name, &args, &text)?;
-        registry.task.handoff.send_replace(Some(String::new()));
+        registry.route.handoff.send_replace(Some(String::new()));
         plugins.jobs.wake.notify_one();
 
         return Ok(ToolResult::text(
@@ -680,7 +680,7 @@ pub(crate) async fn execute_tool_with_registry(
     }
 
     let _mutation = if (mutating(name, &args) && name != "task") || name == "checkpoint" {
-        Some(registry.task.gate.lock().await)
+        Some(registry.route.gate.lock().await)
     } else {
         None
     };
@@ -689,10 +689,10 @@ pub(crate) async fn execute_tool_with_registry(
         sessions.lock().map_err(|_| state::POISONED)?.check_job_step(&run.id, run.generation)?;
     }
 
-    let fast = *registry.task.kind.borrow() == tasks::Kind::Fast;
+    let fast = *registry.route.kind.borrow() == routing::Kind::Fast;
 
     if mutating(name, &args) && fast {
-        registry.task.kind.send_replace(tasks::Kind::Thoughtful);
+        registry.route.kind.send_replace(routing::Kind::Thoughtful);
     }
 
     if name == jobs::input::NAME {
@@ -714,7 +714,7 @@ pub(crate) async fn execute_tool_with_registry(
             jobs::apply(&mut store, session, args)?;
         }
 
-        registry.task.handoff.send_replace(Some(String::new()));
+        registry.route.handoff.send_replace(Some(String::new()));
 
         plugins.jobs.wake.notify_one();
 
@@ -731,7 +731,7 @@ pub(crate) async fn execute_tool_with_registry(
         }
     }
 
-    let task = if name == "task" { Some(tasks::Task::parse(args.clone())?) } else { None };
+    let task = if name == "task" { Some(routing::Route::parse(args.clone())?) } else { None };
 
     let _task_guard = if let Some(task) = &task {
         if !registry.execution.interactive() {
@@ -739,12 +739,12 @@ pub(crate) async fn execute_tool_with_registry(
         }
 
         match task.kind {
-            tasks::Kind::Fast => return Ok(ToolResult::text("Answer the request directly.")),
+            routing::Kind::Fast => return Ok(ToolResult::text("Answer the request directly.")),
 
-            tasks::Kind::Thoughtful => {
-                registry.task.kind.send_replace(tasks::Kind::Thoughtful);
+            routing::Kind::Thoughtful => {
+                registry.route.kind.send_replace(routing::Kind::Thoughtful);
 
-                if !registry.task.announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if !registry.route.announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     let saved = sessions
                         .lock()
                         .map_err(|_| state::POISONED)?
@@ -763,8 +763,8 @@ pub(crate) async fn execute_tool_with_registry(
                 return Ok(ToolResult::text("Continue the work and return the complete answer."));
             }
 
-            tasks::Kind::Background => {
-                if !registry.task.background.load(std::sync::atomic::Ordering::Relaxed) {
+            routing::Kind::Background => {
+                if !registry.route.background.load(std::sync::atomic::Ordering::Relaxed) {
                     return Ok(ToolResult::text(
                         "Background tasks are unavailable here; no task was saved. Answer \
                             directly.",
@@ -781,9 +781,9 @@ pub(crate) async fn execute_tool_with_registry(
                     return Err("Start background work before performing mutating actions.".into());
                 }
 
-                let guard = registry.task.gate.lock().await;
+                let guard = registry.route.gate.lock().await;
 
-                if registry.task.handoff.borrow().is_some() {
+                if registry.route.handoff.borrow().is_some() {
                     return Err("The background task is already saved.".into());
                 }
 
@@ -1108,7 +1108,7 @@ pub(crate) async fn execute_tool_with_registry(
 
                     (None, Some(run)) => {
                         sessions.lock().map_err(|_| state::POISONED)?.escalate_approval(run)?;
-                        registry.task.handoff.send_replace(Some(String::new()));
+                        registry.route.handoff.send_replace(Some(String::new()));
                         plugins.jobs.wake.notify_one();
 
                         return Ok(ToolResult::text(
@@ -1154,7 +1154,7 @@ pub(crate) async fn execute_tool_with_registry(
             )?
         };
 
-        registry.task.handoff.send_replace(Some(task.message));
+        registry.route.handoff.send_replace(Some(task.message));
         plugins.jobs.wake.notify_one();
 
         return Ok(ToolResult::text(format!("Background job {id} is saved.")));

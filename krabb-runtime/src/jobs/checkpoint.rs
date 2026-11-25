@@ -38,7 +38,7 @@ pub(crate) fn apply(
     if let Some(update) = &checkpoint.update
         && (!matches!(update.importance.as_str(), "milestone" | "decision")
             || update.text.trim().is_empty()
-            || update.text.len() > tasks::MESSAGE_LIMIT)
+            || update.text.len() > routing::MESSAGE_LIMIT)
     {
         return Err("An update must describe a meaningful milestone or decision.".into());
     }

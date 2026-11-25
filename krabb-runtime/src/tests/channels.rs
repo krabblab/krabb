@@ -648,7 +648,7 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
 
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().any(|value| value["params"]["text"] == "Recovered"));
-    assert!(sent.iter().any(|value| value["params"]["text"] == crate::tasks::ERROR));
+    assert!(sent.iter().any(|value| value["params"]["text"] == crate::routing::ERROR));
 
     assert!(sessions.lock().unwrap().sessions["telegram-7-thread-4"].queued.is_empty());
 
