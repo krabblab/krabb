@@ -292,8 +292,8 @@ async fn update(
                 "from": VERSION,
                 "version": version,
                 "refresh": refresh,
-                "unloaded": report.unloaded,
-                "definition": definition_outcome(&report),
+                "unloaded": report.as_ref().map(|report| &report.unloaded),
+                "service_definition": report.as_ref().map(definition_outcome),
             }))?
         );
     } else if let Refresh::Pending = refreshed {

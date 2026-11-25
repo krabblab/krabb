@@ -1021,7 +1021,7 @@ fn activation_reports_reach_the_json_result() {
 
     fs::create_dir_all(&root).unwrap();
 
-    assert_eq!(finish::report(&root), finish::Report::default());
+    assert_eq!(finish::report(&root), None);
     assert_eq!(super::definition_outcome(&finish::Report::default()), serde_json::Value::Null);
 
     let report = finish::Report {
@@ -1032,7 +1032,7 @@ fn activation_reports_reach_the_json_result() {
 
     krabb_file::save(root.join("finish.json"), serde_json::to_vec(&report).unwrap()).unwrap();
 
-    let read = finish::report(&root);
+    let read = finish::report(&root).unwrap();
 
     assert_eq!(read, report);
 
@@ -1050,7 +1050,7 @@ fn activation_reports_reach_the_json_result() {
 
     fs::write(root.join("finish.json"), "not json").unwrap();
 
-    assert_eq!(finish::report(&root), finish::Report::default());
+    assert_eq!(finish::report(&root), None);
 
     let _ = fs::remove_dir_all(root);
 }

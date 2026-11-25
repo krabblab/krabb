@@ -80,7 +80,14 @@ pub(super) async fn run(
         report.unloaded = missing;
     }
 
-    krabb_file::save(dir.join(REPORT), serde_json::to_vec(&report)?)?;
+    // The report only adds detail to the result, so failing to save it never undoes the update.
+    let saved = serde_json::to_vec(&report)
+        .map_err(std::io::Error::from)
+        .and_then(|bytes| krabb_file::save(dir.join(REPORT), bytes));
+
+    if let Err(error) = saved {
+        eprintln!("The update report could not be saved: {}", sentence(error.to_string()));
+    }
 
     Ok(())
 }
@@ -104,13 +111,12 @@ const REPORT: &str = "finish.json";
 
 const REPORT_LIMIT: u64 = 64 * 1024;
 
-/// The report the new host left in DIR, or an empty one when it left none.
-pub(super) fn report(dir: &Path) -> Report {
+/// The report the new host left in DIR, or none from a release that writes no report.
+pub(super) fn report(dir: &Path) -> Option<Report> {
     krabb_file::load(dir.join(REPORT), REPORT_LIMIT)
         .ok()
         .flatten()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
 }
 
 /// Asks the next daemon start to keep these plugins detached, replacing any stale request.
