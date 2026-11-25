@@ -92,16 +92,20 @@ class Uninstallers(unittest.TestCase):
     def service(self, daemon, environment):
         if MACOS:
             path = self.root / 'user/Library/LaunchAgents/it.airscript.krabb.plist'
+
             variables = ''.join(f'<key>{name}</key><string>{value}</string>'
                                 for name, value in environment.items())
+
             text = ('<plist version="1.0"><dict><key>Label</key><string>it.airscript.krabb'
                     f'</string><key>ProgramArguments</key><array><string>{daemon}</string>'
                     f'</array><key>EnvironmentVariables</key><dict>{variables}</dict></dict>'
                     '</plist>\n')
         else:
             path = self.root / 'user/.config/systemd/user/krabb.service'
+
             variables = ''.join(f'Environment="{name}={value}"\n'
                                 for name, value in environment.items())
+
             text = f'[Service]\nExecStart="{daemon}"\n{variables}Restart=always\n'
 
         self.write(path, text)
@@ -135,6 +139,7 @@ class Uninstallers(unittest.TestCase):
         database = stores / 'krabb.db'
         memory = stores / 'memory.json'
         records = stores / 'records' / ('b' * 64) / ('c' * 64 + '.md')
+
         created = [database, stores / 'krabb.db-wal', memory, stores / 'memory.lock',
                    stores / '.memory.json.tmp-1', records]
 
@@ -215,6 +220,7 @@ class Uninstallers(unittest.TestCase):
         self.write(served / 'config.toml', 'served')
 
         definition = self.service(self.binaries[1], {'KRABB_HOME': str(served)})
+
         self.env.pop('KRABB_HOME')
 
         result = self.run_uninstaller('--purge', '--yes')
@@ -231,7 +237,9 @@ class Uninstallers(unittest.TestCase):
         other = 'd' * 64
 
         self.write(copy, json.dumps({'backend': 'keyring', 'key_id': other}, indent=2))
-        self.service(self.binaries[1], {'KRABB_HOME': str(self.home), 'KRABB_CREDENTIALS': str(copy)})
+
+        self.service(self.binaries[1],
+                     {'KRABB_HOME': str(self.home), 'KRABB_CREDENTIALS': str(copy)})
 
         result = self.run_uninstaller('--purge', '--yes')
 
