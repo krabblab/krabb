@@ -189,7 +189,8 @@ class Installers(unittest.TestCase):
     def test_unpinned_installs_name_the_newest_prerelease_before_a_stable_one(self):
         releases = self.root / 'releases.json'
 
-        releases.write_text('[\n  {\n    "tag_name": "v0.1.0-rc.1",\n    "prerelease": true\n  }\n]\n')
+        releases.write_text('[\n  {\n    "tag_name": "v0.1.0-rc.1",\n'
+                            '    "prerelease": true\n  }\n]\n')
 
         result = self.run_installer('core', KRABB_VERSION='', KRABB_RELEASE_LIST=releases.as_uri())
 
