@@ -1,0 +1,792 @@
+name: Update
+
+# Proves `krabb update` and `krabb update --rollback` on real archives on every target. It
+# installs a previous build, which is the candidate's own source packaged at version
+# 0.0.0-previous, sets up official plugins and the service, then updates from local release
+# directories laid out as `KRABB_RELEASE_BASE` expects. A copy of the candidate whose daemon
+# exits at once must fail activation and restore the previous build; the real candidate must
+# update; and the recovery point's binary must roll back while the new daemon cannot start.
+# Release runs it on the archives it is about to publish, so a release that cannot update or
+# roll back is never published.
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "23 6 * * 1"
+
+  workflow_call:
+    inputs:
+      artifact:
+        description: "Prefix of core archives already packaged in this run"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  KRABB_PREVIOUS: 0.0.0-previous
+
+jobs:
+  candidate:
+    name: Package Candidate
+    if: inputs.artifact == ''
+    uses: ./.github/workflows/package.yml
+
+    with:
+      names: core
+      artifact: krabb-update-candidate
+
+  previous:
+    name: Package Previous
+    uses: ./.github/workflows/package.yml
+
+    with:
+      names: core
+      artifact: krabb-update-previous
+      version: 0.0.0-previous
+
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+
+    outputs:
+      plugins: ${{ steps.index.outputs.plugins }}
+
+    steps:
+      - name: List Official Plugins
+        id: index
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          registry=https://ghcr.io/v2/krabblab/krabb/plugins
+          scope="repository:krabblab/krabb/plugins:pull"
+          token=$(curl -fsSL "https://ghcr.io/token?scope=$scope" | jq -r .token)
+
+          manifest=$(curl -fsSL -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json" "$registry/manifests/index")
+
+          digest=$(jq -r '.layers[0].digest' <<<"$manifest")
+          plugins=$(curl -fsSL -H "Authorization: Bearer $token" "$registry/blobs/$digest" \
+            | jq -c '.plugins | keys')
+
+          echo "plugins=$plugins" >> "$GITHUB_OUTPUT"
+
+  drill:
+    name: Drill (${{ matrix.name }})
+    needs: [candidate, previous, plan]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' && needs.previous.result == 'success' &&
+          needs.candidate.result != 'failure' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: linux
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+
+          - name: Linux aarch64
+            os: linux
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+
+          - name: macOS x86_64
+            os: macos
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+
+          - name: macOS aarch64
+            os: macos
+            runner: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+
+          - name: Windows x86_64
+            os: windows
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
+          - name: Windows aarch64
+            os: windows
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
+
+    env:
+      KRABB_PLUGINS: ${{ needs.plan.outputs.plugins }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          persist-credentials: false
+
+      - name: Download Previous Archive
+        uses: actions/download-artifact@v8
+
+        with:
+          name: krabb-update-previous-${{ matrix.target }}
+          path: ${{ runner.temp }}/previous
+
+      - name: Download Candidate Archive
+        uses: actions/download-artifact@v8
+
+        with:
+          name: ${{ inputs.artifact || 'krabb-update-candidate' }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/candidate
+
+      - name: Serve The Releases Locally
+        shell: bash
+
+        env:
+          KRABB_TARGET: ${{ matrix.target }}
+          KRABB_ARCHIVE: ${{ matrix.archive }}
+
+        run: |
+          set -euo pipefail
+          candidate=$(bash krabb-scripts/version.sh)
+          test "$candidate" != "$KRABB_PREVIOUS"
+
+          for release in previous candidate; do
+            version=$KRABB_PREVIOUS
+            [ "$release" = candidate ] && version=$candidate
+            archive="krabb-core-v$version-$KRABB_TARGET.$KRABB_ARCHIVE"
+            cd "$RUNNER_TEMP/$release"
+            test -f "$archive"
+
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$archive" > SHA256SUMS
+            else
+              shasum -a 256 "$archive" > SHA256SUMS
+            fi
+          done
+
+          cd "$GITHUB_WORKSPACE"
+
+          # `krabb update` reads a file:// base as a native path, so Windows uses D:/a/... form.
+          root=${RUNNER_TEMP//\\//}
+
+          unstable=false
+          case "$candidate" in *-*) unstable=true ;; esac
+
+          {
+            echo "KRABB_CANDIDATE=$candidate"
+            echo "KRABB_UNSTABLE=$unstable"
+            echo "KRABB_PREVIOUS_BASE=file://$root/previous"
+            echo "KRABB_CANDIDATE_BASE=file://$root/candidate"
+            echo "KRABB_BROKEN_BASE=file://$root/broken"
+          } >> "$GITHUB_ENV"
+
+      - if: matrix.os != 'windows'
+        name: Build A Candidate Whose Daemon Cannot Start
+        shell: bash
+
+        env:
+          KRABB_TARGET: ${{ matrix.target }}
+
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          broken="$RUNNER_TEMP/broken"
+          mkdir -p "$broken"
+
+          digest() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | cut -d ' ' -f 1
+            else
+              shasum -a 256 "$1" | cut -d ' ' -f 1
+            fi
+          }
+
+          for release in previous candidate; do
+            version=$KRABB_PREVIOUS
+            [ "$release" = candidate ] && version=$KRABB_CANDIDATE
+            name="krabb-core-v$version-$KRABB_TARGET"
+            mkdir -p "$work/$release"
+            tar -xzf "$RUNNER_TEMP/$release/$name.tar.gz" -C "$work/$release"
+            daemon=$(digest "$work/$release/$name/bin/krabb-daemon")
+            [ "$release" = previous ] && echo "KRABB_PREVIOUS_DAEMON=$daemon" >> "$GITHUB_ENV"
+            [ "$release" = candidate ] && echo "KRABB_CANDIDATE_DAEMON=$daemon" >> "$GITHUB_ENV"
+          done
+
+          name="krabb-core-v$KRABB_CANDIDATE-$KRABB_TARGET"
+          cp /usr/bin/false "$work/candidate/$name/bin/krabb-daemon"
+          COPYFILE_DISABLE=1 tar -czf "$broken/$name.tar.gz" -C "$work/candidate" "$name"
+          cd "$broken"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$name.tar.gz" > SHA256SUMS
+          else
+            shasum -a 256 "$name.tar.gz" > SHA256SUMS
+          fi
+
+      - if: matrix.os != 'windows'
+        name: Isolate Home
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          user="$RUNNER_TEMP/user"
+          mkdir -p "$user"
+
+          {
+            echo "HOME=$user"
+            echo "KRABB_HOME=$user/.krabb"
+            echo "KRABB_PREFIX=$user/.local"
+          } >> "$GITHUB_ENV"
+
+          echo "$user/.local/bin" >> "$GITHUB_PATH"
+
+          # systemd reads user units from the runner's own home and needs a user session, so
+          # Linux keeps Krabb's home isolated but uses the runner's systemd user manager.
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo loginctl enable-linger "$(id -un)"
+            runtime="/run/user/$(id -u)"
+
+            for _ in $(seq 1 30); do
+              state=$(XDG_RUNTIME_DIR="$runtime" systemctl --user is-system-running 2>/dev/null || true)
+              [ "$state" = running ] || [ "$state" = degraded ] && break
+              sleep 1
+            done
+
+            echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+            echo "XDG_CONFIG_HOME=$HOME/.config" >> "$GITHUB_ENV"
+          else
+            echo "XDG_CONFIG_HOME=$user/.config" >> "$GITHUB_ENV"
+          fi
+
+      - if: matrix.os != 'windows'
+        name: Install The Previous Build With install.sh
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          KRABB_RELEASE_BASE="$KRABB_PREVIOUS_BASE" KRABB_VERSION="$KRABB_PREVIOUS" sh install.sh
+          test "$(krabb version)" = "krabb $KRABB_PREVIOUS"
+
+      - if: matrix.os != 'windows'
+        name: Set Up Plugins And The Service
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          krabb --json init < /dev/null > /dev/null
+          flags=(--yes)
+          [ "$KRABB_UNSTABLE" = true ] && flags+=(--unstable)
+
+          for id in $(jq -r '.[]' <<<"$KRABB_PLUGINS"); do
+            krabb plugin install "$id" "${flags[@]}" < /dev/null
+          done
+
+          krabb --json service install > /dev/null
+          krabb service start
+
+          for _ in $(seq 1 60); do
+            [ "$(krabb --json status < /dev/null | jq -r .daemon)" = running ] && break
+            sleep 1
+          done
+
+          krabb --json status < /dev/null | jq -e '.daemon == "running"' > /dev/null
+          krabb --json session new update-drill < /dev/null > /dev/null
+          krabb --json plugin list < /dev/null | jq -c '[.items[].id] | sort' > "$RUNNER_TEMP/plugins"
+          cat "$KRABB_HOME/config.toml" "$KRABB_HOME/plugins.lock" > "$RUNNER_TEMP/state"
+
+      - if: matrix.os != 'windows'
+        name: Restore The Previous Build After A Failed Activation
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          err="$RUNNER_TEMP/failed.err"
+
+          fail() {
+            echo "::error::$*"
+            tail -n 40 "$KRABB_HOME"/logs/*.log || true
+            exit 1
+          }
+
+          digest() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | cut -d ' ' -f 1
+            else
+              shasum -a 256 "$1" | cut -d ' ' -f 1
+            fi
+          }
+
+          if KRABB_RELEASE_BASE="$KRABB_BROKEN_BASE" \
+            krabb --json update "$KRABB_CANDIDATE" --yes < /dev/null > /dev/null 2> "$err"; then
+            cat "$err"
+            fail "The update succeeded although the new daemon cannot start."
+          fi
+
+          cat "$err"
+          grep -q "so Krabb $KRABB_PREVIOUS was restored" "$err" || fail "The update did not restore."
+          test "$(krabb version)" = "krabb $KRABB_PREVIOUS" || fail "The CLI was not restored."
+
+          [ "$(digest "$KRABB_PREFIX/bin/krabb-daemon")" = "$KRABB_PREVIOUS_DAEMON" ] ||
+            fail "The daemon binary was not restored."
+
+          for _ in $(seq 1 60); do
+            [ "$(krabb --json status < /dev/null | jq -r .daemon)" = running ] && break
+            sleep 1
+          done
+
+          status=$(krabb --json status < /dev/null)
+          jq -e '.daemon == "running"' <<<"$status" > /dev/null || fail "The service did not return."
+          jq -e '.recovery == null' <<<"$status" > /dev/null || fail "The recovery point remains."
+
+          cat "$KRABB_HOME/config.toml" "$KRABB_HOME/plugins.lock" | cmp -s - "$RUNNER_TEMP/state" ||
+            fail "The configuration or plugin lock was not restored."
+
+          plugins=$(krabb --json plugin list < /dev/null | jq -c '[.items[].id] | sort')
+          [ "$plugins" = "$(cat "$RUNNER_TEMP/plugins")" ] || fail "The plugins changed: $plugins."
+
+          krabb --json session list < /dev/null |
+            jq -e '.items[] | select(.id == "update-drill")' > /dev/null ||
+            fail "The session did not survive the restore."
+
+      - if: matrix.os != 'windows'
+        name: Update To The Candidate
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$*"
+            tail -n 40 "$KRABB_HOME"/logs/*.log || true
+            exit 1
+          }
+
+          digest() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | cut -d ' ' -f 1
+            else
+              shasum -a 256 "$1" | cut -d ' ' -f 1
+            fi
+          }
+
+          ready() {
+            krabb --json status < /dev/null | jq -c '[.plugin_states[] | select(.state == "ready") | .id]'
+          }
+
+          before=$(ready)
+
+          detached=$(krabb --json plugin list < /dev/null | jq -r --argjson ready "$before" '
+            [.items[] | select(.id as $id | $ready | index($id))
+              | select(.capabilities | all(. == "client") | not) | .id][0] // empty')
+
+          [ -n "$detached" ] || fail "No plugin is loaded, so none can stay detached."
+          krabb --json plugin detach "$detached" < /dev/null > /dev/null
+          echo "Detached $detached; ready before the update: $before."
+
+          result=$(KRABB_RELEASE_BASE="$KRABB_CANDIDATE_BASE" \
+            krabb --json update "$KRABB_CANDIDATE" --yes < /dev/null) || fail "The update failed."
+
+          echo "$result"
+
+          jq -e --arg version "$KRABB_CANDIDATE" \
+            '.status == "updated" and .version == $version and ((.unloaded // []) | length == 0)' \
+            <<<"$result" > /dev/null || fail "The update result is not a clean update."
+
+          test "$(krabb version)" = "krabb $KRABB_CANDIDATE" || fail "The CLI was not replaced."
+
+          [ "$(digest "$KRABB_PREFIX/bin/krabb-daemon")" = "$KRABB_CANDIDATE_DAEMON" ] ||
+            fail "The daemon binary was not replaced."
+
+          status=$(krabb --json status < /dev/null)
+          jq -e '.daemon == "running"' <<<"$status" > /dev/null || fail "The service is not running."
+
+          jq -e --arg from "$KRABB_PREVIOUS" '.recovery.accepted == true and .recovery.from == $from' \
+            <<<"$status" > /dev/null || fail "The recovery point was not kept."
+
+          after=$(ready)
+          echo "Ready after the update: $after."
+
+          jq -e --arg id "$detached" --argjson after "$after" \
+            'map(select(. != $id)) - $after | length == 0' <<<"$before" > /dev/null ||
+            fail "Plugins loaded before the update are not loaded after it."
+
+          jq -e --arg id "$detached" 'index($id) == null' <<<"$after" > /dev/null ||
+            fail "The detached plugin $detached was attached by the update."
+
+          krabb --json session list < /dev/null |
+            jq -e '.items[] | select(.id == "update-drill")' > /dev/null ||
+            fail "The session did not survive the update."
+
+          krabb --json plugin attach "$detached" < /dev/null > /dev/null
+          ready | jq -e --arg id "$detached" 'index($id) != null' > /dev/null ||
+            fail "The detached plugin $detached did not attach again."
+
+      - if: matrix.os != 'windows'
+        name: Roll Back While The New Daemon Cannot Start
+        shell: bash
+
+        run: |
+          set -euo pipefail
+          daemon="$KRABB_PREFIX/bin/krabb-daemon"
+
+          fail() {
+            echo "::error::$*"
+            tail -n 40 "$KRABB_HOME"/logs/*.log || true
+            exit 1
+          }
+
+          digest() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | cut -d ' ' -f 1
+            else
+              shasum -a 256 "$1" | cut -d ' ' -f 1
+            fi
+          }
+
+          until_daemon() {
+            for _ in $(seq 1 60); do
+              [ "$(krabb --json status < /dev/null | jq -r .daemon)" = "$1" ] && return 0
+              sleep 1
+            done
+
+            fail "The daemon did not become $1."
+          }
+
+          krabb service stop
+          until_daemon stopped
+          cp /usr/bin/false "$daemon.broken"
+          mv -f "$daemon.broken" "$daemon"
+          krabb service start || true
+          sleep 15
+
+          [ "$(krabb --json status < /dev/null | jq -r .daemon)" = stopped ] ||
+            fail "The daemon started although it cannot."
+
+          rollback="$KRABB_HOME/updates/recovery/bin/0/krabb"
+          test -x "$rollback" || fail "The recovery point has no krabb binary."
+          result=$("$rollback" --json update --rollback --yes < /dev/null) || fail "Rollback failed."
+          echo "$result"
+
+          jq -e --arg version "$KRABB_PREVIOUS" '.status == "restored" and .version == $version' \
+            <<<"$result" > /dev/null || fail "The rollback result is not a restore."
+
+          test "$(krabb version)" = "krabb $KRABB_PREVIOUS" || fail "The CLI was not restored."
+          [ "$(digest "$daemon")" = "$KRABB_PREVIOUS_DAEMON" ] || fail "The daemon was not restored."
+          until_daemon running
+
+          krabb --json session list < /dev/null |
+            jq -e '.items[] | select(.id == "update-drill")' > /dev/null ||
+            fail "The session did not survive the rollback."
+
+          krabb --json status < /dev/null | jq -e '.recovery == null' > /dev/null ||
+            fail "The recovery point remains after the rollback."
+
+      - if: always() && matrix.os != 'windows'
+        name: Remove The Service
+        shell: bash
+        run: command -v krabb > /dev/null && krabb service uninstall --yes || true
+
+      - if: matrix.os == 'windows'
+        name: Build A Candidate Whose Daemon Cannot Start
+        shell: pwsh
+
+        env:
+          KRABB_TARGET: ${{ matrix.target }}
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          $work = Join-Path $env:RUNNER_TEMP "work"
+          $broken = Join-Path $env:RUNNER_TEMP "broken"
+          New-Item -ItemType Directory -Force -Path $broken | Out-Null
+
+          foreach ($release in "previous", "candidate") {
+            $version = if ($release -eq "previous") { $env:KRABB_PREVIOUS } else { $env:KRABB_CANDIDATE }
+            $name = "krabb-core-v$version-$env:KRABB_TARGET"
+            $archive = Join-Path $env:RUNNER_TEMP "$release\$name.zip"
+            Expand-Archive -Path $archive -DestinationPath (Join-Path $work $release) -Force
+            $daemon = Join-Path $work "$release\$name\bin\krabb-daemon.exe"
+            $hash = (Get-FileHash $daemon -Algorithm SHA256).Hash.ToLowerInvariant()
+            "KRABB_$($release.ToUpperInvariant())_DAEMON=$hash" >> $env:GITHUB_ENV
+          }
+
+          # whoami.exe never reports to the service manager, so the service cannot start.
+          $name = "krabb-core-v$env:KRABB_CANDIDATE-$env:KRABB_TARGET"
+          $package = Join-Path $work "candidate\$name"
+          Copy-Item "$env:SystemRoot\System32\whoami.exe" "$package\bin\krabb-daemon.exe" -Force
+          Compress-Archive -Path $package -DestinationPath (Join-Path $broken "$name.zip") -Force
+          $hash = (Get-FileHash (Join-Path $broken "$name.zip") -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Set-Content -Encoding ascii (Join-Path $broken "SHA256SUMS")
+
+      - if: matrix.os == 'windows'
+        name: Isolate Home
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          $user = Join-Path $env:RUNNER_TEMP "user"
+          New-Item -ItemType Directory -Force -Path $user | Out-Null
+          "USERPROFILE=$user" >> $env:GITHUB_ENV
+          "HOME=$user" >> $env:GITHUB_ENV
+          "LOCALAPPDATA=$user\AppData\Local" >> $env:GITHUB_ENV
+          "KRABB_HOME=$user\.krabb" >> $env:GITHUB_ENV
+          "$user\AppData\Local\Krabb\bin" >> $env:GITHUB_PATH
+
+      - if: matrix.os == 'windows'
+        name: Install The Previous Build With install.ps1
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+          $release = Join-Path $env:RUNNER_TEMP "previous"
+          $env:KRABB_RELEASE_BASE = ([Uri]$release).AbsoluteUri.TrimEnd('/')
+          $env:KRABB_VERSION = $env:KRABB_PREVIOUS
+
+          # The installer runs no native command, so only its own `exit` sets this.
+          $global:LASTEXITCODE = 0
+          & "$env:GITHUB_WORKSPACE/install.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed." }
+
+          $reported = krabb version
+          if ($reported -ne "krabb $env:KRABB_PREVIOUS") { throw "Installed CLI reports '$reported'." }
+
+      - if: matrix.os == 'windows'
+        name: Set Up Plugins And The Service
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Invoke-Krabb {
+            $output = krabb @args
+            if ($LASTEXITCODE -ne 0) { throw "krabb $args failed: $output" }
+            return ($output | Out-String | ConvertFrom-Json)
+          }
+
+          Invoke-Krabb --json init | Out-Null
+          $flags = @("--yes")
+          if ($env:KRABB_UNSTABLE -eq "true") { $flags += "--unstable" }
+
+          foreach ($id in ($env:KRABB_PLUGINS | ConvertFrom-Json)) {
+            krabb plugin install $id @flags
+            if ($LASTEXITCODE -ne 0) { throw "krabb plugin install $id failed." }
+          }
+
+          Invoke-Krabb --json service install | Out-Null
+          krabb service start
+          if ($LASTEXITCODE -ne 0) { throw "krabb service start failed." }
+
+          for ($i = 0; $i -lt 60; $i++) {
+            if ((Invoke-Krabb --json status).daemon -eq "running") { break }
+            Start-Sleep -Seconds 1
+          }
+
+          if ((Invoke-Krabb --json status).daemon -ne "running") { throw "The service did not start." }
+          Invoke-Krabb --json session new update-drill | Out-Null
+          $ids = @((Invoke-Krabb --json plugin list).items.id | Sort-Object) -join ","
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "plugins") -Value $ids
+
+          $state = foreach ($file in "config.toml", "plugins.lock") {
+            (Get-FileHash (Join-Path $env:KRABB_HOME $file) -Algorithm SHA256).Hash
+          }
+
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "state") -Value ($state -join ",")
+
+      - if: matrix.os == 'windows'
+        name: Restore The Previous Build After A Failed Activation
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Invoke-Krabb {
+            $output = krabb @args
+            if ($LASTEXITCODE -ne 0) { throw "krabb $args failed: $output" }
+            return ($output | Out-String | ConvertFrom-Json)
+          }
+
+          $env:KRABB_RELEASE_BASE = $env:KRABB_BROKEN_BASE
+          $output = & { $ErrorActionPreference = "Continue"; krabb --json update $env:KRABB_CANDIDATE --yes 2>&1 } | Out-String
+          $code = $LASTEXITCODE
+          Remove-Item Env:KRABB_RELEASE_BASE
+          Write-Output $output
+
+          if ($code -eq 0) { throw "The update succeeded although the new daemon cannot start." }
+          if (!$output.Contains("so Krabb $env:KRABB_PREVIOUS was restored")) { throw "The update did not restore." }
+
+          $reported = krabb version
+          if ($reported -ne "krabb $env:KRABB_PREVIOUS") { throw "The CLI was not restored: '$reported'." }
+
+          $daemon = Join-Path $env:LOCALAPPDATA "Krabb\bin\krabb-daemon.exe"
+          $hash = (Get-FileHash $daemon -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:KRABB_PREVIOUS_DAEMON) { throw "The daemon binary was not restored." }
+
+          for ($i = 0; $i -lt 60; $i++) {
+            if ((Invoke-Krabb --json status).daemon -eq "running") { break }
+            Start-Sleep -Seconds 1
+          }
+
+          $status = Invoke-Krabb --json status
+          if ($status.daemon -ne "running") { throw "The service did not return." }
+          if ($null -ne $status.recovery) { throw "The recovery point remains." }
+
+          $state = foreach ($file in "config.toml", "plugins.lock") {
+            (Get-FileHash (Join-Path $env:KRABB_HOME $file) -Algorithm SHA256).Hash
+          }
+
+          $saved = (Get-Content (Join-Path $env:RUNNER_TEMP "state") -Raw).Trim()
+          if (($state -join ",") -ne $saved) { throw "The configuration or plugin lock was not restored." }
+
+          $ids = @((Invoke-Krabb --json plugin list).items.id | Sort-Object) -join ","
+          $saved = (Get-Content (Join-Path $env:RUNNER_TEMP "plugins") -Raw).Trim()
+          if ($ids -ne $saved) { throw "The plugins changed: $ids." }
+
+          $sessions = (Invoke-Krabb --json session list).items.id
+          if ($sessions -notcontains "update-drill") { throw "The session did not survive the restore." }
+
+      - if: matrix.os == 'windows'
+        name: Update To The Candidate
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Invoke-Krabb {
+            $output = krabb @args
+            if ($LASTEXITCODE -ne 0) { throw "krabb $args failed: $output" }
+            return ($output | Out-String | ConvertFrom-Json)
+          }
+
+          function Get-Ready {
+            return @((Invoke-Krabb --json status).plugin_states | Where-Object { $_.state -eq "ready" } |
+              ForEach-Object { $_.id })
+          }
+
+          $before = Get-Ready
+
+          $detached = (Invoke-Krabb --json plugin list).items |
+            Where-Object { $before -contains $_.id -and @($_.capabilities | Where-Object { $_ -ne "client" }).Count -gt 0 } |
+            Select-Object -First 1 -ExpandProperty id
+
+          if (!$detached) { throw "No plugin is loaded, so none can stay detached." }
+          Invoke-Krabb --json plugin detach $detached | Out-Null
+          Write-Output "Detached $detached; ready before the update: $($before -join ', ')."
+
+          $env:KRABB_RELEASE_BASE = $env:KRABB_CANDIDATE_BASE
+          $result = Invoke-Krabb --json update $env:KRABB_CANDIDATE --yes
+          Remove-Item Env:KRABB_RELEASE_BASE
+          $result | ConvertTo-Json -Depth 8
+
+          if ($result.status -ne "updated" -or $result.version -ne $env:KRABB_CANDIDATE) {
+            throw "The update result is not an update to $env:KRABB_CANDIDATE."
+          }
+
+          if (@($result.unloaded).Where({ $_ }).Count -gt 0) { throw "Plugins were not loaded: $($result.unloaded)." }
+
+          $reported = krabb version
+          if ($reported -ne "krabb $env:KRABB_CANDIDATE") { throw "The CLI was not replaced: '$reported'." }
+
+          $daemon = Join-Path $env:LOCALAPPDATA "Krabb\bin\krabb-daemon.exe"
+          $hash = (Get-FileHash $daemon -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:KRABB_CANDIDATE_DAEMON) { throw "The daemon binary was not replaced." }
+
+          $status = Invoke-Krabb --json status
+          if ($status.daemon -ne "running") { throw "The service is not running." }
+
+          if ($status.recovery.accepted -ne $true -or $status.recovery.from -ne $env:KRABB_PREVIOUS) {
+            throw "The recovery point was not kept."
+          }
+
+          $after = Get-Ready
+          Write-Output "Ready after the update: $($after -join ', ')."
+
+          $lost = @($before | Where-Object { $_ -ne $detached -and $after -notcontains $_ })
+          if ($lost.Count -gt 0) { throw "Plugins loaded before the update are not loaded: $($lost -join ', ')." }
+          if ($after -contains $detached) { throw "The detached plugin $detached was attached by the update." }
+
+          $sessions = (Invoke-Krabb --json session list).items.id
+          if ($sessions -notcontains "update-drill") { throw "The session did not survive the update." }
+
+          Invoke-Krabb --json plugin attach $detached | Out-Null
+          if ((Get-Ready) -notcontains $detached) { throw "The detached plugin $detached did not attach again." }
+
+      - if: matrix.os == 'windows'
+        name: Roll Back While The New Daemon Cannot Start
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          $daemon = Join-Path $env:LOCALAPPDATA "Krabb\bin\krabb-daemon.exe"
+
+          function Invoke-Krabb {
+            $output = krabb @args
+            if ($LASTEXITCODE -ne 0) { throw "krabb $args failed: $output" }
+            return ($output | Out-String | ConvertFrom-Json)
+          }
+
+          function Wait-Daemon([string] $State) {
+            for ($i = 0; $i -lt 60; $i++) {
+              if ((Invoke-Krabb --json status).daemon -eq $State) { return }
+              Start-Sleep -Seconds 1
+            }
+
+            throw "The daemon did not become $State."
+          }
+
+          krabb service stop
+          if ($LASTEXITCODE -ne 0) { throw "krabb service stop failed." }
+          Wait-Daemon "stopped"
+
+          for ($i = 0; $i -lt 30; $i++) {
+            try {
+              Copy-Item "$env:SystemRoot\System32\whoami.exe" $daemon -Force
+              break
+            } catch {
+              if ($i -eq 29) { throw }
+              Start-Sleep -Seconds 1
+            }
+          }
+
+          krabb service start
+          Start-Sleep -Seconds 15
+          if ((Invoke-Krabb --json status).daemon -ne "stopped") { throw "The daemon started although it cannot." }
+
+          $rollback = Join-Path $env:KRABB_HOME "updates\recovery\bin\0\krabb.exe"
+          if (!(Test-Path $rollback)) { throw "The recovery point has no krabb binary." }
+          $output = & $rollback --json update --rollback --yes
+          if ($LASTEXITCODE -ne 0) { throw "Rollback failed: $output" }
+          $result = $output | Out-String | ConvertFrom-Json
+          $result | ConvertTo-Json
+
+          if ($result.status -ne "restored" -or $result.version -ne $env:KRABB_PREVIOUS) {
+            throw "The rollback result is not a restore of $env:KRABB_PREVIOUS."
+          }
+
+          $reported = krabb version
+          if ($reported -ne "krabb $env:KRABB_PREVIOUS") { throw "The CLI was not restored: '$reported'." }
+
+          $hash = (Get-FileHash $daemon -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:KRABB_PREVIOUS_DAEMON) { throw "The daemon binary was not restored." }
+          Wait-Daemon "running"
+
+          $sessions = (Invoke-Krabb --json session list).items.id
+          if ($sessions -notcontains "update-drill") { throw "The session did not survive the rollback." }
+          if ($null -ne (Invoke-Krabb --json status).recovery) { throw "The recovery point remains after the rollback." }
+
+      - if: always() && matrix.os == 'windows'
+        name: Remove The Service
+        shell: pwsh
+
+        run: |
+          if (Get-Command krabb -ErrorAction SilentlyContinue) { krabb service uninstall --yes }
+          exit 0
