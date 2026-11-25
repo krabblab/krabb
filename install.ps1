@@ -3,12 +3,16 @@ $ErrorActionPreference = "Stop"
 function Show-Usage {
     Write-Output "Usage: install.ps1 [PLUGIN[@VERSION]]"
     Write-Output "Install Krabb core from a release, or one official plugin from the plugin index."
-    Write-Output "Environment: KRABB_VERSION and KRABB_RELEASE_BASE (core), KRABB_BIN."
+    Write-Output "Environment: KRABB_VERSION and KRABB_RELEASE_BASE (core), KRABB_BIN, and"
+    Write-Output "KRABB_KEEP_PATH=1 to leave the user PATH unchanged."
 }
 
 function Stop-Install([string] $Message) {
     [Console]::Error.WriteLine("[ERROR] $Message")
-    exit 2
+
+    # Under `irm | iex` the script runs in the user's own session, where exit would close it.
+    if ($PSCommandPath) { exit 2 }
+    throw "Krabb was not installed."
 }
 
 function Write-Install([string] $Message) {
@@ -63,10 +67,12 @@ $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitect
 
 $pattern = '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
 $releases = "https://github.com/krabblab/krabb/releases"
+$script = "https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1"
 $target = "$arch-pc-windows-msvc"
+$invalid = "is not valid. Use a version such as 0.1.0 or 0.1.0-rc.1."
 if ($env:KRABB_VERSION) {
-    $version = $env:KRABB_VERSION
-    if ($version -notmatch $pattern) { Stop-Install "Version '$version' is not valid." }
+    $version = $env:KRABB_VERSION -replace '^v', ''
+    if ($version -notmatch $pattern) { Stop-Install "Version '$version' $invalid" }
     $base = "$releases/download/v$version"
     $missing = "Cannot reach Krabb $version; check the version and the connection."
 } else {
@@ -91,12 +97,41 @@ function Get-Release([string]$Uri, [string]$Path) {
     }
 }
 
+# Stable releases are what releases/latest serves; before the first one, name the newest
+# pre-release so the user can pin it.
+function Stop-Prerelease([string]$Directory) {
+    $list = if ($env:KRABB_RELEASE_LIST) { $env:KRABB_RELEASE_LIST } else {
+        "https://api.github.com/repos/krabblab/krabb/releases?per_page=1"
+    }
+
+    $path = Join-Path $Directory "releases.json"
+    try { Get-Release $list $path } catch { return }
+    try { $release = @(Get-Content -Raw $path | ConvertFrom-Json)[0] } catch { return }
+
+    # A stable newest release means the download failed for another reason.
+    if ($release.prerelease -ne $true) { return }
+
+    # The tag goes into a command the user copies, so it must be a plain version.
+    $newest = "$($release.tag_name)" -replace '^v', ''
+    if ($newest -notmatch $pattern) { return }
+
+    Stop-Install ("No stable Krabb release is published yet.`n" +
+        "The newest pre-release is $newest; install it with this command:`n" +
+        "  `$env:KRABB_VERSION = '$newest'; irm $script | iex`n" +
+        "Set KRABB_VERSION first in the same window so the installer receives it.")
+}
+
 $name = "krabb"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
     $checksumsPath = Join-Path $tmp "SHA256SUMS"
-    try { Get-Release "$base/SHA256SUMS" $checksumsPath } catch { Stop-Install $missing }
+    try { Get-Release "$base/SHA256SUMS" $checksumsPath } catch {
+        if (-not $version -and (-not $env:KRABB_RELEASE_BASE -or $env:KRABB_RELEASE_LIST)) {
+            Stop-Prerelease $tmp
+        }
+        Stop-Install $missing
+    }
     $checksums = @{}
     foreach ($entry in Get-Content $checksumsPath) {
         $parts = $entry -split '\s+', 3
@@ -112,7 +147,7 @@ try {
             Select-Object -First 1
         if (-not $latest) { Stop-Install "The latest Krabb release has no build for $target." }
         $version = $latest -replace '^krabb-core-v', '' -replace "$([regex]::Escape($suffix))$", ''
-        if ($version -notmatch $pattern) { Stop-Install "Version '$version' is not valid." }
+        if ($version -notmatch $pattern) { Stop-Install "Version '$version' $invalid" }
         if (-not $env:KRABB_RELEASE_BASE) { $base = "$releases/download/v$version" }
     }
 
@@ -144,6 +179,27 @@ try {
     Copy-Item $daemon.FullName $daemonTemporary
     Move-Item -Force $daemonTemporary (Join-Path $dest "krabb-daemon.exe")
     Write-Install "Installed $name and krabb-daemon in $dest."
+
+    # Read and write the raw value, so entries such as %USERPROFILE%\bin stay unexpanded.
+    $environment = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    try {
+        $path = [string]$environment.GetValue("Path", "", "DoNotExpandEnvironmentNames")
+        if (-not $env:KRABB_KEEP_PATH -and ($path -split ";") -notcontains $dest) {
+            $entries = @($path, $dest) | Where-Object { $_ }
+            $environment.SetValue("Path", ($entries -join ";"), "ExpandString")
+
+            # A registry write alone does not tell Windows to refresh new terminals' environment;
+            # changing a variable through .NET broadcasts that notice.
+            [Environment]::SetEnvironmentVariable("KRABB_PATH_REFRESH", "1", "User")
+            [Environment]::SetEnvironmentVariable("KRABB_PATH_REFRESH", $null, "User")
+            Write-Install "Added $dest to your user PATH for new terminals."
+        }
+    } finally {
+        $environment.Close()
+    }
+
+    if (($env:Path -split ";") -notcontains $dest) { $env:Path = "$env:Path;$dest" }
+    Write-Install "Set up Krabb with ``krabb init``."
 } finally {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -Recurse -Force $tmp }
 }

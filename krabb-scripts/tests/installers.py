@@ -56,7 +56,7 @@ class Installers(unittest.TestCase):
                         KRABB_PREFIX=str(self.root / 'prefix'),
                         LOCALAPPDATA=str(self.root / 'local'),
                         KRABB_HOME=str(self.root / 'config'), KRABB_BIN=str(delegate),
-                        KRABB_FIXTURE_CALLS=str(self.calls))
+                        KRABB_FIXTURE_CALLS=str(self.calls), KRABB_KEEP_PATH='1')
 
     def artifact(self, plugin, checksum):
         arch = 'aarch64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'
@@ -154,6 +154,61 @@ class Installers(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('Cannot download SHA256SUMS from file:', result.stderr)
+
+    def test_release_tags_and_bare_versions_both_install(self):
+        _, _, payload = self.artifact('core', 'valid')
+
+        result = self.run_installer('core', KRABB_VERSION='v1.2.3')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        for name, content in payload.items():
+            self.assertEqual((self.bin / name).read_bytes(), content)
+
+        result = self.run_installer('core', KRABB_VERSION='latest')
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Use a version such as 0.1.0 or 0.1.0-rc.1.', result.stderr)
+
+    def test_installs_end_with_the_path_and_the_first_command(self):
+        self.artifact('core', 'valid')
+
+        result = self.run_installer('core')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Set up Krabb with `krabb init`.', result.stdout)
+
+        if not WINDOWS:
+            self.assertIn(f'export PATH="{self.bin}:$PATH"', result.stdout)
+
+            path = f"{self.bin}:{os.environ['PATH']}"
+            result = self.run_installer('core', PATH=path)
+
+            self.assertNotIn('export PATH=', result.stdout)
+
+    def test_unpinned_installs_name_the_newest_prerelease_before_a_stable_one(self):
+        releases = self.root / 'releases.json'
+
+        releases.write_text('[\n  {\n    "tag_name": "v0.1.0-rc.1",\n'
+                            '    "prerelease": true\n  }\n]\n')
+
+        result = self.run_installer('core', KRABB_VERSION='', KRABB_RELEASE_LIST=releases.as_uri())
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('No stable Krabb release is published yet', result.stderr)
+        self.assertIn('The newest pre-release is 0.1.0-rc.1;', result.stderr)
+        self.assertIn('KRABB_VERSION', result.stderr)
+
+        for release in ['"v0.1.0", "prerelease": false', '"v0.1.0;rm -rf ~", "prerelease": true']:
+            with self.subTest(release=release):
+                releases.write_text(f'[{{"tag_name": {release}}}]\n')
+
+                result = self.run_installer('core', KRABB_VERSION='',
+                                            KRABB_RELEASE_LIST=releases.as_uri())
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn('pre-release', result.stderr)
+                self.assertIn('Cannot download SHA256SUMS', result.stderr)
 
     def test_plugins_are_delegated_to_the_plugin_index(self):
         result = self.run_installer('tools', KRABB_VERSION='', KRABB_RELEASE_BASE='')

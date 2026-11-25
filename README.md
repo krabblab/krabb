@@ -42,6 +42,25 @@ On Windows, in PowerShell:
 irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 ```
 
+> [!NOTE]
+> Until Krabb 0.1.0 is released, install the release candidate. Set `KRABB_VERSION` after
+> the pipe so it reaches `sh`, or export it first:
+>
+> ```sh
+> curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | KRABB_VERSION=0.1.0-rc.1 sh
+> ```
+>
+> In PowerShell, set it in the same window first:
+>
+> ```powershell
+> $env:KRABB_VERSION = '0.1.0-rc.1'; irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
+> ```
+
+The installer puts `krabb` and `krabb-daemon` in `~/.local/bin`, or
+`%LOCALAPPDATA%\Krabb\bin` on Windows, where it is also added to your `PATH`. If your
+shell then reports `command not found: krabb`, add the line the installer printed to
+your shell profile, such as `~/.zshrc`, and open a new terminal.
+
 To install without running a script, download the archive for your platform from
 [GitHub Releases](https://github.com/krabblab/krabb/releases) and follow
 [Manual Download](krabb-docs/workflows.md#manual-download). Archives are named
@@ -94,7 +113,9 @@ Codex sign-in needs the Codex CLI, Signal needs `signal-cli`, and sandboxed shel
 tools need Docker or Podman.
 
 The [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice,
-backups, upgrades, and uninstalling. [Storage](krabb-docs/storage.md) lists where
+backups, and upgrades. To remove Krabb, run the
+[uninstall script](krabb-docs/workflows.md#uninstall); it keeps your data unless you
+purge it. [Storage](krabb-docs/storage.md) lists where
 Krabb keeps its data, and [Troubleshooting](krabb-docs/troubleshooting.md) helps
 when a reply does not arrive.
 

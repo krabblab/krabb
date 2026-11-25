@@ -337,6 +337,39 @@ jobs:
           krabb service uninstall --yes
           test ! -e "$path"
 
+      - if: matrix.os != 'windows'
+        name: Uninstall And Purge
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          # The service step runs the unit under the runner's own systemd user manager.
+          if [ "$RUNNER_OS" = Linux ]; then
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            export XDG_CONFIG_HOME="$KRABB_RUNNER_HOME/.config"
+          fi
+
+          krabb --json service install > /dev/null
+          krabb service start
+          sh uninstall.sh
+
+          if [ "$RUNNER_OS" = Linux ] && systemctl --user is-active --quiet krabb.service; then
+            echo "::error::Uninstall left the service running."
+            exit 1
+          fi
+
+          for path in "$KRABB_PREFIX/bin/krabb" "$KRABB_PREFIX/bin/krabb-daemon"; do
+            if [ -e "$path" ]; then echo "::error::Uninstall left $path."; exit 1; fi
+          done
+
+          test -f "$KRABB_HOME/config.toml"
+          test -d "$KRABB_HOME/plugins"
+          sh uninstall.sh --purge --yes
+
+          left=$(find "$HOME" "$KRABB_RUNNER_HOME/.config/systemd" -iname '*krabb*' 2>/dev/null || true)
+          if [ -n "$left" ]; then echo "::error::Purge left: $left"; exit 1; fi
+
       - if: matrix.os == 'windows'
         name: Isolate Home
         shell: pwsh
@@ -486,10 +519,8 @@ jobs:
           Stop-Process -Id $daemon.Id
           $daemon.WaitForExit()
 
-      # Starting the service fails with "Access is denied" on Windows (#293), so Windows checks
-      # installing and removing it until that is fixed; the daemon step above runs it directly.
       - if: matrix.os == 'windows'
-        name: Install And Remove The Service
+        name: Run Krabb As A Service
         shell: pwsh
 
         run: |
@@ -501,6 +532,17 @@ jobs:
             return ($output | Out-String | ConvertFrom-Json)
           }
 
+          function Wait-Daemon([string] $State) {
+            for ($i = 0; $i -lt 60; $i++) {
+              if ((Invoke-Krabb --json status).daemon -eq $State) { return }
+              Start-Sleep -Seconds 1
+            }
+
+            Get-ChildItem (Join-Path $env:KRABB_HOME "logs") -Filter *.log -ErrorAction SilentlyContinue |
+              ForEach-Object { Get-Content $_.FullName -Tail 40 }
+            throw "The service did not leave the daemon $State."
+          }
+
           $installed = Invoke-Krabb --json service install
 
           try {
@@ -508,9 +550,28 @@ jobs:
 
             $status = Invoke-Krabb --json service status
             if ($status.status -ne "installed") { throw "Service status reported '$($status.status)'." }
-            if (!(Get-Service -Name $status.name -ErrorAction SilentlyContinue)) {
-              throw "Windows has no $($status.name) service."
-            }
+
+            krabb service start
+            if ($LASTEXITCODE -ne 0) { throw "krabb service start failed." }
+            Wait-Daemon "running"
+            Invoke-Krabb --json session new service-flow | Out-Null
+
+            krabb service restart
+            if ($LASTEXITCODE -ne 0) { throw "krabb service restart failed." }
+            Wait-Daemon "running"
+
+            $ids = (Invoke-Krabb --json session list).items.id
+            if ($ids -notcontains "service-flow") { throw "The session did not survive the service restart." }
+
+            krabb service stop
+            if ($LASTEXITCODE -ne 0) { throw "krabb service stop failed." }
+            Wait-Daemon "stopped"
+          } catch {
+            # Name the owner of every state file, since access to them is what fails here.
+            Get-ChildItem $env:KRABB_HOME -Recurse -File -ErrorAction SilentlyContinue |
+              Select-Object -First 60 |
+              ForEach-Object { "{0}  {1}" -f (Get-Acl $_.FullName).Owner, $_.FullName }
+            throw
           } finally {
             krabb service uninstall --yes
             if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
@@ -518,3 +579,35 @@ jobs:
 
           if (Test-Path $installed.path) { throw "Service definition remains at $($installed.path)." }
           if (Get-Service -Name Krabb -ErrorAction SilentlyContinue) { throw "Windows still has the Krabb service." }
+
+      - if: matrix.os == 'windows'
+        name: Uninstall And Purge
+        shell: pwsh
+
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path $env:LOCALAPPDATA "Krabb\bin"
+
+          krabb --json service install | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "krabb service install failed." }
+
+          pwsh -NoProfile -File .\uninstall.ps1
+          if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 failed." }
+          if (Get-Service -Name Krabb -ErrorAction SilentlyContinue) { throw "Uninstall left the Krabb service." }
+
+          foreach ($path in "$bin\krabb.exe", "$bin\krabb-daemon.exe") {
+            if (Test-Path $path) { throw "Uninstall left $path." }
+          }
+
+          if (!(Test-Path "$env:KRABB_HOME\config.toml")) { throw "Uninstall removed the configuration." }
+          if (!(Test-Path "$env:KRABB_HOME\plugins")) { throw "Uninstall removed the plugins." }
+          $path = [Environment]::GetEnvironmentVariable("Path", "User")
+          if (($path -split ";") -contains $bin) { throw "Uninstall left $bin in the user PATH." }
+
+          pwsh -NoProfile -File .\uninstall.ps1 -Purge -Yes
+          if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 -Purge failed." }
+
+          $left = @(Get-ChildItem $env:USERPROFILE -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*krabb*" })
+          if ($left.Count -gt 0) { throw "Purge left: $($left.FullName -join ', ')" }
+          if (Get-Service -Name Krabb -ErrorAction SilentlyContinue) { throw "Purge left the Krabb service." }

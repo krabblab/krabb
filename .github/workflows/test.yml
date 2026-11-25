@@ -150,6 +150,9 @@ jobs:
       - name: Test Installer Integrity
         run: python -B krabb-scripts/tests/installers.py
 
+      - name: Test Uninstallers
+        run: python -B krabb-scripts/tests/uninstallers.py
+
       - name: Check Unix Installer Inputs
         if: runner.os != 'Windows'
         shell: bash

@@ -60,7 +60,7 @@ if [[ -d "$root/krabb-loops" ]]; then
     script_lines=$((script_lines + loop_lines))
 fi
 
-for file in "$root/install.sh" "$root/install.ps1"; do
+for file in "$root/install.sh" "$root/install.ps1" "$root/uninstall.sh" "$root/uninstall.ps1"; do
     if [[ -f "$file" ]]; then
         script_lines=$((script_lines + $(wc -l < "$file")))
     fi

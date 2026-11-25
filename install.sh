@@ -94,15 +94,41 @@ trap cleanup EXIT
 valid_version() {
     printf '%s\n' "$1" | awk \
         '$0 ~ /^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/ { valid = 1 } END { exit !valid }' || \
-        die "Version '$1' is not valid."
+        die "Version '$1' is not valid. Use a version such as 0.1.0 or 0.1.0-rc.1."
+}
+
+
+# Stable releases are what releases/latest serves; before the first one, name the newest
+# pre-release so the user can pin it.
+prerelease() {
+    list=$(curl --fail --silent --location --max-time 30 \
+        "${KRABB_RELEASE_LIST:-https://api.github.com/repos/krabblab/krabb/releases?per_page=1}") ||
+        return 0
+
+    # A stable newest release means the download failed for another reason.
+    printf '%s\n' "$list" | grep -q '"prerelease": *true' || return 0
+
+    newest=$(printf '%s\n' "$list" |
+        sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)
+
+    # The tag goes into a command the user copies, so it must be a plain version.
+    printf '%s\n' "$newest" | awk '$0 ~ /^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/ { ok = 1 }
+        END { exit !ok }' || return 0
+
+    # The variable must reach sh, not curl, so it goes after the pipe or is exported first.
+    die "No stable Krabb release is published yet.
+The newest pre-release is $newest; install it with this command:
+  curl -fsSL $script | KRABB_VERSION=$newest sh
+KRABB_VERSION goes after the pipe so sh receives it, or export it first."
 }
 
 target="$target_arch-$target_os"
 name=krabb
 releases=https://github.com/krabblab/krabb/releases
+script=https://raw.githubusercontent.com/krabblab/krabb/main/install.sh
 
 if [ -n "${KRABB_VERSION:-}" ]; then
-    version=$KRABB_VERSION
+    version=${KRABB_VERSION#v}
     valid_version "$version"
     base=${KRABB_RELEASE_BASE:-"$releases/download/v$version"}
     missing="Cannot reach Krabb $version; check the version and the connection."
@@ -121,7 +147,11 @@ tmp=$(mktemp -d)
 
 curl --fail --silent --show-error --location --retry 3 \
     --connect-timeout 10 --max-time 120 \
-    "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" || die "$missing"
+    "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" || {
+    [ -n "$version" ] || { [ -n "${KRABB_RELEASE_BASE:-}" ] && [ -z "${KRABB_RELEASE_LIST:-}" ]; } ||
+        prerelease
+    die "$missing"
+}
 
 if [ -z "$version" ]; then
     suffix="-$target.$archive_format"
@@ -170,3 +200,24 @@ mv -f "$prefix/bin/.$name.tmp.$$" "$prefix/bin/$name"
 install -m 0755 "$daemon" "$prefix/bin/.krabb-daemon.tmp.$$"
 mv -f "$prefix/bin/.krabb-daemon.tmp.$$" "$prefix/bin/krabb-daemon"
 info "Installed $name and krabb-daemon in $prefix/bin."
+
+case ":$PATH:" in
+    *":$prefix/bin:"*) ;;
+
+    *)
+        line="export PATH=\"$prefix/bin:\$PATH\""
+
+        # Terminal.app opens bash as a login shell, which reads ~/.bash_profile, not ~/.bashrc.
+        case "${SHELL:-}" in
+            */zsh) profile='~/.zshrc' ;;
+            */bash) [ "$target_os" = apple-darwin ] && profile='~/.bash_profile' || profile='~/.bashrc' ;;
+            */fish) profile='~/.config/fish/config.fish' line="fish_add_path $prefix/bin" ;;
+            *) profile='~/.profile' ;;
+        esac
+
+        info "Add $prefix/bin to your PATH by adding this line to $profile, then open a new terminal:"
+        printf '%s\n' "$line"
+        ;;
+esac
+
+info 'Set up Krabb with `krabb init`.'
