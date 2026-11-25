@@ -149,7 +149,7 @@ fn manual_controls_override_timers_and_steering_preserves_a_scheduled_pause() {
 
     assert!(!store.tasks[&fixture.id].restart);
 
-    store.finish_task_control(&fixture.id, task.step).unwrap();
+    store.finish_stop(&fixture.id, task.step).unwrap();
 
     assert_eq!(store.tasks[&fixture.id].status, TaskStatus::Paused);
     assert!(store.tasks[&fixture.id].deferred.is_some());
@@ -229,7 +229,7 @@ fn ambiguous_times_and_uncertain_actions_cannot_create_an_automatic_resume() {
 
     store.defer_task(&fixture.id, &command, now).unwrap();
     store.tasks.get_mut(&fixture.id).unwrap().unsafe_step = true;
-    store.finish_task_control(&fixture.id, task.step).unwrap();
+    store.finish_stop(&fixture.id, task.step).unwrap();
 
     assert!(store.tasks[&fixture.id].uncertain);
     assert!(store.tasks[&fixture.id].deferred.is_none());

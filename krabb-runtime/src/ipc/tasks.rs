@@ -608,7 +608,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            store.finish_task_control(&id, run.generation).unwrap();
+            store.finish_stop(&id, run.generation).unwrap();
             krabb_core::execution::budget::Grant {
                 id: "grant-1".into(),
                 revision: store.tasks[&id].revision,

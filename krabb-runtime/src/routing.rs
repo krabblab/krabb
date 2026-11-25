@@ -261,10 +261,10 @@ mod tests {
         assert!(clock().render().starts_with("Current host time: "));
         assert!(mutating("task", &json!({"kind":"background"})));
         assert!(!mutating("task", &json!({"kind":"thoughtful"})));
-        assert!(mutating("task_control", &json!({"action":"defer"})));
-        assert!(mutating("task_control", &json!({"action":"extend"})));
-        assert!(mutating("task_control", &json!({"action":"pause"})));
-        assert!(!mutating("task_control", &json!({"action":"list"})));
+        assert!(mutating("tasks", &json!({"action":"defer"})));
+        assert!(mutating("tasks", &json!({"action":"extend"})));
+        assert!(mutating("tasks", &json!({"action":"pause"})));
+        assert!(!mutating("tasks", &json!({"action":"list"})));
         assert!(mutating("job", &json!({"action":"pause"})));
     }
 

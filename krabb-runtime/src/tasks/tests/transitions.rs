@@ -171,7 +171,7 @@ fn generated_control_and_worker_sequences_agree_with_the_reference_model() {
                 }
 
                 Event::Finish => {
-                    store.finish_task_control(&id, before.step).unwrap();
+                    store.finish_stop(&id, before.step).unwrap();
                     model.finish();
                 }
 

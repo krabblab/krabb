@@ -154,7 +154,7 @@ fn stop_completion_races_preserve_the_winning_durable_transition() {
                 .is_err()
             );
 
-            store.finish_task_control(&fixture.id, execution.step).unwrap();
+            store.finish_stop(&fixture.id, execution.step).unwrap();
 
             assert_eq!(store.tasks[&fixture.id].status, TaskStatus::Cancelled);
             assert!(store.outbox.is_empty());
@@ -174,7 +174,7 @@ fn stopping_after_an_uncertain_effect_never_becomes_a_resumable_pause() {
     let revision = store.tasks[&fixture.id].revision;
 
     store.control_task(&fixture.id, &command("pause-1", Action::Pause, revision, "")).unwrap();
-    store.finish_task_control(&fixture.id, execution.step).unwrap();
+    store.finish_stop(&fixture.id, execution.step).unwrap();
 
     let revision = store.tasks[&fixture.id].revision;
 
@@ -204,7 +204,7 @@ fn paused_inference_cannot_publish_through_a_new_worker_generation() {
     let receipt =
         store.control_task(&fixture.id, &command("pause-1", Action::Pause, revision, "")).unwrap();
 
-    store.finish_task_control(&fixture.id, old.step).unwrap();
+    store.finish_stop(&fixture.id, old.step).unwrap();
 
     let revision = store.tasks[&fixture.id].revision;
 
@@ -215,7 +215,7 @@ fn paused_inference_cannot_publish_through_a_new_worker_generation() {
     assert_eq!(receipt.state, TaskStatus::Pausing);
     assert!(new.step > old.step);
     assert!(store.check_task_step(&fixture.id, old.step).is_err());
-    assert!(store.finish_task_control(&fixture.id, old.step).is_err());
+    assert!(store.finish_stop(&fixture.id, old.step).is_err());
     assert!(store.check_task_step(&fixture.id, new.step).is_ok());
     assert_eq!(store.tasks[&fixture.id].status, TaskStatus::Running);
 }

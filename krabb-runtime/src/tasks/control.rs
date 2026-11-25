@@ -3,7 +3,7 @@ use krabb_core::execution::budget::Grant;
 
 const EXTENSION_MINUTES: u64 = 24 * 60;
 
-pub(crate) const NAME: &str = "task_control";
+pub(crate) const NAME: &str = "tasks";
 
 /// Earlier releases called the control tool `job`; saved conversations and approvals still do.
 pub(crate) const LEGACY_NAME: &str = "job";

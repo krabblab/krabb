@@ -487,7 +487,7 @@ impl Store {
         }
 
         if task.status.stopping() {
-            return self.finish_task_control(id, task.step);
+            return self.finish_stop(id, task.step);
         }
 
         if task.status != TaskStatus::Running {

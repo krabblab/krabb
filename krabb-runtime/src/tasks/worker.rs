@@ -332,7 +332,7 @@ async fn step(context: &Context, task: Task) -> Result<(), PluginError> {
     }
 
     if current.status.stopping() {
-        store.finish_task_control(&task.id, task.step)?;
+        store.finish_stop(&task.id, task.step)?;
         context.plugins.tasks.wake.notify_one();
         return Ok(());
     }

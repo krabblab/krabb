@@ -54,7 +54,7 @@ fn step(store: &mut state::Store, remote: &mut Remote, id: &str) -> Option<&'sta
     let active = task.operation.as_ref().is_some_and(|operation| operation.active());
 
     if task.status == TaskStatus::Cancelling && !active {
-        store.finish_task_control(id, task.step).unwrap();
+        store.finish_stop(id, task.step).unwrap();
         return Some("stop");
     }
 

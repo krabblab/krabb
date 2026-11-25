@@ -130,7 +130,7 @@ Foreground and background execution share host task records. Foreground admissio
 persists a private context journal, and a saved result can be delivered after a
 lost client connection without running inference again. The host does not parse
 natural language. The model interprets task requests in any language and calls the
-`task_control` tool; the host enforces conversation scope, approval policy, revisions, and
+`tasks` tool; the host enforces conversation scope, approval policy, revisions, and
 allowance limits.
 Exact `/task` commands are the language-neutral fallback: authenticated
 `task.message` and channel intake apply them outside ordinary work admission, so

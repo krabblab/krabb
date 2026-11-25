@@ -229,7 +229,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn finish_task_control(&mut self, id: &str, step: u64) -> std::io::Result<()> {
+    pub fn finish_stop(&mut self, id: &str, step: u64) -> std::io::Result<()> {
         let task = self.task(id)?;
 
         if task.step != step {

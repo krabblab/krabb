@@ -7317,7 +7317,7 @@ mod tests {
         super::local_aware(home, method, params).await
     }
 
-    async fn task_control_fixture(
+    async fn controls_fixture(
         home: String,
         method: String,
         params: serde_json::Value,
@@ -7698,7 +7698,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_output_prints_task_control_notices_while_inference_is_busy() {
+    async fn plain_output_prints_control_notices_while_inference_is_busy() {
         use tokio::io::duplex;
 
         let root =
@@ -7720,7 +7720,7 @@ mod tests {
                 model_override: None,
                 session: "default".into(),
             },
-            task_control_fixture,
+            controls_fixture,
             super::EngineEvents::default(),
             interrupts,
         ));
@@ -7785,7 +7785,7 @@ mod tests {
                 model_override: None,
                 session: "default".into(),
             },
-            task_control_fixture,
+            controls_fixture,
             super::EngineEvents { engine: Some(events), ..Default::default() },
             interrupts,
         ));

@@ -8262,7 +8262,7 @@ fn output_tokens_count_payloads_rather_than_their_debug_form() {
 fn prepares_approval_text_and_channel_requests() {
     assert!(
         super::approval_text(
-            "task_control",
+            "tasks",
             &serde_json::json!({"action":"steer", "id":"task-1", "instruction":"Use v2."})
         )
         .contains("steer task-1 with instruction: Use v2.")
@@ -13367,7 +13367,7 @@ fn failures_without_their_own_next_action_point_to_debug_output() {
 }
 
 #[tokio::test]
-async fn legacy_job_calls_are_validated_against_the_task_control_schema() {
+async fn legacy_job_calls_are_validated_against_the_tasks_schema() {
     let sessions = Arc::new(Mutex::new(super::state::Store::default()));
 
     {

@@ -1639,9 +1639,9 @@ where
                         || app.session_working
                         || !app.pending_interactions.is_empty();
                     let ordinary = !command.starts_with('/') && !command.starts_with('!');
-                    let is_task_control = krabb_core::task::command(command);
+                    let is_task_command = krabb_core::task::command(command);
                     let is_live_control = (ordinary && !app.compaction_active)
-                        || is_task_control
+                        || is_task_command
                         || matches!(
                             command,
                             "/approvals" | "/approve" | "/deny" | "/quit" | "/exit"
@@ -1711,7 +1711,7 @@ where
                         line.clone()
                     };
 
-                    if !(is_task_control
+                    if !(is_task_command
                         || busy && ordinary
                         || matches!(line.as_str(), "/clear" | "/quit" | "/exit"))
                     {

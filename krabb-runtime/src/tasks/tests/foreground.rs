@@ -407,7 +407,7 @@ fn interrupting_the_current_turn_preserves_independent_queued_requests() {
     assert_eq!(store.tasks[&queued.id].status, TaskStatus::Queued);
     assert!(store.claim_task(&queued.id, u64::MAX).is_err());
 
-    store.finish_task_control(&running.run.id, running.run.generation).unwrap();
+    store.finish_stop(&running.run.id, running.run.generation).unwrap();
     store.clear(&fixture.origin, "idle").unwrap();
     store.claim_task(&queued.id, u64::MAX).unwrap();
 

@@ -64,7 +64,7 @@ impl Foreground {
         }
 
         if task.status.stopping() {
-            store.finish_task_control(&self.run.id, self.run.generation)?;
+            store.finish_stop(&self.run.id, self.run.generation)?;
         }
 
         let task = &store.tasks[&self.run.id];

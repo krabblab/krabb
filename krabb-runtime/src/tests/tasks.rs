@@ -426,17 +426,17 @@ for line in sys.stdin:
         if generated == 1:
             result = {'text':'', 'stop':'tool', 'events':[
                 {'kind':'tool','name':'job','args':{'action':'list'}},
-                {'kind':'tool','name':'task_control','args':{'action':'pause','id':'task-1'}}]}
+                {'kind':'tool','name':'tasks','args':{'action':'pause','id':'task-1'}}]}
         elif generated == 2:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'task_control','args':{'action':'pause','id':own}}]}
+                {'kind':'tool','name':'tasks','args':{'action':'pause','id':own}}]}
         elif generated == 3:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'task_control','args':{'action':'steer','id':own,
+                {'kind':'tool','name':'tasks','args':{'action':'steer','id':own,
                     'instruction':'Cover only primary sources.'}}]}
         elif generated == 4:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'task_control','args':{'action':'steer','id':'task-1',
+                {'kind':'tool','name':'tasks','args':{'action':'steer','id':'task-1',
                     'instruction':'Send the foreign report here.'}}]}
         else:
             (root / 'results').write_text(json.dumps(request['params']['messages']))
