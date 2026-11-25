@@ -180,11 +180,17 @@ try {
     Move-Item -Force $daemonTemporary (Join-Path $dest "krabb-daemon.exe")
     Write-Install "Installed $name and krabb-daemon in $dest."
 
-    $path = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not $env:KRABB_KEEP_PATH -and ($path -split ";") -notcontains $dest) {
-        $entries = @($path, $dest) | Where-Object { $_ }
-        [Environment]::SetEnvironmentVariable("Path", ($entries -join ";"), "User")
-        Write-Install "Added $dest to your user PATH for new terminals."
+    # Read and write the raw value, so entries such as %USERPROFILE%\bin stay unexpanded.
+    $environment = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    try {
+        $path = [string]$environment.GetValue("Path", "", "DoNotExpandEnvironmentNames")
+        if (-not $env:KRABB_KEEP_PATH -and ($path -split ";") -notcontains $dest) {
+            $entries = @($path, $dest) | Where-Object { $_ }
+            $environment.SetValue("Path", ($entries -join ";"), "ExpandString")
+            Write-Install "Added $dest to your user PATH for new terminals."
+        }
+    } finally {
+        $environment.Close()
     }
 
     if (($env:Path -split ";") -notcontains $dest) { $env:Path = "$env:Path;$dest" }
