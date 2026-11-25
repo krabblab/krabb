@@ -92,6 +92,7 @@ pub(crate) fn status_with(
         "plugins": installed,
         "plugin_states": states,
         "recovery": upgrade::recovery(root),
+        "recovered": upgrade::outcome(root),
     }))
 }
 
@@ -359,6 +360,18 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
         parts.push((format!("Recovery point: Krabb {from} ({state})"), Vec::new()));
     }
 
+    if let Some(recovered) = recovered(value) {
+        let line = if recovered.finished() {
+            format!("Interrupted update: finished, Krabb {} kept", recovered.to)
+        } else if recovered.restored {
+            format!("Interrupted update: undone, Krabb {} restored", recovered.from)
+        } else {
+            format!("Interrupted update: stopped before any change, Krabb {} kept", recovered.kept)
+        };
+
+        parts.push((line, Vec::new()));
+    }
+
     if !details.is_empty() {
         parts.push(("Needs attention".into(), details));
     }
@@ -409,7 +422,7 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
         return Some(next.into());
     }
 
-    plugins.into_iter().find_map(|plugin| {
+    let plugin = plugins.into_iter().find_map(|plugin| {
         let id = plugin["id"].as_str().unwrap_or_default();
         let next = plugin["next"].as_str()?;
 
@@ -423,7 +436,18 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
             (Some("configured"), _) => format!("Start {id} with `{next}`."),
             _ => restart(id),
         })
+    });
+
+    // An undone update is the last thing to do, once everything else works.
+    plugin.or_else(|| {
+        recovered(value)
+            .filter(|recovered| !recovered.finished())
+            .map(|_| "Try the update again with `krabb update`.".to_owned())
     })
+}
+
+fn recovered(value: &serde_json::Value) -> Option<upgrade::Outcome> {
+    serde_json::from_value(value["recovered"].clone()).ok()
 }
 
 fn restart(id: &str) -> String {

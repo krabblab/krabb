@@ -13509,6 +13509,41 @@ fn failures_without_their_own_next_action_point_to_debug_output() {
 }
 
 #[test]
+fn status_reports_an_interrupted_update_with_one_next_action() {
+    let undone = serde_json::json!({
+        "health": "healthy",
+        "plugin_states": [],
+        "recovered": {"from": "0.1.0", "to": "0.2.0", "kept": "0.1.0", "at": 1, "restored": true},
+    });
+
+    let text = super::status_text(&undone, 0);
+
+    assert!(text.contains("Interrupted update: undone, Krabb 0.1.0 restored"), "{text}");
+
+    let untouched = serde_json::json!({
+        "health": "healthy",
+        "plugin_states": [],
+        "recovered": {"from": "0.1.0", "to": "0.2.0", "kept": "0.1.0", "at": 1},
+    });
+
+    let text = super::status_text(&untouched, 0);
+
+    assert!(text.contains("Interrupted update: stopped before any change, Krabb 0.1.0 kept"));
+    assert!(text.ends_with("\n\nTry the update again with `krabb update`."), "{text}");
+
+    let kept = serde_json::json!({
+        "health": "healthy",
+        "plugin_states": [],
+        "recovered": {"from": "0.1.0", "to": "0.2.0", "kept": "0.2.0", "at": 1},
+    });
+
+    let text = super::status_text(&kept, 0);
+
+    assert!(text.contains("Interrupted update: finished, Krabb 0.2.0 kept"), "{text}");
+    assert!(!text.contains("Try the update again"), "{text}");
+}
+
+#[test]
 fn start_failures_are_one_clean_line_and_name_setup_only_for_rejected_credentials() {
     let failure = super::StartFailure::new(
         "KRABB_GEMINI_API_KEY: abc123 was rejected (401 Unauthorized).\nRun it \u{1b}[2J again.",
