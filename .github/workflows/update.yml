@@ -784,7 +784,12 @@ jobs:
 
           $sessions = (Invoke-Krabb --json session list).items.id
           if ($sessions -notcontains "update-drill") { throw "The session did not survive the rollback." }
-          if ($null -ne (Invoke-Krabb --json status).recovery) { throw "The recovery point remains after the rollback." }
+
+          if ($null -ne (Invoke-Krabb --json status).recovery) {
+            Get-ChildItem (Join-Path $env:KRABB_HOME "updates\recovery") -Recurse -Force |
+              Select-Object -First 60 | ForEach-Object { $_.FullName }
+            throw "The recovery point remains after the rollback."
+          }
 
       - if: always() && matrix.os == 'windows'
         name: Remove The Service
