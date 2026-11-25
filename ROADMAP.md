@@ -263,8 +263,8 @@ agent identities, roles, and delegation introduced by later milestones.
   and one channel or client. Verify both remote and local inference paths without
   requiring every provider or optional component in a basic installation.
 - Scope component acceptance to the [v0.1 functional matrix](FUNCTIONAL.md).
-  Exclude draft A2A, ACP, AG-UI, Browser, Computer, MCP, and Whisper integrations
-  from this release's completion criteria. Existing draft code does not establish
+  Exclude draft A2A, ACP, AG-UI, Browser, Computer, MCP, Runner, and Whisper
+  integrations from this release's completion criteria. Existing draft code does not establish
   released support; graduate automation, interoperability, and speech through
   their later milestones.
 - Support all six targets: x86_64 and aarch64 on each of Linux, macOS, and
