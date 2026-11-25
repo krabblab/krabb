@@ -11,6 +11,7 @@ fn requirement(program: Option<&str>, setting: Option<&str>) -> Requirement {
 #[test]
 fn declarations_name_a_plain_program_or_a_krabb_setting_with_one_line_of_help() {
     assert!(validate(&[requirement(Some("signal-cli"), Some("KRABB_SIGNAL_COMMAND"))]).is_ok());
+
     assert!(validate(&[requirement(None, Some("KRABB_SANDBOX_RUNTIME"))]).is_ok());
     assert!(validate(&[requirement(None, None)]).is_err());
     assert!(validate(&[requirement(Some("../bin/sh"), None)]).is_err());

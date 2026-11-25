@@ -19,6 +19,7 @@ pub(crate) async fn plugin(
 
             list_at(&root, runtime, output.page, output.json || json)?;
         }
+
         PluginCommand::Detach(args) => lifecycle::run(&home(), &args.id, false, json).await?,
         PluginCommand::Attach(args) => lifecycle::run(&home(), &args.id, true, json).await?,
 

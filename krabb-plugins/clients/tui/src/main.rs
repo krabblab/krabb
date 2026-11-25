@@ -6481,8 +6481,7 @@ mod tests {
                 }),
                 1
             ),
-            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Binary is present \
-             (credentials not checked)\n   ├─ Capabilities include model, vision\n   ├─ Uses \
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Ready\n   ├─ Capabilities include model, vision\n   ├─ Uses \
              protocol version 0.1\n   ├─ Commands include codex\n   ├─ Set up credentials with \
              `krabb plugin setup codex`\n   └─ Permissions include network, process"
         );
@@ -8261,8 +8260,7 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         assert!(text.contains("There are not enough earlier turns to compact."));
 
         assert!(text.contains(
-            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@vunknown\n   ├─ Binary is present \
-             (credentials not checked)\n   ├─ Capabilities include model\n   ├─ Uses protocol \
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@vunknown\n   ├─ Ready\n   ├─ Capabilities include model\n   ├─ Uses protocol \
              version 0.0\n   ├─ No commands\n   └─ No permissions"
         ));
 

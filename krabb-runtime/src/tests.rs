@@ -1411,6 +1411,7 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     }
 
     let loaded = vec!["signal".to_owned()];
+
     let missing = super::status::Observed {
         active: Some(loaded.as_slice()),
         failure: None,
@@ -4268,6 +4269,7 @@ fn validates_manifests_and_environment() {
         check: false,
         commands: Vec::new(),
         state: None,
+        requires: Vec::new(),
     };
 
     assert!(manifest.validate().is_ok());
@@ -4340,6 +4342,7 @@ fn validates_manifests_and_environment() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &Config::default(),
         test_home,
@@ -4386,6 +4389,7 @@ fn validates_manifests_and_environment() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &config,
         test_home,
@@ -4407,6 +4411,7 @@ fn validates_manifests_and_environment() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &Config::default(),
         test_home,
@@ -4437,6 +4442,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             check: false,
             commands: Vec::new(),
             state: None,
+            requires: Vec::new(),
         },
         &Config::default(),
         Path::new("/tmp/krabb-home"),
@@ -5815,6 +5821,7 @@ fn manifest_round_trips() {
         check: false,
         commands: Vec::new(),
         state: None,
+        requires: Vec::new(),
     };
 
     let text = toml::to_string(&value).unwrap();
@@ -7210,7 +7217,7 @@ fn formats_plugin_inventory_as_a_tree() {
 
     assert_eq!(
         output,
-        "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Binary is present (credentials not checked)\n   ├─ Capabilities include model, vision\n   ├─ Uses protocol version 0.1\n   ├─ Commands include codex\n   └─ Permissions include network, process"
+        "Plugins (1–1 of 1, page 1 of 1)\n└─ codex@v1.2.3\n   ├─ Ready\n   ├─ Capabilities include model, vision\n   ├─ Uses protocol version 0.1\n   ├─ Commands include codex\n   └─ Permissions include network, process"
     );
 }
 
@@ -7225,7 +7232,7 @@ fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
     let output = super::format_plugin_list(std::slice::from_ref(&item), 1).unwrap();
 
     assert_eq!(item["setup_command"], "krabb plugin setup telegram");
-    assert!(output.contains("Binary is present (credentials not checked)"));
+    assert!(output.contains("Ready"));
     assert!(output.contains("Set up credentials with `krabb plugin setup telegram`"));
     assert!(!output.contains("Health is ready"));
     assert_eq!(item["commands"], serde_json::json!([]));
