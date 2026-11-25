@@ -7,27 +7,57 @@ pub(super) struct Revoked {
     pub(super) secrets: Vec<String>,
     pub(super) keyring: bool,
     pub(super) grants: usize,
+    pub(super) cleanup: Cleanup,
+    /// Steps that failed without stopping the uninstall, each with its next action.
+    pub(super) failures: Vec<Failure>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Cleanup {
+    #[default]
+    Complete,
+    Partial,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(super) struct Failure {
+    pub(super) step: &'static str,
+    pub(super) error: String,
+    pub(super) next: String,
+}
+
+impl Revoked {
+    fn fail(&mut self, step: &'static str, error: String, next: String) {
+        self.cleanup = Cleanup::Partial;
+        self.failures.push(Failure { step, error, next });
+    }
 }
 
 /// Removes grants first, then secrets; every step is idempotent so a failed uninstall can retry.
 pub(super) fn revoke(root: &Path, id: &str, lock: &Lock) -> Result<Revoked, PluginError> {
+    revoke_with(root, id, lock, &service_path())
+}
+
+fn revoke_with(root: &Path, id: &str, lock: &Lock, service: &Path) -> Result<Revoked, PluginError> {
     let mut revoked = Revoked::default();
 
-    revoked.grants = grants(root, id).map_err(|error| failure(id, &revoked, error))?;
+    revoked.grants = grants(root, id).map_err(|error| abort(id, &revoked, error))?;
 
     let names = secrets(lock, id);
 
     revoked.secrets = credentials::forget(&setup::path(root), &credentials::key_path(root), &names)
-        .map_err(|error| failure(id, &revoked, error))?;
+        .map_err(|error| abort(id, &revoked, error))?;
 
-    let service = service_path();
-
-    let copied = service_copy(root, &service, &names).unwrap_or_else(|error| {
-        eprintln!(
-            "Could not remove {id}'s values from the service credential copy {}: {}\nRun \
-             `krabb service uninstall`, or delete that file, to remove them.",
-            service_credentials_path(&service).display(),
-            sentence(error.to_string())
+    let copied = service_copy(root, service, &names).unwrap_or_else(|error| {
+        revoked.fail(
+            "service_credentials",
+            format!(
+                "Could not remove {id}'s values from the service credential copy {}: {}",
+                service_credentials_path(service).display(),
+                sentence(error.to_string())
+            ),
+            "Run `krabb service uninstall` to remove the copy.".into(),
         );
 
         Vec::new()
@@ -39,8 +69,7 @@ pub(super) fn revoke(root: &Path, id: &str, lock: &Lock) -> Result<Revoked, Plug
         }
     }
 
-    revoked.keyring =
-        credentials::forget_entry(id).map_err(|error| failure(id, &revoked, error))?;
+    revoked.keyring = credentials::forget_entry(id).map_err(|error| abort(id, &revoked, error))?;
 
     Ok(revoked)
 }
@@ -75,7 +104,7 @@ fn service_copy(root: &Path, service: &Path, names: &[String]) -> Result<Vec<Str
     credentials::forget(&copy, &key, names)
 }
 
-fn failure(id: &str, revoked: &Revoked, error: PluginError) -> PluginError {
+fn abort(id: &str, revoked: &Revoked, error: PluginError) -> PluginError {
     let done = if revoked.grants > 0 {
         format!("\nRemoved {} sharing grant(s) already.", revoked.grants)
     } else {
