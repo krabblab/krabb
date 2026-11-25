@@ -1,6 +1,6 @@
 //! Krabb host release archives resolved to checksummed sources; plugins use the index.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -200,9 +200,23 @@ pub(super) fn target(os: &str, arch: &str) -> Option<(&'static str, &'static str
         .map(|(_, _, triple, extension)| (*triple, *extension))
 }
 
+/// The local folder a `file://` release base names. On Windows `file:///D:/releases` names
+/// `D:/releases`, so the slash before the drive letter is dropped.
+pub(crate) fn local(base: &str) -> Option<PathBuf> {
+    let path = base.strip_prefix("file://")?;
+
+    let drive = path.strip_prefix('/').filter(|rest| {
+        cfg!(windows)
+            && rest.as_bytes().get(1) == Some(&b':')
+            && rest.as_bytes()[0].is_ascii_alphabetic()
+    });
+
+    Some(PathBuf::from(drive.unwrap_or(path)))
+}
+
 fn checksums(base: &str) -> Result<String, Error> {
-    if let Some(path) = base.strip_prefix("file://") {
-        return read(&Path::new(path).join(SUMS));
+    if let Some(path) = local(base) {
+        return read(&path.join(SUMS));
     }
 
     Ok(String::from_utf8(super::download_bounded(&format!("{base}/{SUMS}"), SUMS_LIMIT)?)?)

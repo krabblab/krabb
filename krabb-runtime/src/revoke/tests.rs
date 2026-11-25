@@ -91,6 +91,7 @@ fn uninstall_revokes_only_the_plugin_grants_and_exclusive_secrets() {
             secrets: vec!["KRABB_TELEGRAM_MODE".into(), "KRABB_TELEGRAM_TOKEN".into()],
             keyring: false,
             grants: 5,
+            ..Revoked::default()
         }
     );
 
@@ -109,6 +110,7 @@ fn uninstall_revokes_only_the_plugin_grants_and_exclusive_secrets() {
     assert_eq!(left.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN", "KRABB_SHARED"]);
     assert_eq!(revoke(&root, "telegram", &lock()).unwrap(), Revoked::default());
     assert_eq!(revoke(&root, "missing", &lock()).unwrap(), Revoked::default());
+    assert_eq!(serde_json::to_value(Revoked::default()).unwrap()["cleanup"], "complete");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -174,6 +176,55 @@ fn uninstall_also_forgets_the_service_credential_copy() {
     assert_eq!(left.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN"]);
     assert!(service_copy(&root, &service, &names).unwrap().is_empty());
     assert!(service_copy(&root, &root.join("missing.service"), &names).unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn an_unwritable_service_credential_copy_is_reported_as_partial_cleanup() {
+    let root = crate::tests::test_root("revoke-service-blocked");
+    let service = root.join("units/krabb.service");
+    let copy = service_credentials_path(&service);
+
+    let environment = [
+        ("KRABB_HOME".to_owned(), root.display().to_string()),
+        ("KRABB_CREDENTIALS".to_owned(), copy.display().to_string()),
+        ("KRABB_CREDENTIALS_KEY".to_owned(), credentials::key_path(&root).display().to_string()),
+    ];
+
+    std::fs::create_dir_all(service.parent().unwrap()).unwrap();
+    std::fs::write(&service, service_text(Path::new("/usr/local/bin/krabb-daemon"), &environment))
+        .unwrap();
+
+    credentials::save(
+        &copy,
+        &credentials::key_path(&root),
+        [("KRABB_TELEGRAM_TOKEN".into(), "synthetic".into())].into_iter().collect(),
+        Some(false),
+    )
+    .unwrap();
+
+    // A directory where the copy's lock file belongs blocks the write even for root.
+    let name = copy.file_name().unwrap().to_str().unwrap();
+
+    let blocked = copy.with_file_name(format!(".{name}.lock"));
+
+    let _ = std::fs::remove_file(&blocked);
+
+    std::fs::create_dir_all(&blocked).unwrap();
+
+    let revoked = revoke_with(&root, "telegram", &lock(), &service).unwrap();
+
+    assert_eq!(revoked.cleanup, Cleanup::Partial);
+    assert_eq!(revoked.failures.len(), 1);
+    assert_eq!(revoked.failures[0].step, "service_credentials");
+    assert!(revoked.failures[0].error.contains(&copy.display().to_string()));
+    assert_eq!(revoked.failures[0].next, "Run `krabb service uninstall` to remove the copy.");
+
+    let json = serde_json::to_value(&revoked).unwrap();
+
+    assert_eq!(json["cleanup"], "partial");
+    assert_eq!(json["failures"][0]["step"], "service_credentials");
 
     let _ = std::fs::remove_dir_all(root);
 }

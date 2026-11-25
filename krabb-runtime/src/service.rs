@@ -233,29 +233,7 @@ pub(crate) fn service_environment_from(
 }
 
 pub(crate) fn codex_binary_from_path(path: &str) -> Option<PathBuf> {
-    #[cfg(windows)]
-    let executable = "codex.exe";
-
-    #[cfg(not(windows))]
-    let executable = "codex";
-
-    std::env::split_paths(path)
-        .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join(executable))
-        .find_map(|candidate| {
-            let metadata = std::fs::metadata(&candidate).ok()?;
-
-            if !metadata.is_file() {
-                return None;
-            }
-
-            #[cfg(unix)]
-            if metadata.permissions().mode() & 0o111 == 0 {
-                return None;
-            }
-
-            candidate.canonicalize().ok()
-        })
+    crate::requirement::locate(if cfg!(windows) { "codex.exe" } else { "codex" }, path)
 }
 
 pub(crate) fn service_path_value(path: PathBuf) -> std::io::Result<String> {

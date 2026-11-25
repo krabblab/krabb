@@ -6,3 +6,8 @@ permissions = ["filesystem", "network", "process"]
 [protocol]
 major = 0
 minor = 1
+
+[[requires]]
+setting = "KRABB_SANDBOX_RUNTIME"
+off = ["off"]
+help = "Install Docker or Podman, whichever KRABB_SANDBOX_RUNTIME names, or set it to off."
