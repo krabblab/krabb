@@ -7,10 +7,12 @@
 //! hidden `--inspect` and `--finish` flags are a contract between releases.
 
 mod finish;
+mod interrupted;
 mod snapshot;
 mod space;
 mod stage;
 
+pub(crate) use interrupted::{Caller, Outcome, before_command, outcome, recover};
 pub(super) use snapshot::uninstalled;
 
 use std::time::Duration;
@@ -61,7 +63,20 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     })?;
 
     if options.rollback {
-        return snapshot::rollback(root, &service_path(), options.yes, json).await;
+        // An activation whose update died still runs; restoring underneath it mixes versions.
+        let Some(_finish) = interrupted::held(root, interrupted::FINISH_LOCK)? else {
+            return Err(interrupted::BUSY.into());
+        };
+
+        snapshot::rollback(root, &service_path(), options.yes, json).await?;
+
+        // A cancelled rollback keeps its recovery point, and with it what status reports.
+        if snapshot::load(root)?.is_none() {
+            interrupted::clear_intent(root)?;
+            interrupted::clear_outcome(root)?;
+        }
+
+        return Ok(());
     }
 
     update(root, options.version, options.yes, json).await
@@ -94,15 +109,8 @@ async fn update(
     yes: bool,
     json: bool,
 ) -> Result<(), PluginError> {
-    if let Some(point) = snapshot::load(root)?
-        && !point.accepted
-    {
-        return Err(format!(
-            "The update to {} did not finish.\nRun `krabb update --rollback` to restore Krabb {}.",
-            point.to, point.from
-        )
-        .into());
-    }
+    // An interrupted update is settled first, so this one starts from a working installation.
+    interrupted::before_update(root, &service_path(), json).await?;
 
     let version = match requested {
         Some(version) if releases::valid_version(&version) => version,
@@ -204,9 +212,40 @@ async fn update(
         return Ok(());
     }
 
+    interrupted::clear_outcome(root)?;
+
+    // Saved before the service stops, so a cut-off update can start it again.
+    interrupted::intend(
+        root,
+        &interrupted::Intent { from: VERSION.into(), to: version.clone(), service: running },
+    )?;
+
     if running {
-        record(root, &mut staged).await?;
-        service_action_with(&service, ServiceAction::Stop, ServiceReport::nested(json))?;
+        let stopped = match record(root, &mut staged).await {
+            Ok(()) => {
+                service_action_with(&service, ServiceAction::Stop, ServiceReport::nested(json))
+            }
+
+            Err(error) => Err(error),
+        };
+
+        // A clean failure is not an interruption, so the service comes back and the intent goes.
+        // If the service cannot start, the intent stays so the next command starts it.
+        if let Err(error) = stopped {
+            let restarted = match self::running() {
+                Ok(true) => Ok(()),
+
+                _ => {
+                    service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))
+                }
+            };
+
+            if restarted.is_ok() {
+                interrupted::clear_intent(root)?;
+            }
+
+            return Err(error);
+        }
     }
 
     let installed = service.is_file().then_some(service.as_path());
@@ -229,13 +268,26 @@ async fn update(
         Ok(point) => point,
 
         Err(error) => {
-            if running {
-                service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
+            let restarted = if running {
+                service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))
+            } else {
+                Ok(())
+            };
+
+            // A service that did not start keeps the intent, so the next command starts it.
+            match restarted {
+                Ok(()) => interrupted::clear_intent(root)?,
+
+                Err(restart) => {
+                    warn!(error = %diagnostic(sentence(restart.to_string())), "The service did not start again.");
+                }
             }
 
             return Err(error);
         }
     };
+
+    interrupted::clear_intent(root)?;
 
     staged.keep();
 
