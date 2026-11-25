@@ -12,9 +12,6 @@ on:
   schedule:
     - cron: "41 5 * * 1"
 
-  push:
-    branches: [flow]
-
   workflow_call:
     inputs:
       artifact:
