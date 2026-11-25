@@ -364,6 +364,7 @@ fn a_task_saved_by_an_earlier_release_as_a_job_loads_and_stays_in_that_format() 
     assert_eq!(reloaded.sessions[&legacy].kind, state::SessionKind::Task);
     assert_eq!(saved["jobs"][&legacy]["status"], "paused");
     assert!(saved.get("tasks").is_none());
+
     assert!(
         walk(&data)
             .iter()

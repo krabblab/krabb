@@ -5281,6 +5281,7 @@ mod tests {
             super::message_timestamp("task-notice-at-1700000000000-task-7-event-2"),
             milliseconds
         );
+
         assert_eq!(
             super::message_timestamp("job-notice-at-1700000000000-job-7-event-2"),
             milliseconds

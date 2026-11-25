@@ -387,6 +387,7 @@ async fn a_refused_cancellation_is_sent_again() {
     }
 
     assert_eq!(effects(&fixture, "operation.cancel"), 2);
+
     assert_eq!(
         fixture.context.sessions.lock().unwrap().tasks[&run.id].status,
         TaskStatus::Cancelled
@@ -435,6 +436,7 @@ async fn a_cancellation_that_got_no_response_is_sent_again() {
 
     assert_eq!(effects(&fixture, "operation.cancel"), 2);
     assert_eq!(effects(&fixture, "operation.inspect"), 0);
+
     assert_eq!(
         fixture.context.sessions.lock().unwrap().tasks[&run.id].status,
         TaskStatus::Cancelled
@@ -816,6 +818,7 @@ async fn a_lost_cancel_receipt_is_reconciled_without_replaying_the_cancellation(
 
     assert_eq!(effects(&fixture, "operation.cancel"), 1);
     assert_eq!(effects(&fixture, "operation.inspect"), 2);
+
     assert_eq!(
         fixture.context.sessions.lock().unwrap().tasks[&run.id].status,
         TaskStatus::Cancelled
@@ -1186,6 +1189,7 @@ async fn absent_runner_preserves_controls_and_legacy_handles_without_claiming_ef
         fixture.context.sessions.lock().unwrap().tasks[&run.id].status,
         TaskStatus::Cancelled
     );
+
     assert_eq!(effects(&fixture, "operation.start"), 0);
     assert_eq!(effects(&fixture, "operation.cancel"), 1);
     assert_eq!(fs::read_to_string(fixture.context.home.join("generated")).unwrap_or_default(), "");

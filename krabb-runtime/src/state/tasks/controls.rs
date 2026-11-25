@@ -111,6 +111,7 @@ impl Store {
 
             match command.action {
                 Action::Pause | Action::Cancel => task.restart = false,
+
                 Action::Steer if next == TaskStatus::Pausing => {
                     task.restart = task.deferred.is_none()
                 }
