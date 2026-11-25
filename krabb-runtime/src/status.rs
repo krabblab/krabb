@@ -141,7 +141,7 @@ fn states(
 
             let observed = Observed {
                 active: active.as_deref(),
-                failure: failures.get(id).map(String::as_str),
+                failure: failures.get(id),
                 missing: missing.get(id).map(String::as_str),
             };
 
@@ -155,7 +155,8 @@ fn states(
 pub(crate) struct Observed<'a> {
     /// The plugins a running daemon loaded; none when the daemon is stopped.
     pub active: Option<&'a [String]>,
-    pub failure: Option<&'a str>,
+    /// Why the daemon could not start the plugin, when it tried and failed.
+    pub failure: Option<&'a StartFailure>,
     /// How to install a program the plugin needs and cannot find.
     pub missing: Option<&'a str>,
 }
@@ -189,9 +190,9 @@ pub(crate) fn plugin_state(
 
         ("configured", Some(start.to_owned()))
     } else {
-        reason = observed.failure;
+        reason = observed.failure.map(|failure| failure.reason.as_str());
 
-        let next = if reason.is_some_and(credential_failure) {
+        let next = if observed.failure.is_some_and(|failure| failure.setup) {
             format!("krabb plugin setup {id}")
         } else {
             "krabb service restart".to_owned()
@@ -203,13 +204,25 @@ pub(crate) fn plugin_state(
     serde_json::json!({"id": id, "state": state, "reason": reason, "next": next})
 }
 
-/// Whether a start failure reads like a rejected or missing credential, which setup fixes.
-fn credential_failure(reason: &str) -> bool {
-    let reason = reason.to_ascii_lowercase();
+/// One plugin list item with its runtime state, as the CLI and the TUI show it.
+///
+/// A missing binary always wins, and a plugin status does not know, such as a folder
+/// outside the lock, is only `installed`.
+pub(crate) fn listed(mut item: Value, states: &[Value], binary: bool) -> Value {
+    let state = states.iter().find(|state| state["id"] == item["id"]);
 
-    ["unauthorized", "forbidden", "invalid token", "token is", "api key", "credential", "401"]
-        .iter()
-        .any(|marker| reason.contains(marker))
+    item["health"] = match (binary, state) {
+        (false, _) => "missing".into(),
+        (true, Some(state)) => state["state"].clone(),
+        (true, None) => "installed".into(),
+    };
+
+    if let Some(state) = state.filter(|_| binary) {
+        item["reason"] = state["reason"].clone();
+        item["next"] = state["next"].clone();
+    }
+
+    item
 }
 
 pub(crate) fn status_health(

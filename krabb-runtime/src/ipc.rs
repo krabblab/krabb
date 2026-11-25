@@ -1964,24 +1964,32 @@ async fn uninstall(request: &IpcRequest, state: &State) -> IpcResponse {
     }
 }
 
-/// What this daemon observes about its plugins, before checking programs on its PATH.
-async fn observed(state: &State) -> super::plugins::Runtime {
+/// What this daemon observes about its plugins, with programs checked on its own PATH.
+async fn runtime(state: &State) -> super::plugins::Runtime {
     let active = state.plugins.all().await.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
     let failures = state.plugins.failures.read().await.clone();
+    let home = state.home.clone();
 
-    super::plugins::Runtime { active, failures, missing: BTreeMap::new() }
+    // Reading every manifest is file work, so it stays off the IPC thread.
+    let missing = tokio::task::spawn_blocking(move || {
+        super::load_lock_at(&home)
+            .map(|lock| super::requirement::missing(&home, &lock))
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+
+    super::plugins::Runtime { active, failures, missing }
 }
 
 /// The installed plugins with their manifests and runtime states, as `krabb plugin list` shows.
 async fn plugin_list(request: &IpcRequest, state: &State) -> IpcResponse {
-    let observed = observed(state).await;
+    let runtime = runtime(state).await;
     let home = state.home.clone();
 
     let items = tokio::task::spawn_blocking(move || {
         let states = super::load_lock_at(&home)
-            .map(|lock| {
-                super::status::plugin_states(&home, &lock, Some(observed.with_missing(&home)))
-            })
+            .map(|lock| super::status::plugin_states(&home, &lock, Some(runtime)))
             .unwrap_or_default();
 
         plugin_items(&home, true, &states)
@@ -1995,27 +2003,24 @@ async fn plugin_list(request: &IpcRequest, state: &State) -> IpcResponse {
 }
 
 async fn active(request: &IpcRequest, state: &State) -> IpcResponse {
-    let items = state.plugins.all().await.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
     let detached = state.plugins.detached.read().await.iter().cloned().collect::<Vec<_>>();
-    let observed = observed(state).await.with_missing(&state.home);
+    let runtime = runtime(state).await;
 
     IpcResponse::ok(
         request.id,
-        json!({"items": items, "detached": detached, "failures": observed.failures,
-            "missing": observed.missing}),
+        json!({"items": runtime.active, "detached": detached, "failures": runtime.failures,
+            "missing": runtime.missing}),
     )
 }
 
 /// The status screen `krabb status` prints, for clients that cannot read the host's state.
 async fn status_report(request: &IpcRequest, state: &State) -> IpcResponse {
-    let observed = observed(state).await;
+    let runtime = runtime(state).await;
     let home = state.home.clone();
 
     // Credential checks for plugins that did not load may decrypt the store or probe a sign-in.
-    let report = tokio::task::spawn_blocking(move || {
-        super::status::status_with(&home, Some(observed.with_missing(&home)))
-    })
-    .await;
+    let report =
+        tokio::task::spawn_blocking(move || super::status::status_with(&home, Some(runtime))).await;
 
     match report {
         Ok(Ok(value)) => {
@@ -2734,13 +2739,8 @@ fn plugin_items(home: &std::path::Path, include_manifest: bool, states: &[Value]
                 format!("krabb-plugin-{id}")
             };
 
-            let state = states.iter().find(|state| state["id"] == id.as_str());
-
-            let health = if !entry.path().join("bin").join(binary).is_file() {
-                "missing"
-            } else {
-                state.and_then(|state| state["state"].as_str()).unwrap_or("ready")
-            };
+            let present = entry.path().join("bin").join(binary).is_file();
+            let health = if present { "ready" } else { "missing" };
 
             let item = if include_manifest {
                 super::read_manifest(&entry.path()).map_or_else(
@@ -2752,14 +2752,9 @@ fn plugin_items(home: &std::path::Path, include_manifest: bool, states: &[Value]
                         })
                     },
                     |manifest| {
-                        let mut item = super::plugin_summary(&manifest, health);
+                        let item = super::plugin_summary(&manifest, health);
 
-                        if let Some(state) = state {
-                            item["reason"] = state["reason"].clone();
-                            item["next"] = state["next"].clone();
-                        }
-
-                        item
+                        super::status::listed(item, states, present)
                     },
                 )
             } else {

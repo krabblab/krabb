@@ -247,7 +247,7 @@ fn doctor_text(root: &Path, checks: &Checks, installed: usize, healthy: bool) ->
         format!("missing for {}", ids.join(", "))
     };
 
-    parts.push(format!("Programs plugins run: {programs}"));
+    parts.push(format!("Plugin programs: {programs}"));
 
     let next = match checks.missing.values().next() {
         _ if !healthy => "Restore the missing local state with `krabb doctor --fix`.",
@@ -286,7 +286,7 @@ mod tests {
              ├─ KRAB.md instructions: present\n\
              ├─ KLAW.md instructions: present\n\
              ├─ Plugins: 2 installed, integrity checks passed, protocol {protocol}\n\
-             └─ Programs plugins run: found\n\
+             └─ Plugin programs: found\n\
              \n\
              Check that the runtime and plugins are running with `krabb status`."
             )
@@ -299,7 +299,7 @@ mod tests {
 
         let text = doctor_text(Path::new("/home/owner/.krabb"), &lacking, 1, true);
 
-        assert!(text.contains("└─ Programs plugins run: missing for signal\n"), "{text}");
+        assert!(text.contains("└─ Plugin programs: missing for signal\n"), "{text}");
         assert!(text.ends_with(&format!("\n\n{help}")), "{text}");
 
         let broken = Checks { workspace: false, ..lacking };

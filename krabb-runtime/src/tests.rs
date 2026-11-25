@@ -1388,13 +1388,10 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
         missing,
     };
 
-    let rejected = super::plugin_state(
-        "gemini",
-        &model,
-        true,
-        &observe(Some("Gemini rejected the API key (401)."), None),
-        true,
-    );
+    let failure = super::StartFailure::new("Gemini rejected the API key (401).");
+
+    let rejected =
+        super::plugin_state("gemini", &model, true, &observe(Some(&failure), None), true);
 
     assert_eq!(rejected["state"], "failed to start");
     assert_eq!(rejected["reason"], "Gemini rejected the API key (401).");
@@ -7222,7 +7219,7 @@ fn formats_plugin_inventory_as_a_tree() {
 }
 
 #[test]
-fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
+fn plugin_inventory_describes_each_runtime_state_with_its_next_step() {
     let manifest: super::Manifest = toml::from_str(
             "id = 'telegram'\nversion = '0.1.0'\nprotocol = { major = 0, minor = 1 }\ncapabilities = ['channel']\nsecrets = ['KRABB_TELEGRAM_TOKEN']\n",
         )
@@ -7241,6 +7238,38 @@ fn plugin_inventory_exposes_setup_without_claiming_credential_readiness() {
     let output = super::format_plugin_list(&[item], 1).unwrap();
 
     assert!(output.contains("Binary is missing, so reinstall the plugin from its source"));
+
+    let line = |health: &str, reason: Option<&str>, next: Option<&str>| {
+        let mut item = super::plugin_summary(&manifest, health);
+
+        item["reason"] = reason.into();
+        item["next"] = next.into();
+
+        let output = super::format_plugin_list(&[item], 1).unwrap();
+
+        output.lines().nth(2).unwrap().trim_start_matches("   ├─ ").to_owned()
+    };
+
+    assert_eq!(line("installed", None, None), "Installed");
+    assert_eq!(line("needs setup", None, Some("krabb plugin setup telegram")), "Needs setup");
+
+    assert_eq!(
+        line("configured", None, Some("krabb service start")),
+        "Configured, but the runtime is not running, so run `krabb service start`"
+    );
+
+    assert_eq!(
+        line("failed to start", Some("Rejected."), Some("krabb plugin setup telegram")),
+        "Failed to start: Rejected, so run `krabb plugin setup telegram`"
+    );
+
+    assert_eq!(line("failed to start", None, None), "Failed to start");
+    assert_eq!(line("missing program", None, None), "Missing a program it runs");
+
+    assert_eq!(
+        line("missing program", None, Some("Install signal-cli.")),
+        "Missing a program it runs: Install signal-cli"
+    );
 }
 
 #[test]
@@ -13432,4 +13461,69 @@ fn failures_without_their_own_next_action_point_to_debug_output() {
     let link = "The release is broken.\nReport it at https://github.com/krabblab/krabb/issues.";
 
     assert_eq!(super::conclude(link.into()), link);
+}
+
+#[test]
+fn start_failures_are_one_clean_line_and_name_setup_only_for_rejected_credentials() {
+    let failure = super::StartFailure::new(
+        "KRABB_GEMINI_API_KEY: abc123 was rejected (401 Unauthorized).\nRun it \u{1b}[2J again.",
+    );
+
+    assert!(failure.setup);
+    assert!(!failure.reason.contains('\n'));
+    assert!(!failure.reason.contains('\u{1b}'));
+    assert!(!failure.reason.contains("abc123"), "{}", failure.reason);
+
+    assert!(!super::StartFailure::new("Plugin binary was not found: gemini.").setup);
+    assert!(!super::StartFailure::new("Listening on port 4013 failed.").setup);
+    assert!(super::StartFailure::new("Telegram answered 403.").setup);
+    assert!(super::reason(&"x".repeat(1_000)).len() <= 304);
+}
+
+#[test]
+fn an_older_daemon_reply_still_lists_its_plugins_and_odd_entries_are_dropped() {
+    let older = super::runtime(serde_json::json!({"items": ["codex"]})).unwrap();
+
+    assert_eq!(older.active, ["codex"]);
+    assert!(older.failures.is_empty() && older.missing.is_empty());
+
+    let current = super::runtime(serde_json::json!({
+        "items": ["codex"],
+        "failures": {
+            "gemini": {"reason": "Rejected.\nAgain.", "setup": true},
+            "../escape": {"reason": "Nope.", "setup": false},
+            "telegram": "an older shape",
+        },
+        "missing": {
+            "signal": "Install signal-cli.",
+            "tools": "Install \u{1b}[2J it.",
+            "slack": 7,
+        },
+    }))
+    .unwrap();
+
+    assert_eq!(current.failures.len(), 1);
+    assert_eq!(current.failures["gemini"].reason, "Rejected. Again.");
+    assert!(current.failures["gemini"].setup);
+    assert_eq!(current.missing, BTreeMap::from([("signal".into(), "Install signal-cli.".into())]));
+}
+
+#[test]
+fn list_items_take_the_runtime_state_unless_the_binary_is_gone() {
+    let states = [serde_json::json!({"id": "gemini", "state": "failed to start",
+        "reason": "Rejected.", "next": "krabb plugin setup gemini"})];
+
+    let item = |id: &str| serde_json::json!({"id": id, "health": "installed"});
+
+    let failed = super::status::listed(item("gemini"), &states, true);
+
+    assert_eq!(failed["health"], "failed to start");
+    assert_eq!(failed["reason"], "Rejected.");
+    assert_eq!(failed["next"], "krabb plugin setup gemini");
+
+    let gone = super::status::listed(item("gemini"), &states, false);
+
+    assert_eq!(gone["health"], "missing");
+    assert!(gone.get("reason").is_none());
+    assert_eq!(super::status::listed(item("stray"), &states, true)["health"], "installed");
 }

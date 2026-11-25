@@ -270,7 +270,7 @@ pub(crate) struct Plugins {
     items: Arc<RwLock<BTreeMap<String, Arc<Live>>>>,
     detached: Arc<RwLock<BTreeSet<String>>>,
     /// Why each plugin that the daemon could not start failed, redacted and bounded.
-    failures: Arc<RwLock<BTreeMap<String, String>>>,
+    failures: Arc<RwLock<BTreeMap<String, StartFailure>>>,
     loading: Arc<AsyncMutex<()>>,
     changed: Arc<Notify>,
     lifecycle: Arc<RwLock<()>>,
@@ -3342,22 +3342,9 @@ fn list_at(
             let manifest = read_manifest_checked(&path)
                 .map_err(|error| format!("Plugin {id} is invalid: {error}."))?;
 
-            let state = states.iter().find(|state| state["id"] == id.as_str());
+            let binary = path.join("bin").join(plugin_name(&id)).is_file();
 
-            let health = if !path.join("bin").join(plugin_name(&id)).is_file() {
-                "missing"
-            } else {
-                state.and_then(|state| state["state"].as_str()).unwrap_or("installed")
-            };
-
-            let mut row = plugin_summary(&manifest, health);
-
-            if let Some(state) = state {
-                row["reason"] = state["reason"].clone();
-                row["next"] = state["next"].clone();
-            }
-
-            rows.push(row);
+            rows.push(status::listed(plugin_summary(&manifest, "installed"), &states, binary));
         }
     }
 

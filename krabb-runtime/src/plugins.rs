@@ -14,8 +14,7 @@ pub(crate) async fn plugin(
         PluginCommand::List(output) => {
             let root = home();
 
-            // A daemon that cannot answer leaves the list to what this process can check.
-            let runtime = runtime_at(&root).await.ok().flatten();
+            let runtime = runtime_at(&root).await?;
 
             list_at(&root, runtime, output.page, output.json || json)?;
         }
@@ -759,20 +758,9 @@ pub(crate) async fn active_at(
 pub(crate) struct Runtime {
     pub active: Vec<String>,
     /// Why each plugin the daemon could not start failed.
-    pub failures: BTreeMap<String, String>,
+    pub failures: BTreeMap<String, StartFailure>,
     /// The help of a program each plugin needs that the daemon cannot find.
     pub missing: BTreeMap<String, String>,
-}
-
-impl Runtime {
-    /// Adds the programs installed plugins need that this process cannot find on its PATH.
-    pub fn with_missing(mut self, root: &Path) -> Self {
-        if let Ok(lock) = load_lock_at(root) {
-            self.missing = requirement::missing(root, &lock);
-        }
-
-        self
-    }
 }
 
 pub(crate) async fn runtime_at(root: &Path) -> Result<Option<Runtime>, PluginError> {
@@ -783,20 +771,36 @@ pub(crate) async fn runtime_at(root: &Path) -> Result<Option<Runtime>, PluginErr
     Ok(Some(runtime(value)?))
 }
 
-/// Reads failures and missing programs leniently: an older daemon sends neither.
+/// Reads failures and missing programs leniently: an older daemon sends neither, and odd
+/// entries are dropped. Text is cleaned again because it is printed to this terminal.
 pub(crate) fn runtime(value: serde_json::Value) -> Result<Runtime, PluginError> {
-    let reasons = |key: &str| {
+    let entries = |key: &str| {
         value[key]
             .as_object()
             .into_iter()
             .flatten()
             .filter(|(id, _)| valid(id))
-            .filter_map(|(id, reason)| Some((id.clone(), start_failure(reason.as_str()?))))
-            .collect::<BTreeMap<_, _>>()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect::<Vec<_>>()
     };
 
-    let failures = reasons("failures");
-    let missing = reasons("missing");
+    let failures = entries("failures")
+        .into_iter()
+        .filter_map(|(id, entry)| {
+            let failure = serde_json::from_value::<StartFailure>(entry).ok()?;
+
+            Some((id, StartFailure { reason: reason(&failure.reason), ..failure }))
+        })
+        .collect();
+
+    let missing = entries("missing")
+        .into_iter()
+        .filter_map(|(id, help)| {
+            let help = help.as_str().filter(|help| requirement::visible(help))?.trim().to_owned();
+
+            Some((id, help))
+        })
+        .collect();
 
     Ok(Runtime { active: active_ids(value)?, failures, missing })
 }

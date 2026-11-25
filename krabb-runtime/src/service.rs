@@ -233,7 +233,7 @@ pub(crate) fn service_environment_from(
 }
 
 pub(crate) fn codex_binary_from_path(path: &str) -> Option<PathBuf> {
-    crate::requirement::found(if cfg!(windows) { "codex.exe" } else { "codex" }, path)
+    crate::requirement::locate(if cfg!(windows) { "codex.exe" } else { "codex" }, path)
 }
 
 pub(crate) fn service_path_value(path: PathBuf) -> std::io::Result<String> {

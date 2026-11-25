@@ -320,7 +320,11 @@ pub(crate) async fn load_plugin(
         Ok(process) => process,
 
         Err(error) => {
-            plugins.failures.write().await.insert(id.to_owned(), start_failure(&error.to_string()));
+            plugins
+                .failures
+                .write()
+                .await
+                .insert(id.to_owned(), StartFailure::new(&error.to_string()));
 
             return Err(error);
         }
@@ -345,9 +349,49 @@ pub(crate) async fn load_plugin(
 /// The longest start failure reason status shows; the full text stays in the daemon log.
 const START_FAILURE_LIMIT: usize = 300;
 
-/// A start failure as status shows it: one redacted sentence of bounded length.
-pub(crate) fn start_failure(error: &str) -> String {
-    clip(redact_diagnostic(sentence(error.trim())), START_FAILURE_LIMIT)
+/// Why a plugin did not start, as status shows it.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub(crate) struct StartFailure {
+    /// One redacted line of bounded length.
+    pub reason: String,
+    /// Whether the plugin rejected or lacked a credential, which setup fixes.
+    #[serde(default)]
+    pub setup: bool,
+}
+
+impl StartFailure {
+    pub fn new(error: &str) -> Self {
+        // Redaction rewrites lines that name a credential, so classify the raw text first.
+        Self { reason: reason(error), setup: rejected_credential(error) }
+    }
+}
+
+/// One redacted line of bounded length, safe to print inside a tree.
+pub(crate) fn reason(text: &str) -> String {
+    let redacted = redact_diagnostic(text.trim());
+
+    let line = redacted
+        .chars()
+        .map(|character| if requirement::hidden(character) { ' ' } else { character })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    clip(sentence(line), START_FAILURE_LIMIT)
+}
+
+fn rejected_credential(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    let words =
+        error.split(|character: char| !character.is_ascii_alphanumeric()).collect::<Vec<_>>();
+
+    let phrase =
+        ["unauthorized", "unauthenticated", "forbidden", "invalid api key", "invalid token"]
+            .iter()
+            .any(|marker| error.contains(marker));
+
+    phrase || words.iter().any(|word| matches!(*word, "401" | "403"))
 }
 
 pub(crate) async fn unload_plugin(
@@ -359,6 +403,10 @@ pub(crate) async fn unload_plugin(
     }
 
     let _loading = plugins.loading.lock().await;
+
+    // Detaching or uninstalling ends whatever kept the plugin from starting.
+    plugins.failures.write().await.remove(id);
+
     let Some(plugin) = plugins.remove(id).await else {
         return Ok(false);
     };

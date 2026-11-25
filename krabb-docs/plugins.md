@@ -172,13 +172,15 @@ setting = "KRABB_SIGNAL_COMMAND"
 help = "Install signal-cli from https://github.com/AsamK/signal-cli#installation."
 ```
 
-`program` is a plain file name looked up on `PATH`. `setting` names a variable whose value
-overrides it; with no `program`, the requirement applies only once that variable is set.
-`help` is one line, up to 300 bytes, that says how to install or start the program. When
-a set-up plugin's program is missing, `krabb status`, `krabb plugin list`, and
-`krabb doctor` report `missing program` with this help. A running daemon checks its own
-`PATH`, which can differ from the shell's. A plugin may declare up to eight requirements.
-Older hosts ignore the table.
+`program` is a plain file name looked up on `PATH`. `setting` names an environment
+variable whose value, a file name or an absolute path, overrides it. With no `program`,
+the requirement applies only once that variable is set, and `off` lists its values that
+need no program, such as `off = ["off"]`. `help` is one line, up to 300 bytes, that says
+how to install or start the program. When a set-up plugin's program is missing,
+`krabb status` and `krabb plugin list` report `missing program` with this help, and
+`krabb doctor` lists the plugin under "Plugin programs". A running daemon checks its own
+environment and `PATH`, which can differ from the shell's. A plugin may declare up to
+eight requirements. Older hosts ignore the table.
 
 Manifest and lock records without `settings` keep their existing behavior.
 Settings and defaults are recorded in the plugin lock. Update previews show before/after

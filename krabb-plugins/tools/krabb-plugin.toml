@@ -9,4 +9,5 @@ minor = 1
 
 [[requires]]
 setting = "KRABB_SANDBOX_RUNTIME"
-help = "Install the container engine KRABB_SANDBOX_RUNTIME names, Docker or Podman."
+off = ["off"]
+help = "Install Docker or Podman, whichever KRABB_SANDBOX_RUNTIME names, or set it to off."
