@@ -436,13 +436,7 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
         }
 
         "check" => {
-            let request = app
-                .client
-                .get(format!("{}/{}", graph_url()?.trim_end_matches('/'), phone()?))
-                .query(&[("fields", "id")])
-                .bearer_auth(token()?);
-
-            krabb_http::accepted(request, "WhatsApp").await?;
+            check_with(&app.client, &graph_url()?, &phone()?, &token()?).await?;
 
             json!({})
         }
@@ -1198,6 +1192,21 @@ fn chunks(value: &str, limit: usize) -> Vec<String> {
     }
 
     output
+}
+
+/// Confirms the Graph API accepts TOKEN for the phone number ID, without sending anything.
+async fn check_with(
+    client: &reqwest::Client,
+    graph: &str,
+    phone: &str,
+    token: &str,
+) -> krabb_core::Result<()> {
+    let request = client
+        .get(format!("{}/{phone}", graph.trim_end_matches('/')))
+        .query(&[("fields", "id")])
+        .bearer_auth(token);
+
+    krabb_http::accepted(request, "WhatsApp").await
 }
 
 #[cfg(not(test))]
@@ -2080,6 +2089,47 @@ mod tests {
         server.await.unwrap();
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Answers one request with STATUS and returns the request it read.
+    async fn answer_once(status: &str) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let status = status.to_owned();
+
+        let served = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0; 4096];
+            let read = socket.read(&mut buffer).await.unwrap();
+
+            let reply =
+                format!("HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}");
+
+            socket.write_all(reply.as_bytes()).await.unwrap();
+
+            String::from_utf8_lossy(&buffer[..read]).into_owned()
+        });
+
+        (address, served)
+    }
+
+    #[tokio::test]
+    async fn the_connection_test_reads_the_phone_number_with_the_token() {
+        let client = reqwest::Client::new();
+        let (graph, served) = answer_once("200 OK").await;
+
+        super::check_with(&client, &format!("{graph}/v20.0/"), "1234", "token-1").await.unwrap();
+
+        let request = served.await.unwrap().to_ascii_lowercase();
+
+        assert!(request.starts_with("get /v20.0/1234?fields=id "), "{request}");
+        assert!(request.contains("authorization: bearer token-1"), "{request}");
+
+        let (graph, _) = answer_once("400 Bad Request").await;
+
+        assert!(super::check_with(&client, &graph, "1234", "bad").await.is_err());
     }
 }
 
