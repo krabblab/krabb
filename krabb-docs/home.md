@@ -24,3 +24,4 @@ Use these guides to install, configure, operate, and extend Krabb.
 20. [Storage](storage.md) — home layout, ownership, retention, and migration.
 21. [Resources](resources.md) — basic memory and CPU footprint for minimal setups.
 22. [Media](media.md) — what each channel and client can send to Krabb and receive.
+23. [Deprecations](../DEPRECATIONS.md) — how old interfaces and saved data retire, and what is pending.

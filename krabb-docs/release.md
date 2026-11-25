@@ -111,6 +111,9 @@ explicitly, and shows the reason.
    plugin detached; and the recovery point's `krabb update --rollback` must restore the
    previous build while the new daemon cannot start. It also runs from the Actions tab
    and every Monday against `main`.
+7. Before a stable release, remove every bridge the [ledger](../DEPRECATIONS.md) lists for
+   it; the deprecation test fails until they are gone. Add the release's row to the home
+   schema floor table, and announce any bridge or floor change planned for the next one.
 
 For a local installer smoke test, set `KRABB_RELEASE_BASE` to a `file://`
 directory containing the archives and `SHA256SUMS`, for example
