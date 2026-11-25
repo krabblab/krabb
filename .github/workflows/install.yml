@@ -536,6 +536,12 @@ jobs:
             krabb service stop
             if ($LASTEXITCODE -ne 0) { throw "krabb service stop failed." }
             Wait-Daemon "stopped"
+          } catch {
+            # Name the owner of every state file, since access to them is what fails here.
+            Get-ChildItem $env:KRABB_HOME -Recurse -File -ErrorAction SilentlyContinue |
+              Select-Object -First 60 |
+              ForEach-Object { "{0}  {1}" -f (Get-Acl $_.FullName).Owner, $_.FullName }
+            throw
           } finally {
             krabb service uninstall --yes
             if ($LASTEXITCODE -ne 0) { throw "krabb service uninstall failed." }
