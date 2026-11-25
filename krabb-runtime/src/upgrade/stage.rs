@@ -149,9 +149,9 @@ pub(super) fn plugins(
             }
 
             return Err(format!(
-                "Plugin {id} uses protocol {}.{}, which Krabb {} does not support. Uninstall it, \
-                 update, then install a build for the new protocol. The installation was not \
-                 changed.",
+                "Plugin {id} uses protocol {}.{}, which Krabb {} does not support.\nThe \
+                 installation was not changed.\nUninstall it with `krabb plugin uninstall {id}` \
+                 before updating.",
                 entry.protocol.major, entry.protocol.minor, inspection.version
             )
             .into());
@@ -195,8 +195,8 @@ pub(super) fn plugins(
             Err(error) => {
                 return Err(format!(
                     "Krabb {} cannot load the installed {id} plugin.\n{}\nThe installation was \
-                     not changed.\nSee every release of the plugin with `krabb plugin versions \
-                     {id}`.",
+                     not changed.\nUninstall it with `krabb plugin uninstall {id}` before \
+                     updating.",
                     inspection.version,
                     sentence(error.to_string())
                 )
@@ -263,8 +263,9 @@ pub(super) fn compatible(staged: &Staged, inspection: &Inspection) -> Result<(),
     for (id, manifest) in &staged.manifests {
         if !protocol.compatible(manifest.protocol) {
             return Err(format!(
-                "Plugin {id} {} uses protocol {}.{}, which Krabb {} does not support. The \
-                 installation was not changed.",
+                "Plugin {id} {} uses protocol {}.{}, which Krabb {} does not support.\nThe \
+                 installation was not changed.\nUninstall it with `krabb plugin uninstall {id}` \
+                 before updating.",
                 manifest.version,
                 manifest.protocol.major,
                 manifest.protocol.minor,
@@ -377,7 +378,7 @@ fn fetch(dir: &Path, source: &str) -> Result<PathBuf, PluginError> {
 
     if let Some(path) = url.strip_prefix("file://") {
         if std::fs::metadata(path)?.len() > ARCHIVE_LIMIT {
-            return Err("Archive exceeds the size limit.".into());
+            return Err(format!("Archive exceeds the size limit.\nReport it at {ISSUES}.").into());
         }
 
         std::fs::copy(path, &destination)?;

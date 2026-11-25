@@ -303,8 +303,8 @@ fn revoked(root: &Path) -> Result<Vec<String>, PluginError> {
 
     if ids.len() > REVOKED_PLUGINS {
         return Err(
-            "Too many plugins were uninstalled since the update to roll back safely.\nKeep this \
-             version, or restore the home from a backup."
+            "Too many plugins were uninstalled since the update to roll back safely.\nRestore \
+             the Krabb home directory from a backup to go back."
                 .into(),
         );
     }

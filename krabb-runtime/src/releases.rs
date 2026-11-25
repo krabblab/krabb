@@ -85,12 +85,14 @@ pub(super) fn base() -> Option<String> {
 
 fn latest_from(base: Option<&str>, os: &str, arch: &str) -> Result<String, Error> {
     let (target, extension) = target(os, arch)
-        .ok_or_else(|| format!("Official releases are not published for {os} ({arch})."))?;
+        .ok_or_else(|| format!("Official releases are not published for {os} ({arch}).\nBuild Krabb from source with `cargo install --path krabb --locked`."))?;
 
     let base = base.unwrap_or(LATEST).trim_end_matches('/');
 
     if !base.starts_with("https://") && !base.starts_with("file://") {
-        return Err("KRABB_RELEASE_BASE must use https:// or file://.".into());
+        return Err("KRABB_RELEASE_BASE is not an https:// or file:// address.\nSet \
+                    `KRABB_RELEASE_BASE` to one, or remove it."
+            .into());
     }
 
     let sums = checksums(base).map_err(|error| {
@@ -106,7 +108,13 @@ fn latest_from(base: Option<&str>, os: &str, arch: &str) -> Result<String, Error
         .filter(|version| valid_version(version))
         .max_by(|left, right| compare(left, right))
         .map(str::to_owned)
-        .ok_or_else(|| format!("The latest release has no Krabb build for {target}.").into())
+        .ok_or_else(|| {
+            format!(
+                "The latest release has no Krabb build for {target}.\nReport it at {}.",
+                super::upgrade::ISSUES
+            )
+            .into()
+        })
 }
 
 /// Whether a valid version is a release rather than a pre-release.
@@ -140,27 +148,34 @@ fn source_from(version: &str, base: Option<&str>, os: &str, arch: &str) -> Resul
     }
 
     let (target, extension) = target(os, arch).ok_or_else(|| {
-        format!("Krabb releases are not published for {os} ({arch}), so build Krabb from source.")
+        format!("Official releases are not published for {os} ({arch}).\nBuild Krabb from source with `cargo install --path krabb --locked`.")
     })?;
 
     let base = base.map_or_else(|| format!("{BASE}/v{version}"), str::to_owned);
     let base = base.trim_end_matches('/');
 
     if !base.starts_with("https://") && !base.starts_with("file://") {
-        return Err("KRABB_RELEASE_BASE must use https:// or file://.".into());
+        return Err("KRABB_RELEASE_BASE is not an https:// or file:// address.\nSet \
+                    `KRABB_RELEASE_BASE` to one, or remove it."
+            .into());
     }
 
     let archive = archive("core", version, target, extension);
 
     let sums = checksums(base).map_err(|error| {
         format!(
-            "Release v{version} is unavailable: {} Check the version or install with --source.",
+            "Release v{version} is unavailable: {}\nCheck the version, then try again with \
+             `krabb update {version}`.",
             super::sentence(error.to_string())
         )
     })?;
 
-    let digest = checksum(&sums, &archive)
-        .ok_or_else(|| format!("Release v{version} has no Krabb build for {target}."))?;
+    let digest = checksum(&sums, &archive).ok_or_else(|| {
+        format!(
+            "Release v{version} has no Krabb build for {target}.\nReport it at {}.",
+            super::upgrade::ISSUES
+        )
+    })?;
 
     Ok(format!("{base}/{archive}#sha256={digest}"))
 }

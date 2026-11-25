@@ -800,10 +800,23 @@ fn sentence(value: impl Into<String>) -> String {
     value
 }
 
+/// Whether a line of a failure tells the user what to run or where to go next.
+fn acts(line: &str) -> bool {
+    line.contains('`') || line.contains("https://")
+}
+
+/// A failure that names no next action of its own ends with the generic one.
+fn conclude(message: String) -> String {
+    if message.lines().last().is_some_and(acts) {
+        return message;
+    }
+
+    format!("{message}\nRun the command again with `--debug` for details.")
+}
+
 fn format_cli_error(message: &str) -> String {
     if message.trim().is_empty() {
-        return "The command could not be completed.\nRun it again with `--debug` for details."
-            .into();
+        return "The command could not be completed.".into();
     }
 
     terminal::printable(&message.lines().map(str::trim_start).collect::<Vec<_>>().join("\n"))
@@ -1714,6 +1727,8 @@ async fn main_with_log(cli: Cli, log_path: Option<PathBuf>) -> ExitCode {
                 );
             } else {
                 let message = sentence(error.to_string());
+                let message = if debug { message } else { conclude(message) };
+
                 let causes = error_causes(error.as_ref());
                 let display = if verbose && !causes.is_empty() {
                     format!("{message}\n{}", causes.join("\n"))
