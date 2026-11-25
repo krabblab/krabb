@@ -7,10 +7,12 @@
 //! hidden `--inspect` and `--finish` flags are a contract between releases.
 
 mod finish;
+mod interrupted;
 mod snapshot;
 mod space;
 mod stage;
 
+pub(crate) use interrupted::{Caller, Outcome, outcome, recover};
 pub(super) use snapshot::uninstalled;
 
 use std::time::Duration;
@@ -61,7 +63,12 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     })?;
 
     if options.rollback {
-        return snapshot::rollback(root, &service_path(), options.yes, json).await;
+        snapshot::rollback(root, &service_path(), options.yes, json).await?;
+
+        interrupted::settle(root)?;
+        interrupted::forget(root)?;
+
+        return Ok(());
     }
 
     update(root, options.version, options.yes, json).await
@@ -94,15 +101,25 @@ async fn update(
     yes: bool,
     json: bool,
 ) -> Result<(), PluginError> {
-    if let Some(point) = snapshot::load(root)?
-        && !point.accepted
+    // An interrupted update is settled first, so this one starts from a working installation.
+    if let Some(outcome) =
+        interrupted::recover_locked(root, &service_path(), VERSION, Caller::Command).await?
     {
-        return Err(format!(
-            "The update to {} did not finish.\nRun `krabb update --rollback` to restore Krabb {}.",
-            point.to, point.from
-        )
-        .into());
+        if !json {
+            eprintln!("{}", outcome.notice());
+        }
+
+        if outcome.kept != VERSION {
+            return Err(format!(
+                "{}\nRun `krabb update` again to update from Krabb {}.",
+                outcome.notice(),
+                outcome.kept
+            )
+            .into());
+        }
     }
+
+    interrupted::forget(root)?;
 
     let version = match requested {
         Some(version) if releases::valid_version(&version) => version,
@@ -204,6 +221,12 @@ async fn update(
         return Ok(());
     }
 
+    // Saved before the service stops, so a cut-off update can start it again.
+    interrupted::intend(
+        root,
+        &interrupted::Intent { from: VERSION.into(), to: version.clone(), service: running },
+    )?;
+
     if running {
         record(root, &mut staged).await?;
         service_action_with(&service, ServiceAction::Stop, ServiceReport::nested(json))?;
@@ -233,9 +256,13 @@ async fn update(
                 service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
             }
 
+            interrupted::settle(root)?;
+
             return Err(error);
         }
     };
+
+    interrupted::settle(root)?;
 
     staged.keep();
 

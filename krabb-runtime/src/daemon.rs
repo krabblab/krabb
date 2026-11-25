@@ -15,6 +15,22 @@ pub(crate) async fn serve_controlled(
     stop: Arc<Stop>,
     on_ready: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Settled before anything is read, because restoring replaces the configuration too.
+    if root.join("updates").is_dir()
+        && let Some(outcome) = upgrade::recover(root, upgrade::Caller::Daemon).await?
+    {
+        info!(kept = %outcome.kept, to = %outcome.to, "Recovered an interrupted update.");
+
+        // The service manager starts the restored daemon after this one exits with an error.
+        if outcome.kept != VERSION {
+            return Err(format!(
+                "Krabb {} was restored after an interrupted update and starts next.",
+                outcome.kept
+            )
+            .into());
+        }
+    }
+
     let channel_id = std::env::var("KRABB_CHANNEL").unwrap_or_else(|_| "telegram".into());
 
     let config = load_config_at(root)?;

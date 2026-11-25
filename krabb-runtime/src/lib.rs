@@ -1830,6 +1830,10 @@ fn error_causes(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let json = cli.json;
 
+    if recovers(&cli.command) {
+        settle_interrupted_update(&home(), json).await?;
+    }
+
     if schema_gated(&cli.command) {
         schema::check(&home())?;
     }
@@ -1877,6 +1881,59 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Import(args) => import_krabfile(args, json)?,
         Command::Update(options) => upgrade::run(options, &home(), json).await?,
         Command::External(args) => external_command(args, json).await?,
+    }
+
+    Ok(())
+}
+
+/// `update` settles an interrupted update itself, and version or completion output must not
+/// wait on one.
+fn recovers(command: &Command) -> bool {
+    !matches!(command, Command::Version(_) | Command::Completion { .. } | Command::Update(_))
+}
+
+/// Finishes or undoes an update a closed terminal, crash, or power loss cut off, before the
+/// command runs on a half-updated installation.
+async fn settle_interrupted_update(
+    root: &Path,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Only an update creates this folder, so a fresh home is never created here.
+    if !root.join("updates").is_dir() {
+        return Ok(());
+    }
+
+    let outcome = match upgrade::recover(root, upgrade::Caller::Command).await {
+        Ok(outcome) => outcome,
+
+        Err(error) => {
+            warn!(error = %diagnostic(sentence(error.to_string())), "Update recovery failed.");
+
+            if !json {
+                eprintln!(
+                    "The interrupted update could not be recovered: {}\nRestore the previous \
+                     version with `krabb update --rollback`.",
+                    sentence(error.to_string())
+                );
+            }
+
+            return Ok(());
+        }
+    };
+
+    let Some(outcome) = outcome else {
+        return Ok(());
+    };
+
+    info!(kept = %outcome.kept, to = %outcome.to, "Recovered an interrupted update.");
+
+    if !json {
+        eprintln!("{}", outcome.notice());
+    }
+
+    // This process is the binary that recovery replaced, so it must not act on the home.
+    if outcome.kept != VERSION {
+        return Err(format!("Run the command again to use Krabb {}.", outcome.kept).into());
     }
 
     Ok(())
