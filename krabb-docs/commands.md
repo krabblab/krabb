@@ -393,6 +393,9 @@ with the missing amount named, and so does a plugin that cannot read its saved
 state. It then previews versions, plugin permission, capability, secret, and state
 changes, home migrations, and the service interruption.
 With `--json`, the command prints that preview and applies it only with `--yes`.
+Its result lists plugins that did not load again under `unloaded`, and reports a
+refreshed or failed service definition under `definition`, so scripts see the same
+warnings the text output prints.
 
 After approval, Krabb stops a running service and saves a recovery point with
 the previous binaries, service definition, configuration, plugins, and state

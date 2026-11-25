@@ -39,18 +39,24 @@ pub(super) async fn run(
         .and_then(|point| point.definition)
         .is_some_and(|saved| saved.path == service);
 
+    let mut report = Report::default();
+
     if saved {
         match definition::refresh(&service) {
-            Ok(true) if !json => {
-                eprintln!("Refreshed the service definition to the current format.")
+            Ok(refreshed) => {
+                report.refreshed = refreshed;
+
+                if refreshed && !json {
+                    eprintln!("Refreshed the service definition to the current format.");
+                }
             }
 
-            Ok(_) => {}
+            Err(error) => {
+                let error = sentence(error.to_string());
 
-            Err(error) => eprintln!(
-                "The service definition could not be refreshed: {}",
-                sentence(error.to_string())
-            ),
+                eprintln!("The service definition could not be refreshed: {error}");
+                report.unrefreshed = Some(error);
+            }
         }
     }
 
@@ -70,9 +76,41 @@ pub(super) async fn run(
                 missing.join(", ")
             );
         }
+
+        report.unloaded = missing;
     }
 
+    krabb_file::save(dir.join(REPORT), serde_json::to_vec(&report)?)?;
+
     Ok(())
+}
+
+/// What activation noticed without failing, which the host that started the update reports.
+/// It is a file in the staged update, so a host from an earlier release simply ignores it.
+#[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
+pub(super) struct Report {
+    /// Plugins loaded before the update that the restarted daemon did not load.
+    #[serde(default)]
+    pub unloaded: Vec<String>,
+    /// Whether the service definition was rewritten to the current format.
+    #[serde(default)]
+    pub refreshed: bool,
+    /// Why an outdated service definition could not be rewritten.
+    #[serde(default)]
+    pub unrefreshed: Option<String>,
+}
+
+const REPORT: &str = "finish.json";
+
+const REPORT_LIMIT: u64 = 64 * 1024;
+
+/// The report the new host left in DIR, or an empty one when it left none.
+pub(super) fn report(dir: &Path) -> Report {
+    krabb_file::load(dir.join(REPORT), REPORT_LIMIT)
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 /// Asks the next daemon start to keep these plugins detached, replacing any stale request.

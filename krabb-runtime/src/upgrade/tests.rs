@@ -1014,3 +1014,43 @@ fn a_json_host_error_folds_into_one_error_and_keeps_warnings() {
     assert_eq!(reported("only a warning\n"), ("only a warning\n", None));
     assert_eq!(reported("note\n{\"other\":1}"), ("note\n{\"other\":1}", None));
 }
+
+#[test]
+fn activation_reports_reach_the_json_result() {
+    let root = temp_root("finish-report");
+
+    fs::create_dir_all(&root).unwrap();
+
+    assert_eq!(finish::report(&root), finish::Report::default());
+    assert_eq!(super::definition_outcome(&finish::Report::default()), serde_json::Value::Null);
+
+    let report = finish::Report {
+        unloaded: vec!["echo".into()],
+        refreshed: false,
+        unrefreshed: Some("The service manager could not reload the service definition.".into()),
+    };
+
+    krabb_file::save(root.join("finish.json"), serde_json::to_vec(&report).unwrap()).unwrap();
+
+    let read = finish::report(&root);
+
+    assert_eq!(read, report);
+
+    assert_eq!(
+        super::definition_outcome(&read),
+        serde_json::json!({
+            "status": "failed",
+            "error": "The service manager could not reload the service definition.",
+        })
+    );
+
+    let refreshed = finish::Report { refreshed: true, ..finish::Report::default() };
+
+    assert_eq!(super::definition_outcome(&refreshed), serde_json::json!({"status": "refreshed"}));
+
+    fs::write(root.join("finish.json"), "not json").unwrap();
+
+    assert_eq!(finish::report(&root), finish::Report::default());
+
+    let _ = fs::remove_dir_all(root);
+}

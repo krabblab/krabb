@@ -251,6 +251,8 @@ async fn update(
         .into());
     }
 
+    let report = finish::report(&staged.dir);
+
     snapshot::accept(root, &mut point)?;
     staged.discard();
 
@@ -290,6 +292,8 @@ async fn update(
                 "from": VERSION,
                 "version": version,
                 "refresh": refresh,
+                "unloaded": report.unloaded,
+                "definition": definition_outcome(&report),
             }))?
         );
     } else if let Refresh::Pending = refreshed {
@@ -416,6 +420,15 @@ async fn activate(
     }
 
     Err(error.unwrap_or_else(|| "The new version could not finish activation.".into()).into())
+}
+
+/// The service definition's outcome for the JSON result, or null when nothing changed.
+fn definition_outcome(report: &finish::Report) -> serde_json::Value {
+    match (&report.unrefreshed, report.refreshed) {
+        (Some(error), _) => serde_json::json!({"status": "failed", "error": error}),
+        (None, true) => serde_json::json!({"status": "refreshed"}),
+        (None, false) => serde_json::Value::Null,
+    }
 }
 
 /// Splits a `--json` host's standard error into its warnings and the message of the error
