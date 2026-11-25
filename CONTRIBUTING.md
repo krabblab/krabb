@@ -92,8 +92,10 @@ with Rust 1.89 and the native Docker architecture (`linux/arm64` or
 `linux/amd64`). Docker keeps the images and action cache locally, so subsequent
 runs do not download the runner again.
 The command runs Verify, Agentskill, Security, the native Linux tests, the
-sandbox test, and the native Linux build. Release, package, checksum, and
-publish workflows are intentionally excluded. Native macOS, Windows, and
+sandbox test, and the native Linux build. Release, package, checksum, install,
+update, and publish workflows are intentionally excluded; the Install and Update
+workflows check installation, update, and rollback on every target before a
+release (see the [release guide](krabb-docs/release.md)). Native macOS, Windows, and
 cross-architecture jobs still run only on their GitHub-hosted runners.
 
 Use `make ci` when adding or changing GitHub Actions workflows, or when the

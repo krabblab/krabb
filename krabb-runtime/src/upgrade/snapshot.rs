@@ -174,6 +174,11 @@ pub(super) async fn restore(
         service_action_with(service, ServiceAction::Start, ServiceReport::nested(json))?;
     }
 
+    // A rollback started from the retained binary runs from inside this folder, which Windows
+    // will not delete, so the record goes first: once it is gone the point is gone, and the
+    // remaining files are replaced when the next update saves its own point.
+    recovery::remove(&directory.join(POINT))?;
+
     let _ = recovery::remove(&directory);
 
     Ok(())
