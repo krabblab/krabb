@@ -192,7 +192,7 @@ class Uninstallers(unittest.TestCase):
         self.assertIn('does not look like a Krabb home', result.stdout)
 
     def test_nothing_installed_says_so(self):
-        shutil.rmtree(self.bin)
+        shutil.rmtree(self.bin.parent if WINDOWS else self.bin)
         shutil.rmtree(self.home)
 
         result = self.run_uninstaller()
