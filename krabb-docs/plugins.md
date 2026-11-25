@@ -356,8 +356,10 @@ and scheduled deliveries negotiate against the currently loaded channel adapter.
 A plugin advertising the `tool` capability can expose its model-callable tools
 through `tools/list`. Return an object with a `tools` array; every entry uses
 the normalized `ToolSpec` fields `name`, optional `description`, and JSON
-Schema `schema`. Keep names unique across all active tool plugins. The runtime
-rejects duplicate names rather than routing a call to an arbitrary provider.
+Schema `schema`. Name each tool `radix_action`, such as `browser_open`, and see
+[Tools](tools.md) for the names Krabb already uses. Keep names unique across all
+active tool plugins. The runtime rejects duplicate names rather than routing a
+call to an arbitrary provider.
 The legacy `tools` plugin keeps its built-in schemas as a fallback for older
 installed binaries that do not implement `tools/list`.
 
@@ -423,7 +425,7 @@ Adapters own external handles and wire payloads. The A2A adapter implements thes
 endpoints with endpoint pinning and authenticated status retrieval.
 
 For durable foreground and background tasks with tool permission, the runtime
-offers discovered operations as `operation_<plugin>_<name>`. Isolated workspaces
+offers discovered operations as `<plugin>_<name>`, such as `runner_delegate`. Isolated workspaces
 and scheduled runs do not expose this interface. The configured mutation approval
 policy applies before admission. The model supplies a contextual acknowledgement;
 the host saves intent before dispatch and the receipt before handoff. Monitoring
@@ -672,7 +674,7 @@ with `session.attach`, which reads them before the message is saved. See
 [Media](media.md) for the per-channel matrix.
 
 The SQLite plugin uses WAL mode and idempotent schema migrations. When it is
-installed and agent tools are enabled, Krabb adds a `data` tool to model
+installed and agent tools are enabled, Krabb adds a `data_query` tool to model
 requests. The agent can create logical databases and tables with typed columns,
 insert structured JSON records, query by exact field values, update a record by
 ID, add or remove optional columns, and delete records or structures. The tool

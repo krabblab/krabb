@@ -129,8 +129,8 @@ existing external work settles; lost start receipts block replay for review.
 Foreground and background execution share host task records. Foreground admission
 persists a private context journal, and a saved result can be delivered after a
 lost client connection without running inference again. The host does not parse
-natural language. The model interprets task requests in any language and calls the
-`tasks` tool; the host enforces conversation scope, approval policy, revisions, and
+natural language. The model interprets task requests in any language and calls a
+`task_<action>` tool such as `task_pause`; the host enforces conversation scope, approval policy, revisions, and
 allowance limits.
 Exact `/task` commands are the language-neutral fallback: authenticated
 `task.message` and channel intake apply them outside ordinary work admission, so
@@ -262,7 +262,7 @@ using shared bounded parsing primitives from `krabb-text`. Persisted deliveries 
 the original source and negotiate again at delivery, so a plugin change does not
 lose formatting. Fast requests answer directly, even when the provider is slow.
 For thoughtful work requiring research, verification, calculation, or generation,
-the model supplies one contextual message through the host-owned `task` tool.
+the model supplies one contextual message through the host-owned `task_classify` tool.
 Elapsed time and tool activity alone never create waiting messages.
 Background execution has two capability modes with the same durability guarantees.
 Minimal execution uses ordinary bounded, checkpointed agent turns in the host.

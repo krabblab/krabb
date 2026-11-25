@@ -361,7 +361,7 @@ attachments, or when a task or schedule notice arrived after the reply.
 
 You can also ask in your own words and any language, such as "start a new
 conversation" or "which model are you using?". The model then uses the same commands
-through a host tool. It cannot cancel its own reply, compact, answer again, change its own
+through the `conversation_command` tool. It cannot cancel its own reply, compact, answer again, change its own
 personality, confirm `/session clear`, or approve or deny a task's saved action; it relays
 the exact command to send instead. A new conversation it starts begins after its current reply.
 

@@ -167,7 +167,7 @@ reserved. History snapshots, memory, and structured records live privately under
 memory and structured records are imported. System instructions always come from
 `data/system/KRAB.md` and `KLAW.md` through the host.
 
-The agent receives confined file tools (`read`, `write`, `list`, `search`), private
+The agent receives confined file tools (`file_read`, `file_write`, `file_list`, `file_search`), private
 memory, and private structured data when enabled. Shell, Git/patch tools,
 third-party tools, desktop/browser control, and scheduling are unavailable because
 they do not enforce this boundary. Git itself is not an OS sandbox; installed

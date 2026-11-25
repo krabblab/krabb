@@ -28,7 +28,7 @@ shell commands: Linux blocks process-group and session changes, and Windows uses
 Objects. Descendants are stopped on completion, timeout, or plugin restart. Other platforms
 reject direct execution; use the sandboxed shell tool for Git and patches there.
 
-The read-only `fetch` tool retrieves bounded text from public HTTPS URLs. It
+The read-only `web_fetch` tool retrieves bounded text from public HTTPS URLs. It
 blocks local and private network addresses, pins requests to validated DNS
 addresses, rechecks redirects, caps redirects at three and response bodies at
 2 MiB, and returns at most 48 KiB of text. Fetch requests have a 15-second
@@ -54,7 +54,8 @@ because the active workspace mount must refer to this host's filesystem. The
 sandbox narrows command access but does not replace kernel, daemon, or host
 security updates.
 
-Worktree turns expose only confined `read`, `write`, `list`, and `search` operations.
+Worktree turns expose only confined `file_read`, `file_write`, `file_list`, and `file_search`
+operations.
 The host blocks shell, Git/patch execution, and tools that cannot enforce the
 worktree boundary. Filesystem operations reject internal runtime storage and
 other conversation directories; searches skip `.git` and `.krabb` trees unless

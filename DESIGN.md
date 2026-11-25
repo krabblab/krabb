@@ -133,6 +133,16 @@ Your Krabb is ready.
 Chat with it with `krabb tui`
 ```
 
+## Tool Names
+
+These rules cover every tool name a model sees. [Tools](krabb-docs/tools.md) lists them.
+
+- Name each tool `radix_action` in snake case, such as `browser_open` or `task_pause`.
+- The radix names the area or plugin, and the action is a verb.
+- Give each action its own tool rather than an `action` argument.
+- A renamed tool keeps its old name as an alias, so saved conversations, approvals, and
+  transcripts still run.
+
 ## Don't
 
 - Don't recolor, stretch, rotate, or outline the mark; it is recognized by its exact shape.

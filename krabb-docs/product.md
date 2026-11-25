@@ -66,7 +66,7 @@ Brand positioning:
   requests and installed plugins. It can expose a first-party command or tool
   only when the plugin that implements its capability is available.
 - **Plugins** implement capabilities and their external I/O. The SQLite plugin
-  owns database and record persistence. Runtime exposes the agent's `data`
+  owns database and record persistence. Runtime exposes the agent's `data_query`
   tool and routes its requests to SQLite; core sees only the generic tool and
   plugin contracts.
 

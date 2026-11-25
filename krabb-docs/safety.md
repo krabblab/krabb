@@ -42,7 +42,7 @@ active workspace are rejected. Shell tools in TUI turns require
 count as explicit user actions. Output and execution time are bounded.
 
 When a person explicitly asks, Krabb can change `tools`, `shell`, or `approval` in its
-own conversation's section with the `settings` tool. It cannot touch other sections or
+own conversation's section with the `settings_change` tool. It cannot touch other sections or
 other keys. Every change asks for approval, even in `auto` mode, and never reuses an
 earlier decision or survives an interrupted turn. In a channel, only the section's
 `owner` can approve it from the chat; the local operator can also approve it through a

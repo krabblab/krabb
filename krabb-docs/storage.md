@@ -110,7 +110,7 @@ content, plus the original user message in the private task journal. Trimming co
 does not remove that input or reclaim its referenced attachments. Background continuation receives
 the original requirements alongside its checkpoint and operation receipts; a clipped goal preview is
 not the complete request. When its text exceeds 16 KiB, each step receives the first 8 KiB and a
-note of the remaining length, plus a read-only `input` tool that returns exact 16 KiB pages of the
+note of the remaining length, plus a read-only `task_read` tool that returns exact 16 KiB pages of the
 saved original, so a large request is not re-sent whole. The fingerprint describes normalized input
 metadata, not a separate verification of attachment file bytes.
 
