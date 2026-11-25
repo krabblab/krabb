@@ -1383,6 +1383,7 @@ async fn connection_tests_never_show_the_account_or_fail_setup() {
     let result = check::run(&older, "probe").await;
 
     assert_eq!(result, json!({"status": "skipped"}));
+
     assert_eq!(
         check::line(&result).unwrap(),
         "This plugin has no connection test, so Krabb cannot confirm its settings."

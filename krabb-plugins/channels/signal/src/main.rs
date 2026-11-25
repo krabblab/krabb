@@ -1745,6 +1745,7 @@ mod tests {
         let other = check_with("+15550000000", command).await.unwrap_err().to_string();
 
         assert!(other.contains("no account matching KRABB_SIGNAL_ACCOUNT"), "{other}");
+
         assert!(
             check_with("+15551234567", &root.join("missing").display().to_string()).await.is_err()
         );

@@ -127,6 +127,7 @@ fn detail(text: &str) -> String {
 pub(super) fn line(result: &Value) -> Option<String> {
     match result["status"].as_str()? {
         "passed" => Some("Connection test passed.".into()),
+
         "skipped" => {
             Some("This plugin has no connection test, so Krabb cannot confirm its settings.".into())
         }
