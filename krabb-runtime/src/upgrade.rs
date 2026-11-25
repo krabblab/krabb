@@ -106,8 +106,16 @@ async fn update(
 
     let version = match requested {
         Some(version) if releases::valid_version(&version) => version,
-        Some(version) => return Err(format!("Version {version} is not a valid release.").into()),
-        None => releases::latest()?,
+
+        Some(version) => {
+            return Err(format!(
+                "Version {version} is not a valid release.\nUpdate to the latest release with \
+                 `krabb update`."
+            )
+            .into());
+        }
+
+        None => releases::latest().map_err(|error| unchanged(error, None))?,
     };
 
     match releases::compare(&version, VERSION) {
@@ -131,9 +139,11 @@ async fn update(
     let running = service.is_file() && running()?;
 
     if !running && control_at("plugin.active", serde_json::json!({}), root).await?.is_some() {
-        return Err(
-            "A Krabb daemon is running outside the service, so stop it before updating.".into()
-        );
+        return Err(format!(
+            "A Krabb daemon is running outside the service.\nStop it, then try again with `{}`.",
+            retry(Some(&version))
+        )
+        .into());
     }
 
     let binaries = [std::env::current_exe()?, daemon_executable()?];
@@ -146,24 +156,29 @@ async fn update(
     let lock = load_lock_at(root)?;
 
     let spinner = terminal::progress(format!("Downloading Krabb {version}..."), json);
-    let mut staged = stage::prepare(root, &version, releases::base().as_deref())?;
-    let inspection = stage::inspect(&staged.krabb, root)?;
+    let mut staged = stage::prepare(root, &version, releases::base().as_deref())
+        .map_err(|error| unchanged(error, Some(&version)))?;
+
+    let inspection =
+        stage::inspect(&staged.krabb, root).map_err(|error| unchanged(error, Some(&version)))?;
 
     if inspection.version != version {
         return Err(format!(
-            "The downloaded release reports version {}, not {version}.",
+            "The downloaded release reports version {}, not {version}.\nThe installation was \
+             not changed.\nReport it at {ISSUES}.",
             inspection.version
         )
         .into());
     }
 
-    stage::plugins(&mut staged, &lock, &inspection, &|| index::load(root))?;
+    stage::plugins(&mut staged, &lock, &inspection, &|| index::load(root))
+        .map_err(|error| unchanged(error, Some(&version)))?;
 
     drop(spinner);
 
     stage::compatible(&staged, &inspection)?;
     stage::readable(root, &mut staged, &lock)?;
-    space::check(root, &binaries, &staged)?;
+    space::check(root, &binaries, &staged).map_err(|error| unchanged(error, Some(&version)))?;
 
     let preview = preview(
         &version,
@@ -199,11 +214,10 @@ async fn update(
     let point = match released(root).await {
         Ok(()) => snapshot::create(root, VERSION, &version, &binaries, installed, running).map_err(
             |error| -> PluginError {
-                format!(
-                    "Could not create the recovery point: {} The installation was not changed.",
-                    sentence(error.to_string())
-                )
-                .into()
+                let failure = format!("Could not create the recovery point: {error}");
+
+                ending(&failure, &format!("Krabb {VERSION} is still installed."), Some(&version))
+                    .into()
             },
         ),
 
@@ -237,13 +251,20 @@ async fn update(
         staged.discard();
 
         return Err(match snapshot::restore(root, &point, &service, json).await {
-            Ok(()) => {
-                format!("The update to {version} failed: {failure} Restored Krabb {VERSION}.")
-            }
+            Ok(()) => ending(
+                &format!(
+                    "The update to {version} failed, so Krabb {VERSION} was restored.\n{failure}"
+                ),
+                &format!(
+                    "The log at {} has more detail.",
+                    logging::application_log_path().display()
+                ),
+                Some(&version),
+            ),
 
             Err(restore) => format!(
-                "The update to {version} failed: {failure} Recovery also failed: {} Run `{}` \
-                 to retry the rollback.",
+                "The update to {version} failed: {failure}\nRecovery also failed: {}\nRetry the \
+                 rollback with `{}`.",
                 sentence(restore.to_string()),
                 rollback_command(root)
             ),
@@ -438,6 +459,33 @@ fn reported(stderr: &str) -> (&str, Option<String>) {
     }
 }
 
+/// Where to report a release that is broken for everyone.
+pub(super) const ISSUES: &str = "https://github.com/krabblab/krabb/issues";
+
+/// A failure before anything changed.
+fn unchanged(error: PluginError, version: Option<&str>) -> PluginError {
+    ending(&error.to_string(), "The installation was not changed.", version).into()
+}
+
+/// A failure, what state it left behind, and one next action: its own when it names one,
+/// otherwise the update command that tries again.
+fn ending(failure: &str, state: &str, version: Option<&str>) -> String {
+    let failure = sentence(failure);
+    let failure = failure.lines().filter(|line| *line != state).collect::<Vec<_>>().join("\n");
+
+    let Some((cause, action)) = failure.rsplit_once('\n').filter(|(_, last)| crate::acts(last))
+    else {
+        return format!("{failure}\n{state}\nTry again with `{}`.", retry(version));
+    };
+
+    format!("{cause}\n{state}\n{action}")
+}
+
+/// The command that repeats an update, keeping the version the user asked for.
+fn retry(version: Option<&str>) -> String {
+    version.map_or_else(|| "krabb update".into(), |version| format!("krabb update {version}"))
+}
+
 fn report_current(json: bool) -> Result<(), PluginError> {
     if json {
         println!(
@@ -476,7 +524,8 @@ async fn released(root: &Path) -> Result<(), PluginError> {
 
             Err(_) if tokio::time::Instant::now() >= deadline => {
                 return Err(format!(
-                    "The Krabb daemon did not stop within {} seconds.",
+                    "The Krabb daemon did not stop within {} seconds.\nStop it with `krabb \
+                     service stop`, then try again.",
                     STOP.as_secs()
                 )
                 .into());

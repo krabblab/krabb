@@ -108,10 +108,10 @@ pub(crate) fn release(root: &Path, id: &str) -> Result<(), PluginError> {
 fn kept(root: &Path) -> Result<BTreeMap<String, State>, PluginError> {
     let unreadable = || -> PluginError {
         format!(
-            "The saved plugin state records in {} cannot be read. The installation was not \
-             changed. Fix or remove that file to continue; removing it forgets the recorded \
-             schemas of uninstalled plugins, so their next install is not checked.",
-            root.join(KEPT).display()
+            "The saved plugin state records in {path} cannot be read.\nThe installation was not \
+             changed.\nRemoving the file forgets the recorded schemas of uninstalled plugins, so \
+             their next install is not checked.\nFix or remove `{path}` to continue.",
+            path = root.join(KEPT).display()
         )
         .into()
     };
