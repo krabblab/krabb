@@ -25,6 +25,11 @@ pub use cache::trim;
 #[cfg(any(windows, test))]
 const SERVICE_SID: &str = "S-1-5-80-3700705418-1466718386-3227256717-750624257-2359456539";
 
+// The accounts that own files the Krabb service creates: SYSTEM, LocalService, which the
+// service runs as, and the service's own SID.
+#[cfg(any(windows, test))]
+const SERVICE_ACCOUNTS: [&str; 3] = ["S-1-5-18", "S-1-5-19", SERVICE_SID];
+
 const CREDENTIAL_LIMIT: u64 = 1024 * 1024;
 
 use std::fs::File;
@@ -675,7 +680,7 @@ fn principal(
     for ancestor in path.ancestors() {
         let sid = owner(ancestor)?;
 
-        if sid != "S-1-5-18" && sid != SERVICE_SID {
+        if !SERVICE_ACCOUNTS.contains(&sid.as_str()) {
             return Ok(sid);
         }
     }
@@ -1265,7 +1270,7 @@ mod tests {
         let path = std::path::Path::new("user/data/state.json");
         let user = "S-1-5-21-1-2-3-1001";
 
-        for service in ["S-1-5-18", super::SERVICE_SID] {
+        for service in super::SERVICE_ACCOUNTS {
             let sid = super::principal(path, |path| {
                 Ok(if path == std::path::Path::new("user") { user } else { service }.into())
             })
