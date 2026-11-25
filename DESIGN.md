@@ -94,6 +94,8 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
   arrow keys. Without a terminal, take the choice from a flag instead.
 - Say each thing once. Instead of repeating a summary or printing a file's contents,
   print the command that shows them.
+- End every error and failure with one next action, so the user always knows how to recover:
+  the command to run, or what to change when no command fits.
 - End with the next action as a runnable command, with no period after the command.
 - Mark finished steps with `✓` and a full sentence that names the kind of thing, such as
   `✓ Installed openai provider.`

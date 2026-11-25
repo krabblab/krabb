@@ -13346,3 +13346,19 @@ async fn interrupts_working_sessions_on_shutdown() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn failures_without_their_own_next_action_point_to_debug_output() {
+    assert_eq!(
+        super::conclude("Session was not found.".into()),
+        "Session was not found.\nRun the command again with `--debug` for details."
+    );
+
+    let own = "Plugin echo is not installed.\nInstall it with `krabb plugin install echo`.";
+
+    assert_eq!(super::conclude(own.into()), own);
+
+    let link = "The release is broken.\nReport it at https://github.com/krabblab/krabb/issues.";
+
+    assert_eq!(super::conclude(link.into()), link);
+}
