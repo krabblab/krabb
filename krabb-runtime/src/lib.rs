@@ -1727,14 +1727,14 @@ async fn main_with_log(cli: Cli, log_path: Option<PathBuf>) -> ExitCode {
                 );
             } else {
                 let message = sentence(error.to_string());
-                let message = if debug { message } else { conclude(message) };
-
                 let causes = error_causes(error.as_ref());
                 let display = if verbose && !causes.is_empty() {
                     format!("{message}\n{}", causes.join("\n"))
                 } else {
                     message.clone()
                 };
+
+                let display = if debug { display } else { conclude(display) };
 
                 eprintln!("{}", format_cli_error(&diagnostic(&display)));
 

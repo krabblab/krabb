@@ -359,8 +359,10 @@ pub(super) fn writable(binary: &Path) -> Result<(), PluginError> {
 
     std::fs::write(&probe, b"").map_err(|error| {
         format!(
-            "Krabb cannot replace files in {}: {} Update with the tool that installed it, or \
-             reinstall Krabb in a writable directory.",
+            "Krabb cannot replace files in {}: {}\nThe installation was not changed.\nReinstall \
+             Krabb in a writable directory as \
+             https://github.com/krabblab/krabb/blob/main/krabb-docs/workflows.md#first-run \
+             describes.",
             directory.display(),
             sentence(error.to_string())
         )

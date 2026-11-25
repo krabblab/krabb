@@ -171,13 +171,14 @@ async fn update(
         .into());
     }
 
-    stage::plugins(&mut staged, &lock, &inspection, &|| index::load(root))?;
+    stage::plugins(&mut staged, &lock, &inspection, &|| index::load(root))
+        .map_err(|error| unchanged(error, Some(&version)))?;
 
     drop(spinner);
 
     stage::compatible(&staged, &inspection)?;
     stage::readable(root, &mut staged, &lock)?;
-    space::check(root, &binaries, &staged)?;
+    space::check(root, &binaries, &staged).map_err(|error| unchanged(error, Some(&version)))?;
 
     let preview = preview(
         &version,
@@ -470,6 +471,7 @@ fn unchanged(error: PluginError, version: Option<&str>) -> PluginError {
 /// otherwise the update command that tries again.
 fn ending(failure: &str, state: &str, version: Option<&str>) -> String {
     let failure = sentence(failure);
+    let failure = failure.lines().filter(|line| *line != state).collect::<Vec<_>>().join("\n");
 
     let Some((cause, action)) = failure.rsplit_once('\n').filter(|(_, last)| crate::acts(last))
     else {

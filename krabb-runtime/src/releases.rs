@@ -84,8 +84,7 @@ pub(super) fn base() -> Option<String> {
 }
 
 fn latest_from(base: Option<&str>, os: &str, arch: &str) -> Result<String, Error> {
-    let (target, extension) = target(os, arch)
-        .ok_or_else(|| format!("Official releases are not published for {os} ({arch}).\nBuild Krabb from source with `cargo install --path krabb --locked`."))?;
+    let (target, extension) = target(os, arch).ok_or_else(|| unsupported(os, arch))?;
 
     let base = base.unwrap_or(LATEST).trim_end_matches('/');
 
@@ -147,9 +146,7 @@ fn source_from(version: &str, base: Option<&str>, os: &str, arch: &str) -> Resul
         return Err(format!("Version {version} is not a valid release version.").into());
     }
 
-    let (target, extension) = target(os, arch).ok_or_else(|| {
-        format!("Official releases are not published for {os} ({arch}).\nBuild Krabb from source with `cargo install --path krabb --locked`.")
-    })?;
+    let (target, extension) = target(os, arch).ok_or_else(|| unsupported(os, arch))?;
 
     let base = base.map_or_else(|| format!("{BASE}/v{version}"), str::to_owned);
     let base = base.trim_end_matches('/');
@@ -229,6 +226,17 @@ fn checksum(sums: &str, archive: &str) -> Option<String> {
             && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .then(|| digest.to_ascii_lowercase())
     })
+}
+
+/// Where to build Krabb for a platform without official releases.
+const SOURCE: &str =
+    "https://github.com/krabblab/krabb/blob/main/krabb-docs/workflows.md#local-development";
+
+fn unsupported(os: &str, arch: &str) -> String {
+    format!(
+        "Official releases are not published for {os} ({arch}).\nBuild Krabb from source as {SOURCE} \
+         describes."
+    )
 }
 
 #[cfg(test)]
