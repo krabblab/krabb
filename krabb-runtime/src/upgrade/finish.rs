@@ -110,6 +110,12 @@ const REPORT: &str = "finish.json";
 
 const REPORT_LIMIT: u64 = 64 * 1024;
 
+/// Whether the new host finished activating. Existence alone decides, so a report a later
+/// release writes in another format still counts.
+pub(super) fn reported(dir: &Path) -> bool {
+    std::fs::symlink_metadata(dir.join(REPORT)).is_ok_and(|metadata| metadata.is_file())
+}
+
 /// The report the new host left in DIR, or none from a release that writes no report.
 pub(super) fn report(dir: &Path) -> Option<Report> {
     krabb_file::load(dir.join(REPORT), REPORT_LIMIT)

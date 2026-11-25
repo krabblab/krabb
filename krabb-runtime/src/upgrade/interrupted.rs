@@ -16,7 +16,7 @@ pub(super) const FINISH_LOCK: &str = ".finish.lock";
 /// How long status mentions a recovery before it is old news.
 const SHOWN: u64 = 7 * 24 * 60 * 60;
 
-const BUSY: &str =
+pub(super) const BUSY: &str =
     "An update or its recovery is still running.\nTry again once `krabb status` answers.";
 
 /// What an update was about to do, saved before it stops the service.
@@ -169,7 +169,7 @@ pub(crate) async fn recover(
 }
 
 /// The lock NAME, or none while another process holds it.
-fn held(root: &Path, name: &str) -> Result<Option<crate::DaemonLock>, PluginError> {
+pub(super) fn held(root: &Path, name: &str) -> Result<Option<crate::DaemonLock>, PluginError> {
     match lock_at(root, name) {
         Ok(lock) => Ok(Some(lock)),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
@@ -202,12 +202,8 @@ pub(super) async fn recover_locked(
 
             let staged = root.join("updates").join(format!("v{}", point.to));
 
-            let outcome = if finish::report(&staged).is_some() {
+            let outcome = if finish::reported(&staged) {
                 snapshot::accept(root, &mut point)?;
-
-                if manages && point.service {
-                    start(service)?;
-                }
 
                 outcome_of(&point.from, &point.to, &point.to, false)
             } else {
@@ -219,29 +215,35 @@ pub(super) async fn recover_locked(
             // The staged release is only needed while the update runs.
             krabb_migrations::recovery::remove(&staged)?;
 
-            Some(outcome)
+            // A restore already started the service it stopped.
+            let starts = manages && point.service && !outcome.restored;
+
+            (outcome, starts)
         }
 
         _ => match intent(root)? {
             // The update stopped before its recovery point, so only the service changed.
             Some(intent) => {
-                if manages && intent.service {
-                    start(service)?;
-                }
+                let starts = manages && intent.service;
 
-                Some(outcome_of(&intent.from, &intent.to, version, false))
+                (outcome_of(&intent.from, &intent.to, version, false), starts)
             }
 
-            None => None,
+            None => return Ok(None),
         },
     };
 
-    if let Some(outcome) = &outcome {
-        clear_intent(root)?;
-        krabb_file::save(root.join(OUTCOME), serde_json::to_vec(outcome)?)?;
+    let (outcome, starts) = outcome;
+
+    // Everything recovery did is recorded first, so a failed start never hides it.
+    clear_intent(root)?;
+    krabb_file::save(root.join(OUTCOME), serde_json::to_vec(&outcome)?)?;
+
+    if starts {
+        start(service)?;
     }
 
-    Ok(outcome)
+    Ok(Some(outcome))
 }
 
 /// Whether recovery may act on POINT without asking. A manual reinstall of another release, or
@@ -251,8 +253,17 @@ fn automatic(point: &snapshot::Point, version: &str) -> bool {
     let versions = releases::valid_version(&point.from) && releases::valid_version(&point.to);
     let installed = version == point.from || version == point.to;
 
-    let names: &[&str] =
-        if cfg!(windows) { &["krabb.exe", "krabb-daemon.exe"] } else { &["krabb", "krabb-daemon"] };
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let names = [format!("krabb{suffix}"), format!("krabb-daemon{suffix}")];
+
+    // Windows and macOS file systems ignore case, so a name may come back as it was typed.
+    let same = |name: &str, expected: &str| {
+        if cfg!(any(windows, target_os = "macos")) {
+            name.eq_ignore_ascii_case(expected)
+        } else {
+            name == expected
+        }
+    };
 
     let binaries = point.binaries.iter().all(|binary| {
         binary.path.is_absolute()
@@ -260,7 +271,7 @@ fn automatic(point: &snapshot::Point, version: &str) -> bool {
                 .path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| names.contains(&name))
+                .is_some_and(|name| names.iter().any(|expected| same(name, expected)))
     });
 
     let home = point.home.iter().all(|entry| {

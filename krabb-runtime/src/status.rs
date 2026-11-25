@@ -277,8 +277,10 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
     if let Some(recovered) = recovered(value) {
         let line = if recovered.finished() {
             format!("Interrupted update: finished, Krabb {} kept", recovered.to)
-        } else {
+        } else if recovered.restored {
             format!("Interrupted update: undone, Krabb {} restored", recovered.from)
+        } else {
+            format!("Interrupted update: stopped before any change, Krabb {} kept", recovered.kept)
         };
 
         parts.push((line, Vec::new()));

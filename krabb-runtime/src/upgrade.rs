@@ -63,6 +63,11 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     })?;
 
     if options.rollback {
+        // An activation whose update died still runs; restoring underneath it mixes versions.
+        let Some(_finish) = interrupted::held(root, interrupted::FINISH_LOCK)? else {
+            return Err(interrupted::BUSY.into());
+        };
+
         snapshot::rollback(root, &service_path(), options.yes, json).await?;
 
         // A cancelled rollback keeps its recovery point, and with it what status reports.
@@ -224,13 +229,19 @@ async fn update(
             Err(error) => Err(error),
         };
 
-        // A clean failure is not an interruption, so the service and the intent are put back.
+        // A clean failure is not an interruption, so the service comes back and the intent goes.
+        // If the service cannot start, the intent stays so the next command starts it.
         if let Err(error) = stopped {
-            if !self::running()? {
-                service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
-            }
+            let restarted = match self::running() {
+                Ok(true) => Ok(()),
+                _ => {
+                    service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))
+                }
+            };
 
-            interrupted::clear_intent(root)?;
+            if restarted.is_ok() {
+                interrupted::clear_intent(root)?;
+            }
 
             return Err(error);
         }
@@ -256,11 +267,11 @@ async fn update(
         Ok(point) => point,
 
         Err(error) => {
-            interrupted::clear_intent(root)?;
-
             if running {
                 service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
             }
+
+            interrupted::clear_intent(root)?;
 
             return Err(error);
         }

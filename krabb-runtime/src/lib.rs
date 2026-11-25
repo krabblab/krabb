@@ -1830,7 +1830,9 @@ fn error_causes(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let json = cli.json;
 
-    if recovers(&cli.command) {
+    // Unit tests run commands against the developer's own home and service, which recovery
+    // must never restore or start; recovery itself is tested on temporary homes.
+    if recovers(&cli.command) && !cfg!(test) {
         upgrade::before_command(&home(), json).await?;
     }
 

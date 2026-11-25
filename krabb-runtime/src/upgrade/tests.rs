@@ -1110,7 +1110,8 @@ fn interrupted_update(name: &str) -> (PathBuf, PathBuf, [PathBuf; 2]) {
     let root = temp_root(name);
     let home = root.join("home");
     let bin = root.join("bin");
-    let binaries = [bin.join("krabb"), bin.join("krabb-daemon")];
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let binaries = [bin.join(format!("krabb{suffix}")), bin.join(format!("krabb-daemon{suffix}"))];
 
     for (path, content) in [
         (home.join("config.toml"), "model = 'old'"),
