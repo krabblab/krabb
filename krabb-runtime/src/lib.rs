@@ -57,6 +57,8 @@ mod credentials;
 mod daemon;
 mod definition;
 mod delivery;
+#[cfg(test)]
+mod deprecation;
 mod digest;
 mod dispatch;
 mod doctor;

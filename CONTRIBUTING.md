@@ -147,6 +147,9 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
   modules or comments that merely restate code.
 - Add deterministic tests and documentation for public behavior, permissions,
   and protocol changes.
+- Follow the [deprecation policy](DEPRECATIONS.md) when you replace an interface or
+  change saved data. Register every bridge with the release that removes it, and
+  change saved data only through `krabb-migrations` steps.
 - Keep filesystem access confined, shell disabled by default, and secrets out
   of logs, manifests, issues, and planning files.
 - Never add telemetry or commit credentials.
