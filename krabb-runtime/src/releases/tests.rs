@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::PathBuf;
 
 use super::{checksum, source_from, stable, target, valid_version};
 
