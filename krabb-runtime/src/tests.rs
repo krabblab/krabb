@@ -13543,6 +13543,7 @@ fn status_reports_an_interrupted_update_with_one_next_action() {
     assert!(!text.contains("Try the update again"), "{text}");
 }
 
+#[test]
 fn start_failures_are_one_clean_line_and_name_setup_only_for_rejected_credentials() {
     let failure = super::StartFailure::new(
         "KRABB_GEMINI_API_KEY: abc123 was rejected (401 Unauthorized).\nRun it \u{1b}[2J again.",
