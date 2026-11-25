@@ -128,17 +128,19 @@ pub(super) async fn restore(
     service: &Path,
     json: bool,
 ) -> Result<(), PluginError> {
-    restore_with(root, point, service, json, true).await
+    restore_with(root, point, service, json, true, true).await
 }
 
-/// Restores the recovery point; with MANAGES false it leaves the service alone, for the
-/// daemon that recovers while the service manager runs it.
+/// Restores the recovery point. STOPS stops a running service first and STARTS starts it again
+/// afterwards; the daemon that recovers while the service manager runs it sets neither, and
+/// recovery starts the service itself once it has recorded what it did.
 pub(super) async fn restore_with(
     root: &Path,
     point: &Point,
     service: &Path,
     json: bool,
-    manages: bool,
+    stops: bool,
+    starts: bool,
 ) -> Result<(), PluginError> {
     let directory = store(root);
     let plugins = changes(root)?;
@@ -148,7 +150,7 @@ pub(super) async fn restore_with(
         confined(saved)?;
     }
 
-    if manages && service.is_file() && running()? {
+    if stops && service.is_file() && running()? {
         service_action_with(service, ServiceAction::Stop, ServiceReport::nested(json))?;
     }
 
@@ -182,7 +184,7 @@ pub(super) async fn restore_with(
     // The daemon checks this lock while starting, so release it before the service starts.
     drop(plugins);
 
-    if manages && point.service && service.is_file() {
+    if starts && point.service && service.is_file() {
         service_action_with(service, ServiceAction::Start, ServiceReport::nested(json))?;
     }
 

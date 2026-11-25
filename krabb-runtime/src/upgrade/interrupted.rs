@@ -207,18 +207,18 @@ pub(super) async fn recover_locked(
 
                 outcome_of(&point.from, &point.to, &point.to, false)
             } else {
-                snapshot::restore_with(root, &point, service, true, manages).await?;
+                snapshot::restore_with(root, &point, service, true, manages, false).await?;
 
                 outcome_of(&point.from, &point.to, &point.from, true)
             };
 
-            // The staged release is only needed while the update runs.
-            krabb_migrations::recovery::remove(&staged)?;
+            // The staged release is only needed while the update runs, so failing to remove it
+            // never undoes recovery; the next update replaces it.
+            if let Err(error) = krabb_migrations::recovery::remove(&staged) {
+                warn!(error = %diagnostic(sentence(error.to_string())), "The staged release stays.");
+            }
 
-            // A restore already started the service it stopped.
-            let starts = manages && point.service && !outcome.restored;
-
-            (outcome, starts)
+            (outcome, manages && point.service)
         }
 
         _ => match intent(root)? {
@@ -235,9 +235,10 @@ pub(super) async fn recover_locked(
 
     let (outcome, starts) = outcome;
 
-    // Everything recovery did is recorded first, so a failed start never hides it.
-    clear_intent(root)?;
+    // Everything recovery did is recorded first, so a failed start never hides it, and the
+    // outcome before the intent goes, so a failed save leaves recovery to run again.
     krabb_file::save(root.join(OUTCOME), serde_json::to_vec(&outcome)?)?;
+    clear_intent(root)?;
 
     if starts {
         start(service)?;
@@ -301,13 +302,17 @@ fn start(service: &Path) -> Result<(), PluginError> {
 ///
 /// It runs only when an update left something to settle, says what it did once, and stops the
 /// command when this process is the binary recovery replaced.
-pub(crate) async fn before_command(root: &Path, json: bool) -> Result<(), PluginError> {
+pub(crate) async fn before_command(
+    root: &Path,
+    service: &Path,
+    json: bool,
+) -> Result<(), PluginError> {
     // Only an update creates this folder, so a fresh home is never created here.
     if !root.join("updates").is_dir() {
         return Ok(());
     }
 
-    let outcome = match recover(root, &service_path(), Caller::Command).await {
+    let outcome = match recover(root, service, Caller::Command).await {
         Ok(outcome) => outcome,
         Err(error) if error.to_string() == BUSY => return Err(error),
 
@@ -354,7 +359,11 @@ fn recovery_failure(error: &PluginError) -> String {
 }
 
 /// Settles an interrupted update before a new one starts; the caller holds the update lock.
-pub(super) async fn before_update(root: &Path, json: bool) -> Result<(), PluginError> {
+pub(super) async fn before_update(
+    root: &Path,
+    service: &Path,
+    json: bool,
+) -> Result<(), PluginError> {
     if !pending(root) {
         return Ok(());
     }
@@ -363,7 +372,7 @@ pub(super) async fn before_update(root: &Path, json: bool) -> Result<(), PluginE
         return Err(BUSY.into());
     };
 
-    let outcome = recover_locked(root, &service_path(), VERSION, Caller::Command).await?;
+    let outcome = recover_locked(root, service, VERSION, Caller::Command).await?;
 
     drop(finish);
 

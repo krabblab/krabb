@@ -1833,7 +1833,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Unit tests run commands against the developer's own home and service, which recovery
     // must never restore or start; recovery itself is tested on temporary homes.
     if recovers(&cli.command) && !cfg!(test) {
-        upgrade::before_command(&home(), json).await?;
+        upgrade::before_command(&home(), &service_path(), json).await?;
     }
 
     if schema_gated(&cli.command) {

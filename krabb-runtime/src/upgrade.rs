@@ -110,7 +110,7 @@ async fn update(
     json: bool,
 ) -> Result<(), PluginError> {
     // An interrupted update is settled first, so this one starts from a working installation.
-    interrupted::before_update(root, json).await?;
+    interrupted::before_update(root, &service_path(), json).await?;
 
     let version = match requested {
         Some(version) if releases::valid_version(&version) => version,
@@ -268,11 +268,16 @@ async fn update(
         Ok(point) => point,
 
         Err(error) => {
-            if running {
-                service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
-            }
+            let restarted = if running {
+                service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))
+            } else {
+                Ok(())
+            };
 
-            interrupted::clear_intent(root)?;
+            // A service that did not start keeps the intent, so the next command starts it.
+            if restarted.is_ok() {
+                interrupted::clear_intent(root)?;
+            }
 
             return Err(error);
         }

@@ -1300,3 +1300,61 @@ async fn a_running_update_is_never_recovered_underneath_it() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn commands_settle_what_an_update_left_and_wait_while_one_runs() {
+    let (root, home, binaries) = interrupted_update("before-command");
+    let service = no_service(&root);
+
+    assert!(interrupted::before_command(&home, &service, true).await.is_ok(), "nothing to do");
+
+    interrupted::intend(
+        &home,
+        &interrupted::Intent { from: VERSION.into(), to: "9.9.9".into(), service: false },
+    )
+    .unwrap();
+
+    interrupted::before_command(&home, &service, true).await.unwrap();
+
+    assert_eq!(interrupted::outcome(&home).unwrap().kept, VERSION);
+    assert!(!home.join("updates/intent.json").exists());
+
+    // A record recovery may not act on is left in place, and the command still runs.
+    snapshot::create(&home, "0.1.0", "0.2.0", &binaries, None, false).unwrap();
+
+    assert!(interrupted::before_command(&home, &service, true).await.is_ok());
+    assert!(snapshot::load(&home).unwrap().is_some_and(|point| !point.accepted));
+
+    let _update = lock_at(&home, ".update.lock").unwrap();
+    let busy = interrupted::before_command(&home, &service, true).await.unwrap_err();
+
+    assert!(busy.to_string().starts_with("An update or its recovery is still running."));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn an_update_settles_an_earlier_interruption_first() {
+    let (root, home, _) = interrupted_update("before-update");
+    let service = no_service(&root);
+
+    interrupted::intend(
+        &home,
+        &interrupted::Intent { from: VERSION.into(), to: "9.9.9".into(), service: false },
+    )
+    .unwrap();
+
+    {
+        let _finishing = lock_at(&home, interrupted::FINISH_LOCK).unwrap();
+
+        assert!(interrupted::before_update(&home, &service, true).await.is_err());
+        assert!(home.join("updates/intent.json").exists());
+    }
+
+    interrupted::before_update(&home, &service, true).await.unwrap();
+
+    assert!(!home.join("updates/intent.json").exists());
+    assert!(interrupted::outcome(&home).is_some());
+
+    let _ = fs::remove_dir_all(root);
+}
