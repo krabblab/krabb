@@ -39,18 +39,24 @@ pub(super) async fn run(
         .and_then(|point| point.definition)
         .is_some_and(|saved| saved.path == service);
 
+    let mut report = Report::default();
+
     if saved {
         match definition::refresh(&service) {
-            Ok(true) if !json => {
-                eprintln!("Refreshed the service definition to the current format.")
+            Ok(refreshed) => {
+                report.refreshed = refreshed;
+
+                if refreshed && !json {
+                    eprintln!("Refreshed the service definition to the current format.");
+                }
             }
 
-            Ok(_) => {}
+            Err(error) => {
+                let error = sentence(error.to_string());
 
-            Err(error) => eprintln!(
-                "The service definition could not be refreshed: {}",
-                sentence(error.to_string())
-            ),
+                eprintln!("The service definition could not be refreshed: {error}");
+                report.unrefreshed = Some(error);
+            }
         }
     }
 
@@ -70,9 +76,47 @@ pub(super) async fn run(
                 missing.join(", ")
             );
         }
+
+        report.unloaded = missing;
+    }
+
+    // The report only adds detail to the result, so failing to save it never undoes the update.
+    let saved = serde_json::to_vec(&report)
+        .map_err(std::io::Error::from)
+        .and_then(|bytes| krabb_file::save(dir.join(REPORT), bytes));
+
+    if let Err(error) = saved {
+        eprintln!("The update report could not be saved: {}", sentence(error.to_string()));
     }
 
     Ok(())
+}
+
+/// What activation noticed without failing, which the host that started the update reports.
+/// It is a file in the staged update, so a host from an earlier release simply ignores it.
+#[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
+pub(super) struct Report {
+    /// Plugins loaded before the update that the restarted daemon did not load.
+    #[serde(default)]
+    pub unloaded: Vec<String>,
+    /// Whether the service definition was rewritten to the current format.
+    #[serde(default)]
+    pub refreshed: bool,
+    /// Why an outdated service definition could not be rewritten.
+    #[serde(default)]
+    pub unrefreshed: Option<String>,
+}
+
+const REPORT: &str = "finish.json";
+
+const REPORT_LIMIT: u64 = 64 * 1024;
+
+/// The report the new host left in DIR, or none from a release that writes no report.
+pub(super) fn report(dir: &Path) -> Option<Report> {
+    krabb_file::load(dir.join(REPORT), REPORT_LIMIT)
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
 /// Asks the next daemon start to keep these plugins detached, replacing any stale request.

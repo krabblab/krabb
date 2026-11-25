@@ -23,12 +23,12 @@ basic checks passed. Track individual crates and plugins in the
 
 | Platform          | Setup | Daemon | Intelligence | Channel | Client | Plugins |
 | ----------------- | ----- | ------ | ------------ | ------- | ------ | ------- |
-| Linux (x86_64)    | [ ]   | [ ]    | [ ]          | [ ]     | [ ]    | [ ]     |
+| Linux (x86_64)    | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
 | Linux (aarch64)   | [x]   | [x]    | [x]          | [x]     | [x]    | [x]     |
-| macOS (x86_64)    | [ ]   | [ ]    | [ ]          | [ ]     | [ ]    | [ ]     |
-| macOS (aarch64)   | [ ]   | [ ]    | [ ]          | [ ]     | [ ]    | [ ]     |
-| Windows (x86_64)  | [ ]   | [ ]    | [ ]          | [ ]     | [ ]    | [ ]     |
-| Windows (aarch64) | [ ]   | [ ]    | [ ]          | [ ]     | [ ]    | [ ]     |
+| macOS (x86_64)    | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
+| macOS (aarch64)   | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
+| Windows (x86_64)  | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
+| Windows (aarch64) | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
 
 See [workflows](krabb-docs/workflows.md), [providers](krabb-docs/providers.md),
 [commands](krabb-docs/commands.md), and [safety](krabb-docs/safety.md) for instructions.

@@ -95,6 +95,14 @@ explicitly, and shows the reason.
    x86_64, which require 60% per package and 40% for the runtime host.
 3. Inspect archive contents and checksums with `krabb-scripts/check.sh`.
 4. Review installer output on each published target before merging.
+5. Release builds the core archives, then runs the Install workflow on them before
+   publishing: it installs them with `install.sh` or `install.ps1` on every target,
+   runs `krabb init`, `krabb doctor`, and `krabb status`, installs every official
+   plugin without setting it up, and installs and removes the service. If any target
+   fails, nothing is published. Run the same workflow from the Actions tab: it builds
+   the branch or tag chosen under "Use workflow from", latest `main` by default, and
+   also runs every Monday against `main`. To test another commit, push a branch or tag
+   at it first.
 
 For a local installer smoke test, set `KRABB_RELEASE_BASE` to a `file://`
 directory containing the archives and `SHA256SUMS`, for example
