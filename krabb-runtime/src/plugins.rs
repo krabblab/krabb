@@ -209,9 +209,9 @@ pub(crate) async fn plugin(
 
             if !activation_errors.is_empty() {
                 let restart = if service_path().is_file() {
-                    "Restart them with `krabb service restart`"
+                    "Restart them with `krabb service restart`."
                 } else {
-                    "Load them by restarting `krabb-daemon`"
+                    "Load them by restarting `krabb-daemon`."
                 };
 
                 return Err(format!(
@@ -482,10 +482,10 @@ pub(crate) fn plugin_log_hint(failure: &str) -> String {
 
 pub(crate) fn plugin_service_guidance(installed: bool) -> &'static str {
     if installed {
-        "Activate the new plugins with `krabb service restart`"
+        "Activate the new plugins with `krabb service restart`."
     } else {
         "The Krabb service is not installed.\nRun every plugin in the background with `krabb \
-         service install`"
+         service install`."
     }
 }
 

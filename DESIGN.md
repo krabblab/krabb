@@ -96,7 +96,8 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
   print the command that shows them.
 - End every error and failure with one next action, so the user always knows how to recover:
   the command to run, or what to change when no command fits.
-- End with the next action as a runnable command, with no period after the command.
+- End with the next action as a runnable command, and end that sentence with a period
+  like any other.
 - Mark finished steps with `✓` and a full sentence that names the kind of thing, such as
   `✓ Installed openai provider.`
 - Set headers, prompts, and the selection in bold Coral, hints in faint text, examples

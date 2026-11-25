@@ -119,7 +119,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         if let Flow::Stop = flow {
             println!();
             println!("Setup stopped.");
-            println!("Continue any time with `krabb init`");
+            println!("Continue any time with `krabb init`.");
             return Ok(());
         }
     }
@@ -240,7 +240,7 @@ impl Guide {
         if crate::home::regular_file_present(&self.root.join("config.toml")) {
             Ok(())
         } else {
-            Err("Krabb is not initialized.\nCreate it with `krabb init home`".into())
+            Err("Krabb is not initialized.\nCreate it with `krabb init home`.".into())
         }
     }
 
@@ -293,7 +293,7 @@ impl Guide {
                     None => return Ok(Flow::Stop),
 
                     Some(index) if index == PROVIDERS.len() => {
-                        self.note("Add a provider later with `krabb init provider`");
+                        self.note("Add a provider later with `krabb init provider`.");
                         return Ok(Flow::Next);
                     }
 
@@ -329,16 +329,16 @@ impl Guide {
 
         self.done(&summary(provider, &model));
         self.note(&format!(
-            "Saved in {} for every conversation without a choice of its own",
+            "Saved in {} for every conversation without a choice of its own.",
             self.root.join("config.toml").display()
         ));
 
         self.overridden(provider, &model)?;
 
         self.note(if applied {
-            "No restart is needed, because the running daemon uses it for new turns"
+            "No restart is needed, because the running daemon uses it for new turns."
         } else {
-            "No restart is needed, because it applies when the daemon starts"
+            "No restart is needed, because it applies when the daemon starts."
         });
 
         Ok(Flow::Next)
@@ -352,7 +352,7 @@ impl Guide {
         if (used.as_str(), used_model.as_str()) != (provider, model) {
             self.note(&format!(
                 "KRABB_MODEL_PLUGIN, KRABB_MODEL, or clients.cli make the CLI use {used} with \
-                 {used_model} instead"
+                 {used_model} instead."
             ));
         }
 
@@ -372,7 +372,7 @@ impl Guide {
             return Ok(Some(keep));
         }
 
-        self.note(&format!("Looking up the {provider} models"));
+        self.note(&format!("Looking up the {provider} models."));
 
         let models = listed(&self.root, config, provider).await;
         let mut heading = None;
@@ -404,8 +404,8 @@ impl Guide {
         }
 
         let hint = kept.map_or_else(
-            || format!("Press Enter to use the {provider} default model"),
-            |model| format!("Press Enter to keep {model}"),
+            || format!("Press Enter to use the {provider} default model."),
+            |model| format!("Press Enter to keep {model}."),
         );
 
         let heading = heading.unwrap_or_else(|| self.heading("Which model should your Krabb use?"));
@@ -436,7 +436,7 @@ impl Guide {
         self.section("Personality");
 
         if ready_provider(&self.root)?.is_none() {
-            self.note("Hatching needs a provider, so add one with `krabb init provider`");
+            self.note("Hatching needs a provider, so add one with `krabb init provider`.");
             return Ok(Flow::Next);
         }
 
@@ -456,7 +456,7 @@ impl Guide {
             }
 
             Some(_) => {
-                self.note("Give it one later with `krabb hatch`");
+                self.note("Give it one later with `krabb hatch`.");
                 Ok(Flow::Next)
             }
         }
@@ -517,7 +517,7 @@ impl Guide {
                 Some(0) => !installed,
 
                 Some(_) if !installed => {
-                    self.note("Start it later with `krabb init service`");
+                    self.note("Start it later with `krabb init service`.");
                     return Ok(Flow::Next);
                 }
 
@@ -562,7 +562,7 @@ impl Guide {
             return Ok(Flow::Next);
         }
 
-        let later = format!("Set it up later with `krabb plugin setup {}`", offer.id);
+        let later = format!("Set it up later with `krabb plugin setup {}`.", offer.id);
 
         if !self.interactive {
             self.note(&later);
@@ -605,12 +605,12 @@ impl Guide {
 /// How the guide ends: whether the Krabb can answer, then the one command to run next.
 fn closing(ready: bool, terminal: bool) -> &'static str {
     match (ready, terminal) {
-        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`",
-        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`",
+        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.",
+        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`.",
 
         (false, _) => {
             "Your Krabb is set up, and it needs a provider to answer.\n\
-                       Add one with `krabb init provider`"
+                       Add one with `krabb init provider`."
         }
     }
 }
