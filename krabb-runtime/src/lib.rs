@@ -3342,13 +3342,6 @@ fn list_at(
     Ok(())
 }
 
-fn string_list(value: &Value) -> String {
-    let values =
-        value.as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>();
-
-    if values.is_empty() { "none".into() } else { values.join(", ") }
-}
-
 fn read_manifest(root: &Path) -> Option<Manifest> {
     read_manifest_checked(root).ok()
 }

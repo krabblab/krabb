@@ -1,6 +1,6 @@
 [package]
 name = "krabb-text"
-description = "Bounded text parsing and formatting primitives for Krabb channels"
+description = "Bounded text parsing and formatting primitives for Krabb channels and clients"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 pulldown-cmark = { version = "0.13", default-features = false }
+serde_json.workspace = true

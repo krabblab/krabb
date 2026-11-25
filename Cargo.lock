@@ -2490,6 +2490,7 @@ name = "krabb-text"
 version = "0.1.0-rc.1"
 dependencies = [
  "pulldown-cmark",
+ "serde_json",
 ]
 
 [[package]]

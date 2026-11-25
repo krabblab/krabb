@@ -2,6 +2,13 @@
 
 use crate::*;
 
+pub(crate) use krabb_text::listing::{NO_PLUGINS, validate_page};
+pub(crate) use krabb_text::tree::{format_tree, format_tree_entry, format_tree_list};
+
+pub(crate) fn format_plugin_list(items: &[Value], page: usize) -> Result<String, String> {
+    krabb_text::listing::format_plugin_list(items, page, CLI_LIST_PAGE_SIZE)
+}
+
 pub(crate) fn plugin_summary(manifest: &Manifest, health: &str) -> Value {
     serde_json::json!({
         "id": manifest.id,
@@ -18,90 +25,6 @@ pub(crate) fn plugin_summary(manifest: &Manifest, health: &str) -> Value {
         "health": health,
     })
 }
-
-pub(crate) fn format_plugin_list(items: &[Value], page: usize) -> Result<String, String> {
-    if items.is_empty() {
-        return Ok(NO_PLUGINS.into());
-    }
-
-    let mut items = items.iter().collect::<Vec<_>>();
-
-    items.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
-
-    let (start, end, pages) = page_bounds(page, items.len(), "plugins")?;
-
-    let mut output =
-        format!("Plugins ({}–{} of {}, page {page} of {pages})", start + 1, end, items.len());
-
-    for (index, item) in items[start..end].iter().enumerate() {
-        let id = item["id"].as_str().unwrap_or("unknown");
-        let version = item["version"].as_str().unwrap_or("unknown");
-        let health = item["health"].as_str().unwrap_or("unknown");
-        let capabilities = string_list(&item["capabilities"]);
-        let permissions = string_list(&item["permissions"]);
-
-        let commands = item["commands"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|command| command["name"].as_str())
-            .collect::<Vec<_>>();
-
-        let protocol = format!(
-            "{}.{}",
-            item["protocol"]["major"].as_u64().unwrap_or_default(),
-            item["protocol"]["minor"].as_u64().unwrap_or_default()
-        );
-
-        let commands = if commands.is_empty() { "none".into() } else { commands.join(", ") };
-
-        let capabilities = if capabilities == "none" {
-            "No capabilities".into()
-        } else {
-            format!("Capabilities include {capabilities}")
-        };
-
-        let commands = if commands == "none" {
-            "No commands".into()
-        } else {
-            format!("Commands include {commands}")
-        };
-
-        let permissions = if permissions == "none" {
-            "No permissions".into()
-        } else {
-            format!("Permissions include {permissions}")
-        };
-
-        let binary = match health {
-            "ready" => "Binary is present (credentials not checked)".into(),
-            "missing" => "Binary is missing, so reinstall the plugin from its source".into(),
-            _ => format!("Health is {health}"),
-        };
-
-        let mut details =
-            vec![binary, capabilities, format!("Uses protocol version {protocol}"), commands];
-
-        if let Some(command) = item["setup_command"].as_str() {
-            details.push(format!("Set up credentials with `{command}`"));
-        }
-
-        details.push(permissions);
-
-        let separator = if index == 0 { "\n" } else { "\n\n" };
-
-        output.push_str(&format!(
-            "{separator}{}",
-            format_tree_entry(&format!("{id}@v{version}"), &details, index + 1 == end - start)
-        ));
-    }
-
-    Ok(output)
-}
-
-/// The empty plugin list, which ends with the command that adds the first plugin.
-pub(crate) const NO_PLUGINS: &str =
-    "No plugins installed.\nInstall one with `krabb plugin install <id>`.";
 
 /// The empty delivery list, which needs nothing more.
 const NO_DELIVERIES: &str = "No pending deliveries.\nEvery reply has been delivered.";
@@ -238,24 +161,7 @@ pub(crate) fn page_bounds(
     total: usize,
     kind: &str,
 ) -> Result<(usize, usize, usize), String> {
-    validate_page(page)?;
-
-    let pages = total.div_ceil(CLI_LIST_PAGE_SIZE);
-
-    if page > pages {
-        return Err(format!(
-            "Page {page} is out of range for {kind}, which has pages 1 to {pages}."
-        ));
-    }
-
-    let start = (page - 1) * CLI_LIST_PAGE_SIZE;
-    let end = (start + CLI_LIST_PAGE_SIZE).min(total);
-
-    Ok((start, end, pages))
-}
-
-pub(crate) fn validate_page(page: usize) -> Result<(), String> {
-    if page == 0 { Err("Page numbers start at 1.".into()) } else { Ok(()) }
+    krabb_text::listing::page_bounds(page, total, CLI_LIST_PAGE_SIZE, kind)
 }
 
 pub(crate) fn session_list_priority(item: &Value) -> u8 {
@@ -266,40 +172,6 @@ pub(crate) fn session_list_priority(item: &Value) -> u8 {
     } else {
         2
     }
-}
-
-pub(crate) fn format_tree_entry(label: &str, details: &[String], is_last: bool) -> String {
-    let root_branch = if is_last { "└─" } else { "├─" };
-
-    let child_prefix = if is_last { "   " } else { "│  " };
-
-    let mut lines = vec![format!("{root_branch} {label}")];
-
-    lines.extend(details.iter().enumerate().map(|(index, detail)| {
-        let branch = if index + 1 == details.len() { "└─" } else { "├─" };
-
-        format!("{child_prefix}{branch} {detail}")
-    }));
-
-    lines.join("\n")
-}
-
-pub(crate) fn format_tree_list(entries: &[String]) -> String {
-    let entries = entries.iter().map(|entry| (entry.clone(), Vec::new())).collect::<Vec<_>>();
-
-    format_tree(&entries)
-}
-
-/// One tree of labeled entries, each with its own details, as plugin results print them.
-pub(crate) fn format_tree(entries: &[(String, Vec<String>)]) -> String {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(index, (label, details))| {
-            format_tree_entry(label, details, index + 1 == entries.len())
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 pub(crate) fn format_date(timestamp: u64) -> Option<String> {
