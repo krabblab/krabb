@@ -388,7 +388,8 @@ pub struct Store {
     pub(super) record_limit: Option<u64>,
 }
 
-const CATALOG_VERSION: u8 = 15;
+/// Version 16 saves new tasks as `task-<digits>`, which earlier releases reject as invalid.
+const CATALOG_VERSION: u8 = 16;
 pub(crate) const SYSTEM_CONTEXT: &str = "krabb-context-";
 /// The delivery ID suffix of a best-effort progress notice.
 pub(crate) const PROGRESS: &str = "-progress";
@@ -766,7 +767,7 @@ impl Store {
         if reserved {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Scheduled session IDs are reserved.",
+                "Task and schedule session IDs are reserved.\nChoose another name.",
             ));
         }
 
@@ -928,7 +929,7 @@ impl Store {
         if is_schedule_session(target) || is_task_session(target) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Scheduled session IDs are reserved.",
+                "Task and schedule session IDs are reserved.\nChoose another name.",
             ));
         }
 
@@ -2078,7 +2079,7 @@ impl Store {
         if is_schedule_session(target) || is_task_session(target) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Scheduled session IDs are reserved.",
+                "Task and schedule session IDs are reserved.\nChoose another name.",
             ));
         }
 
@@ -2651,11 +2652,8 @@ fn is_schedule_session(id: &str) -> bool {
     })
 }
 
-/// Whether `id` names a background task; earlier releases saved tasks as `job-<digits>`.
 pub(crate) fn is_task_session(id: &str) -> bool {
-    id.strip_prefix("task-")
-        .or_else(|| id.strip_prefix("job-"))
-        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+    krabb_core::task::id(id)
 }
 
 pub fn valid(id: &str) -> bool {
@@ -5349,7 +5347,7 @@ mod tests {
         let catalog: serde_json::Value = serde_json::from_str(&index).unwrap();
         let loaded = Store::load(&path).unwrap();
 
-        assert_eq!(catalog["version"], 15);
+        assert_eq!(catalog["version"], 16);
         assert_eq!(catalog["sessions"], serde_json::json!({}));
         assert_eq!(store.offset("telegram"), 9);
         assert_eq!(loaded.offset("telegram"), 9);

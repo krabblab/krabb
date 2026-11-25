@@ -24,8 +24,8 @@ const TASK_PROMPT: &str = concat!(
     "Omit message to publish the most recent draft from this step. ",
     "If more work remains, checkpoint and continue without another human prompt. ",
     "The host delivers updates and completion to the original conversation. ",
-    "Do not create schedules or new background tasks, and do not send messages to other recipients. \
-        ",
+    "Do not create schedules or new background tasks, ",
+    "and do not send messages to other recipients. ",
     "Never repeat a completed mutation; if an action's outcome is uncertain, stop as blocked.",
 );
 

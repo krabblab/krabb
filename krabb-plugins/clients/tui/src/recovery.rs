@@ -73,15 +73,10 @@ where
         return Ok(None);
     }
 
-    let Some(task) = receipt.task.filter(|task| {
-        receipt.found
-            && task.id.len() <= 128
-            && task
-                .id
-                .strip_prefix("task-")
-                .or_else(|| task.id.strip_prefix("job-"))
-                .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
-    }) else {
+    let Some(task) = receipt
+        .task
+        .filter(|task| receipt.found && task.id.len() <= 128 && krabb_core::task::id(&task.id))
+    else {
         return Err(krabb_core::Error::Protocol("Invalid task receipt identity.".into()));
     };
 

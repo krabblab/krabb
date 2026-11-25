@@ -9,6 +9,13 @@ pub const INSTRUCTION_LIMIT: usize = 64 * 1024;
 /// Exact, language-neutral task command prefix; all other text is interpreted by the model.
 pub const PREFIX: &str = "/task";
 
+/// Whether `value` is a task ID; releases before 0.1.0 saved tasks as `job-<digits>`.
+pub fn id(value: &str) -> bool {
+    value.strip_prefix("task-").or_else(|| value.strip_prefix("job-")).is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
 pub fn command(text: &str) -> bool {
     let text = text.trim();
 
@@ -163,6 +170,16 @@ mod tests {
         assert!(!command("/tasks"));
         assert!(!command("pause the report"));
         assert!(!command("metti in pausa /task"));
+    }
+
+    #[test]
+    fn task_ids_are_digits_after_the_current_or_earlier_prefix() {
+        assert!(id("task-42"));
+        assert!(id("job-42"));
+        assert!(!id("task-"));
+        assert!(!id("task-4a"));
+        assert!(!id("schedule-42"));
+        assert!(!id("../task-42"));
     }
 
     #[test]

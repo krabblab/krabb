@@ -147,8 +147,8 @@ the same conversation; no status request is needed to keep work running. Cancell
 session also cancels its tasks. Tasks retain their captured tool, shell, workspace, and approval
 limits. Safe interrupted steps resume; an uncertain tool action pauses the task to prevent duplicate
 effects. A missing permission or required user decision also pauses it. Supply the requested
-clarification in the same conversation to resume a blocked task. Tasks with uncertain action outcomes
-stay blocked for review. A pause or cancellation of a running task first reports that stopping was
+clarification in the same conversation to resume a blocked task. Tasks with uncertain action
+outcomes stay blocked for review. A pause or cancellation of a running task first reports that stopping was
 requested; a paused state is reached only after the active step settles. Manual pauses preserve the
 saved goal and survive restart. Changing a paused task preserves the pause; changing a running task
 stops its current step and queues continuation with the updated instruction.

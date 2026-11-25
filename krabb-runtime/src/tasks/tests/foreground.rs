@@ -1132,7 +1132,7 @@ fn saved_journal_copies_migrate_to_conversation_references() {
     let recovered = state::Store::load(&path).unwrap();
     let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
 
-    assert_eq!(saved["version"], 15);
+    assert_eq!(saved["version"], 16);
     assert!(recovered.sessions[&id].reference.is_some());
     assert_eq!(
         recovered.sessions[&id].messages.iter().map(|message| &message.id).collect::<Vec<_>>(),

@@ -20,7 +20,7 @@ fn reservations_precede_dispatch_and_restart_retains_the_same_remaining_allowanc
     let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
 
     assert_eq!(saved["jobs"][&fixture.id]["budget"]["pending"]["id"], first.id);
-    assert_eq!(saved["version"], 15);
+    assert_eq!(saved["version"], 16);
 
     let mut store = fixture.context.sessions.lock().unwrap();
 

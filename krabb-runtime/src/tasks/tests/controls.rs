@@ -317,7 +317,7 @@ fn legacy_blockers_migrate_without_becoming_manual_pauses() {
     let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
 
     assert_eq!(recovered.tasks[&fixture.id].status, TaskStatus::Blocked);
-    assert_eq!(saved["version"], 15);
+    assert_eq!(saved["version"], 16);
     assert!(recovered.tasks[&fixture.id].commands.is_empty());
 
     let mut future = saved;
@@ -347,7 +347,10 @@ fn a_task_saved_by_an_earlier_release_as_a_job_loads_and_stays_in_that_format() 
     }
 
     let path = data.join("sessions/index.json");
-    let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+
+    saved["version"] = json!(15);
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
 
     assert_eq!(saved["jobs"][&legacy]["id"], legacy.as_str());
 

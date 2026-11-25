@@ -393,7 +393,7 @@ fn legacy_unknown_input_is_preserved_without_fabricating_a_fingerprint_or_resett
     assert!(restored.tasks[&run.id].input.as_ref().unwrap().fingerprint.is_none());
     let migrated: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
 
-    assert_eq!(migrated["version"], 15);
+    assert_eq!(migrated["version"], 16);
     assert_eq!(migrated["jobs"][&run.id]["budget"], budget);
     restored.sessions.get_mut(&fixture.origin).unwrap().messages.clear();
     restored.reserve(&fixture.origin, "retry".into()).unwrap();

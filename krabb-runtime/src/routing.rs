@@ -37,24 +37,24 @@ pub(super) struct Route {
 
 impl Route {
     pub fn parse(value: Value) -> Result<Self, PluginError> {
-        let mut task: Self = serde_json::from_value(value)?;
+        let mut route: Self = serde_json::from_value(value)?;
 
-        task.message = task.message.trim().into();
-        task.instruction = task.instruction.trim().into();
+        route.message = route.message.trim().into();
+        route.instruction = route.instruction.trim().into();
 
-        if task.kind != Kind::Fast
-            && (task.message.is_empty() || task.message.len() > MESSAGE_LIMIT)
+        if route.kind != Kind::Fast
+            && (route.message.is_empty() || route.message.len() > MESSAGE_LIMIT)
         {
             return Err("A contextual progress message of at most 2,000 bytes is required.".into());
         }
 
-        if task.kind == Kind::Background
-            && (task.instruction.is_empty() || task.instruction.len() > TEXT_LIMIT)
+        if route.kind == Kind::Background
+            && (route.instruction.is_empty() || route.instruction.len() > TEXT_LIMIT)
         {
             return Err("A complete background task instruction is required.".into());
         }
 
-        Ok(task)
+        Ok(route)
     }
 }
 
@@ -89,11 +89,11 @@ pub(super) fn tool(background: bool) -> ToolSpec {
                 generation needs a contextual acknowledgement: call with kind thoughtful and one \
                 brief contextual message in the user's language. For substantial autonomous work \
                 requiring multiple stages, choose background with a contextual acknowledgement and \
-                a self-contained goal before side effects. The host saves a durable task, continues \
-                it in checkpointed steps without an overall lifetime deadline, and delivers \
-                important updates and completion automatically. No scheduler plugin is needed. Do \
-                not promise a handoff until this tool succeeds. Background execution is {}. Do not \
-                use this tool inside a background or scheduled task.",
+                a self-contained goal before side effects. The host saves a durable task, \
+                continues it in checkpointed steps without an overall lifetime deadline, and \
+                delivers important updates and completion automatically. No scheduler plugin is \
+                needed. Do not promise a handoff until this tool succeeds. Background execution \
+                is {}. Do not use this tool inside a background or scheduled task.",
             if background {
                 "available under the configured approval policy"
             } else {

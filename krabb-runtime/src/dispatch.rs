@@ -724,7 +724,7 @@ pub(crate) async fn execute_tool_with_registry(
     }
 
     if name == tasks::CONTROL {
-        if matches!(channel, "task" | "job" | "scheduler") || !registry.execution.interactive() {
+        if channel == "scheduler" || !registry.execution.interactive() {
             return Err("Unattended work cannot control other background tasks.".into());
         }
 
@@ -735,7 +735,7 @@ pub(crate) async fn execute_tool_with_registry(
 
     let route = if name == "task" { Some(routing::Route::parse(args.clone())?) } else { None };
 
-    let _task_guard = if let Some(route) = &route {
+    let _route_guard = if let Some(route) = &route {
         if !registry.execution.interactive() {
             return Err("Scheduled execution cannot classify or create background tasks.".into());
         }
@@ -1435,7 +1435,7 @@ pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
             };
 
             format!(
-                "{} task {}{detail}",
+                "{} {}{detail}",
                 args["action"].as_str().unwrap_or_default(),
                 args["id"].as_str().unwrap_or_default()
             )
@@ -1638,7 +1638,7 @@ pub(crate) async fn host_tool_with_registry(
         return Ok(Response::fail(id, -32601, "method not found"));
     }
 
-    let Some(name) = params["name"].as_str() else {
+    let Some(name) = params["name"].as_str().map(tasks::canonical) else {
         return Ok(Response::fail(id, -32602, "A tool name is required."));
     };
 

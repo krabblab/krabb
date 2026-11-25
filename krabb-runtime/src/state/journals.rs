@@ -77,7 +77,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let key = index["sessions"]["task-1"].as_str().unwrap();
 
-        assert_eq!(index["version"], 15);
+        assert_eq!(index["version"], 16);
         assert_eq!(index["journals"], serde_json::json!(["task-1"]));
         assert!(root.join(format!("data/tasks/task-1/records/{key}.json")).is_file());
         assert!(!root.join(format!("data/sessions/records/{key}.json")).exists());

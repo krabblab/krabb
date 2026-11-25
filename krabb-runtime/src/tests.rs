@@ -8265,7 +8265,7 @@ fn prepares_approval_text_and_channel_requests() {
             "task_control",
             &serde_json::json!({"action":"steer", "id":"task-1", "instruction":"Use v2."})
         )
-        .contains("steer task task-1 with instruction: Use v2.")
+        .contains("steer task-1 with instruction: Use v2.")
     );
 
     assert!(
@@ -13364,4 +13364,73 @@ fn failures_without_their_own_next_action_point_to_debug_output() {
     let link = "The release is broken.\nReport it at https://github.com/krabblab/krabb/issues.";
 
     assert_eq!(super::conclude(link.into()), link);
+}
+
+#[tokio::test]
+async fn the_legacy_job_tool_name_is_reserved_and_checked_against_the_task_control_schema() {
+    assert!(super::HOST_TOOLS.contains(&super::tasks::CONTROL));
+    assert!(super::HOST_TOOLS.contains(&super::tasks::LEGACY_CONTROL));
+
+    let sessions = Arc::new(Mutex::new(super::state::Store::default()));
+
+    {
+        let mut store = sessions.lock().unwrap();
+
+        store.create("room", "test").unwrap();
+        store
+            .begin(
+                "room",
+                Message {
+                    id: "turn".into(),
+                    session: "room".into(),
+                    role: Role::User,
+                    sender: None,
+                    content: vec![Content::Text { text: "request".into() }],
+                },
+            )
+            .unwrap();
+    }
+
+    let registry = super::ToolRegistry {
+        specs: vec![super::tasks::control_tool()],
+        ..super::ToolRegistry::default()
+    };
+
+    let (notices, _events) = tokio::sync::mpsc::channel(4);
+
+    let response = super::host_tool_with_registry(
+        Request::call(
+            7,
+            "host/tool",
+            serde_json::json!({"name": "job", "args": {"action": "approve", "id": "task-1"}}),
+        ),
+        &Plugins::default(),
+        &sessions,
+        "room",
+        "codex",
+        "test",
+        None,
+        false,
+        false,
+        false,
+        super::ApprovalMode::Off,
+        Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap())),
+        "telegram",
+        "8",
+        None,
+        notices,
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        registry,
+        "turn".into(),
+        tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let error = response.error.unwrap();
+
+    assert_eq!(error.code, -32602);
+    assert!(error.message.starts_with("Tool arguments are invalid:"), "{}", error.message);
 }

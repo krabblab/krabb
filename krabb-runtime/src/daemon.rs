@@ -149,7 +149,7 @@ pub(crate) async fn serve_inner(
 
     let storage_task = tokio::spawn(storage::maintain(root.to_owned(), Arc::clone(&stop)));
 
-    let tasks_task = tokio::spawn(tasks::run(tasks::Context {
+    let worker = tokio::spawn(tasks::run(tasks::Context {
         plugins: plugins.clone(),
         sessions: Arc::clone(&sessions),
         stop: Arc::clone(&stop),
@@ -186,7 +186,7 @@ pub(crate) async fn serve_inner(
     debug!("Stopping the scheduler.");
     let _ = scheduler_task.await;
     debug!("Stopping background tasks.");
-    let _ = tasks_task.await;
+    let _ = worker.await;
     debug!("Stopping local IPC.");
     let _ = ipc_task.await;
     debug!("Stopping plugins.");
