@@ -7,9 +7,6 @@ name: Install
 # publish, so a release whose installation does not work is never published.
 
 on:
-  push:
-    branches: [sidtype]
-
   workflow_dispatch:
 
   schedule:
