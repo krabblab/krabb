@@ -10,6 +10,9 @@ name: Update
 # roll back is never published.
 
 on:
+  push:
+    branches: [drill]
+
   workflow_dispatch:
 
   schedule:
