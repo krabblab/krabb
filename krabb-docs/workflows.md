@@ -19,8 +19,12 @@ Use these workflows to set up, operate, and update a Krabb installation.
 Install the CLI and daemon with the command in the [README](../README.md#get-started).
 The installer verifies the release checksum and places `krabb` and `krabb-daemon` in
 `~/.local/bin`, or `%LOCALAPPDATA%\Krabb\bin` on Windows. Set `KRABB_VERSION` to pin a
-release and `KRABB_PREFIX` to choose another location. Platforms without a complete
-row in [Compatibility](../COMPATIBILITY.md) are experimental.
+release, with or without the leading `v`, and `KRABB_PREFIX` to choose another location.
+These variables must reach the installer: put them after the pipe, as in `curl … |
+KRABB_VERSION=0.1.0 sh`, or export them first. On Windows the installer adds its folder
+to your user `PATH`; elsewhere it prints the line to add when the folder is missing from
+`PATH`. Platforms without a complete row in [Compatibility](../COMPATIBILITY.md) are
+experimental.
 
 ```sh
 krabb init
