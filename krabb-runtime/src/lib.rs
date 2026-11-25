@@ -1391,7 +1391,7 @@ impl Manifest {
             .collect::<Vec<_>>();
 
         setup::validate_prompts(&self.setup, &variables, &defaults)?;
-        requirement::validate(&self.requires)?;
+        requirement::validate(&self.requires, &variables)?;
 
         Ok(())
     }

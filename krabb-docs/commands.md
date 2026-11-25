@@ -265,12 +265,14 @@ plugin forward is the next action, and `--json` lists each plugin's `next`:
 | --- | --- | --- |
 | `needs setup` | Required secrets or settings are missing. | `krabb plugin setup <id>` |
 | `configured` | Setup is complete; the daemon is stopped. | `krabb service start`, or `krabb service install` |
-| `failed to start` | The daemon is running but did not load the plugin. | `krabb service restart`, after checking the application log |
+| `missing program` | A program the plugin runs, such as `signal-cli`, is not on the daemon's `PATH`. | The plugin's install help |
+| `failed to start` | The daemon is running but did not load the plugin; the reason is shown. | `krabb plugin setup <id>` when a credential was rejected, otherwise `krabb service restart` |
 | `ready` | The daemon loaded the plugin. Clients are ready once set up. | None |
 
 Use `--json` for automation. Capability objects are named `intelligence` and
 `channels`, each with a `status` and `plugins` array. `plugin_states` lists each
-plugin's `id`, `state`, and `next` command, which is `null` when ready. The former `messaging` key
+plugin's `id`, `state`, `reason` (why it failed to start, or `null`), and `next` step,
+which is `null` when ready. The former `messaging` key
 has been renamed to `channels`; update scripts that read it.
 
 ## Terminal User Interface
@@ -456,8 +458,9 @@ uninstallation identifies the plugin being removed. Spinners clear before
 prompts and results. `--json` suppresses these progress messages.
 Plugin results use one-line tree entries; failed installs and updates point to
 the current application log file. Update previews also show the failure reason.
-`plugin list` distinguishes present and missing binaries and shows credential
-setup commands. Binary presence does not mean a plugin is authenticated or active.
+`plugin list` shows each plugin's state from `krabb status`, with the reason a
+plugin failed to start and its next step, plus credential setup commands. A plugin
+whose binary is gone is `missing`; with no daemon to ask, the TUI shows `installed`.
 
 `plugin update` previews changes, then replaces changed plugins after
 confirmation, including reviewed changes to capabilities, permissions, secret names,

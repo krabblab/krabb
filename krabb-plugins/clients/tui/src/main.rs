@@ -587,7 +587,8 @@ where
             .await?;
     }
 
-    let inventory = host(home.clone(), "plugin.list".into(), serde_json::json!({}))
+    // Startup only needs to know which plugins are installed, not each one's runtime state.
+    let inventory = host(home.clone(), "plugin.list".into(), serde_json::json!({"states": false}))
         .await
         .unwrap_or(Value::Null);
 
@@ -5177,7 +5178,9 @@ fn local_plugin_list(home: &str) -> Value {
                 .and_then(|bytes| toml::from_str::<Value>(&String::from_utf8_lossy(&bytes)).ok())
                 .unwrap_or(Value::Null);
 
-            let health = if plugin_binary_path(home, &id).is_file() { "ready" } else { "missing" };
+            // Without the daemon only the binary can be checked, which does not make it ready.
+            let health =
+                if plugin_binary_path(home, &id).is_file() { "installed" } else { "missing" };
 
             let filled = |value: &Value| match value {
                 Value::Array(items) => !items.is_empty(),

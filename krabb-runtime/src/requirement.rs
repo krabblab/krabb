@@ -19,7 +19,9 @@ pub(crate) struct Requirement {
     pub help: String,
 }
 
-pub(crate) fn validate(requirements: &[Requirement]) -> Result<(), String> {
+/// Checks the declarations; DECLARED are the manifest's secrets and settings, which the host
+/// may fill from the saved store, so a requirement cannot read one from the environment.
+pub(crate) fn validate(requirements: &[Requirement], declared: &[String]) -> Result<(), String> {
     if requirements.len() > REQUIREMENT_LIMIT {
         return Err(format!("Plugins may declare at most {REQUIREMENT_LIMIT} requirements."));
     }
@@ -35,6 +37,12 @@ pub(crate) fn validate(requirements: &[Requirement]) -> Result<(), String> {
 
         if requirement.setting.as_deref().is_some_and(|setting| !setting.starts_with("KRABB_")) {
             return Err("Requirement settings must be KRABB_ environment variable names.".into());
+        }
+
+        if requirement.setting.as_ref().is_some_and(|setting| declared.contains(setting)) {
+            return Err(
+                "Requirement settings must not be the plugin's own secrets or settings.".into()
+            );
         }
 
         if requirement.off.len() > REQUIREMENT_LIMIT
@@ -105,10 +113,7 @@ fn unmet(
 /// The host passes these variables to plugins only from its own environment, never from the
 /// saved store, so the check reads them the same way.
 fn setting_value(setting: &str) -> Option<String> {
-    std::env::var(setting)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+    std::env::var(setting).ok().filter(|value| !value.trim().is_empty())
 }
 
 /// Finds PROGRAM as a plugin would start it: an absolute path, or a file name on PATH.

@@ -1983,13 +1983,22 @@ async fn runtime(state: &State) -> super::plugins::Runtime {
 }
 
 /// The installed plugins with their manifests and runtime states, as `krabb plugin list` shows.
+///
+/// `{"states": false}` skips the states, whose credential checks may decrypt the store or
+/// probe a sign-in, for a client that only needs the inventory.
 async fn plugin_list(request: &IpcRequest, state: &State) -> IpcResponse {
-    let runtime = runtime(state).await;
+    let wanted = request.params["states"] != false;
+    let runtime = if wanted { Some(runtime(state).await) } else { None };
+
     let home = state.home.clone();
 
     let items = tokio::task::spawn_blocking(move || {
-        let states = super::load_lock_at(&home)
-            .map(|lock| super::status::plugin_states(&home, &lock, Some(runtime)))
+        let states = runtime
+            .and_then(|runtime| {
+                let lock = super::load_lock_at(&home).ok()?;
+
+                Some(super::status::plugin_states(&home, &lock, Some(runtime)))
+            })
             .unwrap_or_default();
 
         plugin_items(&home, true, &states)
@@ -2740,7 +2749,7 @@ fn plugin_items(home: &std::path::Path, include_manifest: bool, states: &[Value]
             };
 
             let present = entry.path().join("bin").join(binary).is_file();
-            let health = if present { "ready" } else { "missing" };
+            let health = if present { "installed" } else { "missing" };
 
             let item = if include_manifest {
                 super::read_manifest(&entry.path()).map_or_else(

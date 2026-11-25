@@ -40,8 +40,8 @@ saving them. Choose a hosted provider such as `openai`, `anthropic`, `gemini`, o
 needs its own memory and CPU, described in [Resources](resources.md). See
 [Providers](providers.md) for credentials and default models.
 
-`krabb status` lists each plugin as `needs setup`, `configured`, `failed to start`,
-or `ready`, with the command to run next. Keep the daemon in the foreground until
+`krabb status` lists each plugin as `needs setup`, `configured`, `missing program`,
+`failed to start`, or `ready`, with the step to take next. Keep the daemon in the foreground until
 replies and acknowledgements work, then move it to the
 [background service](#background-service). Configuration, conversations,
 credentials, and plugins live in `KRABB_HOME`; [Storage](storage.md) lists every

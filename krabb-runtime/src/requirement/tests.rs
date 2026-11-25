@@ -9,26 +9,34 @@ fn requirement(program: Option<&str>, setting: Option<&str>) -> Requirement {
     }
 }
 
+fn validate_all(requirements: &[Requirement]) -> Result<(), String> {
+    validate(requirements, &[])
+}
+
 #[test]
 fn declarations_name_a_plain_program_or_a_krabb_setting_with_one_line_of_help() {
-    assert!(validate(&[requirement(Some("signal-cli"), Some("KRABB_SIGNAL_COMMAND"))]).is_ok());
+    assert!(validate_all(&[requirement(Some("signal-cli"), Some("KRABB_SIGNAL_COMMAND"))]).is_ok());
 
-    assert!(validate(&[requirement(None, Some("KRABB_SANDBOX_RUNTIME"))]).is_ok());
-    assert!(validate(&[requirement(None, None)]).is_err());
-    assert!(validate(&[requirement(Some("../bin/sh"), None)]).is_err());
-    assert!(validate(&[requirement(Some(".hidden"), None)]).is_err());
-    assert!(validate(&[requirement(Some("docker"), Some("PATH"))]).is_err());
-    assert!(validate(&vec![requirement(Some("docker"), None); REQUIREMENT_LIMIT + 1]).is_err());
+    assert!(validate_all(&[requirement(None, Some("KRABB_SANDBOX_RUNTIME"))]).is_ok());
+    assert!(validate_all(&[requirement(None, None)]).is_err());
+    assert!(validate_all(&[requirement(Some("../bin/sh"), None)]).is_err());
+    assert!(validate_all(&[requirement(Some(".hidden"), None)]).is_err());
+    assert!(validate_all(&[requirement(Some("docker"), Some("PATH"))]).is_err());
+    assert!(validate_all(&vec![requirement(Some("docker"), None); REQUIREMENT_LIMIT + 1]).is_err());
+
+    let own = [requirement(None, Some("KRABB_SIGNAL_COMMAND"))];
+
+    assert!(validate(&own, &["KRABB_SIGNAL_COMMAND".into()]).is_err());
 
     let off = Requirement { off: vec!["off".into()], ..requirement(None, Some("KRABB_RUNTIME")) };
 
-    assert!(validate(std::slice::from_ref(&off)).is_ok());
-    assert!(validate(&[Requirement { off: vec!["no way".into()], ..off }]).is_err());
+    assert!(validate_all(std::slice::from_ref(&off)).is_ok());
+    assert!(validate_all(&[Requirement { off: vec!["no way".into()], ..off }]).is_err());
 
     for help in ["Install it.\nThen retry.", "Install \u{1b}[2Jit.", "Install \u{202e}it.", " "] {
         let declared = Requirement { help: help.into(), ..requirement(Some("docker"), None) };
 
-        assert!(validate(&[declared]).is_err(), "{help:?}");
+        assert!(validate_all(&[declared]).is_err(), "{help:?}");
     }
 }
 
