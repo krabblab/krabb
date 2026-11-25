@@ -234,6 +234,7 @@ async fn update(
         if let Err(error) = stopped {
             let restarted = match self::running() {
                 Ok(true) => Ok(()),
+
                 _ => {
                     service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))
                 }
