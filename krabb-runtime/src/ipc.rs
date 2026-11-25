@@ -141,6 +141,7 @@ fn control_method(method: &str) -> bool {
             | "approval.resolve"
             | "approval.list"
             | "status"
+            | "status.report"
     )
 }
 
@@ -229,6 +230,7 @@ async fn handle(
         "plugin.unload" | "plugin.detach" => unload(&request, &state).await,
         "plugin.uninstall" => uninstall(&request, &state).await,
         "plugin.active" => active(&request, &state).await,
+        "status.report" => status_report(&request, &state).await,
         "delivery.drop" => drop_deliveries(&request, &state).await,
         "capability.call" => capability_call(&request, &state).await,
         "model.list" => model_list(&request, &state).await,
@@ -1966,6 +1968,29 @@ async fn active(request: &IpcRequest, state: &State) -> IpcResponse {
     let detached = state.plugins.detached.read().await.iter().cloned().collect::<Vec<_>>();
 
     IpcResponse::ok(request.id, json!({"items": items, "detached": detached}))
+}
+
+/// The status screen `krabb status` prints, for clients that cannot read the host's state.
+async fn status_report(request: &IpcRequest, state: &State) -> IpcResponse {
+    let active = state.plugins.all().await.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    let home = state.home.clone();
+
+    // Credential checks for plugins that did not load may decrypt the store or probe a sign-in.
+    let report =
+        tokio::task::spawn_blocking(move || super::status::status_with(&home, Some(active))).await;
+
+    match report {
+        Ok(Ok(value)) => {
+            let installed = value["plugins"].as_u64().unwrap_or(0) as usize;
+
+            let text = super::status::status_text(&value, installed);
+
+            IpcResponse::ok(request.id, json!({"text": text}))
+        }
+
+        Ok(Err(error)) => IpcResponse::fail(request.id, -32000, error.to_string()),
+        Err(_) => IpcResponse::fail(request.id, -32000, "The status check stopped unexpectedly."),
+    }
 }
 
 fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
@@ -5075,6 +5100,14 @@ for line in sys.stdin:
         let response = active(&request, &state).await;
 
         assert_eq!(response.result.unwrap()["items"], json!(["tools"]));
+
+        let request = IpcRequest::call(2, "secret", "status.report", json!({}));
+        let report = super::status_report(&request, &state).await.result.unwrap();
+        let text = report["text"].as_str().unwrap();
+
+        assert!(text.starts_with(&format!("Krabb {}", crate::VERSION)), "{text}");
+        assert!(text.contains("├─ Runtime: running"), "{text}");
+        assert!(text.contains("tools: ready"), "{text}");
 
         state.plugins.detached.write().await.insert("telegram".into());
 

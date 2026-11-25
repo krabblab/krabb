@@ -120,3 +120,34 @@ fn string_list(value: &Value) -> String {
 
     if values.is_empty() { "none".into() } else { values.join(", ") }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pages_start_at_one_and_stop_at_the_last() {
+        assert_eq!(page_bounds(1, 7, 5, "plugins"), Ok((0, 5, 2)));
+        assert_eq!(page_bounds(2, 7, 5, "plugins"), Ok((5, 7, 2)));
+        assert_eq!(page_bounds(0, 7, 5, "plugins"), Err("Page numbers start at 1.".into()));
+
+        assert_eq!(
+            page_bounds(3, 7, 5, "plugins"),
+            Err("Page 3 is out of range for plugins, which has pages 1 to 2.".into())
+        );
+    }
+
+    #[test]
+    fn plugins_without_details_say_so() {
+        let items = [serde_json::json!({"id": "echo", "version": "0.1.0", "health": "missing"})];
+
+        assert_eq!(
+            format_plugin_list(&items, 1, 5).unwrap(),
+            "Plugins (1–1 of 1, page 1 of 1)\n└─ echo@v0.1.0\n   ├─ Binary is missing, so \
+             reinstall the plugin from its source\n   ├─ No capabilities\n   ├─ Uses protocol \
+             version 0.0\n   ├─ No commands\n   └─ No permissions"
+        );
+
+        assert_eq!(format_plugin_list(&[], 1, 5).unwrap(), NO_PLUGINS);
+    }
+}

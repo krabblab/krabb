@@ -1246,7 +1246,7 @@ const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/history list", "List recent TUI input history."),
     ("/history clear", "Clear saved TUI input history."),
     ("/history help", "Show input history commands."),
-    ("/status", "Show whether the background runtime is running."),
+    ("/status", "Show the runtime, intelligence, channels, and plugins."),
     ("/task", "List saved tasks, or pause, resume, cancel, approve, or deny one by ID."),
     ("/task steer|defer|extend", "Redirect, delay, or extend a task: <id> <value>."),
     ("/plugin", "Browse installed plugins, optionally by page."),
@@ -3264,7 +3264,7 @@ fn wrap_transcript_line(line: &str, name: &str, width: usize) -> Vec<Line<'stati
         || line == "Session commands:"
         || line == "Sessions:"
         || line.starts_with("Sessions | ")
-        || line.starts_with("Plugins | ")
+        || line.starts_with("Plugins (")
     {
         vec![(line.to_owned(), Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD))]
     } else if line.starts_with("Session not found") {
