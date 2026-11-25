@@ -419,15 +419,15 @@ fn select_for<'a>(
 ) -> Result<Choice<'a>, Error> {
     let (target, extension) = releases::target(os, arch).ok_or_else(|| {
         format!(
-            "Official plugins are not published for {os} ({arch}), so install from a local build \
-            with --source."
+            "Official plugins are not published for {os} ({arch}).\nInstall a local build with \
+             `krabb plugin install {id} --source <path>`"
         )
     })?;
 
     let releases = index.plugins.get(id).ok_or_else(|| {
         format!(
-            "Plugin {id} is not in the official plugin index.\nCheck the ID or install with \
-            --source."
+            "Plugin {id} is not in the official plugin index.\nCheck the ID, or install a local \
+             build with `krabb plugin install {id} --source <path>`"
         )
     })?;
 
@@ -436,15 +436,15 @@ fn select_for<'a>(
             let release =
                 releases.iter().find(|release| release.version == version).ok_or_else(|| {
                     format!(
-                        "Plugin {id} has no version {version}.\nSee the available ones with \
-                        `krabb plugin versions {id}`"
+                        "Plugin {id} has no version {version}.\nSee every release with \
+                         `krabb plugin versions {id}`"
                     )
                 })?;
 
             if !protocol.compatible(release.protocol) {
                 return Err(format!(
-                    "Plugin {id} {version} needs plugin protocol {}.{}, which this Krabb does \
-                    not support.\nChoose another with `krabb plugin versions {id}`",
+                    "Plugin {id} {version} needs plugin protocol {}.{}, which this version of \
+                     Krabb does not support.\nSee every release with `krabb plugin versions {id}`",
                     release.protocol.major, release.protocol.minor
                 )
                 .into());
@@ -464,14 +464,7 @@ fn select_for<'a>(
                 .collect::<Vec<_>>();
 
             if supported.is_empty() {
-                return Err(format!(
-                    "No {}version of {id} supports plugin protocol {}.{}.\nChoose one with \
-                    `krabb plugin versions {id}`",
-                    if unstable { "" } else { "stable " },
-                    protocol.major,
-                    protocol.minor
-                )
-                .into());
+                return Err(Unavailable::new(id, releases, unstable, protocol, target).into());
             }
 
             supported
@@ -480,8 +473,8 @@ fn select_for<'a>(
                 .max_by(|left, right| releases::compare(&left.version, &right.version))
                 .ok_or_else(|| {
                     format!(
-                        "No published version of {id} has a build for {target}, so install from \
-                        a local build with --source."
+                        "No release of plugin {id} has a build for {target}.\nInstall a local \
+                         build with `krabb plugin install {id} --source <path>`"
                     )
                 })?
         }
@@ -489,14 +482,70 @@ fn select_for<'a>(
 
     let artifact = release.artifacts.get(target).ok_or_else(|| {
         format!(
-            "Plugin {id} {} has no build for {target}, so install from a local build with \
-            --source.",
+            "Plugin {id} {} has no build for {target}.\nInstall a local build with `krabb plugin \
+             install {id} --source <path>`",
             release.version
         )
     })?;
 
     Ok(Choice { release, artifact, target, extension })
 }
+
+/// No release of a plugin can run on this host. Its message states only the fact, so an
+/// update that embeds it stays accurate, and `next` gives the command for an install.
+#[derive(Debug)]
+pub(crate) struct Unavailable {
+    id: String,
+    prerelease: bool,
+}
+
+impl Unavailable {
+    fn new(
+        id: &str,
+        releases: &[Release],
+        unstable: bool,
+        protocol: Protocol,
+        target: &str,
+    ) -> Self {
+        let prerelease = !unstable
+            && releases.iter().any(|release| {
+                release.yanked.is_none()
+                    && !releases::stable(&release.version)
+                    && protocol.compatible(release.protocol)
+                    && release.artifacts.contains_key(target)
+            });
+
+        Self { id: id.to_owned(), prerelease }
+    }
+
+    /// The command that installs the plugin anyway, or that lists its releases.
+    pub(crate) fn next(&self) -> String {
+        if self.prerelease {
+            format!(
+                "Install the newest pre-release with `krabb plugin install {} --unstable`",
+                self.id
+            )
+        } else {
+            format!("See every release with `krabb plugin versions {}`", self.id)
+        }
+    }
+}
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.prerelease {
+            write!(
+                formatter,
+                "No stable release of plugin {} works with this version of Krabb.",
+                self.id
+            )
+        } else {
+            write!(formatter, "No release of plugin {} works with this version of Krabb.", self.id)
+        }
+    }
+}
+
+impl std::error::Error for Unavailable {}
 
 /// Downloads a chosen archive into `dir` and verifies it against its index digest.
 pub(crate) fn pull(index: &Index, id: &str, choice: &Choice, dir: &Path) -> Result<PathBuf, Error> {

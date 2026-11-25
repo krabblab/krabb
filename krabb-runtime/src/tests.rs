@@ -1267,7 +1267,7 @@ async fn injects_only_the_current_conversations_bounded_memory_index() {
 }
 
 #[test]
-fn formats_status_as_aligned_lines() {
+fn status_reads_as_a_tree_with_one_next_action() {
     let value = serde_json::json!({
         "version": super::VERSION,
         "health": "unhealthy",
@@ -1286,9 +1286,39 @@ fn formats_status_as_aligned_lines() {
     assert_eq!(
         super::status_text(&value, 0),
         format!(
-            "Version:            {}\nHealth:             unhealthy\nBackground runtime: stopped\nIntelligence:       configured (codex, gemini)\nChannels:           configured (telegram, discord)\nPlugins:            0 installed",
+            "Krabb {} needs attention\n\
+             ├─ Runtime: stopped\n\
+             ├─ Intelligence: configured (codex, gemini)\n\
+             ├─ Channels: configured (telegram, discord)\n\
+             └─ Plugins: 0 installed",
             super::VERSION
         )
+    );
+
+    let healthy = serde_json::json!({
+        "version": "0.1.0",
+        "health": "healthy",
+        "daemon": "running",
+        "intelligence": {"status": "configured", "plugins": ["codex"]},
+        "channels": {"status": "not configured", "plugins": []},
+        "recovery": {"from": "0.0.9", "accepted": true},
+    });
+
+    assert_eq!(
+        super::status_text(&healthy, 1),
+        "Krabb 0.1.0 is healthy\n\
+         ├─ Runtime: running\n\
+         ├─ Intelligence: configured (codex)\n\
+         ├─ Channels: not configured\n\
+         ├─ Plugins: 1 installed\n\
+         └─ Recovery point: Krabb 0.0.9 (kept)"
+    );
+
+    let unfinished = serde_json::json!({"recovery": {"from": "0.0.9", "accepted": false}});
+
+    assert!(
+        super::status_text(&unfinished, 0)
+            .ends_with("\n\nUndo the unfinished update with `krabb update --rollback`")
     );
 
     assert_eq!(
@@ -1316,6 +1346,7 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
         settings: Vec::new(),
         commands: Vec::new(),
         linked: false,
+        state: None,
     };
 
     let model = entry("model");
@@ -1344,7 +1375,36 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     let failed = state("gemini", &model, true, Some(&active), true);
 
     assert_eq!(failed.0, "failed to start");
-    assert!(failed.1.unwrap().ends_with("then run krabb service restart"));
+    assert_eq!(failed.1.unwrap(), "krabb service restart");
+
+    let next = |state: &str, next: &str| {
+        let value =
+            serde_json::json!({"plugin_states": [{"id": "codex", "state": state, "next": next}]});
+        let text = super::status_text(&value, 1);
+
+        text.rsplit("\n\n").next().unwrap().to_owned()
+    };
+
+    assert_eq!(next("configured", "krabb service start"), "Start codex with `krabb service start`");
+
+    assert_eq!(
+        next("configured", "krabb service install"),
+        "Install the service with `krabb service install`"
+    );
+
+    assert!(next("failed to start", "krabb service restart").starts_with("The log at "));
+
+    let unready = serde_json::json!({
+        "health": "unhealthy",
+        "health_details": ["selected intelligence plugin is not ready"],
+        "plugin_states": [{"id": "codex", "state": "failed to start", "next": "krabb service restart"}],
+    });
+
+    assert!(
+        super::status_text(&unready, 1)
+            .ends_with(" shows why codex failed.\nRestart codex with `krabb service restart`")
+    );
+
     assert_eq!(state("tui", &entry("client"), true, Some(&active), true).0, "ready");
 
     let text = super::status_text(
@@ -1356,7 +1416,8 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     );
 
     assert!(text.ends_with(
-        "2 installed\n  openai            ready\n  telegram          needs setup: krabb plugin setup telegram"
+        "└─ Plugins: 2 installed\n   ├─ openai: ready\n   └─ telegram: needs setup\n\n\
+         Set up telegram with `krabb plugin setup telegram`"
     ));
 }
 
@@ -1413,12 +1474,22 @@ fn formats_status_health_details_only_when_present() {
     let text = super::status_text(&value, 3);
 
     assert!(text.ends_with(
-            "Plugins:            3 installed\nHealth details:     configuration is invalid, plugin commands have name conflicts"
-        ));
+        "├─ Plugins: 3 installed\n└─ Needs attention\n   ├─ Configuration is invalid\n   \
+         └─ Plugin commands have name conflicts\n\nFind the invalid setting with `krabb doctor`"
+    ));
+
+    value["health_details"] = serde_json::json!([
+        "no intelligence plugin is installed (run `krabb plugin install <provider>`)"
+    ]);
+
+    assert!(super::status_text(&value, 3).ends_with(
+        "   └─ No intelligence plugin is installed\n\n\
+         Install a provider with `krabb plugin install <provider>`"
+    ));
 
     value["health_details"] = serde_json::json!([]);
 
-    assert!(!super::status_text(&value, 3).contains("Health details:"));
+    assert!(!super::status_text(&value, 3).contains("Needs attention"));
 }
 
 #[tokio::test]
@@ -1476,33 +1547,53 @@ fn formats_plugin_install_results_as_compact_tree_rows() {
 }
 
 #[test]
+fn failed_installs_show_each_reason_and_next_command() {
+    assert_eq!(
+        super::plugin_install_output(
+            &[
+                serde_json::json!({
+                    "id": "telegram",
+                    "status": "failed",
+                    "error": "No stable release of plugin telegram works with this version of Krabb.",
+                    "next": "Install the newest pre-release with `krabb plugin install telegram --unstable`",
+                }),
+                serde_json::json!({
+                    "id": "nosuch",
+                    "status": "failed",
+                    "error": "Plugin nosuch is not in the official plugin index.\nCheck the \
+                              ID\u{1b}[2J.",
+                }),
+            ],
+            false
+        ),
+        "Installed 0 of 2 plugins\n\
+         ├─ telegram installation failed\n\
+         │  ├─ No stable release of plugin telegram works with this version of Krabb.\n\
+         │  └─ Install the newest pre-release with `krabb plugin install telegram --unstable`\n\
+         └─ nosuch installation failed\n   \
+         ├─ Plugin nosuch is not in the official plugin index.\n   \
+         └─ Check the ID\u{fffd}[2J."
+    );
+}
+
+#[test]
 fn plugin_install_failures_point_to_the_daily_application_log() {
-    let error = super::plugin_install_error(
-        &[serde_json::json!({"id": "telegram", "error": "source unavailable"})],
-        3,
-        false,
-    );
+    let log = super::logging::application_log_path().display().to_string();
 
-    assert!(error.starts_with("Failed to install 1 of 3 plugins."));
-
-    assert!(
-        error.contains("For details about the failed installation, check the application logs:")
-    );
-
-    assert!(error.contains(&super::logging::application_log_path().display().to_string()));
-    assert!(!error.contains("source unavailable"));
+    assert_eq!(super::plugin_install_error(), format!("The log at {log} has more detail."));
 }
 
 #[test]
 fn plugin_install_guidance_uses_the_service_state() {
     assert_eq!(
         super::plugin_service_guidance(false),
-        "The Krabb service is not installed. Install it for full plugin functionality:\nkrabb service install"
+        "The Krabb service is not installed.\nRun every plugin in the background with `krabb \
+         service install`"
     );
 
     assert_eq!(
         super::plugin_service_guidance(true),
-        "Restart the Krabb service to activate the new plugins:\nkrabb service restart"
+        "Activate the new plugins with `krabb service restart`"
     );
 }
 
@@ -1977,7 +2068,7 @@ fn schedule_list_shows_pending_state_and_exact_utc_time() {
 
     assert_eq!(
         super::format_schedule_list(&serde_json::json!({"items": []})),
-        "There are no schedules to list."
+        "No schedules yet.\nAdd one with `krabb schedule add`, or ask your Krabb to schedule a task."
     );
 
     let local = super::format_schedule_list(&serde_json::json!({
@@ -4112,6 +4203,7 @@ fn validates_manifests_and_environment() {
         setup: BTreeMap::new(),
         check: false,
         commands: Vec::new(),
+        state: None,
     };
 
     assert!(manifest.validate().is_ok());
@@ -4183,6 +4275,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         test_home,
@@ -4228,6 +4321,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &config,
         test_home,
@@ -4248,6 +4342,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         test_home,
@@ -4277,6 +4372,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             setup: BTreeMap::new(),
             check: false,
             commands: Vec::new(),
+            state: None,
         },
         &Config::default(),
         Path::new("/tmp/krabb-home"),
@@ -4578,6 +4674,7 @@ fn recovers_locks_and_plugin_staging() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 
@@ -5144,8 +5241,18 @@ async fn manages_service_definition() {
         .is_err()
     );
 
+    let copy = super::service_credentials_path(&path);
+
+    fs::write(&copy, "stale copy").unwrap();
+
     #[cfg(not(windows))]
-    service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
+    {
+        service_at(&path, ServiceCommand::Install(super::ServiceInstall { force: true })).unwrap();
+
+        assert!(!copy.exists(), "a reinstall without secrets must not keep an older copy");
+
+        fs::write(&copy, "copy").unwrap();
+    }
 
     super::service_at_with_status(
         &path,
@@ -5206,8 +5313,32 @@ async fn manages_service_definition() {
         fs::remove_file(&path).unwrap();
 
         assert!(!path.exists());
+
+        if cfg!(not(windows)) {
+            assert!(!copy.exists(), "uninstall must delete the service credential copy");
+        }
+
+        fs::write(&copy, "orphaned copy").unwrap();
+        fs::write(copy.with_extension("json.new"), "staged copy").unwrap();
         service_at(&path, ServiceCommand::Remove(super::ServiceRemove { yes: true })).unwrap();
+
+        assert!(!copy.exists());
+        assert!(!copy.with_extension("json.new").exists());
     }
+}
+
+#[test]
+fn json_uninstall_folds_its_stop_into_one_result() {
+    use super::ServiceReport::{Json, Silent, Text};
+
+    let remove = ServiceCommand::Remove(super::ServiceRemove { yes: true });
+
+    assert_eq!(super::service_report(&remove, true), Silent);
+    assert_eq!(super::service_report(&remove, false), Text);
+    assert_eq!(super::service_report(&ServiceCommand::Start, true), Json);
+    assert_eq!(super::service_report(&ServiceCommand::Restart, false), Text);
+    assert_eq!(super::ServiceReport::nested(true), Silent);
+    assert_eq!(super::ServiceReport::nested(false), Text);
 }
 
 #[test]
@@ -5281,8 +5412,11 @@ fn service_actions_report_when_no_transition_is_needed() {
         (super::ServiceAction::Stop, None),
         (super::ServiceAction::Restart, None),
     ] {
-        super::service_action_message(action, previous, false).unwrap();
-        super::service_action_message(action, previous, true).unwrap();
+        for report in
+            [super::ServiceReport::Text, super::ServiceReport::Json, super::ServiceReport::Silent]
+        {
+            super::service_action_message(action, previous, report).unwrap();
+        }
     }
 }
 
@@ -5295,7 +5429,28 @@ fn service_status_uses_clear_sentences() {
             Path::new("/home/user/krabb.service"),
             true
         ),
-        "The Krabb service is running.\nIts definition is at /home/user/krabb.service."
+        "The Krabb service is running\n└─ Definition: /home/user/krabb.service"
+    );
+
+    assert_eq!(
+        super::service_status_text(
+            "Krabb",
+            super::ServiceState::Inactive,
+            Path::new("/home/user/krabb.service"),
+            true
+        ),
+        "The Krabb service is stopped\n└─ Definition: /home/user/krabb.service\n\n\
+         Start it with `krabb service start`"
+    );
+
+    assert!(
+        super::service_status_text(
+            "Krabb",
+            super::ServiceState::Failed,
+            Path::new("/home/user/krabb.service"),
+            true
+        )
+        .ends_with("\n\nRestart it with `krabb service restart`")
     );
 
     assert_eq!(
@@ -5305,7 +5460,7 @@ fn service_status_uses_clear_sentences() {
             Path::new("unused"),
             false
         ),
-        "The Krabb service is not installed."
+        "The Krabb service is not installed.\nInstall it with `krabb service install`"
     );
 }
 
@@ -5534,6 +5689,7 @@ fn discovers_plugins_and_detects_source_changes() {
         settings: Vec::new(),
         commands: Vec::new(),
         linked: false,
+        state: None,
     };
 
     assert!(changed(&root, "echo", &entry).unwrap());
@@ -5572,6 +5728,7 @@ fn update_modes_are_explicit() {
                 settings: Vec::new(),
                 commands: Vec::new(),
                 linked: false,
+                state: None,
             }
         )
         .is_err()
@@ -5593,12 +5750,30 @@ fn manifest_round_trips() {
         setup: BTreeMap::new(),
         check: false,
         commands: Vec::new(),
+        state: None,
     };
 
     let text = toml::to_string(&value).unwrap();
     let parsed: Manifest = toml::from_str(&text).unwrap();
 
     assert_eq!(parsed.id, "echo");
+    assert!(value.validate().is_ok());
+
+    let mut escaped = value.clone();
+
+    escaped.version = "0.1.0\u{1b}[2J".into();
+
+    assert!(escaped.validate().unwrap_err().contains("visible text"));
+
+    let mut described = value;
+
+    described.commands.push(CommandSpec {
+        name: "echo".into(),
+        description: "Echo\u{1b}]52;c;eA==\u{7}".into(),
+        interactive: false,
+    });
+
+    assert!(described.validate().is_err());
 }
 
 #[test]
@@ -5637,6 +5812,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
             }],
 
             linked: false,
+            state: None,
         },
     );
 
@@ -5758,6 +5934,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
                 description: "Open the model console.".into(),
                 interactive: false,
             }],
+            state: None,
         },
     );
 
@@ -5819,6 +5996,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         },
     );
 
@@ -5869,6 +6047,7 @@ async fn conditional_native_commands_follow_installed_capabilities() {
             settings: Vec::new(),
             linked: false,
             commands: Vec::new(),
+            state: None,
         },
     );
 
@@ -5934,6 +6113,7 @@ fn krabb_owned_plugin_commands_are_conditional_native_commands() {
             description: format!("Run the {id} command."),
             interactive,
         }],
+        state: None,
     };
 
     let mut lock = super::Lock::default();
@@ -6040,6 +6220,7 @@ async fn plugin_removal_preserves_state_owned_by_conditional_commands() {
         settings: Vec::new(),
         linked: false,
         commands: Vec::new(),
+        state: None,
     };
 
     let catalog = root.join("data/sessions/index.json");
@@ -7019,7 +7200,8 @@ fn plugin_inventory_uses_tree_rows_and_pages_of_five() {
     assert!(second_page.starts_with("Plugins (6–7 of 7, page 2 of 2)\n├─ plugin-05"));
     assert!(second_page.contains("└─ plugin-06@v1.0.0"));
     assert!(super::format_plugin_list(&items, 3).unwrap_err().contains("1 to 2"));
-    assert_eq!(super::format_plugin_list(&[], 1).unwrap(), "No plugins installed.");
+    assert_eq!(super::format_plugin_list(&[], 1).unwrap(), super::NO_PLUGINS);
+    assert!(super::NO_PLUGINS.ends_with("Install one with `krabb plugin install <id>`"));
 }
 
 #[test]
@@ -7061,7 +7243,7 @@ fn session_inventory_prioritizes_working_sessions_and_paginates() {
 
     assert_eq!(
         super::format_session_list(&serde_json::json!({"items": []}), 1).unwrap(),
-        "No sessions."
+        "No sessions yet.\nStart a conversation with `krabb tui`"
     );
 }
 
@@ -7094,7 +7276,7 @@ fn delivery_inventory_groups_details_and_pages() {
 
     assert_eq!(
         super::format_delivery_list(&serde_json::json!({"items": []}), 1).unwrap(),
-        "No pending deliveries."
+        "No pending deliveries.\nEvery reply has been delivered."
     );
 }
 
@@ -10801,6 +10983,7 @@ async fn asks_a_local_plugin() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 
@@ -10821,6 +11004,7 @@ async fn asks_a_local_plugin() {
             settings: Vec::new(),
             commands: Vec::new(),
             linked: false,
+            state: None,
         },
     );
 

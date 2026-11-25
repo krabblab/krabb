@@ -742,10 +742,10 @@ where
                     Ok(value) => format_status(&value),
 
                     Err(error) if daemon_unavailable(&error) => {
-                        "Background runtime: stopped.\nStart it with `krabb service start`.\n> ".into()
+                        "Runtime: stopped.\nStart it with `krabb service start`\n> ".into()
                     }
 
-                    Err(error) => format!("Daemon status unavailable: {}.\n> ", sentence(error.to_string())),
+                    Err(error) => format!("Runtime status unavailable: {}.\n> ", sentence(error.to_string())),
                 };
 
                 output.write_all(text.as_bytes()).await?;
@@ -2356,11 +2356,8 @@ async fn local_aware(home: String, method: String, params: Value) -> krabb_core:
 async fn require_daemon(home: &str) -> krabb_core::Result<()> {
     control(home, "status", serde_json::json!({})).await.map(|_| ()).map_err(|error| match error {
         ControlError::Unavailable(_) => krabb_core::Error::Denied(
-            concat!(
-                "The Krabb daemon is not running.\n",
-                "Start it with `krabb service start` or run `krabb-daemon`."
-            )
-            .into(),
+            concat!("The Krabb daemon is not running.\n", "Start it with `krabb service start`")
+                .into(),
         ),
         ControlError::Failed(error) => error,
     })
@@ -4273,11 +4270,11 @@ fn parse_memory_list(command: &str) -> Result<(usize, Option<&'static str>), ()>
 
 fn format_schedules(value: &Value) -> String {
     let Some(items) = value["items"].as_array() else {
-        return "There are no schedules to list.\n> ".into();
+        return NO_SCHEDULES.into();
     };
 
     if items.is_empty() {
-        return "There are no schedules to list.\n> ".into();
+        return NO_SCHEDULES.into();
     }
 
     let total = value["total"].as_u64().unwrap_or(items.len() as u64);
@@ -4866,10 +4863,7 @@ fn format_approval_notice(
 fn format_status(value: &Value) -> String {
     let running = value["running"].as_bool().unwrap_or(false);
     let sessions = value["sessions"].as_u64().unwrap_or(0);
-    format!(
-        "Background runtime: {}\nSessions: {sessions}\n> ",
-        if running { "running" } else { "stopped" }
-    )
+    format!("Runtime: {}\nSessions: {sessions}\n> ", if running { "running" } else { "stopped" })
 }
 
 fn format_approval(value: &Value) -> String {
@@ -4978,7 +4972,7 @@ fn format_sessions(
     page: usize,
 ) -> String {
     let Some(items) = value["items"].as_array() else {
-        return "Sessions: none.\n> ".into();
+        return "No sessions yet.\n> ".into();
     };
 
     let mut items = items.iter().filter(|item| item["id"].as_str().is_some()).collect::<Vec<_>>();
@@ -4986,7 +4980,7 @@ fn format_sessions(
     items.retain(|item| item["id"].as_str().is_some_and(|id| tui_session_name(id).is_some()));
 
     if items.is_empty() {
-        return "Sessions: none.\n> ".into();
+        return "No sessions yet.\n> ".into();
     }
 
     items.sort_by(|left, right| {
@@ -5052,7 +5046,7 @@ fn format_sessions(
         .collect::<Vec<_>>();
 
     if sessions.is_empty() {
-        "Sessions: none.\n> ".into()
+        "No sessions yet.\n> ".into()
     } else {
         format!(
             "Sessions | {}–{} of {total} | page {page}/{pages}:\n{}\n> ",
@@ -5111,16 +5105,24 @@ fn format_session_archive(id: &str, archived: bool, changed: bool) -> String {
     format!("{action} session {id}.")
 }
 
+/// The empty schedule list; in the TUI the Krabb itself adds schedules.
+const NO_SCHEDULES: &str =
+    "No schedules yet.\nAsk your Krabb to schedule a task, such as a daily summary.\n> ";
+
+/// The empty plugin list, worded as the CLI words it.
+const NO_PLUGINS: &str = "No plugins installed.\nInstall one with `krabb plugin install <id>`";
+
 fn format_plugins(value: &Value, page: usize) -> String {
     let Some(items) = value["items"].as_array() else {
-        return "No plugins installed.".into();
+        return NO_PLUGINS.into();
     };
 
     if items.is_empty() {
-        return "No plugins installed.".into();
+        return NO_PLUGINS.into();
     }
 
     let mut items = items.iter().collect::<Vec<_>>();
+
     items.sort_by_key(|item| item["id"].as_str().unwrap_or("unknown"));
 
     let total = items.len();
@@ -5147,6 +5149,7 @@ fn format_plugins(value: &Value, page: usize) -> String {
 
         let capabilities = format_string_list(&item["capabilities"]);
         let permissions = format_string_list(&item["permissions"]);
+
         let commands = item["commands"]
             .as_array()
             .into_iter()
@@ -5200,6 +5203,7 @@ fn format_string_list(value: &Value) -> String {
 
 fn local_plugin_list(home: &str) -> Value {
     let root = std::path::PathBuf::from(home).join("plugins");
+
     let mut items = std::fs::read_dir(root)
         .ok()
         .into_iter()
@@ -6108,11 +6112,11 @@ mod tests {
     fn formats_status() {
         let text = super::format_status(&serde_json::json!({"running": true, "sessions": 2}));
 
-        assert_eq!(text, "Background runtime: running\nSessions: 2\n> ");
+        assert_eq!(text, "Runtime: running\nSessions: 2\n> ");
 
         let text = super::format_status(&serde_json::json!({"running": false}));
 
-        assert_eq!(text, "Background runtime: stopped\nSessions: 0\n> ");
+        assert_eq!(text, "Runtime: stopped\nSessions: 0\n> ");
     }
 
     #[test]
@@ -6253,7 +6257,7 @@ mod tests {
 
         assert_eq!(
             super::format_sessions(&serde_json::json!({"items": [{}]}), "", false, 1),
-            "Sessions: none.\n> "
+            "No sessions yet.\n> "
         );
 
         assert_eq!(
@@ -6270,7 +6274,7 @@ mod tests {
 
         assert_eq!(
             super::format_sessions(&serde_json::json!({}), "", false, 1),
-            "Sessions: none.\n> "
+            "No sessions yet.\n> "
         );
     }
 
@@ -6493,10 +6497,7 @@ mod tests {
 
     #[test]
     fn formats_schedule_and_memory_records() {
-        assert_eq!(
-            super::format_schedules(&json!({"items": []})),
-            "There are no schedules to list.\n> "
-        );
+        assert_eq!(super::format_schedules(&json!({"items": []})), super::NO_SCHEDULES);
 
         assert_eq!(
             super::format_schedules(&json!({"items": [{"id": 7, "due": 42, "text": "call back"}]})),
@@ -8217,7 +8218,7 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
 
         assert_eq!(text.matches("Reply").count(), 1);
         assert!(text.contains("Current model: base."));
-        assert!(text.contains("Daemon status unavailable"));
+        assert!(text.contains("Runtime status unavailable"));
         assert!(text.contains("Pending approvals:"));
         assert!(text.contains("Approval accepted."));
         assert!(text.contains("Approval denied."));
@@ -8738,12 +8739,12 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
     #[test]
     fn formats_denied_cli_errors_without_debug_wrappers() {
         let error = krabb_core::Error::Denied(
-            "The Krabb daemon is not running.\nStart it with `krabb service start`.".into(),
+            "The Krabb daemon is not running.\nStart it with `krabb service start`".into(),
         );
 
         assert_eq!(
             super::cli_error_message(&error),
-            "The Krabb daemon is not running.\nStart it with `krabb service start`."
+            "The Krabb daemon is not running.\nStart it with `krabb service start`"
         );
     }
 

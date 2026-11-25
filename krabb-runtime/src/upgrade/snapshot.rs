@@ -137,7 +137,7 @@ pub(super) async fn restore(
     }
 
     if service.is_file() && running()? {
-        service_action_with(service, ServiceAction::Stop, json)?;
+        service_action_with(service, ServiceAction::Stop, ServiceReport::nested(json))?;
     }
 
     released(root).await?;
@@ -171,7 +171,7 @@ pub(super) async fn restore(
     drop(plugins);
 
     if point.service && service.is_file() {
-        service_action_with(service, ServiceAction::Start, json)?;
+        service_action_with(service, ServiceAction::Start, ServiceReport::nested(json))?;
     }
 
     let _ = recovery::remove(&directory);
@@ -221,10 +221,12 @@ pub(super) async fn rollback(
         return Ok(());
     }
 
-    let spinner = terminal::progress(format!("Restoring Krabb {}...", point.from), json);
+    // Restoring stops and starts the service, which reports itself, so no spinner runs over it.
+    if !json {
+        eprintln!("Restoring Krabb {}...", point.from);
+    }
 
     restore(root, &point, service, json).await?;
-    drop(spinner);
 
     if json {
         println!(

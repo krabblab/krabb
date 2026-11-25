@@ -21,6 +21,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         setup: BTreeMap::new(),
         check: false,
         commands: commands.clone(),
+        state: None,
     };
 
     fs::write(plugin.join("krabb-plugin.toml"), toml::to_string(&manifest).unwrap()).unwrap();
@@ -39,6 +40,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         settings: manifest.settings,
         linked: false,
         commands,
+        state: None,
     };
 
     crate::save_lock_at(&root, &crate::Lock { plugins: BTreeMap::from([(id.into(), entry)]) })

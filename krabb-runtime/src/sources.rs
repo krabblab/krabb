@@ -115,6 +115,8 @@ pub(crate) fn link_recorded(
     manifest.validate().map_err(|error| format!("Invalid plugin manifest: {error}"))?;
     validate_commands(home_root, &source.id, &manifest.commands)?;
 
+    updates::state::check(home_root, load_lock_at(home_root)?.plugins.get(&source.id), &manifest)?;
+
     let dest = home_root.join("plugins").join(&source.id);
 
     if root_path == std::fs::canonicalize(&dest).unwrap_or_default() {
@@ -183,6 +185,7 @@ pub(crate) fn link_recorded(
                 commands: manifest.commands.clone(),
                 linked,
                 default: default_source,
+                state: manifest.state.clone(),
             },
         );
 
@@ -245,6 +248,10 @@ pub(crate) fn link_recorded(
     }
 
     result?;
+
+    if let Err(error) = updates::state::release(home_root, &source.id) {
+        tracing::warn!(plugin = %source.id, %error, "Kept plugin state record was not cleared.");
+    }
 
     Ok(manifest)
 }

@@ -66,7 +66,7 @@ pub(crate) fn init(
                 })
             );
         } else {
-            println!("Krabb is already initialized at {}.", root.display());
+            println!("{}", already(&root));
         }
 
         return Ok(());
@@ -100,10 +100,11 @@ pub(crate) fn init(
             })
         );
     } else {
-        println!("Krabb initialized at {}.", root.display());
+        let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
+
         println!(
-            "Once an intelligence provider is set up, run `krabb hatch` to give your Krabb a \
-             name and a personality."
+            "Krabb is initialized\n{home}\n\nAdd an intelligence provider with `krabb init \
+             provider`"
         );
     }
 
@@ -336,4 +337,41 @@ pub(crate) fn directory_present(path: &Path) -> bool {
 pub(crate) fn regular_file_present(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+}
+
+/// The answer to `krabb init` on a home that exists, with the step that is still missing.
+/// A configuration that cannot be read falls back to the provider step, which reports it.
+fn already(root: &Path) -> String {
+    let home = crate::format_tree_list(&[format!("Home: {}", root.display())]);
+
+    let next = if matches!(crate::onboard::ready_provider(root), Ok(Some(_))) {
+        "Check every part with `krabb status`"
+    } else {
+        "Add an intelligence provider with `krabb init provider`"
+    };
+
+    format!("Krabb is already initialized\n{home}\n\n{next}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_existing_home_names_its_missing_step() {
+        let root = crate::tests::test_root("home-already");
+
+        init_at(&root).unwrap();
+
+        let text = already(&root);
+
+        assert!(text.starts_with("Krabb is already initialized\n└─ Home: "), "{text}");
+        assert!(text.ends_with("\n\nAdd an intelligence provider with `krabb init provider`"));
+
+        std::fs::write(root.join("config.toml"), "provider = [").unwrap();
+
+        assert!(already(&root).ends_with("`krabb init provider`"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

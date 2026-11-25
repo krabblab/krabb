@@ -215,6 +215,17 @@ input or error output is not a terminal, and `krabb update --json` without `--ye
 applying it. Errors go to standard error; with `--json`, results go to standard
 output.
 
+Output is plain whenever it is not a terminal: no colors, no help banner, and
+progress printed once as a line, or left out, instead of redrawn. `NO_COLOR` and
+`TERM=dumb` also turn colors off in a terminal, and `TERM=dumb` stops progress
+from redrawing. Text from plugins and models shows control characters as `�`, so
+it cannot move the cursor or change the terminal. Each command that supports
+`--json` prints exactly one JSON document, even when it also stops or starts the
+service, as `krabb service uninstall` and `krabb update` do. A failure, including
+invalid arguments, prints one `{"error": ...}` document on standard error. CLI
+results and errors never wrap commands or paths, so they stay whole and copyable
+in narrow terminals.
+
 ## Status And Health
 intelligence, channels, version, and the installed plugin count. When the daemon
 is running, the capability lists reflect its loaded plugins, including all active
@@ -224,15 +235,37 @@ locally available credentials and settings; they do not prove live connectivity.
 Channels are optional for local CLI and TUI use. If any channel is installed,
 health requires at least one ready channel; an explicit `KRABB_CHANNEL` requires
 that channel. Health also checks configuration, the selected intelligence plugin,
-and command conflicts. Failed checks appear in `health_details`.
+and command conflicts. Failed checks appear in `health_details`, and under
+"Needs attention" in the text output.
 
-Each installed plugin is listed with its state and the command that moves it forward:
+Result screens share one layout, as `krabb status` shows:
+
+```text
+Krabb 0.1.0 is healthy
+├─ Runtime: stopped
+├─ Intelligence: configured (codex)
+├─ Channels: not configured
+└─ Plugins: 1 installed
+   └─ codex: configured
+
+Start codex with `krabb service start`
+```
+
+A headline sentence comes first, then a tree of parts and their details, then,
+when something is left to do, one sentence naming the command to run next.
+`krabb doctor`, `krabb service status`, and `krabb init` follow it. Empty plugin,
+session, schedule, and delivery lists say so in one line and, when there is
+something to add, end with how to add it; the TUI words them the same way and
+uses the same terms, Runtime and Intelligence.
+
+Each installed plugin is listed with its state; the first command that moves a
+plugin forward is the next action, and `--json` lists each plugin's `next`:
 
 | State | Meaning | Next action |
 | --- | --- | --- |
 | `needs setup` | Required secrets or settings are missing. | `krabb plugin setup <id>` |
 | `configured` | Setup is complete; the daemon is stopped. | `krabb service start`, or `krabb service install` |
-| `failed to start` | The daemon is running but did not load the plugin. | Check the application log, then `krabb service restart` |
+| `failed to start` | The daemon is running but did not load the plugin. | `krabb service restart`, after checking the application log |
 | `ready` | The daemon loaded the plugin. Clients are ready once set up. | None |
 
 Use `--json` for automation. Capability objects are named `intelligence` and
@@ -356,8 +389,9 @@ review and apply changes to linked and custom-source plugins; without a terminal
 or with `--json`, it reports them as pending. Either way, the new version stays
 installed. A truncated or mismatched download also stops the update, and so does
 too little free disk space for the recovery point and new files plus 64 MiB,
-with the missing amount named. It then previews versions, plugin permission,
-capability, and secret changes, home migrations, and the service interruption.
+with the missing amount named, and so does a plugin that cannot read its saved
+state. It then previews versions, plugin permission, capability, secret, and state
+changes, home migrations, and the service interruption.
 With `--json`, the command prints that preview and applies it only with `--yes`.
 
 After approval, Krabb stops a running service and saves a recovery point with
@@ -423,7 +457,9 @@ setup commands. Binary presence does not mean a plugin is authenticated or activ
 
 `plugin update` previews changes, then replaces changed plugins after
 confirmation, including reviewed changes to capabilities, permissions, secret names,
-settings, and commands. Reinstallation is not needed for these changes. `--yes` accepts
+settings, commands, and the plugin's state schema. A release that cannot read the
+installed state is listed as a failed check and not offered. Reinstallation is not
+needed for these changes. `--yes` accepts
 the saved preview; stale or modified candidates are rejected. Running plugins keep
 serving during preparation and switch over between their requests. Installation
 activation errors print their cause and return a failure exit status.
@@ -602,8 +638,19 @@ moved with the arrow keys, and Esc stops the guide, so `krabb init` continues la
 Name steps to run only those, such as `krabb init home provider`. A finished step is
 skipped when you run every step, and offers a change when you name it. Without a
 terminal, `krabb init` creates only the home, and `--provider` and `--channel` answer
-their steps, as in `krabb init --provider ollama --channel none service`. `krabb doctor` is read-only; `krabb doctor --fix` creates missing
-safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
+their steps, as in `krabb init --provider ollama --channel none service`.
+
+The `provider` step then asks for a model. A provider that lists its models, such as
+Codex, offers its first 20 as choices, plus one to type another name; otherwise type a
+model name. Enter keeps the model you chose before for the same provider, or the
+provider's default. The summary names the provider and model, says that `config.toml`
+in the home holds them for every conversation without its own choice, names any
+`KRABB_MODEL_PLUGIN`, `KRABB_MODEL`, or `clients.cli` override, and says that no
+restart is needed and whether the running daemon already uses them. Without a
+terminal, the step keeps the earlier model or the default. Naming the step when a
+provider is set also offers to change only its model.
+
+`krabb doctor` is read-only; `krabb doctor --fix` creates missing safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
 
 `krabb hatch` personalizes your Krabb. Run it without arguments and it asks eight

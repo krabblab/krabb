@@ -63,6 +63,7 @@ for line in sys.stdin:
             settings: Vec::new(),
             linked: false,
             commands: vec![],
+            state: None,
         },
     );
 
@@ -433,8 +434,7 @@ async fn status_reports_all_live_channels_without_cli_credentials() {
     assert!(status.get("messaging").is_none());
 
     assert!(
-        crate::status_text(&status, 3)
-            .contains("Channels:           configured (telegram, whatsapp)")
+        crate::status_text(&status, 3).contains("├─ Channels: configured (telegram, whatsapp)")
     );
 
     for (id, _) in state.plugins.all().await {

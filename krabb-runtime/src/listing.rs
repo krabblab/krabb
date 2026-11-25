@@ -21,7 +21,7 @@ pub(crate) fn plugin_summary(manifest: &Manifest, health: &str) -> Value {
 
 pub(crate) fn format_plugin_list(items: &[Value], page: usize) -> Result<String, String> {
     if items.is_empty() {
-        return Ok("No plugins installed.".into());
+        return Ok(NO_PLUGINS.into());
     }
 
     let mut items = items.iter().collect::<Vec<_>>();
@@ -99,13 +99,26 @@ pub(crate) fn format_plugin_list(items: &[Value], page: usize) -> Result<String,
     Ok(output)
 }
 
+/// The empty plugin list, which ends with the command that adds the first plugin.
+pub(crate) const NO_PLUGINS: &str =
+    "No plugins installed.\nInstall one with `krabb plugin install <id>`";
+
+/// The empty delivery list, which needs nothing more.
+const NO_DELIVERIES: &str = "No pending deliveries.\nEvery reply has been delivered.";
+
+/// The sentence that ends every empty plugin result.
+pub(crate) const INSTALL_ONE: &str = "Install one with `krabb plugin install <id>`";
+
+/// The empty session list, which ends with the command that starts a conversation.
+const NO_SESSIONS: &str = "No sessions yet.\nStart a conversation with `krabb tui`";
+
 pub(crate) fn format_session_list(value: &Value, page: usize) -> Result<String, String> {
     let Some(items) = value["items"].as_array() else {
         return Err("The session list returned an invalid response.".into());
     };
 
     if items.is_empty() {
-        return Ok("No sessions.".into());
+        return Ok(NO_SESSIONS.into());
     }
 
     let mut items = items.iter().filter(|item| item["id"].as_str().is_some()).collect::<Vec<_>>();
@@ -123,7 +136,7 @@ pub(crate) fn format_session_list(value: &Value, page: usize) -> Result<String, 
     });
 
     if items.is_empty() {
-        return Ok("No sessions.".into());
+        return Ok(NO_SESSIONS.into());
     }
 
     let total = items.len();
@@ -177,13 +190,13 @@ pub(crate) fn format_delivery_list(value: &Value, page: usize) -> Result<String,
     };
 
     if items.is_empty() {
-        return Ok("No pending deliveries.".into());
+        return Ok(NO_DELIVERIES.into());
     }
 
     let items = items.iter().filter(|item| item["id"].as_str().is_some()).collect::<Vec<_>>();
 
     if items.is_empty() {
-        return Ok("No pending deliveries.".into());
+        return Ok(NO_DELIVERIES.into());
     }
 
     let total = items.len();
@@ -272,10 +285,19 @@ pub(crate) fn format_tree_entry(label: &str, details: &[String], is_last: bool) 
 }
 
 pub(crate) fn format_tree_list(entries: &[String]) -> String {
+    let entries = entries.iter().map(|entry| (entry.clone(), Vec::new())).collect::<Vec<_>>();
+
+    format_tree(&entries)
+}
+
+/// One tree of labeled entries, each with its own details, as plugin results print them.
+pub(crate) fn format_tree(entries: &[(String, Vec<String>)]) -> String {
     entries
         .iter()
         .enumerate()
-        .map(|(index, entry)| format_tree_entry(entry, &[], index + 1 == entries.len()))
+        .map(|(index, (label, details))| {
+            format_tree_entry(label, details, index + 1 == entries.len())
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

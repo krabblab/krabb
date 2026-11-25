@@ -564,8 +564,10 @@ fn status(host: &Host<'_>, caller: &Caller<'_>) -> Result<String, PluginError> {
         .filter(|job| job.origin.session == caller.session && !job.status.terminal())
         .count();
 
-    let mut text =
-        format!("Krabb {VERSION}\nModel: {} / {model}\nConversation: {activity}", host.provider);
+    let mut text = format!(
+        "Krabb {VERSION}\nIntelligence: {} / {model}\nConversation: {activity}",
+        host.provider
+    );
 
     if let Some(usage) = session.and_then(|session| session.context_usage.as_ref())
         && usage.limit > 0

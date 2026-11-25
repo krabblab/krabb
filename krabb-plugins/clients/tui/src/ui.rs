@@ -6450,7 +6450,7 @@ mod tests {
         let mut app = App { session: "tui-work".into(), model_available: false, ..App::default() };
         app.begin_interaction("/status");
 
-        assert!(app.capture_interaction_output("Background runtime: ").is_empty());
+        assert!(app.capture_interaction_output("Runtime: ").is_empty());
         assert!(app.capture_interaction_output("stopped.\n").is_empty());
         let saved = app.capture_interaction_output("> ").pop().unwrap();
         super::persist_interaction(&home, saved, crate::local_aware).await.unwrap();
@@ -6477,7 +6477,7 @@ mod tests {
         assert!(transcript.contains("You | "));
         assert!(transcript.contains("System | "));
         assert!(transcript.contains("/status"));
-        assert!(transcript.contains("Background runtime: stopped."));
+        assert!(transcript.contains("Runtime: stopped."));
         assert!(transcript.contains("hello without a model"));
         assert!(transcript.contains("No intelligence plugin is installed."));
         assert!(transcript.contains("/session missing"));

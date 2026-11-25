@@ -109,6 +109,11 @@ directory containing the archives and `SHA256SUMS`, for example
 `file:///tmp/krabb-release`. The default remains the versioned HTTPS release
 directory, and installers reject other release-base schemes.
 
+The Package workflow checks every archive and installer it builds. On both
+Windows targets it also installs the service in an isolated home, checks its
+status, and removes it. Run it from the Actions tab with `core` to check
+packaging without releasing.
+
 Release scripts are intentionally explicit. They do not publish crates,
 containers, or services, and they must not receive credentials through command
 arguments.

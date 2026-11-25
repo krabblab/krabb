@@ -1982,6 +1982,7 @@ name = "krabb"
 version = "0.1.0-rc.1"
 dependencies = [
  "krabb-runtime",
+ "serde_json",
  "tokio",
 ]
 

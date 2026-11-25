@@ -129,9 +129,7 @@ pub(crate) fn plugin_state(
 
         ("configured", Some(start.to_owned()))
     } else {
-        let log = logging::application_log_path();
-
-        ("failed to start", Some(format!("check {} then run krabb service restart", log.display())))
+        ("failed to start", Some("krabb service restart".to_owned()))
     };
 
     serde_json::json!({"id": id, "state": state, "next": next})
@@ -225,52 +223,146 @@ pub(crate) fn capability_text(value: &serde_json::Value) -> String {
     }
 }
 
+/// The status as the plugin tree layout: a headline, one branch per part, and one next action.
 pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String {
-    let mut output = format!(
-        "{:<20}{}\n{:<20}{}\n{:<20}{}\n{:<20}{}\n{:<20}{}\n{:<20}{} installed",
-        "Version:",
-        value["version"].as_str().unwrap_or(VERSION),
-        "Health:",
-        value["health"].as_str().unwrap_or("unhealthy"),
-        "Background runtime:",
-        value["daemon"].as_str().unwrap_or("stopped"),
-        "Intelligence:",
-        capability_text(&value["intelligence"]),
-        "Channels:",
-        capability_text(&value["channels"]),
-        "Plugins:",
-        installed
-    );
+    let version = value["version"].as_str().unwrap_or(VERSION);
+    let healthy = value["health"] == "healthy";
+    let headline = if healthy { "is healthy" } else { "needs attention" };
 
-    for plugin in value["plugin_states"].as_array().into_iter().flatten() {
-        let id = plugin["id"].as_str().unwrap_or_default();
-        let state = plugin["state"].as_str().unwrap_or_default();
+    let plugins = value["plugin_states"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|plugin| {
+            format!(
+                "{}: {}",
+                plugin["id"].as_str().unwrap_or_default(),
+                plugin["state"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
 
-        output.push_str(&format!("\n  {id:<18}{state}"));
+    let details = value["health_details"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(|detail| advice(detail).0)
+        .collect::<Vec<_>>();
 
-        if let Some(next) = plugin["next"].as_str() {
-            output.push_str(&format!(": {next}"));
-        }
-    }
-
-    if let Some(details) = value["health_details"].as_array() {
-        let details = details.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>();
-
-        if !details.is_empty() {
-            output.push_str("\nHealth details:     ");
-            output.push_str(&details.join(", "));
-        }
-    }
+    let mut parts = vec![
+        (format!("Runtime: {}", value["daemon"].as_str().unwrap_or("stopped")), Vec::new()),
+        (format!("Intelligence: {}", capability_text(&value["intelligence"])), Vec::new()),
+        (format!("Channels: {}", capability_text(&value["channels"])), Vec::new()),
+        (format!("Plugins: {installed} installed"), plugins),
+    ];
 
     if let Some(from) = value["recovery"]["from"].as_str() {
-        let state = if value["recovery"]["accepted"] == true {
-            "kept"
-        } else {
-            "update unfinished, so run `krabb update --rollback`"
-        };
+        let state =
+            if value["recovery"]["accepted"] == true { "kept" } else { "update unfinished" };
 
-        output.push_str(&format!("\n{:<20}Krabb {from} ({state})", "Recovery point:"));
+        parts.push((format!("Recovery point: Krabb {from} ({state})"), Vec::new()));
+    }
+
+    if !details.is_empty() {
+        parts.push(("Needs attention".into(), details));
+    }
+
+    let tree = parts
+        .iter()
+        .enumerate()
+        .map(|(index, (label, details))| {
+            format_tree_entry(label, details, index + 1 == parts.len())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut output = format!("Krabb {version} {headline}\n{tree}");
+
+    if let Some(next) = next_action(value) {
+        output.push_str(&format!("\n\n{next}"));
     }
 
     output
+}
+
+/// The one command that moves the installation forward, as a sentence.
+fn next_action(value: &serde_json::Value) -> Option<String> {
+    if value["recovery"]["from"].is_string() && value["recovery"]["accepted"] != true {
+        return Some("Undo the unfinished update with `krabb update --rollback`".into());
+    }
+
+    let plugins = value["plugin_states"].as_array().into_iter().flatten();
+
+    // A plugin that did not load also makes its capability "not ready"; restarting is the cure.
+    if let Some(plugin) = plugins.clone().find(|plugin| plugin["state"] == "failed to start") {
+        return Some(restart(plugin["id"].as_str().unwrap_or_default()));
+    }
+
+    let details = value["health_details"].as_array().into_iter().flatten();
+
+    if let Some(next) =
+        details.filter_map(serde_json::Value::as_str).find_map(|detail| advice(detail).1)
+    {
+        return Some(next.into());
+    }
+
+    plugins.into_iter().find_map(|plugin| {
+        let id = plugin["id"].as_str().unwrap_or_default();
+        let next = plugin["next"].as_str()?;
+
+        Some(match (plugin["state"].as_str(), next) {
+            (Some("needs setup"), _) => format!("Set up {id} with `{next}`"),
+
+            (Some("configured"), "krabb service install") => {
+                "Install the service with `krabb service install`".into()
+            }
+
+            (Some("configured"), _) => format!("Start {id} with `{next}`"),
+            _ => restart(id),
+        })
+    })
+}
+
+fn restart(id: &str) -> String {
+    format!(
+        "The log at {} shows why {id} failed.\nRestart {id} with `krabb service restart`",
+        logging::application_log_path().display()
+    )
+}
+
+/// How the text output names a health detail, and the one command that resolves it.
+fn advice(detail: &str) -> (String, Option<&'static str>) {
+    let (problem, next) = match detail {
+        "configuration is missing (run `krabb init`)" => {
+            ("Configuration is missing", "Create the configuration with `krabb init`")
+        }
+
+        "configuration is invalid" => {
+            ("Configuration is invalid", "Find the invalid setting with `krabb doctor`")
+        }
+
+        "no intelligence plugin is installed (run `krabb plugin install <provider>`)" => (
+            "No intelligence plugin is installed",
+            "Install a provider with `krabb plugin install <provider>`",
+        ),
+
+        "selected intelligence plugin is not ready" => (
+            "The selected intelligence plugin is not ready",
+            "Set it up with `krabb init provider`",
+        ),
+
+        "no channel is ready or the selected channel is not ready" => {
+            ("No channel is ready", "Set one up with `krabb init channel`")
+        }
+
+        "plugin commands have name conflicts" => (
+            "Plugin commands have name conflicts",
+            "Uninstall one of the conflicting plugins with `krabb plugin uninstall <id>`",
+        ),
+
+        detail => return (sentence(detail).trim_end_matches('.').to_owned(), None),
+    };
+
+    (problem.into(), Some(next))
 }
