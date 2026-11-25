@@ -378,8 +378,8 @@ fn fetch(dir: &Path, source: &str) -> Result<PathBuf, PluginError> {
     let name = url.rsplit('/').next().filter(|name| !name.is_empty()).ok_or("Bad release URL.")?;
     let destination = dir.join(name);
 
-    if let Some(path) = url.strip_prefix("file://") {
-        if std::fs::metadata(path)?.len() > ARCHIVE_LIMIT {
+    if let Some(path) = releases::local(url) {
+        if std::fs::metadata(&path)?.len() > ARCHIVE_LIMIT {
             return Err(format!("Archive exceeds the size limit.\nReport it at {ISSUES}.").into());
         }
 

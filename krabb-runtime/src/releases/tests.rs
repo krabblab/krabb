@@ -142,3 +142,19 @@ fn only_plain_versions_are_stable() {
     assert!(!stable("0.3.0.rc1"));
     assert!(!stable("0.3.0.1"));
 }
+
+#[test]
+fn file_release_bases_name_a_local_folder_on_every_system() {
+    assert_eq!(super::local("file:///srv/releases"), Some(PathBuf::from("/srv/releases")));
+    assert_eq!(super::local("https://example.com/releases"), None);
+
+    let drive = super::local("file:///D:/releases").unwrap();
+
+    if cfg!(windows) {
+        assert_eq!(drive, PathBuf::from("D:/releases"));
+    } else {
+        assert_eq!(drive, PathBuf::from("/D:/releases"));
+    }
+
+    assert_eq!(super::local("file://D:/releases"), Some(PathBuf::from("D:/releases")));
+}
