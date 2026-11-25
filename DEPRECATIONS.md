@@ -46,6 +46,11 @@ Stored names are part of the data format, not a bridge. For example, the session
 catalog keeps saving background tasks under `jobs`. Renaming a stored name is a
 migration.
 
+**This applies from the stable 0.1.0 release on.** The data format 0.1.0 ships is the
+baseline. The session catalog's own upgrades from earlier pre-release formats are not
+steps. They stay only so homes created by 0.1.0 pre-releases keep loading, and they go
+when a release raises the floor. Every change to saved data after 0.1.0 is a step.
+
 ### Bridges
 
 A bridge is any code that keeps an old interface working.
