@@ -48,6 +48,13 @@ pub(crate) fn lock_at(root: &Path, name: &str) -> std::io::Result<DaemonLock> {
     lock_at_timeout(root, name, std::time::Duration::ZERO)
 }
 
+/// How long a lock is retried even when the caller would not wait for it.
+///
+/// Plugins and tools start with `pre_exec` hooks, so each child is forked before it runs its
+/// program and shares the parent's open lock files until then. A lock this process just dropped
+/// can look held for that moment, so a short retry tells it apart from one really held.
+const GRACE: std::time::Duration = std::time::Duration::from_millis(100);
+
 pub(crate) fn lock_at_timeout(
     root: &Path,
     name: &str,
@@ -78,7 +85,7 @@ pub(crate) fn lock_at_timeout(
         .truncate(false)
         .open(&path)?;
 
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = std::time::Instant::now() + timeout.max(GRACE);
 
     loop {
         match file.try_lock() {
@@ -98,7 +105,7 @@ pub(crate) fn lock_at_timeout(
                     ));
                 }
 
-                std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+                std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
             }
 
             Err(std::fs::TryLockError::Error(error)) => return Err(error),
