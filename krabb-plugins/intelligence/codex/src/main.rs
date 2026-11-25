@@ -75,6 +75,21 @@ async fn generate_with_session(
         Request::Note { .. } => return Ok(None),
     };
 
+    if method == "check" {
+        // An API key replaces the Codex CLI for generation, so it is the credential to test.
+        match credential()? {
+            Some(key) => {
+                let request = client.get(format!("{}/models", base_url())).bearer_auth(key);
+
+                krabb_http::accepted(request, "Codex").await?;
+            }
+
+            None => codex::check().await?,
+        }
+
+        return Ok(Some(Response::ok(id, json!({}))));
+    }
+
     if method == "command" {
         let text = codex::command(&params, emitter).await?;
 
@@ -102,10 +117,12 @@ async fn generate_with_session(
         return codex_session.lock().await.generate(id, input, emitter).await;
     };
 
-    let base = std::env::var("KRABB_CODEX_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+    generate_at(client, id, input, &key, &base_url(), emitter).await
+}
 
-    generate_at(client, id, input, &key, &base, emitter).await
+/// The OpenAI-compatible API an API key talks to instead of the Codex CLI.
+fn base_url() -> String {
+    std::env::var("KRABB_CODEX_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into())
 }
 
 async fn generate_at(

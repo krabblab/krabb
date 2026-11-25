@@ -272,7 +272,7 @@ pub(super) fn isolated(path: &Path) -> bool {
 }
 
 pub(super) fn tool(name: &str) -> bool {
-    matches!(name, "read" | "write" | "list" | "search")
+    matches!(name, "file_read" | "file_write" | "file_list" | "file_search")
 }
 
 #[cfg(all(test, unix))]

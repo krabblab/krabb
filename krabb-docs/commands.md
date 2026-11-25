@@ -21,6 +21,7 @@ krabb update --rollback [-y|--yes] [--json]
 krabb completion <bash|fish|powershell|zsh>
 krabb plugin list [<page>] [--json]
 krabb plugin setup <id> [--no-activate] [--json]
+krabb plugin check <id> [--json]
 krabb <id> setup [--no-activate] [--json]
 krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [--unstable] [-y|--yes] [--json]
 krabb plugin versions <id> [--json]
@@ -363,7 +364,7 @@ attachments, or when a task or schedule notice arrived after the reply.
 
 You can also ask in your own words and any language, such as "start a new
 conversation" or "which model are you using?". The model then uses the same commands
-through a host tool. It cannot cancel its own reply, compact, answer again, change its own
+through the `conversation_command` tool. It cannot cancel its own reply, compact, answer again, change its own
 personality, confirm `/session clear`, or approve or deny a task's saved action; it relays
 the exact command to send instead. A new conversation it starts begins after its current reply.
 
@@ -639,7 +640,7 @@ remain available for legacy tasks using the message tool.
 
 One run produces one stored result and independent durable deliveries. Use
 `krabb delivery list`, then retry an uncertain delivery only after checking whether
-it arrived. Retrying delivery does not rerun the job or resend successful targets.
+it arrived. Retrying delivery does not repeat the run or resend to targets that succeeded.
 
 Use `krabb schedule help` for full syntax. The
 [Scheduler guide](../krabb-plugins/scheduler/README.md) covers task
@@ -825,8 +826,8 @@ and provides a command to check the conversation. It does not claim deletion or 
 ## Deferred Task Resume
 
 Ask the model to resume a task later, or send an exact command such as
-`/task defer job-3 2030-11-12T09:00 Europe/Rome` or
-`/task defer job-3 2030-11-12T09:00:00+01:00`. The model resolves relative times
+`/task defer task-3 2030-11-12T09:00 Europe/Rome` or
+`/task defer task-3 2030-11-12T09:00:00+01:00`. The model resolves relative times
 and asks when the timezone is unknown. The host saves the instant and
 timezone, pauses the task, and resumes eligible work when due without the scheduler
 plugin or another message. If the daemon is offline then, it resumes after startup.
@@ -850,7 +851,7 @@ review instead of automatic resume.
 ## Task Inference Grants
 
 In the conversation where a task began, ask the model to extend it or send
-`/task extend job-3 30`. Each grant raises its captured inference ceiling by up
+`/task extend task-3 30`. Each grant raises its captured inference ceiling by up
 to 24 hours, within the host
 `inference.task_ceiling_seconds` ceiling. The task's state does not change; resume it
 separately if it is paused or blocked.
@@ -860,7 +861,7 @@ inference ceiling with `task.budget`. The payload contains `id` and `grant`:
 
 ```json
 {
-  "id": "job-123",
+  "id": "task-123",
   "grant": {
     "id": "grant-123",
     "revision": 4,

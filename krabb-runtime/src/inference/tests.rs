@@ -98,7 +98,7 @@ fn admission_honors_hard_limits_and_does_not_reclassify_or_truncate_fast_request
 
     assert!(
         history
-            .prepare("fixture", "model", &profile(), true, tasks::Kind::Fast, &mut request, 1_000)
+            .prepare("fixture", "model", &profile(), true, routing::Kind::Fast, &mut request, 1_000)
             .is_err()
     );
 
@@ -108,7 +108,7 @@ fn admission_honors_hard_limits_and_does_not_reclassify_or_truncate_fast_request
             "model",
             &profile(),
             true,
-            tasks::Kind::Fast,
+            routing::Kind::Fast,
             &mut request,
             execution::MAX_MILLIS,
         )
@@ -208,7 +208,7 @@ async fn timing_cache_survives_reload_and_contains_only_bounded_aggregate_data()
 #[test]
 fn invalid_reports_cannot_poison_predictions_or_expand_cache_capacity() {
     let history = History::default();
-    let mut reply = tasks::reply("Not timing data.".into());
+    let mut reply = routing::reply("Not timing data.".into());
 
     reply.timing = Some(execution::Timing {
         load_millis: Some(50_000),
@@ -253,7 +253,7 @@ fn admission_preserves_explicit_output_summary_and_timing_authority() {
             "model",
             &profile,
             true,
-            tasks::Kind::Fast,
+            routing::Kind::Fast,
             &mut request,
             execution::MAX_MILLIS,
         )
@@ -288,7 +288,7 @@ fn admission_preserves_explicit_output_summary_and_timing_authority() {
                     "model",
                     &profile,
                     true,
-                    tasks::Kind::Fast,
+                    routing::Kind::Fast,
                     &mut denied,
                     execution::MAX_MILLIS
                 )
@@ -340,7 +340,7 @@ async fn traces_record_known_outcomes_and_preserve_unknown_usage_exactly_once() 
 
     tokio::time::advance(Duration::from_secs(1)).await;
 
-    let reply = tasks::reply("Done".into());
+    let reply = routing::reply("Done".into());
 
     trace.complete(&reply);
     trace.complete(&reply);
@@ -398,7 +398,7 @@ async fn aborting_the_parent_future_retains_a_censored_interruption_without_a_re
 async fn unusable_metrics_do_not_turn_a_valid_completion_into_free_or_successful_rate_evidence() {
     let history = Arc::new(History::default());
     let mut trace = history.trace("fixture", "model", &profile());
-    let mut reply = tasks::reply("Done".into());
+    let mut reply = routing::reply("Done".into());
 
     reply.input = Some(100);
 

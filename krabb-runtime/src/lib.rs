@@ -71,7 +71,6 @@ mod inbound;
 mod index;
 mod inference;
 pub(crate) mod ipc;
-mod jobs;
 mod krabfile;
 mod launch;
 mod lifecycle;
@@ -91,9 +90,11 @@ mod recovery;
 mod releases;
 mod requirement;
 mod revoke;
+mod routing;
 mod schedules;
 mod sessions;
 mod style;
+mod tasks;
 mod tools;
 
 pub use pdf::child as pdf_child;
@@ -133,7 +134,6 @@ mod sources;
 pub(crate) mod state;
 mod status;
 mod storage;
-mod tasks;
 pub(crate) mod terminal;
 mod turns;
 mod updates;
@@ -211,9 +211,21 @@ const SCHEDULE_CONCURRENCY: usize = 4;
 const SCHEDULE_CALL_RANGE: u64 = 1 << 20;
 type WorkspaceLocks = Arc<AsyncMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>;
 const COMMAND_OUTPUT: usize = 2 * 1024 * 1024;
-/// Task tools the host owns; plugins may not register these names.
-const HOST_TOOLS: [&str; 6] =
-    ["task", "job", "checkpoint", jobs::input::NAME, slash::TOOL, settings::TOOL];
+/// Tools the host owns; plugins may not register these names.
+const HOST_TOOLS: [&str; 12] = [
+    routing::NAME,
+    tasks::CONTROLS[0],
+    tasks::CONTROLS[1],
+    tasks::CONTROLS[2],
+    tasks::CONTROLS[3],
+    tasks::CONTROLS[4],
+    tasks::CONTROLS[5],
+    tasks::CONTROLS[6],
+    tasks::CHECKPOINT,
+    tasks::input::NAME,
+    slash::TOOL,
+    settings::TOOL,
+];
 
 const ACK_ATTEMPTS: u32 = 3;
 const TOOL_CALL_PROTOCOL_MINOR: u16 = 1;
@@ -276,7 +288,7 @@ pub(crate) struct Plugins {
     loading: Arc<AsyncMutex<()>>,
     changed: Arc<Notify>,
     lifecycle: Arc<RwLock<()>>,
-    jobs: Arc<jobs::Signals>,
+    tasks: Arc<tasks::Signals>,
     workspaces: WorkspaceLocks,
     clients: Arc<clients::Registry>,
     inference: Arc<inference::History>,
@@ -289,11 +301,16 @@ struct ToolRegistry {
     owners: BTreeMap<String, String>,
     operations: BTreeMap<String, operations::Offer>,
     cleanup: process::Cleanup,
-    task: Arc<tasks::State>,
+    route: Arc<routing::State>,
     source: Option<sharing::Principal>,
     execution: state::SessionKind,
     run: Option<krabb_core::task::Run>,
     restart: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A host tool name that a plugin tried to register.
+fn reserved_tool(registry: &ToolRegistry) -> Option<&'static str> {
+    HOST_TOOLS.into_iter().find(|name| registry.owners.contains_key(*name))
 }
 
 impl Default for Plugins {
@@ -307,7 +324,7 @@ impl Default for Plugins {
             loading: Arc::new(AsyncMutex::new(())),
             changed: Arc::new(Notify::new()),
             lifecycle: Arc::new(RwLock::new(())),
-            jobs: Arc::new(jobs::Signals::default()),
+            tasks: Arc::new(tasks::Signals::default()),
             workspaces: Arc::new(AsyncMutex::new(HashMap::new())),
             clients: Arc::new(clients::Registry::default()),
             inference: Arc::new(inference::History::default()),

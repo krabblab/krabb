@@ -155,6 +155,8 @@ pub(crate) struct KrabfileImport {
 pub(crate) enum PluginCommand {
     #[command(about = "Securely configure an installed plugin's secrets and settings.")]
     Setup(setup::Options),
+    #[command(about = "Test an installed plugin's connection with its saved settings.")]
+    Check(Id),
     #[command(about = "List installed plugins.")]
     List(ListOutput),
     #[command(visible_alias = "add", about = "Install and activate one or more plugins.")]

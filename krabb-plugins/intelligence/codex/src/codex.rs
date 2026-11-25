@@ -25,6 +25,25 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(890);
 
 const COMMAND_HELP: &str = "Manage Codex sign-in and models.\n\nUsage: krabb codex <COMMAND>\n\nCommands:\n  login [--device]  Sign in to your Codex account.\n  status            Show whether Codex is signed in.\n  logout            Sign out of Codex.\n  models            List models available to this Codex account.\n  help              Show this help.\n\nRun `krabb codex <command> --help` for command-specific help.";
 
+/// Confirms the Codex executable starts and has a signed-in account, without a model turn.
+pub async fn check() -> krabb_core::Result<()> {
+    check_with(binary(), codex_home()).await
+}
+
+async fn check_with(binary: OsString, home: Option<PathBuf>) -> krabb_core::Result<()> {
+    let mut server = Server::start_with(binary, home).await?;
+
+    server.initialize().await?;
+
+    let result = server.call("account/read", json!({})).await?;
+
+    if result["account"].is_null() {
+        return Err(denied("Codex is not signed in.\nSign in with `krabb codex login`."));
+    }
+
+    Ok(())
+}
+
 pub async fn command(params: &Value, mut emitter: Emitter) -> krabb_core::Result<String> {
     command_with(params, &mut emitter, binary(), codex_home()).await
 }
@@ -1778,6 +1797,55 @@ done
         }
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_connection_test_needs_a_signed_in_account() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
+        let fake = |account: &str| {
+            format!(
+                r#"#!/bin/sh
+
+if [ "$1" = "--version" ]; then
+    printf '%s\n' 'codex-cli 99.0.0'
+    exit 0
+fi
+
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    case "$line" in
+        *\"method\":\"initialize\"*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
+        *account/read*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"account":{account}}}}}\n' "$id" ;;
+    esac
+done
+"#
+            )
+        };
+
+        let signed = std::env::temp_dir()
+            .join(format!("krabb-codex-check-signed-{}-{nonce}", std::process::id()));
+
+        let signed_out = std::env::temp_dir()
+            .join(format!("krabb-codex-check-out-{}-{nonce}", std::process::id()));
+
+        write_binary(&signed, &fake(r#"{"type":"chatgpt"}"#)).unwrap();
+        write_binary(&signed_out, &fake("null")).unwrap();
+
+        assert!(super::check_with(signed.as_os_str().to_owned(), None).await.is_ok());
+
+        let error = super::check_with(signed_out.as_os_str().to_owned(), None)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.ends_with("Sign in with `krabb codex login`."), "{error}");
+
+        let _ = std::fs::remove_file(signed);
+        let _ = std::fs::remove_file(signed_out);
     }
 
     #[cfg(unix)]

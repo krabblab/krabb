@@ -325,10 +325,39 @@ async fn call(inbox: &Arc<Mutex<Inbox>>, request: Request) -> krabb_core::Result
 
         "media" => media(&account, &params).await?,
         "info" => json!({"account": account}),
+        "check" => check(&account).await?,
         _ => return Ok(None),
     };
 
     Ok(Some(Response::ok(id, result)))
+}
+
+/// Confirms signal-cli runs and has the configured account registered, without sending.
+async fn check(account: &str) -> krabb_core::Result<Value> {
+    let command = std::env::var("KRABB_SIGNAL_COMMAND").unwrap_or_else(|_| "signal-cli".into());
+
+    check_with(account, &command).await
+}
+
+async fn check_with(account: &str, command: &str) -> krabb_core::Result<Value> {
+    let args = ["-o", "json", "listAccounts"].map(str::to_owned);
+    let accounts = run_with(command, &args).await?;
+
+    let listed = accounts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|entry| entry["number"].as_str() == Some(account));
+
+    if !listed {
+        return Err(krabb_core::Error::Denied(
+            "signal-cli has no account matching KRABB_SIGNAL_ACCOUNT.\nLink or register it \
+             with signal-cli, then run `krabb plugin check signal`."
+                .into(),
+        ));
+    }
+
+    Ok(json!({}))
 }
 
 async fn run_with(command: &str, args: &[String]) -> krabb_core::Result<Value> {
@@ -1694,6 +1723,34 @@ mod tests {
     #[test]
     fn rejects_an_acknowledgement_for_a_future_sequence() {
         assert!(Inbox::default().acknowledge(1).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_connection_test_needs_signal_cli_to_list_the_configured_account() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("krabb-signal-check-{}", std::process::id()));
+        let script = root.join("signal-cli");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&script, "#!/bin/sh\nprintf '%s' '[{\"number\":\"+15551234567\"}]'\n")
+            .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let command = script.to_str().unwrap();
+
+        assert_eq!(check_with("+15551234567", command).await.unwrap(), json!({}));
+
+        let other = check_with("+15550000000", command).await.unwrap_err().to_string();
+
+        assert!(other.contains("no account matching KRABB_SIGNAL_ACCOUNT"), "{other}");
+
+        assert!(
+            check_with("+15551234567", &root.join("missing").display().to_string()).await.is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

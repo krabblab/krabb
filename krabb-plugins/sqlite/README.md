@@ -12,7 +12,7 @@ private database files, and a 32 MiB database limit.
 
 ## Agent Data
 
-When tools are enabled and SQLite is installed, the agent gets a `data` tool
+When tools are enabled and SQLite is installed, the agent gets a `data_query` tool
 for creating and exploring structured data. It can create named databases and
 tables, declare typed columns, insert records, query by exact field values,
 add optional columns or remove columns, update a record by ID, and delete records

@@ -1,287 +1,162 @@
+mod checkpoint;
+mod control;
+mod defer;
+pub(super) mod dialog;
+mod foreground;
+pub(super) mod input;
+mod policy;
+#[cfg(all(test, unix))]
+mod tests;
+mod worker;
+
+pub(super) use checkpoint::{NAME as CHECKPOINT, apply, tool as checkpoint_tool};
+
+pub(super) use control::{
+    NAMES as CONTROLS, action, control, refusal, sender, tools as control_tools,
+};
+
+pub(super) use foreground::{Answer, Failure, Foreground};
+pub(super) use worker::{Context, run};
+
 use super::*;
+use state::{Task, TaskStatus};
 
-pub(super) const ERROR: &str = "I've encountered an error while answering, please retry.";
-pub(super) const FAST_LIMIT: Duration = Duration::from_secs(60);
-pub(super) const STEP_LIMIT: Duration = Duration::from_secs(10 * 60);
-/// Longest contextual acknowledgement a model may send while work continues.
-pub(super) const MESSAGE_LIMIT: usize = 2_000;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum Kind {
-    #[default]
-    Fast,
-    Thoughtful,
-    Background,
+#[derive(Default)]
+pub(super) struct Signals {
+    pub wake: Notify,
+    pub attached: Mutex<BTreeSet<String>>,
+    pub cancels: Mutex<BTreeMap<String, Arc<Cancellation>>>,
+    pub ceiling: Option<u64>,
 }
 
-impl Kind {
-    pub fn limit(self) -> Duration {
-        match self {
-            Self::Fast => FAST_LIMIT,
-            Self::Thoughtful => TURN_LIMIT,
-            Self::Background => STEP_LIMIT,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Task {
-    pub kind: Kind,
-    #[serde(default)]
-    pub message: String,
-    #[serde(default)]
-    pub instruction: String,
-}
-
-impl Task {
-    pub fn parse(value: Value) -> Result<Self, PluginError> {
-        let mut task: Self = serde_json::from_value(value)?;
-
-        task.message = task.message.trim().into();
-        task.instruction = task.instruction.trim().into();
-
-        if task.kind != Kind::Fast
-            && (task.message.is_empty() || task.message.len() > MESSAGE_LIMIT)
+impl Signals {
+    pub fn cancel(&self, id: &str) {
+        if let Ok(cancels) = self.cancels.lock()
+            && let Some(cancel) = cancels.get(id)
         {
-            return Err("A contextual progress message of at most 2,000 bytes is required.".into());
+            cancel.request();
         }
 
-        if task.kind == Kind::Background
-            && (task.instruction.is_empty() || task.instruction.len() > TEXT_LIMIT)
-        {
-            return Err("A complete background task instruction is required.".into());
+        self.wake.notify_one();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture(
+    store: &state::Store,
+    provider: &str,
+    model: &str,
+    workspace: &Path,
+    integration: &str,
+    chat: &str,
+    thread: Option<&str>,
+    session: &str,
+    tools: bool,
+    shell: bool,
+) -> Result<Value, PluginError> {
+    let current = store.sessions.get(session).ok_or("The originating session was not found.")?;
+    let source =
+        current.source.clone().ok_or("The session has no registered delivery endpoint.")?;
+    let (id, local) = match &source {
+        sharing::Principal::Client(id) => (id, true),
+        sharing::Principal::Channel(id) => (id, false),
+
+        sharing::Principal::Agent(_) => {
+            return Err("An agent is not a user delivery endpoint.".into());
         }
+    };
 
-        Ok(task)
+    if id != integration {
+        return Err("The session endpoint changed during this turn.".into());
     }
-}
 
-#[derive(Debug)]
-pub(super) struct State {
-    pub handoff: watch::Sender<Option<String>>,
-    pub kind: watch::Sender<Kind>,
-    pub gate: AsyncMutex<()>,
-    pub announced: std::sync::atomic::AtomicBool,
-    pub background: std::sync::atomic::AtomicBool,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            handoff: watch::channel(None).0,
-            kind: watch::channel(Kind::Fast).0,
-            gate: AsyncMutex::new(()),
-            announced: std::sync::atomic::AtomicBool::new(false),
-            background: std::sync::atomic::AtomicBool::new(false),
+    Ok(serde_json::json!({
+        "provider":provider, "model":model, "workspace":workspace.canonicalize()?,
+        "tools":tools, "shell":shell,
+        "origin": {
+            "source":source, "channel":id, "chat":if local { session } else { chat },
+            "private":!local && current.private,
+            "thread":if local { None } else { thread }, "session":session,
+            "sender":current.inflight.as_ref().and_then(|message| message.sender.clone()),
+            "roles":current.inflight_roles,
         }
+    }))
+}
+
+pub(super) fn goal(text: String) -> String {
+    if text.len() > TOOL_ARGS_LIMIT {
+        format!(
+            "Original request preview; consult its full text in the saved context:\n{}",
+            clip(text, TOOL_ARGS_LIMIT - 128)
+        )
+    } else {
+        text
     }
 }
 
-pub(super) fn tool(background: bool) -> ToolSpec {
-    ToolSpec {
-        name: "task".into(),
-        description: Some(format!(
-            "Classify work before doing it. Fast is the default: answer greetings and readily \
-                available questions directly without calling this tool or announcing work. \
-                Thoughtful work needing research, verification, nontrivial calculations or \
-                generation needs a contextual acknowledgement: call with kind thoughtful and one \
-                brief contextual message in the user's language. For substantial autonomous work \
-                requiring multiple stages, choose background with a contextual acknowledgement and \
-                a self-contained goal before side effects. The host saves a durable job, continues \
-                it in checkpointed steps without an overall lifetime deadline, and delivers \
-                important updates and completion automatically. No scheduler plugin is needed. Do \
-                not promise a handoff until this tool succeeds. Background execution is {}. Do not \
-                use this tool inside a background or scheduled job.",
-            if background {
-                "available under the configured approval policy"
-            } else {
-                "unavailable under this conversation's policy; explain limits honestly"
-            },
-        )),
-        schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "kind": {"type": "string", "enum": if background {
-                    vec!["fast", "thoughtful", "background"]
-                } else { vec!["fast", "thoughtful"] }},
-                "message": {"type": "string"},
-                "instruction": {"type": "string"}
-            },
-            "required": ["kind"],
-            "additionalProperties": false
-        }),
-    }
+pub(super) fn enqueue(
+    store: &mut state::Store,
+    route: &routing::Route,
+    context: &Value,
+) -> Result<String, PluginError> {
+    let task = record(route, context)?;
+    let id = task.id.clone();
+
+    store.enqueue_task(task)?;
+    Ok(id)
 }
 
-pub(super) fn context(session: &str) -> Message {
-    Message {
-        id: "krabb-task".into(),
-        session: session.into(),
-        role: Role::System,
-        sender: None,
-        content: vec![Content::Text {
-            text: "Classify the current request by the work it needs, not by provider latency. \
-                Fast requests such as greetings and simple questions with readily available \
-                answers need only the answer, with no waiting message. Thoughtful requests need \
-                research, fact checking, calculations, or generation: use the task tool to provide \
-                one brief contextual progress message in the user's language, then do the work. \
-                Substantial requests requiring multiple stages should use the task tool's \
-                background mode before starting work when available; the host delivers the \
-                finished result automatically. Do not invent a background job or promise later \
-                delivery when a handoff fails or is unavailable. Do not add canned \
-                acknowledgements to fast answers."
-                .into(),
-        }],
-    }
-}
+pub(super) fn record(route: &routing::Route, context: &Value) -> Result<Task, PluginError> {
+    let origin: origin::Origin = serde_json::from_value(context["origin"].clone())?;
 
-/// The host clock, appended to the newest request so earlier turns keep a stable prefix.
-pub(super) fn clock() -> Content {
-    Content::Text {
-        text: format!(
-            "Current host time: {}. Resolve relative dates and times from it.",
-            krabb_date::format_datetime_local(unix_seconds())
-        ),
-    }
-}
-
-/// Adds the host time to a request; a full message carries it in its last text instead, so the
-/// request keeps within the content limit, and a full message without text keeps its content.
-pub(super) fn stamp(request: &mut Message) {
-    let Content::Text { text: clock } = clock() else { return };
-
-    if request.content.len() < CONTENT_LIMIT {
-        request.content.push(Content::Text { text: clock });
-        return;
-    }
-
-    if let Some(text) = request.content.iter_mut().rev().find_map(|item| match item {
-        Content::Text { text } => Some(text),
-        _ => None,
-    }) {
-        text.push_str("\n\n");
-        text.push_str(&clock);
-    }
-}
-
-pub(super) fn reply(text: String) -> ModelReply {
-    ModelReply {
-        timing: None,
-        text,
-        stop: "stop".into(),
+    Ok(Task {
+        id: format!("task-{}", schedule_id()?),
+        instruction: route.instruction.clone(),
+        checkpoint: String::new(),
+        provider: context["provider"].as_str().ok_or("Task provider is missing.")?.into(),
+        model: context["model"].as_str().ok_or("Task model is missing.")?.into(),
+        workspace: serde_json::from_value(context["workspace"].clone())?,
+        origin,
+        foreground: false,
+        operation: None,
+        approval: None,
+        budget: Some(krabb_core::execution::budget::Budget::default()),
+        grants: Vec::new(),
+        deferred: None,
+        deferrals: Vec::new(),
+        request: None,
         input: None,
-        output: None,
-        context_usage: None,
-        events: Vec::new(),
-    }
+        result: None,
+        tools: context["tools"] == true,
+        shell: context["shell"] == true,
+        status: TaskStatus::Queued,
+        unsafe_step: false,
+        uncertain: false,
+        commands: Vec::new(),
+        restart: false,
+        step: 0,
+        revision: 0,
+        failures: 0,
+        retry: None,
+        next: unix_seconds(),
+        created: unix_seconds(),
+        updated: unix_seconds(),
+        notice: None,
+        last_notice: String::new(),
+        last_notified: 0,
+    })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub(super) fn checkpoint_prompt(store: &state::Store, id: &str) -> Result<String, PluginError> {
+    let task = store.tasks.get(id).ok_or("The background goal was not found.")?;
 
-    #[test]
-    fn a_full_request_carries_the_host_time_without_another_item() {
-        let mut request = Message {
-            id: "request".into(),
-            session: "session".into(),
-            role: Role::User,
-            sender: None,
-            content: vec![Content::Text { text: "Hello.".into() }],
-        };
-
-        stamp(&mut request);
-
-        assert_eq!(request.content.len(), 2);
-
-        request.content = vec![Content::Text { text: "Hello.".into() }; CONTENT_LIMIT];
-        stamp(&mut request);
-
-        assert_eq!(request.content.len(), CONTENT_LIMIT);
-        assert!(matches!(request.content.last(),
-            Some(Content::Text { text }) if text.starts_with("Hello.\n\nCurrent host time:")));
-    }
-
-    use serde_json::json;
-
-    #[test]
-    fn task_modes_require_context_without_accepting_destinations() {
-        assert_eq!(Task::parse(json!({"kind":"fast"})).unwrap().kind, Kind::Fast);
-
-        let task = Task::parse(json!({
-            "kind":"thoughtful", "message":"  I'll verify today's releases.  "
-        }))
-        .unwrap();
-
-        assert_eq!(task.message, "I'll verify today's releases.");
-
-        for invalid in [
-            json!({"kind":"unknown"}),
-            json!({"kind":"thoughtful"}),
-            json!({"kind":"thoughtful", "message":" "}),
-            json!({"kind":"thoughtful", "message":"x".repeat(2_001)}),
-            json!({"kind":"background", "message":"I'll prepare the report."}),
-            json!({"kind":"background", "message":"I'll prepare it.", "instruction":" "}),
-            json!({"kind":"fast", "destinations":[]}),
-        ] {
-            assert!(Task::parse(invalid).is_err());
-        }
-
-        assert!(
-            Task::parse(json!({
-                "kind":"background", "message":"I'll prepare it.",
-                "instruction":"x".repeat(TEXT_LIMIT + 1)
-            }))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn background_availability_is_explicit_and_bounded() {
-        for available in [true, false] {
-            let spec = tool(available);
-
-            validate_tool_spec(&spec).unwrap();
-
-            assert_eq!(
-                spec.schema["properties"]["kind"]["enum"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("background")),
-                available
-            );
-        }
-
-        assert_eq!(Kind::Fast.limit(), Duration::from_secs(60));
-        assert_eq!(Kind::Thoughtful.limit(), Duration::from_secs(300));
-        assert_eq!(Kind::Background.limit(), Duration::from_secs(600));
-        assert_eq!(reply("Saved.".into()).text, "Saved.");
-        assert!(clock().render().starts_with("Current host time: "));
-        assert!(mutating("task", &json!({"kind":"background"})));
-        assert!(!mutating("task", &json!({"kind":"thoughtful"})));
-        assert!(mutating("job", &json!({"action":"defer"})));
-        assert!(mutating("job", &json!({"action":"extend"})));
-        assert!(mutating("job", &json!({"action":"pause"})));
-        assert!(!mutating("job", &json!({"action":"list"})));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn fast_turns_and_tool_activity_never_create_a_waiting_message() {
-        let mut output = StreamOutput::new();
-
-        output.apply(StreamNotice::Text("Hello!".into()));
-        output.apply(StreamNotice::Tool("read".into()));
-        tokio::time::advance(Duration::from_secs(60)).await;
-
-        assert!(!output.ready());
-        assert!(!output.dirty);
-        assert!(output.message.is_none());
-
-        output.apply(StreamNotice::Progress("I'll compare the sources.".into()));
-
-        assert!(output.ready());
-        assert_eq!(output.message.as_deref(), Some("I'll compare the sources."));
-    }
+    Ok(format!(
+        "Your last reply is an internal draft and has not been delivered. The goal \
+            remains:\n{}\n\nThe durable checkpoint is:\n{}\n\nIf the whole goal is complete, call \
+            checkpoint with state complete and a summary; omit message to deliver your last draft, \
+            or provide the complete result in message. Otherwise checkpoint completed work and the \
+            exact next action, then continue automatically. Do not ask the user to ping you or \
+            continue the work manually.",
+        task.instruction, task.checkpoint,
+    ))
 }

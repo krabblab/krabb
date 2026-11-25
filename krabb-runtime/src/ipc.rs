@@ -399,7 +399,7 @@ impl<'a> Reservation<'a> {
             sessions: &state.sessions,
             id,
             owner: owner.into(),
-            wake: &state.plugins.jobs.wake,
+            wake: &state.plugins.tasks.wake,
             release: false,
         })
     }
@@ -553,7 +553,7 @@ async fn session_answer(
         sessions: &state.sessions,
         id,
         owner,
-        wake: &state.plugins.jobs.wake,
+        wake: &state.plugins.tasks.wake,
         release: true,
     };
 
@@ -784,13 +784,13 @@ async fn session_answer(
     let response = match result {
         Ok(reply) => IpcResponse::ok(request.id, json!({"done": true, "text": reply.text})),
 
-        Err(error) if error.is::<super::jobs::Failure>() => {
-            let failure = error.downcast_ref::<super::jobs::Failure>().unwrap();
+        Err(error) if error.is::<super::tasks::Failure>() => {
+            let failure = error.downcast_ref::<super::tasks::Failure>().unwrap();
             let published = state
                 .sessions
                 .lock()
                 .map_err(lock)
-                .and_then(|mut sessions| sessions.publish_job_notice(&failure.id));
+                .and_then(|mut sessions| sessions.publish_task_notice(&failure.id));
 
             match published {
                 Ok(()) => IpcResponse::ok(
@@ -1730,11 +1730,11 @@ async fn cancel(request: &IpcRequest, state: &State) -> IpcResponse {
             return IpcResponse::fail(request.id, -32000, error.to_string());
         }
 
-        for job in sessions.jobs.values().filter(|job| {
-            (job.origin.session == id || job.id == id)
-                && (!current_only || job.status == crate::state::JobStatus::Cancelling)
+        for task in sessions.tasks.values().filter(|task| {
+            (task.origin.session == id || task.id == id)
+                && (!current_only || task.status == crate::state::TaskStatus::Cancelling)
         }) {
-            state.plugins.jobs.cancel(&job.id);
+            state.plugins.tasks.cancel(&task.id);
         }
 
         if active {
@@ -3649,7 +3649,7 @@ for line in sys.stdin:
             let (_, mut output) = server.into_split();
             let answering = Arc::clone(&state);
 
-            let task = tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 super::session_answer(
                     &IpcRequest::call(
                         7,
@@ -3695,7 +3695,7 @@ for line in sys.stdin:
 
             wait_for_tui_request(&state, 0).await;
             crate::cancellation(&state.cancels, "turn").request();
-            tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), handle).await.unwrap().unwrap().unwrap();
             state.plugins.get("fixture").await.unwrap().stop().await.unwrap();
             std::fs::remove_dir_all(&state.home).unwrap();
         }
@@ -3711,7 +3711,7 @@ for line in sys.stdin:
         let (_, mut output) = server.into_split();
         let answering = Arc::clone(&state);
 
-        let task = tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             super::session_answer(
                 &IpcRequest::call(
                     7,
@@ -3733,7 +3733,7 @@ for line in sys.stdin:
 
         wait_for_tui_request(&state, 2).await;
         advance_tui_time(81).await;
-        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), handle).await.unwrap().unwrap().unwrap();
 
         let mut reader = BufReader::new(client);
 
@@ -3762,17 +3762,17 @@ for line in sys.stdin:
                     .starts_with("The request failed. Its saved task will retry no earlier than ")
             );
 
-            assert_eq!(sessions.jobs.len(), 1);
-            assert!(sessions.jobs.values().all(|job| job.result.is_none()));
-            let job = sessions.jobs.values().next().unwrap();
+            assert_eq!(sessions.tasks.len(), 1);
+            assert!(sessions.tasks.values().all(|task| task.result.is_none()));
+            let task = sessions.tasks.values().next().unwrap();
 
-            assert_eq!(job.failures, 1);
+            assert_eq!(task.failures, 1);
             assert_eq!(
-                job.retry.as_ref().unwrap().failure.kind,
+                task.retry.as_ref().unwrap().failure.kind,
                 krabb_core::failure::Kind::TimedOut
             );
 
-            assert!(job.retry.as_ref().unwrap().at > super::super::unix_seconds());
+            assert!(task.retry.as_ref().unwrap().at > super::super::unix_seconds());
 
             assert_eq!(session.status, "idle");
             assert!(!session.reservation_active);
@@ -4190,7 +4190,7 @@ done"##;
             super::super::StreamNotice::Approval {
                 chat: "chat".into(),
                 thread: None,
-                tool: "shell".into(),
+                tool: "shell_run".into(),
                 arguments: "{\"command\":\"rm foo\"}".into(),
                 command: Some("rm foo".into()),
                 text: "Krabb requests approval to run this shell command: rm foo.".into(),
@@ -4211,7 +4211,7 @@ done"##;
                 "event": "approval",
                 "id": "approval-id",
                 "text": "Krabb requests approval to run this shell command: rm foo.",
-                "tool": "shell",
+                "tool": "shell_run",
                 "arguments": "{\"command\":\"rm foo\"}",
                 "command": "rm foo"
             })
@@ -4337,8 +4337,8 @@ while IFS= read -r line; do
             if [ "$count" = 0 ]; then
                 count=1
                 case "$line" in
-                    *'"name":"read"'*)
-                        printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"read","args":{"path":"note.txt"},"approve":false}]}}'
+                    *'"name":"file_read"'*)
+                        printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"file_read","args":{"path":"note.txt"},"approve":false}]}}'
                         ;;
                     *)
                         printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"workspace tools were not advertised","stop":"stop"}}'
@@ -4364,9 +4364,9 @@ while IFS= read -r line; do
             printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}'
             ;;
         *'"method":"tools/list"'*)
-            printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"read","description":"Read a fixture file.","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"file_read","description":"Read a fixture file.","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}}'
             ;;
-        *'"method":"read"'* | *'"method":"visible"'*)
+        *'"method":"file_read"'* | *'"method":"visible"'*)
             printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"fixture note contents"}}'
             ;;
         *'"method":"shutdown"'*)
@@ -4624,16 +4624,16 @@ for line in sys.stdin:
         result = {"protocol": {"major": 0, "minor": 1}, "id": role,
                   "version": "0.1.0", "capabilities": ["model" if role == "fixture" else "tool"]}
     elif method == "generate":
-        result = {"text": "", "stop": "tool", "events": [{"kind": "tool", "name": "shell",
+        result = {"text": "", "stop": "tool", "events": [{"kind": "tool", "name": "shell_run",
                   "args": {"command": "touch started; sleep 2; echo changed > result"},
                   "approve": True}]}
     elif method == "tools/list" and role == "browser":
         result = {"tools": []}
     elif method == "tools/list":
-        result = {"tools": [{"name": "shell", "description": "Run a fixture shell command.",
+        result = {"tools": [{"name": "shell_run", "description": "Run a fixture shell command.",
                   "schema": {"type": "object", "properties": {"command": {"type": "string"}},
                              "required": ["command"], "additionalProperties": False}}]}
-    elif method == "shell":
+    elif method == "shell_run":
         assert request["params"]["approve"] is True
         subprocess.run(request["params"]["command"], shell=True, cwd=root, preexec_fn=os.setpgrp)
         result = {"text": "finished"}
@@ -6315,7 +6315,7 @@ for line in sys.stdin:
                 chat: "7".into(),
                 thread: None,
                 session: "telegram-7".into(),
-                tool: "write".into(),
+                tool: "file_write".into(),
                 args: json!({"path": "note.txt", "text": "approved"}),
             })
             .unwrap();

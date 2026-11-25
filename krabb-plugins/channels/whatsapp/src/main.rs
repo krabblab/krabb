@@ -386,13 +386,8 @@ async fn plugin_main() -> krabb_core::Result<()> {
     let inbox = load_inbox()?;
     let app = App { client, queue: Arc::new(Mutex::new(inbox)) };
 
-    let listener = TcpListener::bind(listen()).await.map_err(|error| {
-        krabb_core::Error::Denied(format!("WhatsApp webhook listener failed: {error}."))
-    })?;
-
-    let webhook = app.clone();
-
-    tokio::spawn(async move { webhook_loop(listener, webhook).await });
+    // Only channel intake polls, so a connection test never takes the running plugin's port.
+    let webhook = Arc::new(tokio::sync::OnceCell::new());
 
     serve_with(
         Hello {
@@ -405,7 +400,15 @@ async fn plugin_main() -> krabb_core::Result<()> {
         },
         move |request| {
             let app = app.clone();
-            async move { call(&app, request).await }
+            let webhook = Arc::clone(&webhook);
+
+            async move {
+                if matches!(&request, Request::Call { method, .. } if method == "poll") {
+                    webhook.get_or_try_init(|| listen_for_webhooks(app.clone())).await?;
+                }
+
+                call(&app, request).await
+            }
         },
     )
     .await
@@ -430,6 +433,12 @@ async fn call(app: &App, request: Request) -> krabb_core::Result<Option<Response
                 .ok_or_else(|| krabb_core::Error::Denied("ack.sequence is required.".into()))?;
             app.queue.lock().await.acknowledge(sequence)?;
             json!({"acknowledged": true})
+        }
+
+        "check" => {
+            check_with(&app.client, &graph_url()?, &phone()?, &token()?).await?;
+
+            json!({})
         }
 
         "send" => send(app, &params).await?,
@@ -1183,6 +1192,32 @@ fn chunks(value: &str, limit: usize) -> Vec<String> {
     }
 
     output
+}
+
+/// Confirms the Graph API accepts TOKEN for the phone number ID, without sending anything.
+async fn check_with(
+    client: &reqwest::Client,
+    graph: &str,
+    phone: &str,
+    token: &str,
+) -> krabb_core::Result<()> {
+    let request = client
+        .get(format!("{}/{phone}", graph.trim_end_matches('/')))
+        .query(&[("fields", "id")])
+        .bearer_auth(token);
+
+    krabb_http::accepted(request, "WhatsApp").await
+}
+
+#[cfg(not(test))]
+async fn listen_for_webhooks(app: App) -> krabb_core::Result<()> {
+    let listener = TcpListener::bind(listen()).await.map_err(|error| {
+        krabb_core::Error::Denied(format!("WhatsApp webhook listener failed: {error}."))
+    })?;
+
+    tokio::spawn(async move { webhook_loop(listener, app).await });
+
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -2054,6 +2089,58 @@ mod tests {
         server.await.unwrap();
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Answers one request with STATUS and returns the request it read.
+    async fn answer_once(status: &str) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let status = status.to_owned();
+
+        let served = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0; 1024];
+
+            // Headers may arrive in more than one read, so read until the blank line.
+            while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut chunk).await.unwrap();
+
+                if read == 0 {
+                    break;
+                }
+
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+
+            let reply =
+                format!("HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}");
+
+            socket.write_all(reply.as_bytes()).await.unwrap();
+
+            String::from_utf8_lossy(&buffer).into_owned()
+        });
+
+        (address, served)
+    }
+
+    #[tokio::test]
+    async fn the_connection_test_reads_the_phone_number_with_the_token() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (graph, served) = answer_once("200 OK").await;
+
+        super::check_with(&client, &format!("{graph}/v20.0/"), "1234", "token-1").await.unwrap();
+
+        let request = served.await.unwrap().to_ascii_lowercase();
+
+        assert!(request.starts_with("get /v20.0/1234?fields=id "), "{request}");
+        assert!(request.contains("authorization: bearer token-1"), "{request}");
+
+        let (graph, _) = answer_once("400 Bad Request").await;
+
+        assert!(super::check_with(&client, &graph, "1234", "bad").await.is_err());
     }
 }
 

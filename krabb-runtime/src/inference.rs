@@ -220,7 +220,7 @@ impl History {
         model: &str,
         profile: &krabb_core::context::Profile,
         cold: bool,
-        kind: tasks::Kind,
+        kind: routing::Kind,
         request: &mut Request,
         available_millis: u64,
     ) -> Result<Option<execution::Limits>, PluginError> {
@@ -253,7 +253,7 @@ impl History {
 
         let available_millis =
             available_millis.min(explicit.map_or(u64::MAX, |limits| limits.total_millis));
-        let output = bound.min(if kind == tasks::Kind::Fast { FAST_OUTPUT } else { OUTPUT });
+        let output = bound.min(if kind == routing::Kind::Fast { FAST_OUTPUT } else { OUTPUT });
 
         let mut planned = output;
         let tokens = krabb_core::context::estimate(&input.messages, &input.tools);

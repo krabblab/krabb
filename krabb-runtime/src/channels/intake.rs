@@ -17,7 +17,7 @@ pub(crate) struct Context {
     pub mode: ApprovalMode,
     pub sessions: Arc<Mutex<state::Store>>,
     pub approvals: Arc<AsyncMutex<approval::Gate>>,
-    pub signals: Arc<jobs::Signals>,
+    pub signals: Arc<tasks::Signals>,
     pub shutdown: Arc<Stop>,
     pub offset: i64,
     pub call: u64,

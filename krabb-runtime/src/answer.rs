@@ -155,7 +155,7 @@ pub(crate) async fn answer(
     scheduled_destination: Option<AuthorizedDestination>,
     schedule_run_id: Option<u64>,
     run: Option<krabb_core::task::Run>,
-) -> Result<jobs::Answer, PluginError> {
+) -> Result<tasks::Answer, PluginError> {
     let mut registry = tool_registry(plugins, tools_enabled, shell_enabled).await?;
 
     let foreground = if let Some(workspace) = workspace.filter(|_| run.is_none()) {
@@ -164,7 +164,7 @@ pub(crate) async fn answer(
         if store.sessions.get(session).is_some_and(|session| {
             session.kind == state::SessionKind::Conversation && session.source.is_some()
         }) {
-            let context = jobs::capture(
+            let context = tasks::capture(
                 &store,
                 &provider.hello.id,
                 model,
@@ -176,9 +176,9 @@ pub(crate) async fn answer(
                 tools_enabled,
                 shell_enabled,
             )?;
-            Some(jobs::Foreground::admit(
+            Some(tasks::Foreground::admit(
                 &mut store,
-                Arc::clone(&plugins.jobs),
+                Arc::clone(&plugins.tasks),
                 &context,
                 messages.clone(),
                 cancel,
@@ -196,7 +196,7 @@ pub(crate) async fn answer(
 
     let cleanup = registry.cleanup.clone();
     let restart = Arc::clone(&registry.restart);
-    let task = Arc::clone(&registry.task);
+    let route = Arc::clone(&registry.route);
 
     let mut result = answer_with_registry(
         provider,
@@ -239,7 +239,7 @@ pub(crate) async fn answer(
 
         let mut store = sessions.lock().map_err(|_| state::POISONED)?;
 
-        if run.as_ref().is_none_or(|run| store.check_job_step(&run.id, run.generation).is_ok()) {
+        if run.as_ref().is_none_or(|run| store.check_task_step(&run.id, run.generation).is_ok()) {
             Ok(store.compact(session, &compacted)?)
         } else {
             Ok(false)
@@ -272,27 +272,29 @@ pub(crate) async fn answer(
 
         foreground.settle(&mut store, &result, stop.is_signaled() || cancel.requested())?;
 
-        let job = store.jobs.get(&foreground.run.id).ok_or_else(|| {
+        let task = store.tasks.get(&foreground.run.id).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "The foreground task was removed.")
         })?;
 
         if result.is_err()
             || matches!(
-                job.status,
-                state::JobStatus::Paused | state::JobStatus::Blocked | state::JobStatus::Cancelled
+                task.status,
+                state::TaskStatus::Paused
+                    | state::TaskStatus::Blocked
+                    | state::TaskStatus::Cancelled
             )
-            || job.status == state::JobStatus::Waiting && !job.observing()
+            || task.status == state::TaskStatus::Waiting && !task.observing()
         {
-            return Err(Box::new(jobs::Failure::new(
-                job.id.clone(),
-                job.status,
+            return Err(Box::new(tasks::Failure::new(
+                task.id.clone(),
+                task.status,
                 result.err().unwrap_or_else(|| "The task was stopped.".into()),
             )));
         }
     }
 
     let requested = restart.load(std::sync::atomic::Ordering::Acquire);
-    let handed_off = task.handoff.borrow().is_some();
+    let handed_off = route.handoff.borrow().is_some();
 
     // A turn that handed its work to a background task must not restart under that task.
     if requested && handed_off {
@@ -305,7 +307,7 @@ pub(crate) async fn answer(
 
     let restart = requested && !handed_off;
 
-    result.map(|model| jobs::Answer { model, foreground, restart })
+    result.map(|model| tasks::Answer { model, foreground, restart })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -363,7 +365,7 @@ pub(crate) async fn answer_with_registry(
     }
 
     if let Some(run) = &registry.run {
-        sessions.lock().map_err(|_| state::POISONED)?.check_job_step(&run.id, run.generation)?;
+        sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
     }
 
     if isolated {
@@ -487,7 +489,7 @@ pub(crate) async fn answer_with_registry(
 
     messages.insert(0, messaging::context(session, &destination));
 
-    if let Some(name) = HOST_TOOLS.iter().find(|name| registry.owners.contains_key(**name)) {
+    if let Some(name) = reserved_tool(&registry) {
         return Err(format!("A plugin registered the reserved host tool `{name}`.").into());
     }
 
@@ -500,33 +502,33 @@ pub(crate) async fn answer_with_registry(
                 .get(session)
                 .is_some_and(|session| session.source.is_some() || session.origin.is_some());
 
-        registry.task.background.store(background, std::sync::atomic::Ordering::Relaxed);
+        registry.route.background.store(background, std::sync::atomic::Ordering::Relaxed);
 
-        let task = tasks::tool(background);
+        let task = routing::tool(background);
 
         registry.specs.push(task.clone());
 
         specs.push(task);
-        registry.specs.push(jobs::control_tool());
-        specs.push(jobs::control_tool());
+        registry.specs.extend(tasks::control_tools());
+        specs.extend(tasks::control_tools());
         registry.specs.push(slash::spec());
         specs.push(slash::spec());
-        messages.insert(0, tasks::context(session));
+        messages.insert(0, routing::context(session));
 
         if let Some(request) = messages.iter_mut().rev().find(|message| message.role == Role::User)
         {
-            tasks::stamp(request);
+            routing::stamp(request);
         }
     } else {
-        registry.task.kind.send_replace(if registry.execution == state::SessionKind::Job {
-            tasks::Kind::Background
+        registry.route.kind.send_replace(if registry.execution == state::SessionKind::Task {
+            routing::Kind::Background
         } else {
-            tasks::Kind::Thoughtful
+            routing::Kind::Thoughtful
         });
 
-        if registry.execution == state::SessionKind::Job {
-            registry.specs.push(jobs::checkpoint_tool());
-            specs.push(jobs::checkpoint_tool());
+        if registry.execution == state::SessionKind::Task {
+            registry.specs.push(tasks::checkpoint_tool());
+            specs.push(tasks::checkpoint_tool());
         }
     }
 
@@ -588,12 +590,12 @@ pub(crate) async fn answer_with_registry(
 
             *call += 1;
 
-            if let Some(text) = registry.task.handoff.borrow().clone() {
+            if let Some(text) = registry.route.handoff.borrow().clone() {
                 sessions
                     .lock()
                     .map_err(|_| state::POISONED)?
                     .retire_approval(&run.id, &approval.id)?;
-                return Ok(tasks::reply(text));
+                return Ok(routing::reply(text));
             }
 
             format!(
@@ -624,15 +626,15 @@ pub(crate) async fn answer_with_registry(
     }
 
     if let Some(run) = &registry.run
-        && jobs::input::oversized(&*sessions.lock().map_err(|_| state::POISONED)?, &run.id)
+        && tasks::input::oversized(&*sessions.lock().map_err(|_| state::POISONED)?, &run.id)
     {
-        registry.specs.push(jobs::input::tool());
-        specs.push(jobs::input::tool());
+        registry.specs.push(tasks::input::tool());
+        specs.push(tasks::input::tool());
     }
 
-    let mut handoff = registry.task.handoff.subscribe();
+    let mut handoff = registry.route.handoff.subscribe();
 
-    let mut kind = registry.task.kind.subscribe();
+    let mut kind = registry.route.kind.subscribe();
     let started = tokio::time::Instant::now();
 
     let compaction = provider.supports(Capability::Context)
@@ -681,7 +683,7 @@ pub(crate) async fn answer_with_registry(
             sessions
                 .lock()
                 .map_err(|_| state::POISONED)?
-                .check_job_step(&run.id, run.generation)?;
+                .check_task_step(&run.id, run.generation)?;
         }
 
         let profile = admission.profile.clone();
@@ -743,8 +745,8 @@ pub(crate) async fn answer_with_registry(
             deadline.min(generation_started + Duration::from_millis(limits.total_millis))
         });
 
-        let legacy_bound = if registry.execution == state::SessionKind::Job {
-            tasks::STEP_LIMIT
+        let legacy_bound = if registry.execution == state::SessionKind::Task {
+            routing::STEP_LIMIT
         } else {
             TURN_LIMIT
         };
@@ -890,7 +892,7 @@ pub(crate) async fn answer_with_registry(
         let mut receiver_closed = false;
 
         let reply = loop {
-            let legacy = if compaction && *kind.borrow() == tasks::Kind::Fast {
+            let legacy = if compaction && *kind.borrow() == routing::Kind::Fast {
                 TURN_LIMIT
             } else {
                 kind.borrow().limit()
@@ -915,7 +917,7 @@ pub(crate) async fn answer_with_registry(
                 _ = handoff.changed() => {
                     if let Some(text) = handoff.borrow_and_update().clone() {
                         trace.outcome(krabb_core::execution::policy::Outcome::Yielded);
-                        return Ok(tasks::reply(text));
+                        return Ok(routing::reply(text));
                     }
                 }
 
@@ -1061,10 +1063,11 @@ pub(crate) async fn answer_with_registry(
         trace.complete(&parsed);
 
         merge_stream(&mut parsed, notes);
+
         keep_one_mutation(&mut parsed.events);
 
         if parsed.text.len() > TEXT_LIMIT {
-            if registry.execution == state::SessionKind::Job {
+            if registry.execution == state::SessionKind::Task {
                 return Err(failure::blocked(
                     "The result exceeds the message limit; use an authorized file artifact or a \
                         bounded final result.",
@@ -1103,7 +1106,7 @@ pub(crate) async fn answer_with_registry(
                 .into());
         }
 
-        if registry.execution == state::SessionKind::Job
+        if registry.execution == state::SessionKind::Task
             && !parsed.events.iter().any(|event| matches!(event, Event::Tool { .. }))
         {
             if let Some(error) = parsed.events.iter().find_map(|event| {
@@ -1129,7 +1132,7 @@ pub(crate) async fn answer_with_registry(
             let prompt = {
                 let mut store = sessions.lock().map_err(|_| state::POISONED)?;
                 store.push_turn(session, registry.run.as_ref(), draft.clone())?;
-                jobs::checkpoint_prompt(&store, session)?
+                tasks::checkpoint_prompt(&store, session)?
             };
 
             let prompt = Message {
@@ -1273,8 +1276,8 @@ pub(crate) async fn answer_with_registry(
 
             *call += 1;
 
-            if let Some(text) = registry.task.handoff.borrow().clone() {
-                return Ok(tasks::reply(text));
+            if let Some(text) = registry.route.handoff.borrow().clone() {
+                return Ok(routing::reply(text));
             }
 
             let mut content: Vec<Content> = output
@@ -1534,6 +1537,7 @@ pub(crate) async fn forward_stream(
         }
 
         Some(Event::Tool { name, .. }) => StreamNotice::Tool(name),
+
         Some(Event::Error { .. } | Event::Context { .. }) | None => return Ok(()),
     };
 
@@ -1557,12 +1561,12 @@ pub(crate) fn merge_stream(reply: &mut ModelReply, notes: Vec<Request>) {
 
 pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
     match name {
-        "checkpoint" | "input" => false,
-        "job" => args["action"] != "list",
-        "task" => matches!(args["kind"].as_str(), Some("background")),
-        "write"
-        | "patch"
-        | "shell"
+        tasks::CHECKPOINT | tasks::input::NAME => false,
+        name if tasks::action(name).is_some() => tasks::action(name) != Some("list"),
+        routing::NAME => matches!(args["kind"].as_str(), Some("background")),
+        "file_write"
+        | "file_patch"
+        | "shell_run"
         | "memory_remember"
         | "schedule_propose"
         | "schedule_cancel"
@@ -1573,10 +1577,10 @@ pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
         | "schedule_update"
         | "message_send"
         | settings::TOOL => true,
-        "read"
-        | "list"
-        | "search"
-        | "fetch"
+        "file_read"
+        | "file_list"
+        | "file_search"
+        | "web_fetch"
         | "memory_search"
         | "schedule_list"
         | "browser_open"
@@ -1590,12 +1594,12 @@ pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
         | "computer_screenshot"
         | "computer_windows" => false,
 
-        "data" => !matches!(
+        "data_query" => !matches!(
             args["operation"].as_str(),
             Some("list_databases" | "list_tables" | "describe_table" | "query")
         ),
 
-        "git" => true,
+        "git_run" => true,
 
         name if name.starts_with("browser_") => {
             !matches!(name, "browser_tabs" | "browser_snapshot" | "browser_screenshot")

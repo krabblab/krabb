@@ -99,7 +99,7 @@ for a decision instead of continuing automatically.
 `inference.max_seconds` bounds a request's active envelope (1–86400 seconds,
 default 3600); `queue_seconds` bounds provider admission wait (1–300, default 60).
 The request also retains its caller deadline. These settings do not create a
-lifetime deadline for durable jobs. Providers without negotiated deadline support
+lifetime deadline for durable tasks. Providers without negotiated deadline support
 retain their legacy class limits.
 
 If the predicted inference cannot fit the admitted envelope, the saved task blocks

@@ -11,16 +11,17 @@ Use these guides to install, configure, operate, and extend Krabb.
 7. [Concepts](concepts.md) — sessions, turns, leases, events, and delivery.
 8. [Architecture](architecture.md) — process boundaries, turn flow, and JSON-RPC.
 9. [Plugins](plugins.md) — manifests, sources, permissions, and authoring.
-10. [Safety](safety.md) — defaults, confinement, recovery, and resource limits.
-11. [Security](security.md) — trust boundaries, approvals, and operational limits.
-12. [Troubleshooting](troubleshooting.md) — diagnostics and common failures.
-13. [Release](release.md) — packaging, checksums, and publication gates.
-14. [License](license.md) — Apache-2.0 rationale and contribution terms.
-15. [Product](product.md) — capabilities, boundaries, and engineering principles.
-16. [Compatibility](../COMPATIBILITY.md) — basic checklist per operating system and architecture.
-17. [Functional Test Matrix](../FUNCTIONAL.md) — tested crates and plugins across platforms.
-18. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.
-19. [Storage](storage.md) — home layout, ownership, retention, and migration.
-20. [Resources](resources.md) — basic memory and CPU footprint for minimal setups.
-21. [Media](media.md) — what each channel and client can send to Krabb and receive.
-22. [Deprecations](../DEPRECATIONS.md) — how old interfaces and saved data retire, and what is pending.
+10. [Tools](tools.md) — every tool the model can call, grouped by source.
+11. [Safety](safety.md) — defaults, confinement, recovery, and resource limits.
+12. [Security](security.md) — trust boundaries, approvals, and operational limits.
+13. [Troubleshooting](troubleshooting.md) — diagnostics and common failures.
+14. [Release](release.md) — packaging, checksums, and publication gates.
+15. [License](license.md) — Apache-2.0 rationale and contribution terms.
+16. [Product](product.md) — capabilities, boundaries, and engineering principles.
+17. [Compatibility](../COMPATIBILITY.md) — basic checklist per operating system and architecture.
+18. [Functional Test Matrix](../FUNCTIONAL.md) — tested crates and plugins across platforms.
+19. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.
+20. [Storage](storage.md) — home layout, ownership, retention, and migration.
+21. [Resources](resources.md) — basic memory and CPU footprint for minimal setups.
+22. [Media](media.md) — what each channel and client can send to Krabb and receive.
+23. [Deprecations](../DEPRECATIONS.md) — how old interfaces and saved data retire, and what is pending.

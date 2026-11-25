@@ -153,7 +153,7 @@ async fn maximum_data_page_survives_tool_and_model_serialization() {
         &plugins,
         &super::ToolRegistry::default(),
         2,
-        "data",
+        "data_query",
         serde_json::json!({"operation": "query", "table": "notes"}),
         false,
         None,
@@ -206,10 +206,10 @@ async fn agent_filesystem_requests_preserve_workspace_and_approval_policy() {
     let workspace = root.join("project");
 
     for (name, mode, allowed) in [
-        ("read", super::ApprovalMode::Off, true),
-        ("write", super::ApprovalMode::Off, false),
-        ("write", super::ApprovalMode::Prompt, false),
-        ("write", super::ApprovalMode::Auto, true),
+        ("file_read", super::ApprovalMode::Off, true),
+        ("file_write", super::ApprovalMode::Off, false),
+        ("file_write", super::ApprovalMode::Prompt, false),
+        ("file_write", super::ApprovalMode::Auto, true),
     ] {
         let response = super::agent_request(
             Request::call(
@@ -236,7 +236,7 @@ async fn agent_filesystem_requests_preserve_workspace_and_approval_policy() {
             let args = response.result.unwrap()["params"].clone();
 
             assert_eq!(args["workspace"], workspace.display().to_string());
-            assert_eq!(args["approve"], name == "write");
+            assert_eq!(args["approve"], name == "file_write");
         }
     }
 
@@ -246,7 +246,7 @@ async fn agent_filesystem_requests_preserve_workspace_and_approval_policy() {
                 8,
                 "host/tool",
                 serde_json::json!({
-                    "name": "read", "workspace": root.parent().unwrap(),
+                    "name": "file_read", "workspace": root.parent().unwrap(),
                     "args": {"path": "note.txt"}
                 })
             ),
@@ -1840,6 +1840,29 @@ fn advisory_lock_releases_after_drop() {
     assert!(daemon_lock(&root).is_ok());
 }
 
+#[test]
+fn a_lock_released_while_a_child_starts_is_acquired_and_a_held_one_is_not() {
+    let root = test_root("lock-grace");
+    let held = super::lock_at(&root, ".grace.lock").unwrap();
+
+    // Stands in for a starting child that keeps the lock for a moment after it is dropped.
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        drop(held);
+    });
+
+    assert!(super::lock_at(&root, ".grace.lock").is_ok());
+
+    release.join().unwrap();
+
+    let _held = super::lock_at(&root, ".grace.lock").unwrap();
+    let busy = super::lock_at(&root, ".grace.lock").err().map(|error| error.kind());
+
+    assert_eq!(busy, Some(std::io::ErrorKind::AlreadyExists));
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[cfg(unix)]
 #[test]
 fn aborts_process_when_staging_exceeds_limit() {
@@ -2571,7 +2594,7 @@ while IFS= read -r line; do
     case "$line" in
         *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}' ;;
         *'"method":"generate"'*)
-            printf '%s\n' '{"jsonrpc":"2.0","id":77,"method":"host/tool","params":{"name":"read","args":{"path":"missing.txt"}}}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":77,"method":"host/tool","params":{"name":"file_read","args":{"path":"missing.txt"}}}'
             IFS= read -r tool_reply
             printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"I could not read the file.","stop":"stop"}}'
             ;;
@@ -2585,7 +2608,7 @@ while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
     case "$line" in
         *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}' ;;
-        *'"method":"read"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"error":{"code":-32000,"message":"The requested file is missing."}}' ;;
+        *'"method":"file_read"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"error":{"code":-32000,"message":"The requested file is missing."}}' ;;
         *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"ok":true}}'; exit 0 ;;
     esac
 done
@@ -4133,7 +4156,7 @@ while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),"method".*/\1/p')
     case "$line" in
         *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}' ;;
-        *'"method":"generate"'*) case "$line" in *'"name":"shell"'*) case "$line" in *'originating conversation metadata is'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"DONE: Shell tool available.","stop":"stop"}}' ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"Origin route was not provided.","stop":"stop"}}' ;; esac ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"Shell tool missing.","stop":"stop"}}' ;; esac ;;
+        *'"method":"generate"'*) case "$line" in *'"name":"shell_run"'*) case "$line" in *'originating conversation metadata is'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"DONE: Shell tool available.","stop":"stop"}}' ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"Origin route was not provided.","stop":"stop"}}' ;; esac ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"Shell tool missing.","stop":"stop"}}' ;; esac ;;
         *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"ok":true}}'; exit 0 ;;
     esac
 done
@@ -7915,12 +7938,12 @@ fn supports_structured_tool_calls_in_protocol_01() {
 
 #[test]
 fn marks_mutating_tools() {
-    assert!(super::mutating("write", &serde_json::json!({})));
-    assert!(super::mutating("patch", &serde_json::json!({})));
-    assert!(super::mutating("shell", &serde_json::json!({})));
+    assert!(super::mutating("file_write", &serde_json::json!({})));
+    assert!(super::mutating("file_patch", &serde_json::json!({})));
+    assert!(super::mutating("shell_run", &serde_json::json!({})));
     assert!(super::mutating("memory_remember", &serde_json::json!({})));
-    assert!(super::mutating("data", &serde_json::json!({"operation":"insert"})));
-    assert!(!super::mutating("data", &serde_json::json!({"operation":"query"})));
+    assert!(super::mutating("data_query", &serde_json::json!({"operation":"insert"})));
+    assert!(!super::mutating("data_query", &serde_json::json!({"operation":"query"})));
     assert!(super::mutating("schedule_propose", &serde_json::json!({})));
     assert!(super::mutating("schedule_run", &serde_json::json!({"id": 1})));
     assert!(super::mutating("schedule_retry", &serde_json::json!({"id": 1})));
@@ -7932,17 +7955,23 @@ fn marks_mutating_tools() {
 
     assert!(super::mutating("browser_click", &serde_json::json!({"approve":true})));
     assert!(super::mutating("computer_type", &serde_json::json!({"text":"submit"})));
-    assert!(super::mutating("git", &serde_json::json!({"args": ["worktree", "add", "path"]})));
+    assert!(super::mutating("git_run", &serde_json::json!({"args": ["worktree", "add", "path"]})));
 
-    assert!(super::mutating("git", &serde_json::json!({"args": ["worktree", "remove", "path"]})));
+    assert!(super::mutating(
+        "git_run",
+        &serde_json::json!({"args": ["worktree", "remove", "path"]})
+    ));
 
-    assert!(!super::mutating("read", &serde_json::json!({})));
+    assert!(!super::mutating("file_read", &serde_json::json!({})));
     assert!(!super::mutating("browser_screenshot", &serde_json::json!({})));
     assert!(!super::mutating("computer_screenshot", &serde_json::json!({})));
-    assert!(super::mutating("git", &serde_json::json!({"args": ["status"]})));
+    assert!(super::mutating("git_run", &serde_json::json!({"args": ["status"]})));
     assert!(super::requires_vision_tool("browser_screenshot"));
     assert!(super::requires_vision_tool("computer_screenshot"));
     assert!(!super::requires_vision_tool("browser_snapshot"));
+
+    assert!(!super::mutating("task_list", &serde_json::json!({})));
+    assert!(super::mutating("task_pause", &serde_json::json!({"id":"task-1"})));
 }
 
 #[cfg(unix)]
@@ -8286,7 +8315,7 @@ async fn execute_tool_rejects_shell_when_turn_permission_is_disabled() {
     let result = super::execute_tool(
         &Plugins::default(),
         1,
-        "shell",
+        "shell_run",
         serde_json::json!({"command": "true"}),
         "codex",
         "test",
@@ -8359,19 +8388,19 @@ async fn authorized_schedule_proposals_fail_when_the_scheduler_is_missing() {
 fn runs_only_one_mutating_tool_from_each_model_response() {
     let mut events = vec![
         super::Event::Tool {
-            name: "read".into(),
+            name: "file_read".into(),
             args: serde_json::json!({"path": "note.txt"}),
             id: None,
             thought_signature: None,
         },
         super::Event::Tool {
-            name: "write".into(),
+            name: "file_write".into(),
             args: serde_json::json!({"path": "note.txt", "text": "updated"}),
             id: None,
             thought_signature: None,
         },
         super::Event::Tool {
-            name: "shell".into(),
+            name: "shell_run".into(),
             args: serde_json::json!({"command": "touch note.txt"}),
             id: None,
             thought_signature: None,
@@ -8381,7 +8410,7 @@ fn runs_only_one_mutating_tool_from_each_model_response() {
     super::keep_one_mutation(&mut events);
 
     assert_eq!(events.len(), 2);
-    assert!(matches!(events.last(), Some(super::Event::Tool { name, .. }) if name == "write"));
+    assert!(matches!(events.last(), Some(super::Event::Tool { name, .. }) if name == "file_write"));
 }
 
 #[test]
@@ -8404,23 +8433,19 @@ fn output_tokens_count_payloads_rather_than_their_debug_form() {
 fn prepares_approval_text_and_channel_requests() {
     assert!(
         super::approval_text(
-            "job",
-            &serde_json::json!({"action":"steer", "id":"job-1", "instruction":"Use v2."})
+            "task_steer",
+            &serde_json::json!({"id":"task-1", "instruction":"Use v2."})
         )
-        .contains("steer task job-1 with instruction: Use v2.")
+        .contains("steer task-1 with instruction: Use v2.")
     );
 
     assert!(
-        super::approval_text(
-            "job",
-            &serde_json::json!({"action":"extend", "id":"job-1",
-                "minutes":30})
-        )
-        .contains("by 30 minutes")
+        super::approval_text("task_extend", &serde_json::json!({"id":"task-1", "minutes":30}))
+            .contains("by 30 minutes")
     );
 
     assert!(
-        super::approval_text("write", &serde_json::json!({"path": "note.txt"}))
+        super::approval_text("file_write", &serde_json::json!({"path": "note.txt"}))
             .contains("write to note.txt")
     );
 
@@ -8430,19 +8455,26 @@ fn prepares_approval_text_and_channel_requests() {
     );
 
     assert!(
-        super::approval_text("patch", &serde_json::json!({"text": "diff"})).contains("4 bytes")
+        super::approval_text("file_patch", &serde_json::json!({"text": "diff"}))
+            .contains("4 bytes")
     );
 
     assert!(
-        super::approval_text("shell", &serde_json::json!({"command": "cargo test"}))
+        super::approval_text("shell_run", &serde_json::json!({"command": "cargo test"}))
             .contains("cargo test")
     );
 
     assert!(
-        super::approval_text("git", &serde_json::json!({"args": ["status"]})).contains("status")
+        super::approval_text("git_run", &serde_json::json!({"args": ["status"]}))
+            .contains("status")
     );
 
-    assert!(super::approval_text("read", &serde_json::json!({})).contains("read tool"));
+    assert!(super::approval_text("file_read", &serde_json::json!({})).contains("file_read tool"));
+
+    assert!(
+        super::approval_text("task_pause", &serde_json::json!({"id":"task-1"}))
+            .starts_with("Krabb requests approval to pause task-1.")
+    );
 
     let telegram =
         super::approval_params("telegram", "7", Some("9"), "Approve?", "allow", "deny").unwrap();
@@ -11797,7 +11829,7 @@ async fn drains_queued_channel_events() {
 async fn runs_a_tool_turn_before_replying() {
     let channel_script = r#"first=1; while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *poll*) if [ "$first" = 1 ]; then first=0; printf '%s\n' '{"jsonrpc":"2.0","id":10,"result":{"events":[{"id":1,"chat":7,"private":true,"sender":8,"text":"read note"}]}}'; else printf '%s\n' '{"jsonrpc":"2.0","id":13,"result":{"events":[]}}'; fi ;; *send*) request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"message_id":99}}' ;; *edit*) request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"message_id":99}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
     let channel_script = channel_script.replace("\\\\n", "\\n").replace("\\\"", "\"");
-    let provider_script = r#"count=0; while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}' ;; *generate*) if [ "$count" = 0 ]; then count=1; printf '%s\n' '{"jsonrpc":"2.0","id":11,"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"read","args":{"path":"note.txt"},"approve":false}]}}'; else printf '%s\n' '{"jsonrpc":"2.0","id":13,"result":{"text":"note is ready","stop":"stop"}}'; fi ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
+    let provider_script = r#"count=0; while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}' ;; *generate*) if [ "$count" = 0 ]; then count=1; printf '%s\n' '{"jsonrpc":"2.0","id":11,"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"file_read","args":{"path":"note.txt"},"approve":false}]}}'; else printf '%s\n' '{"jsonrpc":"2.0","id":13,"result":{"text":"note is ready","stop":"stop"}}'; fi ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
     let provider_script = provider_script.replace("\\\\n", "\\n").replace("\\\"", "\"");
     let tool_script = r#"while IFS= read -r line; do case "$line" in *hello*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}' ;; *read*) printf '%s\n' '{"jsonrpc":"2.0","id":12,"result":{"text":"note contents"}}' ;; *shutdown*) printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'; exit 0 ;; esac; done"#;
     let tool_script = tool_script.replace("\\\\n", "\\n").replace("\\\"", "\"");
@@ -11881,7 +11913,7 @@ async fn runs_a_tool_turn_before_replying() {
 async fn counts_each_model_tool_invocation_once() {
     for requested in [super::TOOL_CALLS, super::TOOL_CALLS + 1] {
         let event = serde_json::json!({
-            "kind": "tool", "name": "read", "args": {"path": "note.txt"}
+            "kind": "tool", "name": "file_read", "args": {"path": "note.txt"}
         });
 
         let first = serde_json::json!({"text":"", "stop":"tool", "events":vec![event.clone(); 8]});
@@ -11924,10 +11956,10 @@ while IFS= read -r line; do
             result=$result'"version":"0.1.0","capabilities":["tool"]}'
             ;;
         *'"method":"tools/list"'*)
-            result='{"tools":[{"name":"read","schema":{"type":"object",'
+            result='{"tools":[{"name":"file_read","schema":{"type":"object",'
             result=$result'"properties":{"path":{"type":"string"}}}}]}'
             ;;
-        *'"method":"read"'*)
+        *'"method":"file_read"'*)
             count=$((count + 1))
             result='{"text":"read-'"$count"'"}'
             ;;
@@ -12163,9 +12195,9 @@ async fn prompts_for_signed_approval_before_mutating_tools() {
     let root = test_root("prompt-approval");
     let marker = root.join("approved");
     let channel_script = r#"first=1; callback=0; approval=; while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"telegram","version":"0.1.0","capabilities":["channel"]}}' ;; *'"method":"poll"'*) if [ "$first" = 1 ]; then first=0; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[{"id":1,"chat":7,"private":true,"sender":8,"text":"write a note"}]}}'; elif [ -n "$approval" ] && [ "$callback" = 0 ]; then callback=1; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[{"kind":"callback","id":2,"chat":7,"private":true,"sender":9,"callback_id":"callback-1","data":"'"$approval"'"}]}}'; elif [ -n "$approval" ] && [ "$callback" = 1 ]; then callback=2; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[{"kind":"callback","id":3,"chat":7,"private":true,"sender":8,"callback_id":"callback-2","data":"'"$approval"'"}]}}'; else sleep 0.01; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"events":[]}}'; fi ;; *'"method":"approval"'*) approval=$(printf '%s' "$line" | sed -n 's/.*"approve":"\([^"]*\)".*/\1/p'); printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"sent":true}}' ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"message_id":99,"id":"message-99","acknowledged":true}}' ;; esac; done"#;
-    let provider_script = r#"count=0; while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}' ;; *'"method":"generate"'*) if [ "$count" = 0 ]; then count=1; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"write","args":{"path":"note.txt","text":"approved content","approve":false}}]}}'; else printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The note was written.","stop":"stop"}}'; fi ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#;
+    let provider_script = r#"count=0; while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}' ;; *'"method":"generate"'*) if [ "$count" = 0 ]; then count=1; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"file_write","args":{"path":"note.txt","text":"approved content","approve":false}}]}}'; else printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The note was written.","stop":"stop"}}'; fi ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#;
 
-    let tool_script = r#"while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}' ;; *'"method":"write"'*) case "$line" in *'"approve":true'*) touch "__MARKER__"; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The file was written."}}' ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"error":{"code":-32000,"message":"Approval was missing."}}' ;; esac ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#
+    let tool_script = r#"while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}' ;; *'"method":"file_write"'*) case "$line" in *'"approve":true'*) touch "__MARKER__"; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The file was written."}}' ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"error":{"code":-32000,"message":"Approval was missing."}}' ;; esac ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#
             .replace("__MARKER__", &marker.display().to_string());
 
     let channel = Process::start_with("sh", ["-c", channel_script]).await.unwrap();
@@ -12851,7 +12883,7 @@ async fn routes_plugin_tool_requests_through_host_policy() {
         Request::call(
             7,
             "host/tool",
-            serde_json::json!({"name": "read", "args": {"path": "note.txt"}}),
+            serde_json::json!({"name": "file_read", "args": {"path": "note.txt"}}),
         ),
         &plugins,
         &sessions,
@@ -12880,7 +12912,11 @@ async fn routes_plugin_tool_requests_through_host_policy() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
 
     let listing = super::host_tool(
-        Request::call(8, "host/tool", serde_json::json!({"name": "list", "args": {"path": "."}})),
+        Request::call(
+            8,
+            "host/tool",
+            serde_json::json!({"name": "file_list", "args": {"path": "."}}),
+        ),
         &plugins,
         &sessions,
         "room",
@@ -12911,7 +12947,7 @@ async fn routes_plugin_tool_requests_through_host_policy() {
             9,
             "host/tool",
             serde_json::json!({
-                "name": "write",
+                "name": "file_write",
                 "args": {"path": "note.txt", "text": "unapproved", "approve": true}
             }),
         ),
@@ -12952,7 +12988,7 @@ async fn routes_plugin_tool_requests_through_host_policy() {
         Request::call(
             8,
             "host/tool",
-            serde_json::json!({"name": "read", "args": {"path": "note.txt"}}),
+            serde_json::json!({"name": "file_read", "args": {"path": "note.txt"}}),
         ),
         &plugins,
         &sessions,
@@ -13018,7 +13054,7 @@ async fn routes_plugin_tool_requests_through_host_policy() {
             10,
             "host/tool",
             serde_json::json!({
-                "name": "write",
+                "name": "file_write",
                 "args": {"path": "note.txt", "text": "approved"}
             }),
         ),
@@ -13106,7 +13142,7 @@ while IFS= read -r line; do
             ;;
         *generate*)
             request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\),.*/\1/p')
-            printf '{"jsonrpc":"2.0","id":%s,"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"read","args":{"path":"note.txt"},"approve":false}]}}\n' "$request_id"
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"file_read","args":{"path":"note.txt"},"approve":false}]}}\n' "$request_id"
             ;;
         *shutdown*)
             printf '%s\n' '{"jsonrpc":"2.0","id":9999,"result":{"ok":true}}'
@@ -13506,6 +13542,105 @@ fn failures_without_their_own_next_action_point_to_debug_output() {
     let link = "The release is broken.\nReport it at https://github.com/krabblab/krabb/issues.";
 
     assert_eq!(super::conclude(link.into()), link);
+}
+
+#[tokio::test]
+async fn task_calls_are_validated_against_their_schema() {
+    let sessions = Arc::new(Mutex::new(super::state::Store::default()));
+
+    {
+        let mut store = sessions.lock().unwrap();
+
+        store.create("room", "test").unwrap();
+        store
+            .begin(
+                "room",
+                Message {
+                    id: "turn".into(),
+                    session: "room".into(),
+                    role: Role::User,
+                    sender: None,
+                    content: vec![Content::Text { text: "request".into() }],
+                },
+            )
+            .unwrap();
+    }
+
+    let call = async |name: &str, args: serde_json::Value| {
+        let registry = super::ToolRegistry {
+            specs: super::tasks::control_tools(),
+            ..super::ToolRegistry::default()
+        };
+
+        let (notices, _events) = tokio::sync::mpsc::channel(4);
+
+        super::host_tool_with_registry(
+            Request::call(7, "host/tool", serde_json::json!({"name": name, "args": args})),
+            &Plugins::default(),
+            &sessions,
+            "room",
+            "codex",
+            "test",
+            None,
+            false,
+            false,
+            false,
+            super::ApprovalMode::Off,
+            Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap())),
+            "telegram",
+            "8",
+            None,
+            notices,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            registry,
+            "turn".into(),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .error
+        .unwrap()
+    };
+
+    let error = call("task_pause", serde_json::json!({"id": "task-1", "extra": 1})).await;
+
+    assert_eq!(error.code, -32602);
+    assert!(error.message.starts_with("Tool arguments are invalid:"), "{}", error.message);
+
+    let error = call("task_pause", serde_json::json!({"id": "task-1"})).await;
+
+    assert_eq!(error.code, -32000);
+    assert!(error.message.contains("Approval policy blocks"), "{}", error.message);
+
+    let error = call("job", serde_json::json!({"action": "pause", "id": "task-1"})).await;
+
+    assert_eq!(error.message, "Tool access is disabled for this channel.");
+}
+
+#[test]
+fn plugins_cannot_register_host_tool_names() {
+    let mut names = vec![super::routing::NAME, super::tasks::CHECKPOINT, super::tasks::input::NAME];
+
+    names.extend(super::tasks::CONTROLS);
+    names.extend([super::slash::TOOL, super::settings::TOOL]);
+
+    for name in names {
+        let registry = super::ToolRegistry {
+            owners: [(name.to_owned(), "fixture".to_owned())].into(),
+            ..super::ToolRegistry::default()
+        };
+
+        assert_eq!(super::reserved_tool(&registry), Some(name));
+    }
+
+    let registry = super::ToolRegistry {
+        owners: [("read".to_owned(), "files".to_owned())].into(),
+        ..super::ToolRegistry::default()
+    };
+
+    assert_eq!(super::reserved_tool(&registry), None);
 }
 
 #[test]

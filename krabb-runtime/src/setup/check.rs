@@ -7,11 +7,15 @@ use serde_json::{Value, json};
 
 pub(super) const METHOD: &str = "check";
 const LIMIT: Duration = Duration::from_secs(20);
-const DETAIL: usize = 200;
-const UNAVAILABLE: &str = "The connection test could not run, and the settings were saved anyway.";
+const DETAIL: usize = 300;
+const UNAVAILABLE: &str = "The connection test could not run.";
 
 /// Reports `passed`, `failed`, or `skipped`; plugin failures never fail the setup.
 pub(super) async fn run(root: &Path, id: &str) -> Value {
+    run_within(root, id, LIMIT).await
+}
+
+pub(super) async fn run_within(root: &Path, id: &str, limit: Duration) -> Value {
     let supported = crate::read_manifest_checked(&root.join("plugins").join(id))
         .is_ok_and(|manifest| manifest.check);
 
@@ -19,10 +23,57 @@ pub(super) async fn run(root: &Path, id: &str) -> Value {
         return json!({"status": "skipped"});
     }
 
-    match tokio::time::timeout(LIMIT, attempt(root, id)).await {
+    match tokio::time::timeout(limit, attempt(root, id)).await {
         Ok(outcome) => outcome,
         Err(_) => json!({"status": "failed", "detail": "The connection test timed out."}),
     }
+}
+
+/// `krabb plugin check <id>`: reruns the connection test without asking setup questions.
+pub(crate) async fn command(root: &Path, id: &str, json: bool) -> Result<(), crate::PluginError> {
+    if !crate::valid(id) || !root.join("plugins").join(id).is_dir() {
+        return Err(format!(
+            "Plugin {id} is not installed.\nList installed plugins with `krabb plugin list`."
+        )
+        .into());
+    }
+
+    let mut result = run(root, id).await;
+
+    result["id"] = id.into();
+
+    let failure = (result["status"] == "failed").then(|| failed(&result, id));
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else if failure.is_none() {
+        let text = if result["status"] == "passed" {
+            format!("The {id} connection test passed.")
+        } else {
+            format!("Plugin {id} has no connection test, so Krabb cannot confirm its settings.")
+        };
+
+        println!("{text}");
+    }
+
+    match failure {
+        Some(message) => Err(message.into()),
+        None => Ok(()),
+    }
+}
+
+/// A failed test as an error that ends with one next action.
+fn failed(result: &Value, id: &str) -> String {
+    let detail = crate::sentence(result["detail"].as_str().unwrap_or(UNAVAILABLE));
+
+    if detail.lines().last().is_some_and(crate::acts) {
+        return format!("The {id} connection test failed: {detail}");
+    }
+
+    format!(
+        "The {id} connection test failed: {detail}\nChange its settings with `krabb plugin \
+         setup {id}`."
+    )
 }
 
 async fn attempt(root: &Path, id: &str) -> Value {
@@ -51,15 +102,35 @@ async fn call(root: &Path, id: &str) -> Option<krabb_core::types::Response> {
     response.ok()
 }
 
-/// Bounds plugin text and strips anything shaped like a credential.
+/// Bounds plugin text, strips anything shaped like a credential, and neutralizes terminal
+/// control characters. A final line naming a command is kept whole, so clipping never cuts
+/// the plugin's own next action.
 fn detail(text: &str) -> String {
-    crate::clip(crate::redact_diagnostic(text.trim()), DETAIL)
+    let redacted = crate::redact_diagnostic(text.trim());
+
+    let bounded = match redacted.rsplit_once('\n') {
+        Some((body, last)) if crate::acts(last) && last.len() <= DETAIL => {
+            format!(
+                "{}\n{}",
+                crate::clip(body.to_owned(), DETAIL),
+                crate::clip(last.into(), DETAIL)
+            )
+        }
+
+        _ => crate::clip(redacted, DETAIL),
+    };
+
+    crate::terminal::printable(&bounded)
 }
 
 /// Renders the result as one line for terminal output.
 pub(super) fn line(result: &Value) -> Option<String> {
     match result["status"].as_str()? {
         "passed" => Some("Connection test passed.".into()),
+
+        "skipped" => {
+            Some("This plugin has no connection test, so Krabb cannot confirm its settings.".into())
+        }
 
         "failed" => Some(format!(
             "Connection test failed: {}",

@@ -265,7 +265,7 @@ pub(crate) fn approval_arguments(
 ) -> Result<String, PluginError> {
     let arguments = args.to_string();
 
-    let limit = if matches!(name, "schedule_propose" | "schedule_update" | "task") {
+    let limit = if matches!(name, "schedule_propose" | "schedule_update" | routing::NAME) {
         APPROVAL_SCHEDULE_LIMIT
     } else {
         APPROVAL_ARGUMENT_LIMIT

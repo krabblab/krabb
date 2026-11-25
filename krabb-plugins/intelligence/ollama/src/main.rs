@@ -75,8 +75,7 @@ async fn generate(
     };
 
     if method == krabb_core::execution::INFO {
-        let host =
-            std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+        let host = host();
 
         let profile = execution::profile(
             &host,
@@ -90,9 +89,14 @@ async fn generate(
         return Ok(Some(Response::ok(id, serde_json::to_value(profile)?)));
     }
 
+    if method == "check" {
+        check_at(client, &host(), credential()).await?;
+
+        return Ok(Some(Response::ok(id, json!({}))));
+    }
+
     if method == "model.info" {
-        let host =
-            std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+        let host = host();
 
         let model = model::resolve(params["model"].as_str().unwrap_or("default"), &host);
 
@@ -114,9 +118,27 @@ async fn generate(
 
     let input: ModelRequest = serde_json::from_value(params)?;
 
-    let host = std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into());
+    generate_at(client, id, input, &host(), &mut emitter).await
+}
 
-    generate_at(client, id, input, &host, &mut emitter).await
+/// Confirms the Ollama server at HOST answers its model list, sending KEY when one is saved.
+async fn check_at(
+    client: &reqwest::Client,
+    host: &str,
+    key: Option<String>,
+) -> krabb_core::Result<()> {
+    let mut request = client.get(format!("{}/api/tags", host.trim_end_matches('/')));
+
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+
+    krabb_http::accepted(request, "Ollama").await
+}
+
+/// The Ollama server Krabb talks to: a local or self-hosted one, or Ollama's cloud.
+fn host() -> String {
+    std::env::var("KRABB_OLLAMA_HOST").unwrap_or_else(|_| "https://ollama.com".into())
 }
 
 async fn generate_at(
@@ -1064,6 +1086,58 @@ mod tests {
 
                 if params["event"]["text"] == "Ready."
         ));
+    }
+
+    /// Answers one request with STATUS and returns the request it read.
+    async fn answer_once(status: &str) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let status = status.to_owned();
+
+        let served = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0; 1024];
+
+            // Headers may arrive in more than one read, so read until the blank line.
+            while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut chunk).await.unwrap();
+
+                if read == 0 {
+                    break;
+                }
+
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+
+            let reply =
+                format!("HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}");
+
+            socket.write_all(reply.as_bytes()).await.unwrap();
+
+            String::from_utf8_lossy(&buffer).into_owned()
+        });
+
+        (address, served)
+    }
+
+    #[tokio::test]
+    async fn the_connection_test_lists_models_with_the_saved_key() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (host, served) = answer_once("200 OK").await;
+
+        super::check_at(&client, &host, Some("secret-key".into())).await.unwrap();
+
+        let request = served.await.unwrap().to_ascii_lowercase();
+
+        assert!(request.starts_with("get /api/tags "), "{request}");
+        assert!(request.contains("authorization: bearer secret-key"), "{request}");
+
+        let (host, _) = answer_once("401 Unauthorized").await;
+
+        assert!(super::check_at(&client, &host, None).await.is_err());
     }
 }
 

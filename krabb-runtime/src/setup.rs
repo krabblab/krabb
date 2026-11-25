@@ -9,7 +9,7 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-mod check;
+pub(crate) mod check;
 mod prompt;
 
 pub(super) use prompt::{Prompt, validate as validate_prompts};

@@ -6,16 +6,16 @@ use super::{
 
 #[test]
 fn shell_is_only_declared_when_enabled() {
-    assert!(!tools(false).iter().any(|tool| tool.name == "shell"));
+    assert!(!tools(false).iter().any(|tool| tool.name == "shell_run"));
 
-    let shell = tools(true).into_iter().find(|tool| tool.name == "shell").unwrap();
+    let shell = tools(true).into_iter().find(|tool| tool.name == "shell_run").unwrap();
 
     assert!(shell.description.unwrap().contains("paths beyond the workspace"));
 }
 
 #[test]
 fn fetch_tool_requires_a_url() {
-    let fetch = tools(false).into_iter().find(|tool| tool.name == "fetch").unwrap();
+    let fetch = tools(false).into_iter().find(|tool| tool.name == "web_fetch").unwrap();
 
     assert_eq!(fetch.schema["required"], serde_json::json!(["url"]));
     assert_eq!(fetch.schema["properties"]["url"]["type"], "string");
@@ -27,7 +27,7 @@ fn structured_data_tool_has_a_bounded_schema_and_guidance() {
 
     validate_tool_spec(&data).unwrap();
 
-    assert_eq!(data.name, "data");
+    assert_eq!(data.name, "data_query");
     assert!(data.description.unwrap().contains("structured data"));
     assert_eq!(data.schema["properties"]["columns"]["maxItems"], 64);
     assert!(data.schema["properties"]["columns"].get("minItems").is_none());
@@ -101,14 +101,16 @@ fn validates_registered_arguments_before_execution() {
         ..ToolRegistry::default()
     };
 
-    assert!(validate_registered_args(&registry, "read", &serde_json::json!({"path":"a"})).is_ok());
+    assert!(
+        validate_registered_args(&registry, "file_read", &serde_json::json!({"path":"a"})).is_ok()
+    );
 
-    assert!(validate_registered_args(&registry, "read", &serde_json::json!({})).is_err());
+    assert!(validate_registered_args(&registry, "file_read", &serde_json::json!({})).is_err());
 
     assert!(
         validate_registered_args(
             &registry,
-            "read",
+            "file_read",
             &serde_json::json!({"path":"a", "outside":true})
         )
         .is_err()
@@ -159,5 +161,5 @@ fn scheduler_describes_available_execution_capabilities() {
 
     assert!(schedule_listing_allowed(crate::state::SessionKind::Conversation));
     assert!(!schedule_listing_allowed(crate::state::SessionKind::Schedule));
-    assert!(!schedule_listing_allowed(crate::state::SessionKind::Job));
+    assert!(!schedule_listing_allowed(crate::state::SessionKind::Task));
 }

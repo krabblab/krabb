@@ -230,6 +230,11 @@ fn restore_unlocked(root: &Path) -> Result<bool, Error> {
     Ok(true)
 }
 
+/// How long the lock is retried before the home counts as busy. A child process that is
+/// starting shares this process's open lock file for a moment, so a lock just released can
+/// look held.
+const GRACE: std::time::Duration = std::time::Duration::from_millis(100);
+
 fn lock(root: &Path) -> Result<fs::File, Error> {
     let file = fs::OpenOptions::new()
         .read(true)
@@ -238,10 +243,19 @@ fn lock(root: &Path) -> Result<fs::File, Error> {
         .truncate(false)
         .open(root.join(LOCK))?;
 
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(fs::TryLockError::WouldBlock) => Err(Error::Busy),
-        Err(fs::TryLockError::Error(error)) => Err(error.into()),
+    let deadline = std::time::Instant::now() + GRACE;
+
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+
+            Err(fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+
+            Err(fs::TryLockError::WouldBlock) => return Err(Error::Busy),
+            Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
     }
 }
 

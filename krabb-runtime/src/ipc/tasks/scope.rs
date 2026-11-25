@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::JobStatus;
+use crate::state::TaskStatus;
 
 #[test]
 fn another_conversation_of_the_same_client_cannot_discover_or_control_the_task() {
@@ -37,9 +37,9 @@ fn another_conversation_of_the_same_client_cannot_discover_or_control_the_task()
         assert!(!text.contains("Research"));
         let store = state.sessions.lock().unwrap();
 
-        assert_eq!(store.jobs[&task].status, JobStatus::Queued);
-        assert!(store.jobs[&task].commands.is_empty());
-        assert!(store.jobs[&task].deferred.is_none());
+        assert_eq!(store.tasks[&task].status, TaskStatus::Queued);
+        assert!(store.tasks[&task].commands.is_empty());
+        assert!(store.tasks[&task].deferred.is_none());
     }
 
     let accepted = message(
@@ -50,7 +50,7 @@ fn another_conversation_of_the_same_client_cannot_discover_or_control_the_task()
     .unwrap();
 
     assert!(accepted["text"].as_str().unwrap().contains("paused"));
-    assert_eq!(state.sessions.lock().unwrap().jobs[&task].status, JobStatus::Paused);
+    assert_eq!(state.sessions.lock().unwrap().tasks[&task].status, TaskStatus::Paused);
 }
 
 #[test]

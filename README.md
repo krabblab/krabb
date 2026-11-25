@@ -163,6 +163,7 @@ Common starting points:
 - [Visibility And Worktrees](krabb-docs/sharing.md)
 - [Storage](krabb-docs/storage.md)
 - [Plugin Development](krabb-docs/plugins.md)
+- [Tools](krabb-docs/tools.md)
 
 ## Development
 

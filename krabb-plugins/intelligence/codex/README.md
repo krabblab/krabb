@@ -34,7 +34,7 @@ catalog sources and generation limits. Unavailable models fail without substitut
 
 Sign-in turns explicitly use live web search, overriding the cached-search default
 of a read-only Codex session. Provider-hosted web search is separate from local
-sandbox network access and Krabb's `fetch` tool. The API-key route enables Responses web search for supported models. A search or cache miss does not prove that a URL is missing.
+sandbox network access and Krabb's `web_fetch` tool. The API-key route enables Responses web search for supported models. A search or cache miss does not prove that a URL is missing.
 
 The plugin advertises image-request support during its handshake. The HTTP
 adapter sends inline images through Responses or compatible Chat Completions. The Codex adapter sends inline image inputs through the app-server
