@@ -26,7 +26,7 @@ The policy covers every interface people, scripts, or plugins depend on:
 
 A security fix may remove an interface at once; its release notes say so.
 
-### Saved data
+### Saved Data
 
 Changes to the data in a Krabb home are versioned migrations, never compatibility
 code in the read path.
