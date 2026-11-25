@@ -87,6 +87,7 @@ mod plugins;
 mod process;
 mod recovery;
 mod releases;
+mod requirement;
 mod revoke;
 mod schedules;
 mod sessions;
@@ -268,6 +269,8 @@ pub(crate) struct Plugins {
     selection: Arc<Mutex<Option<selection::Policy>>>,
     items: Arc<RwLock<BTreeMap<String, Arc<Live>>>>,
     detached: Arc<RwLock<BTreeSet<String>>>,
+    /// Why each plugin that the daemon could not start failed, redacted and bounded.
+    failures: Arc<RwLock<BTreeMap<String, String>>>,
     loading: Arc<AsyncMutex<()>>,
     changed: Arc<Notify>,
     lifecycle: Arc<RwLock<()>>,
@@ -298,6 +301,7 @@ impl Default for Plugins {
             selection: Arc::new(Mutex::new(None)),
             items: Arc::new(RwLock::new(BTreeMap::new())),
             detached: Arc::new(RwLock::new(BTreeSet::new())),
+            failures: Arc::new(RwLock::new(BTreeMap::new())),
             loading: Arc::new(AsyncMutex::new(())),
             changed: Arc::new(Notify::new()),
             lifecycle: Arc::new(RwLock::new(())),
@@ -1292,6 +1296,9 @@ struct Manifest {
     /// The schema of the plugin's saved state and the older ones it migrates when it starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<updates::state::State>,
+    /// External programs the plugin runs, which Krabb cannot install for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requires: Vec<requirement::Requirement>,
 }
 
 impl Manifest {
@@ -1384,6 +1391,7 @@ impl Manifest {
             .collect::<Vec<_>>();
 
         setup::validate_prompts(&self.setup, &variables, &defaults)?;
+        requirement::validate(&self.requires)?;
 
         Ok(())
     }
@@ -3305,12 +3313,9 @@ fn secure(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> std::io::Result<
     save_file(path, content)
 }
 
-fn list(page: usize, json: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    list_at(&home(), page, json)
-}
-
 fn list_at(
     root: &Path,
+    runtime: Option<Runtime>,
     page: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -3318,6 +3323,10 @@ fn list_at(
 
     let plugin_root = root.join("plugins");
     let mut rows = Vec::new();
+
+    let states = load_lock_at(root)
+        .map(|lock| status::plugin_states(root, &lock, runtime))
+        .unwrap_or_default();
 
     if plugin_root.exists() {
         for entry in std::fs::read_dir(&plugin_root)? {
@@ -3333,10 +3342,22 @@ fn list_at(
             let manifest = read_manifest_checked(&path)
                 .map_err(|error| format!("Plugin {id} is invalid: {error}."))?;
 
-            let health =
-                if path.join("bin").join(plugin_name(&id)).is_file() { "ready" } else { "missing" };
+            let state = states.iter().find(|state| state["id"] == id.as_str());
 
-            rows.push(plugin_summary(&manifest, health));
+            let health = if !path.join("bin").join(plugin_name(&id)).is_file() {
+                "missing"
+            } else {
+                state.and_then(|state| state["state"].as_str()).unwrap_or("installed")
+            };
+
+            let mut row = plugin_summary(&manifest, health);
+
+            if let Some(state) = state {
+                row["reason"] = state["reason"].clone();
+                row["next"] = state["next"].clone();
+            }
+
+            rows.push(row);
         }
     }
 

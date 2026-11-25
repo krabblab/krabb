@@ -110,6 +110,8 @@ pub(crate) fn doctor_at(
         verify_plugin_binary(id, entry, &manifest, &binary)?;
     }
 
+    let missing = requirement::missing(root, &lock);
+
     let healthy = doctor_healthy(
         config_present,
         config_valid,
@@ -152,6 +154,7 @@ pub(crate) fn doctor_at(
                 "plugins": {
                     "directory_present": plugins_directory_present,
                     "installed": lock.plugins.keys().collect::<Vec<_>>(),
+                    "missing_programs": missing,
                 },
 
                 "workspace": {
@@ -194,6 +197,7 @@ pub(crate) fn doctor_at(
             workspace: workspace_directory_present,
             krab: krab_instructions_present,
             klaw: klaw_instructions_present,
+            missing,
         };
 
         println!("{}", doctor_text(root, &checks, lock.plugins.len(), healthy));
@@ -209,6 +213,8 @@ struct Checks {
     workspace: bool,
     krab: bool,
     klaw: bool,
+    /// The install help of a program each plugin needs that is not on this shell's PATH.
+    missing: BTreeMap<String, String>,
 }
 
 /// The check as the plugin tree layout, ending with the one command to run next.
@@ -219,7 +225,7 @@ fn doctor_text(root: &Path, checks: &Checks, installed: usize, healthy: bool) ->
 
     let headline = if healthy { "is healthy" } else { "needs repair" };
 
-    let parts = [
+    let mut parts = vec![
         format!("Home: {}", root.display()),
         format!("Configuration: {configuration}"),
         format!("Plugins directory: {}", present(checks.plugins)),
@@ -233,10 +239,20 @@ fn doctor_text(root: &Path, checks: &Checks, installed: usize, healthy: bool) ->
         ),
     ];
 
-    let next = if healthy {
-        "Check that the runtime and plugins are running with `krabb status`."
+    let programs = if checks.missing.is_empty() {
+        "found".to_owned()
     } else {
-        "Restore the missing local state with `krabb doctor --fix`."
+        let ids = checks.missing.keys().map(String::as_str).collect::<Vec<_>>();
+
+        format!("missing for {}", ids.join(", "))
+    };
+
+    parts.push(format!("Programs plugins run: {programs}"));
+
+    let next = match checks.missing.values().next() {
+        _ if !healthy => "Restore the missing local state with `krabb doctor --fix`.",
+        Some(help) => help.as_str(),
+        None => "Check that the runtime and plugins are running with `krabb status`.",
     };
 
     format!("The local installation {headline}\n{}\n\n{next}", format_tree_list(&parts))
@@ -248,8 +264,14 @@ mod tests {
 
     #[test]
     fn the_check_reads_as_a_tree_with_one_next_action() {
-        let all =
-            Checks { configuration: true, plugins: true, workspace: true, krab: true, klaw: true };
+        let all = Checks {
+            configuration: true,
+            plugins: true,
+            workspace: true,
+            krab: true,
+            klaw: true,
+            missing: BTreeMap::new(),
+        };
 
         let protocol = format!("{}.{}", Protocol::CURRENT.major, Protocol::CURRENT.minor);
 
@@ -263,14 +285,25 @@ mod tests {
              ├─ Workspace: present\n\
              ├─ KRAB.md instructions: present\n\
              ├─ KLAW.md instructions: present\n\
-             └─ Plugins: 2 installed, integrity checks passed, protocol {protocol}\n\
+             ├─ Plugins: 2 installed, integrity checks passed, protocol {protocol}\n\
+             └─ Programs plugins run: found\n\
              \n\
              Check that the runtime and plugins are running with `krabb status`."
             )
         );
 
-        let missing = Checks { workspace: false, ..all };
-        let text = doctor_text(Path::new("/home/owner/.krabb"), &missing, 0, false);
+        let help = "Install signal-cli from https://github.com/AsamK/signal-cli#installation.";
+
+        let lacking =
+            Checks { missing: BTreeMap::from([("signal".to_owned(), help.to_owned())]), ..all };
+
+        let text = doctor_text(Path::new("/home/owner/.krabb"), &lacking, 1, true);
+
+        assert!(text.contains("└─ Programs plugins run: missing for signal\n"), "{text}");
+        assert!(text.ends_with(&format!("\n\n{help}")), "{text}");
+
+        let broken = Checks { workspace: false, ..lacking };
+        let text = doctor_text(Path::new("/home/owner/.krabb"), &broken, 0, false);
 
         assert!(text.starts_with("The local installation needs repair\n"), "{text}");
         assert!(text.contains("├─ Workspace: missing\n"), "{text}");

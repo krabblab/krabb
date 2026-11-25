@@ -1352,8 +1352,13 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     let model = entry("model");
     let active = vec!["openai".to_owned()];
 
-    let state = |id, entry, configured, active, service| {
-        let value = super::plugin_state(id, entry, configured, active, service);
+    let state = |id, entry, configured, active: Option<&Vec<String>>, service| {
+        let observed = super::status::Observed {
+            active: active.map(Vec::as_slice),
+            ..super::status::Observed::default()
+        };
+
+        let value = super::plugin_state(id, entry, configured, &observed, service);
 
         (value["state"].as_str().unwrap().to_owned(), value["next"].as_str().map(str::to_owned))
     };
@@ -1377,6 +1382,47 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     assert_eq!(failed.0, "failed to start");
     assert_eq!(failed.1.unwrap(), "krabb service restart");
 
+    let observe = |failure, missing| super::status::Observed {
+        active: Some(active.as_slice()),
+        failure,
+        missing,
+    };
+
+    let rejected = super::plugin_state(
+        "gemini",
+        &model,
+        true,
+        &observe(Some("Gemini rejected the API key (401)."), None),
+        true,
+    );
+
+    assert_eq!(rejected["state"], "failed to start");
+    assert_eq!(rejected["reason"], "Gemini rejected the API key (401).");
+    assert_eq!(rejected["next"], "krabb plugin setup gemini");
+
+    let help = "Install signal-cli from https://github.com/AsamK/signal-cli#installation.";
+    let signal = entry("channel");
+
+    for (configured, expected) in [(true, "missing program"), (false, "needs setup")] {
+        let value =
+            super::plugin_state("signal", &signal, configured, &observe(None, Some(help)), true);
+
+        assert_eq!(value["state"], expected);
+    }
+
+    let loaded = vec!["signal".to_owned()];
+    let missing = super::status::Observed {
+        active: Some(loaded.as_slice()),
+        failure: None,
+        missing: Some(help),
+    };
+
+    assert_eq!(
+        super::plugin_state("signal", &signal, false, &missing, true)["next"],
+        help,
+        "a loaded plugin that cannot find its program is not ready"
+    );
+
     let next = |state: &str, next: &str| {
         let value =
             serde_json::json!({"plugin_states": [{"id": "codex", "state": state, "next": next}]});
@@ -1396,6 +1442,21 @@ fn status_places_each_plugin_on_its_path_with_a_next_action() {
     );
 
     assert!(next("failed to start", "krabb service restart").starts_with("The log at "));
+
+    assert_eq!(
+        next("failed to start", "krabb plugin setup codex"),
+        "Set up codex again with `krabb plugin setup codex`."
+    );
+
+    assert_eq!(next("missing program", help), help);
+
+    let reasoned = super::status_text(
+        &serde_json::json!({"plugin_states": [{"id": "gemini", "state": "failed to start",
+            "reason": "Gemini rejected the API key (401).", "next": "krabb plugin setup gemini"}]}),
+        1,
+    );
+
+    assert!(reasoned.contains("gemini: failed to start (Gemini rejected the API key (401))"));
 
     let unready = serde_json::json!({
         "health": "unhealthy",
@@ -7126,7 +7187,7 @@ fn plugin_list_rejects_invalid_visible_manifests() {
     fs::create_dir_all(root.join("plugins/broken")).unwrap();
     fs::write(root.join("plugins/broken/krabb-plugin.toml"), "broken = true\n").unwrap();
 
-    assert!(super::list_at(&root, 1, true).is_err());
+    assert!(super::list_at(&root, None, 1, true).is_err());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -9156,8 +9217,8 @@ async fn manages_local_sessions_and_plugins() {
             .is_symlink()
     );
 
-    super::list_at(&root, 1, true).unwrap();
-    super::list_at(&root, 1, false).unwrap();
+    super::list_at(&root, None, 1, true).unwrap();
+    super::list_at(&root, None, 1, false).unwrap();
 
     let lock = super::load_lock_at(&root).unwrap();
 
@@ -9270,7 +9331,7 @@ async fn manages_local_sessions_and_plugins() {
 
     assert!(super::installed_at(&root).is_empty());
 
-    super::list_at(&root, 1, false).unwrap();
+    super::list_at(&root, None, 1, false).unwrap();
 
     assert!(
         super::remove_at(super::PluginRemove { id: "missing".into(), yes: false }, &root).is_err()

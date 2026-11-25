@@ -231,6 +231,7 @@ async fn handle(
         "plugin.uninstall" => uninstall(&request, &state).await,
         "plugin.active" => active(&request, &state).await,
         "status.report" => status_report(&request, &state).await,
+        "plugin.list" => plugin_list(&request, &state).await,
         "delivery.drop" => drop_deliveries(&request, &state).await,
         "capability.call" => capability_call(&request, &state).await,
         "model.list" => model_list(&request, &state).await,
@@ -1963,21 +1964,58 @@ async fn uninstall(request: &IpcRequest, state: &State) -> IpcResponse {
     }
 }
 
+/// What this daemon observes about its plugins, before checking programs on its PATH.
+async fn observed(state: &State) -> super::plugins::Runtime {
+    let active = state.plugins.all().await.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    let failures = state.plugins.failures.read().await.clone();
+
+    super::plugins::Runtime { active, failures, missing: BTreeMap::new() }
+}
+
+/// The installed plugins with their manifests and runtime states, as `krabb plugin list` shows.
+async fn plugin_list(request: &IpcRequest, state: &State) -> IpcResponse {
+    let observed = observed(state).await;
+    let home = state.home.clone();
+
+    let items = tokio::task::spawn_blocking(move || {
+        let states = super::load_lock_at(&home)
+            .map(|lock| {
+                super::status::plugin_states(&home, &lock, Some(observed.with_missing(&home)))
+            })
+            .unwrap_or_default();
+
+        plugin_items(&home, true, &states)
+    })
+    .await;
+
+    match items {
+        Ok(items) => IpcResponse::ok(request.id, json!({"items": items})),
+        Err(_) => IpcResponse::fail(request.id, -32000, "The plugin list stopped unexpectedly."),
+    }
+}
+
 async fn active(request: &IpcRequest, state: &State) -> IpcResponse {
     let items = state.plugins.all().await.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
     let detached = state.plugins.detached.read().await.iter().cloned().collect::<Vec<_>>();
+    let observed = observed(state).await.with_missing(&state.home);
 
-    IpcResponse::ok(request.id, json!({"items": items, "detached": detached}))
+    IpcResponse::ok(
+        request.id,
+        json!({"items": items, "detached": detached, "failures": observed.failures,
+            "missing": observed.missing}),
+    )
 }
 
 /// The status screen `krabb status` prints, for clients that cannot read the host's state.
 async fn status_report(request: &IpcRequest, state: &State) -> IpcResponse {
-    let active = state.plugins.all().await.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    let observed = observed(state).await;
     let home = state.home.clone();
 
     // Credential checks for plugins that did not load may decrypt the store or probe a sign-in.
-    let report =
-        tokio::task::spawn_blocking(move || super::status::status_with(&home, Some(active))).await;
+    let report = tokio::task::spawn_blocking(move || {
+        super::status::status_with(&home, Some(observed.with_missing(&home)))
+    })
+    .await;
 
     match report {
         Ok(Ok(value)) => {
@@ -2016,8 +2054,6 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                 "approval": state.approval_mode.as_str(),
             })
         }
-
-        "plugin.list" => json!({"items": plugin_inventory(&state.home)}),
 
         "plugin.guard" => {
             let sessions = state.sessions.lock().map_err(lock)?;
@@ -2668,14 +2704,11 @@ fn to_io(error: krabb_core::Error) -> io::Error {
 }
 
 fn plugins(home: &std::path::Path) -> Vec<Value> {
-    plugin_items(home, false)
+    plugin_items(home, false, &[])
 }
 
-fn plugin_inventory(home: &std::path::Path) -> Vec<Value> {
-    plugin_items(home, true)
-}
-
-fn plugin_items(home: &std::path::Path, include_manifest: bool) -> Vec<Value> {
+/// Installed plugin folders; a known state replaces the binary check when STATES has one.
+fn plugin_items(home: &std::path::Path, include_manifest: bool, states: &[Value]) -> Vec<Value> {
     let mut items = std::fs::read_dir(home.join("plugins"))
         .ok()
         .into_iter()
@@ -2701,8 +2734,13 @@ fn plugin_items(home: &std::path::Path, include_manifest: bool) -> Vec<Value> {
                 format!("krabb-plugin-{id}")
             };
 
-            let health = entry.path().join("bin").join(binary).is_file();
-            let health = if health { "ready" } else { "missing" };
+            let state = states.iter().find(|state| state["id"] == id.as_str());
+
+            let health = if !entry.path().join("bin").join(binary).is_file() {
+                "missing"
+            } else {
+                state.and_then(|state| state["state"].as_str()).unwrap_or("ready")
+            };
 
             let item = if include_manifest {
                 super::read_manifest(&entry.path()).map_or_else(
@@ -2713,7 +2751,16 @@ fn plugin_items(home: &std::path::Path, include_manifest: bool) -> Vec<Value> {
                             "health": health,
                         })
                     },
-                    |manifest| super::plugin_summary(&manifest, health),
+                    |manifest| {
+                        let mut item = super::plugin_summary(&manifest, health);
+
+                        if let Some(state) = state {
+                            item["reason"] = state["reason"].clone();
+                            item["next"] = state["next"].clone();
+                        }
+
+                        item
+                    },
                 )
             } else {
                 json!({
@@ -5992,7 +6039,7 @@ for line in sys.stdin:
             ]
         );
 
-        let inventory = super::plugin_inventory(&root);
+        let inventory = super::plugin_items(&root, true, &[]);
 
         assert_eq!(inventory[0]["version"], "1.2.3");
         assert_eq!(inventory[0]["capabilities"], json!(["model", "vision"]));

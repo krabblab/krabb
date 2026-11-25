@@ -162,6 +162,24 @@ error when it is rejected. Setup does not show other result fields. Error text i
 redacted and clipped before setup shows it. Setup reports the result but never fails
 because of it, and skips plugins without the flag or that answer method-not-found.
 
+Declare each external program the plugin runs, which Krabb cannot install for it, in a
+`[[requires]]` entry:
+
+```toml
+[[requires]]
+program = "signal-cli"
+setting = "KRABB_SIGNAL_COMMAND"
+help = "Install signal-cli from https://github.com/AsamK/signal-cli#installation."
+```
+
+`program` is a plain file name looked up on `PATH`. `setting` names a variable whose value
+overrides it; with no `program`, the requirement applies only once that variable is set.
+`help` is one line, up to 300 bytes, that says how to install or start the program. When
+a set-up plugin's program is missing, `krabb status`, `krabb plugin list`, and
+`krabb doctor` report `missing program` with this help. A running daemon checks its own
+`PATH`, which can differ from the shell's. A plugin may declare up to eight requirements.
+Older hosts ignore the table.
+
 Manifest and lock records without `settings` keep their existing behavior.
 Settings and defaults are recorded in the plugin lock. Update previews show before/after
 capabilities, permissions, secret names, settings, and commands. Confirming the update

@@ -311,8 +311,21 @@ pub(crate) async fn load_plugin(
 
     let _loading = plugins.loading.lock().await;
 
-    let path = binary_at(id, root).ok_or_else(|| format!("Plugin binary was not found: {id}."))?;
-    let process = launch(root, path, id, capability, force, config).await?;
+    let launched = match binary_at(id, root) {
+        Some(path) => launch(root, path, id, capability, force, config).await,
+        None => Err(format!("Plugin binary was not found: {id}.").into()),
+    };
+
+    let process = match launched {
+        Ok(process) => process,
+
+        Err(error) => {
+            plugins.failures.write().await.insert(id.to_owned(), start_failure(&error.to_string()));
+
+            return Err(error);
+        }
+    };
+
     let hello = process.hello.clone();
 
     if let Some(previous) = plugins.insert(Live::new(process)).await {
@@ -325,7 +338,16 @@ pub(crate) async fn load_plugin(
 
     info!(plugin = %hello.id, version = %hello.version, "Plugin loaded.");
     plugins.detached.write().await.remove(id);
+    plugins.failures.write().await.remove(id);
     Ok(hello)
+}
+
+/// The longest start failure reason status shows; the full text stays in the daemon log.
+const START_FAILURE_LIMIT: usize = 300;
+
+/// A start failure as status shows it: one redacted sentence of bounded length.
+pub(crate) fn start_failure(error: &str) -> String {
+    clip(redact_diagnostic(sentence(error.trim())), START_FAILURE_LIMIT)
 }
 
 pub(crate) async fn unload_plugin(
