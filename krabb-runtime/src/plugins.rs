@@ -627,10 +627,19 @@ pub(crate) fn plugin_uninstall_output(outcome: &Value) -> String {
         details.push(format!("Revoked {grants} sharing {noun}."));
     }
 
-    if !details.is_empty() {
+    let mut entries = details.into_iter().map(|detail| (detail, Vec::new())).collect::<Vec<_>>();
+
+    for failure in revoked["failures"].as_array().into_iter().flatten() {
+        let error = failure["error"].as_str().unwrap_or("A cleanup step failed.").to_owned();
+        let next = failure["next"].as_str().map(str::to_owned).into_iter().collect();
+
+        entries.push((error, next));
+    }
+
+    if !entries.is_empty() {
         output.push('\n');
 
-        output.push_str(&format_tree_list(&details));
+        output.push_str(&format_tree(&entries));
     }
 
     output

@@ -1683,6 +1683,22 @@ fn plugin_uninstall_details_follow_the_summary_without_an_empty_line() {
     );
 
     assert_eq!(
+        super::plugin_uninstall_output(&serde_json::json!({
+            "id": "telegram",
+            "revoked": {"secrets": [], "keyring": false, "grants": 1, "cleanup": "partial",
+                "failures": [{"step": "service_credentials",
+                    "error": "Could not remove telegram's values from the service credential copy.",
+                    "next": "Run `krabb service install` to rewrite the copy without them."}]}
+        })),
+        concat!(
+            "Uninstalled plugin telegram.\n",
+            "├─ Revoked 1 sharing grant.\n",
+            "└─ Could not remove telegram's values from the service credential copy.\n",
+            "   └─ Run `krabb service install` to rewrite the copy without them."
+        )
+    );
+
+    assert_eq!(
         super::plugin_uninstall_batch_output(
             &[
                 "codex@v0.1.0 successfully uninstalled".into(),

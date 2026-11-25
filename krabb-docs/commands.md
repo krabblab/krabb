@@ -489,6 +489,12 @@ Use `plugin install` (alias `add`) to install and activate a plugin, and
 `plugin uninstall` (alias `remove`) to remove it. Installing does not require a
 separate attach step.
 
+Uninstalling also removes the plugin's saved secrets and sharing grants. If one of
+these cleanup steps fails after the plugin is removed, such as the copy of its secrets
+kept for the service, the result lists it with a next action. With `--json`,
+`revoked.cleanup` is `complete` or `partial`, and `revoked.failures` holds each failed
+`step` with its `error` and `next` action.
+
 For maintenance, `plugin detach <id>` (alias `stop`) waits for active work to finish
 and disconnects the plugin from the runtime, keeping its files, credentials and data.
 Use `plugin attach <id>` (alias `start`) to bring it back. Updates preserve detachment;
