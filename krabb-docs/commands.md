@@ -412,12 +412,16 @@ stopped. Any other failure
 restores the recovery point and the service state.
 
 If the update is cut off, for example by a closed terminal, a crash, or power loss, the
-next `krabb` command or daemon start settles it while no update is running. When the
-new version had finished activating, it is kept; otherwise the recovery point is
-restored. Either way, a service that was running before the update runs again. Krabb
-says what it did once, and `krabb status` shows it as `Interrupted update`, with the
-command to try the update again when it was undone; `--json` reports it as
-`recovered`, with `from`, `to`, the `kept` version, and the time `at`.
+next `krabb` command or daemon start settles it; `krabb version`, `krabb completion`,
+and `krabb update --rollback` do not. While an update or its activation still runs,
+other commands ask you to try again. When the new version had finished activating, it
+is kept; otherwise the recovery point is restored. Either way, a service that was
+running before the update runs again. Krabb says what it did, and for a week
+`krabb status` shows it as `Interrupted update`, with `krabb update` to try again when
+it was undone; `--json` reports it as `recovered`, with `from`, `to`, the `kept`
+version, whether it was `restored`, and the time `at` in Unix seconds. A record that
+names another release, such as one you reinstalled by hand, is left for
+`krabb update --rollback`, which asks first.
 
 `krabb status` shows a retained recovery point. `krabb update --rollback`
 restores it without the network or the new daemon; if the new `krabb` cannot

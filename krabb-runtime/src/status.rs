@@ -338,7 +338,7 @@ fn next_action(value: &serde_json::Value) -> Option<String> {
     plugin.or_else(|| {
         recovered(value)
             .filter(|recovered| !recovered.finished())
-            .map(|recovered| format!("Try the update again with `krabb update {}`.", recovered.to))
+            .map(|_| "Try the update again with `krabb update`.".to_owned())
     })
 }
 

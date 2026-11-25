@@ -16,18 +16,29 @@ pub(crate) async fn serve_controlled(
     on_ready: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Settled before anything is read, because restoring replaces the configuration too.
-    if root.join("updates").is_dir()
-        && let Some(outcome) = upgrade::recover(root, upgrade::Caller::Daemon).await?
-    {
-        info!(kept = %outcome.kept, to = %outcome.to, "Recovered an interrupted update.");
+    if root.join("updates").is_dir() {
+        match upgrade::recover(root, &service_path(), upgrade::Caller::Daemon).await {
+            Ok(Some(outcome)) => {
+                info!(kept = %outcome.kept, to = %outcome.to, "Recovered an interrupted update.");
 
-        // The service manager starts the restored daemon after this one exits with an error.
-        if outcome.kept != VERSION {
-            return Err(format!(
-                "Krabb {} was restored after an interrupted update and starts next.",
-                outcome.kept
-            )
-            .into());
+                // The service manager starts the restored daemon after this one exits.
+                if outcome.kept != VERSION {
+                    return Err(format!(
+                        "Krabb {} was restored after an interrupted update, so the service \
+                         restarts with it.",
+                        outcome.kept
+                    )
+                    .into());
+                }
+            }
+
+            Ok(None) => {}
+
+            // Refusing to start would only restart the daemon forever, so it serves and status
+            // keeps offering the rollback.
+            Err(error) => {
+                error!(error = %diagnostic(sentence(error.to_string())), "Update recovery failed.");
+            }
         }
     }
 

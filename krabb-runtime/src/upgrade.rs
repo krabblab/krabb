@@ -12,7 +12,7 @@ mod snapshot;
 mod space;
 mod stage;
 
-pub(crate) use interrupted::{Caller, Outcome, outcome, recover};
+pub(crate) use interrupted::{Caller, Outcome, before_command, outcome, recover};
 pub(super) use snapshot::uninstalled;
 
 use std::time::Duration;
@@ -65,8 +65,11 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     if options.rollback {
         snapshot::rollback(root, &service_path(), options.yes, json).await?;
 
-        interrupted::settle(root)?;
-        interrupted::forget(root)?;
+        // A cancelled rollback keeps its recovery point, and with it what status reports.
+        if snapshot::load(root)?.is_none() {
+            interrupted::clear_intent(root)?;
+            interrupted::clear_outcome(root)?;
+        }
 
         return Ok(());
     }
@@ -102,24 +105,7 @@ async fn update(
     json: bool,
 ) -> Result<(), PluginError> {
     // An interrupted update is settled first, so this one starts from a working installation.
-    if let Some(outcome) =
-        interrupted::recover_locked(root, &service_path(), VERSION, Caller::Command).await?
-    {
-        if !json {
-            eprintln!("{}", outcome.notice());
-        }
-
-        if outcome.kept != VERSION {
-            return Err(format!(
-                "{}\nRun `krabb update` again to update from Krabb {}.",
-                outcome.notice(),
-                outcome.kept
-            )
-            .into());
-        }
-    }
-
-    interrupted::forget(root)?;
+    interrupted::before_update(root, json).await?;
 
     let version = match requested {
         Some(version) if releases::valid_version(&version) => version,
@@ -221,6 +207,8 @@ async fn update(
         return Ok(());
     }
 
+    interrupted::clear_outcome(root)?;
+
     // Saved before the service stops, so a cut-off update can start it again.
     interrupted::intend(
         root,
@@ -228,8 +216,24 @@ async fn update(
     )?;
 
     if running {
-        record(root, &mut staged).await?;
-        service_action_with(&service, ServiceAction::Stop, ServiceReport::nested(json))?;
+        let stopped = match record(root, &mut staged).await {
+            Ok(()) => {
+                service_action_with(&service, ServiceAction::Stop, ServiceReport::nested(json))
+            }
+
+            Err(error) => Err(error),
+        };
+
+        // A clean failure is not an interruption, so the service and the intent are put back.
+        if let Err(error) = stopped {
+            if !self::running()? {
+                service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
+            }
+
+            interrupted::clear_intent(root)?;
+
+            return Err(error);
+        }
     }
 
     let installed = service.is_file().then_some(service.as_path());
@@ -252,17 +256,17 @@ async fn update(
         Ok(point) => point,
 
         Err(error) => {
+            interrupted::clear_intent(root)?;
+
             if running {
                 service_action_with(&service, ServiceAction::Start, ServiceReport::nested(json))?;
             }
-
-            interrupted::settle(root)?;
 
             return Err(error);
         }
     };
 
-    interrupted::settle(root)?;
+    interrupted::clear_intent(root)?;
 
     staged.keep();
 
