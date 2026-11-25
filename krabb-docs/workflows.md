@@ -261,14 +261,39 @@ without changes.
 
 ## Uninstall
 
+Remove Krabb with the uninstall script for your system. By default it removes only the
+software: the service, the `krabb` and `krabb-daemon` binaries, installed plugin code,
+downloaded updates, and on Windows the `PATH` entry. `KRABB_HOME` stays with your
+settings, credentials, and conversations, so installing Krabb again picks up where you
+left off.
+
 ```sh
-krabb service uninstall -y
-krabb plugin uninstall <id>... -y
+curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.sh | sh
 ```
 
-Uninstalling a plugin removes its saved secrets and its sharing grants. Then delete the `krabb` and `krabb-daemon` binaries from the
-install location. Delete `KRABB_HOME` only if you no longer need its
-conversations and settings.
+```powershell
+irm https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.ps1 | iex
+```
+
+To leave nothing of Krabb on the machine, purge it. Purging also deletes `KRABB_HOME`,
+the credential entries Krabb saved in the OS keyring, and the database and memory files
+at custom `KRABB_DB` and `KRABB_MEMORY` paths. It asks for confirmation first; pass
+`--yes`, or `-Yes` in PowerShell, to skip it in scripts. Folders that Krabb did not
+create, such as a project used as `KRABB_ROOT` or a `KRABB_MEDIA` folder, are listed
+but never deleted.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.sh | sh -s -- --purge
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.ps1))) -Purge
+```
+
+Both scripts print what they removed and what they kept. They work even when the
+`krabb` binary no longer runs. To remove a single plugin instead, run
+`krabb plugin uninstall <id> -y`, which also removes its saved secrets and its sharing
+grants.
 
 Uninstall cannot reach access that lives outside Krabb:
 

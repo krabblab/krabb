@@ -94,7 +94,9 @@ Codex sign-in needs the Codex CLI, Signal needs `signal-cli`, and sandboxed shel
 tools need Docker or Podman.
 
 The [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice,
-backups, upgrades, and uninstalling. [Storage](krabb-docs/storage.md) lists where
+backups, and upgrades. To remove Krabb, run the
+[uninstall script](krabb-docs/workflows.md#uninstall); it keeps your data unless you
+purge it. [Storage](krabb-docs/storage.md) lists where
 Krabb keeps its data, and [Troubleshooting](krabb-docs/troubleshooting.md) helps
 when a reply does not arrive.
 
