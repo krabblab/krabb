@@ -134,10 +134,13 @@ class Uninstallers(unittest.TestCase):
         project = self.root / 'project'
         database = stores / 'krabb.db'
         memory = stores / 'memory.json'
+        records = stores / 'records' / ('b' * 64) / ('c' * 64 + '.md')
         created = [database, stores / 'krabb.db-wal', memory, stores / 'memory.lock',
-                   stores / '.memory.json.tmp-1']
+                   stores / '.memory.json.tmp-1', records]
 
-        for path in [*created, project / 'notes.md']:
+        unrelated = [project / 'notes.md', stores / 'records/mine/notes.md', stores / 'krabb.lock']
+
+        for path in [*created, *unrelated]:
             self.write(path, 'data')
 
         result = self.run_uninstaller('--purge', '--yes', KRABB_DB=str(database),
@@ -149,7 +152,9 @@ class Uninstallers(unittest.TestCase):
         for path in created:
             self.assertFalse(path.exists(), path)
 
-        self.assertTrue((project / 'notes.md').exists())
+        for path in unrelated:
+            self.assertTrue(path.exists(), path)
+
         self.assertIn(str(project), result.stdout)
 
         if not WINDOWS:
@@ -218,6 +223,27 @@ class Uninstallers(unittest.TestCase):
         self.assertFalse(definition.exists())
         self.assertFalse(served.exists())
         self.assertTrue((self.home / 'config.toml').exists())
+
+
+    @unittest.skipIf(WINDOWS, 'the stubbed keyring tools are Unix commands')
+    def test_purge_removes_the_keyring_entry_of_every_credentials_copy(self):
+        copy = self.root / 'user/service.credentials.json'
+        other = 'd' * 64
+
+        self.write(copy, json.dumps({'backend': 'keyring', 'key_id': other}, indent=2))
+        self.service(self.binaries[1], {'KRABB_HOME': str(self.home), 'KRABB_CREDENTIALS': str(copy)})
+
+        result = self.run_uninstaller('--purge', '--yes')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        tool = 'security' if MACOS else 'secret-tool'
+        calls = [line for line in self.recorded().splitlines() if line.startswith(tool)]
+
+        self.assertEqual(len(calls), 2, self.recorded())
+        self.assertTrue(any(f'credentials:{KEY}' in call for call in calls), calls)
+        self.assertTrue(any(f'credentials:{other}' in call for call in calls), calls)
+        self.assertFalse(copy.exists())
 
 
 if __name__ == '__main__':

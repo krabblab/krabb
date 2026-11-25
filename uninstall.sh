@@ -109,10 +109,19 @@ if [ -f "$service" ]; then
     fi
 fi
 
-# The installed service names the home and stores this installation really uses.
-path() {
+# The installed service names the home and stores this installation really uses. They are
+# read now, because the definition is removed before the stores are.
+variables='KRABB_HOME KRABB_DB KRABB_MEMORY KRABB_CREDENTIALS KRABB_CREDENTIALS_KEY KRABB_TIMER
+KRABB_ROOT KRABB_MEDIA KRABB_CODEX_HOME'
+
+for variable in $variables; do
     value=''
-    [ "$owned" = false ] || value=$(setting "$1")
+    [ "$owned" = false ] || value=$(setting "$variable")
+    eval "defined_$variable=\$value"
+done
+
+path() {
+    eval "value=\${defined_$1:-}"
     [ -n "$value" ] || eval "value=\${$1:-}"
     printf '%s' "$value"
 }
@@ -169,20 +178,47 @@ store() {
         "$directory/.$name".txn-* "$directory/.$name".live-*; do
         remove "$sidecar"
     done
-
-    # The memory plugin locks its file with the extension replaced, as memory.lock.
-    [ "${name%.*}" = "$name" ] || remove "$directory/${name%.*}.lock"
 }
 
-# Read before the home goes: the exact keyring entry this home's credentials use.
-credentials=$(path KRABB_CREDENTIALS)
-credentials=${credentials:-"$home/credentials.json"}
-entry=''
+# The memory store keeps its index, a lock named with the extension replaced, and one
+# folder of records per scope, named by a 64-character hash, next to the index.
+memory() {
+    store "$1"
+    [ -n "$1" ] && [ "${1#/}" != "$1" ] || return 0
 
-if [ -f "$credentials" ] && grep -q '"backend": *"keyring"' "$credentials"; then
+    directory=$(dirname "$1")
+    name=$(basename "$1")
+    [ "${name%.*}" = "$name" ] || remove "$directory/${name%.*}.lock"
+
+    for scope in "$directory"/records/*; do
+        hash=$(basename "$scope")
+
+        case "$hash" in
+            *[!0-9a-f]* | '') ;;
+            *) [ "${#hash}" -ne 64 ] || [ ! -d "$scope" ] || remove "$scope" ;;
+        esac
+    done
+
+    rmdir "$directory/records" 2>/dev/null || true
+}
+
+# Read before the home goes: the exact keyring entry of every credentials file. The service
+# can keep its own copy with its own entry, next to the home's file or a custom one.
+service_credentials=$(path KRABB_CREDENTIALS)
+shell_credentials=${KRABB_CREDENTIALS:-}
+entries=''
+
+for credentials in "$service_credentials" "$shell_credentials" "$home/credentials.json"; do
+    [ -f "$credentials" ] && grep -q '"backend": *"keyring"' "$credentials" || continue
+
     entry=$(sed -n 's/.*"key_id": *"\([0-9a-fA-F]\{64\}\)".*/credentials:\1/p' "$credentials" |
         head -n 1)
-fi
+
+    case " $entries " in
+        *" $entry "*) ;;
+        *) [ -z "$entry" ] || entries="$entries $entry" ;;
+    esac
+done
 
 if [ "$owned" = true ]; then
     krabb="$prefix/bin/krabb"
@@ -233,13 +269,16 @@ fi
 
 if [ "$purge" = true ]; then
     # Stores at custom paths are files Krabb created; folders such as KRABB_ROOT are not.
-    for variable in KRABB_DB KRABB_MEMORY KRABB_CREDENTIALS KRABB_CREDENTIALS_KEY KRABB_TIMER; do
+    for variable in KRABB_DB KRABB_CREDENTIALS KRABB_CREDENTIALS_KEY KRABB_TIMER; do
         store "$(path "$variable")"
     done
 
+    store "$shell_credentials"
+    memory "$(path KRABB_MEMORY)"
+
     [ "$krabb_home" = false ] || remove "$home"
 
-    if [ -n "$entry" ]; then
+    for entry in $entries; do
         case "$system" in
             Darwin)
                 if security delete-generic-password -s "$label" -a "$entry" > /dev/null 2>&1
@@ -257,7 +296,7 @@ if [ "$purge" = true ]; then
                 fi
                 ;;
         esac
-    fi
+    done
 fi
 
 for variable in KRABB_ROOT KRABB_MEDIA KRABB_CODEX_HOME; do

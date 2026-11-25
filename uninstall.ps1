@@ -122,30 +122,51 @@ function Remove-Store([string] $Path) {
         Remove-Krabb $sidecar
     }
 
-    # The memory plugin locks its file with the extension replaced, as memory.lock.
-    if ([IO.Path]::HasExtension($name)) {
-        Remove-Krabb (Join-Path $directory ([IO.Path]::ChangeExtension($name, "lock")))
-    }
-
     foreach ($pattern in "tmp", "backup", "txn", "live") {
         Get-ChildItem -LiteralPath $directory -Force -Filter ".$name.$pattern-*" -ErrorAction SilentlyContinue |
             ForEach-Object { Remove-Krabb $_.FullName }
     }
 }
 
-# Read before the home goes: the exact credential entry this home's credentials use.
-$credentials = Get-KrabbPath "KRABB_CREDENTIALS"
-if (-not $credentials) { $credentials = Join-Path $krabbHome "credentials.json" }
-$entry = $null
+# The memory store keeps its index, a lock named with the extension replaced, and one
+# folder of records per scope, named by a 64-character hash, next to the index.
+function Remove-Memory([string] $Path) {
+    Remove-Store $Path
+    if (-not $Path -or -not [IO.Path]::IsPathRooted($Path)) { return }
 
-if (Test-Path -LiteralPath $credentials -PathType Leaf) {
+    $directory = Split-Path $Path
+    $name = Split-Path $Path -Leaf
+    if ([IO.Path]::HasExtension($name)) {
+        Remove-Krabb (Join-Path $directory ([IO.Path]::ChangeExtension($name, "lock")))
+    }
+
+    $records = Join-Path $directory "records"
+    Get-ChildItem -LiteralPath $records -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -cmatch '^[0-9a-f]{64}$' } |
+        ForEach-Object { Remove-Krabb $_.FullName }
+
+    if ((Test-Path -LiteralPath $records) -and -not (Get-ChildItem -LiteralPath $records -Force)) {
+        Remove-Item -LiteralPath $records -Force
+    }
+}
+
+# Read before the home goes: the exact credential entry of every credentials file. The service
+# can keep its own copy with its own entry, next to the home's file or a custom one.
+$serviceCredentials = Get-KrabbPath "KRABB_CREDENTIALS"
+$entries = [Collections.Generic.List[string]]::new()
+
+foreach ($credentials in $serviceCredentials, $env:KRABB_CREDENTIALS, (Join-Path $krabbHome "credentials.json")) {
+    if (-not $credentials -or -not (Test-Path -LiteralPath $credentials -PathType Leaf)) { continue }
+
     try {
         $envelope = Get-Content -Raw -LiteralPath $credentials | ConvertFrom-Json
-        if ($envelope.backend -eq "keyring" -and "$($envelope.key_id)" -match '^[0-9a-fA-F]{64}$') {
-            $entry = "credentials:$($envelope.key_id)"
+        $entry = "credentials:$($envelope.key_id)"
+        if ($envelope.backend -eq "keyring" -and $entry -match '^credentials:[0-9a-fA-F]{64}$' -and
+            -not $entries.Contains($entry)) {
+            $entries.Add($entry)
         }
     } catch {
-        $entry = $null
+        continue
     }
 }
 
@@ -207,13 +228,16 @@ if ($isHome) {
 
 if ($Purge) {
     # Stores at custom paths are files Krabb created; folders such as KRABB_ROOT are not.
-    foreach ($name in "KRABB_DB", "KRABB_MEMORY", "KRABB_CREDENTIALS", "KRABB_CREDENTIALS_KEY", "KRABB_TIMER") {
+    foreach ($name in "KRABB_DB", "KRABB_CREDENTIALS", "KRABB_CREDENTIALS_KEY", "KRABB_TIMER") {
         Remove-Store (Get-KrabbPath $name)
     }
 
+    Remove-Store $env:KRABB_CREDENTIALS
+    Remove-Memory (Get-KrabbPath "KRABB_MEMORY")
+
     if ($isHome) { Remove-Krabb $krabbHome }
 
-    if ($entry) {
+    foreach ($entry in $entries) {
         if ((Invoke-Tool "cmdkey.exe" @("/delete:$entry.$label")).Ok) {
             $removed.Add("the $entry credential entry")
         }
