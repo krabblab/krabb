@@ -27,7 +27,6 @@ const SERVICE_SID: &str = "S-1-5-80-3700705418-1466718386-3227256717-750624257-2
 
 const CREDENTIAL_LIMIT: u64 = 1024 * 1024;
 
-#[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -42,14 +41,37 @@ struct Transaction {
 
 pub fn load(path: impl AsRef<Path>, limit: u64) -> io::Result<Option<Vec<u8>>> {
     let path = path.as_ref();
+    let mut attempt = 1;
 
+    loop {
+        match read(path, limit) {
+            Err(error) if replacing(&error) && attempt < REPLACE_ATTEMPTS => {
+                attempt += 1;
+
+                std::thread::sleep(REPLACE_WAIT);
+            }
+
+            result => return result,
+        }
+    }
+}
+
+/// How often a read retries while Windows replaces the file, and how long it waits between.
+const REPLACE_ATTEMPTS: u32 = 50;
+const REPLACE_WAIT: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Whether an error is Windows refusing a file that another process is replacing right now.
+/// Only errors from the operating system count, never the checks this crate reports itself.
+fn replacing(error: &io::Error) -> bool {
+    cfg!(windows)
+        && error.raw_os_error().is_some()
+        && matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied)
+}
+
+fn read(path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
     match recover(path) {
         Ok(()) => {}
-        Err(error)
-            if matches!(error.kind(), io::ErrorKind::NotADirectory | io::ErrorKind::NotFound) =>
-        {
-            return Ok(None);
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => return Ok(None),
 
         Err(error) => return Err(error),
     }
@@ -94,10 +116,33 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
 
     reject_link(path)?;
 
-    let nonce = nonce();
-    let temporary = path.with_file_name(format!(".{}.tmp-{}", name(path), nonce));
-    let backup = path.with_file_name(format!(".{}.backup-{}", name(path), nonce));
-    let journal = path.with_file_name(format!(".{}.txn-{}", name(path), nonce));
+    let stamp = stamp();
+    let temporary = path.with_file_name(format!(".{}.tmp-{}", name(path), stamp));
+    let backup = path.with_file_name(format!(".{}.backup-{}", name(path), stamp));
+    let journal = path.with_file_name(format!(".{}.txn-{}", name(path), stamp));
+    let live = live(path, stamp);
+
+    // Held for the whole save, so another process's recovery leaves this transaction alone
+    // while it is in progress. The operating system releases it if this process dies.
+    let mut options = OpenOptions::new();
+
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let owner = options.open(&live)?;
+
+    match owner.lock() {
+        Ok(()) => {}
+
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {}
+
+        Err(error) => {
+            let _ = fs::remove_file(&live);
+
+            return Err(error);
+        }
+    }
 
     let result = (|| {
         let mut options = OpenOptions::new();
@@ -118,8 +163,13 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
 
         write_journal(&journal, &transaction)?;
 
+        // A hard link keeps the previous file in place, so the rename below replaces it in
+        // one step and readers never find the file missing. Without links, it moves aside.
         if matches!(fs::symlink_metadata(path), Ok(metadata) if metadata.is_file()) {
-            fs::rename(path, &backup)?;
+            if fs::hard_link(path, &backup).is_err() {
+                fs::rename(path, &backup)?;
+            }
+
             transaction.phase = "backed_up".into();
             write_journal(&journal, &transaction)?;
         }
@@ -139,13 +189,45 @@ pub fn save(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>
         Ok::<(), io::Error>(())
     })();
 
-    if let Err(error) = result {
+    if result.is_err() {
         let _ = fs::remove_file(&temporary);
-
-        return Err(error);
     }
 
-    Ok(())
+    let _ = fs::remove_file(&live);
+
+    drop(owner);
+
+    result
+}
+
+/// The file a saving process holds locked while its transaction for PATH is in progress.
+fn live(path: &Path, stamp: impl std::fmt::Display) -> std::path::PathBuf {
+    path.with_file_name(format!(".{}.live-{}", name(path), stamp))
+}
+
+/// Whether another process may still hold the transaction with this NONCE open. A missing file
+/// means the writer finished, crashed before it existed, or predates these files. When the
+/// state cannot be told, the transaction is left alone for a later recovery.
+fn in_progress(path: &Path, stamp: &str) -> bool {
+    let file = match File::open(live(path, stamp)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+
+    match file.try_lock() {
+        Ok(()) => false,
+        Err(fs::TryLockError::Error(error)) if error.kind() == io::ErrorKind::Unsupported => false,
+        Err(_) => true,
+    }
+}
+
+/// Treat a file that another recovery already moved or removed as handled.
+fn settled(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 pub fn append(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()> {
@@ -284,7 +366,14 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
             continue;
         }
 
-        let transaction: Transaction = match serde_json::from_slice(&fs::read(&journal)?) {
+        // A journal that vanished or is being replaced belongs to a writer that is still busy.
+        let content = match fs::read(&journal) {
+            Ok(content) => content,
+            Err(error) if error.kind() == io::ErrorKind::NotFound || replacing(&error) => continue,
+            Err(error) => return Err(error),
+        };
+
+        let transaction: Transaction = match serde_json::from_slice(&content) {
             Ok(transaction) => transaction,
 
             Err(_) => {
@@ -312,15 +401,21 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
             ));
         }
 
+        let stamp = suffix.unwrap_or_default();
+
+        if in_progress(path, stamp) {
+            continue;
+        }
+
         let temporary = parent.join(&transaction.temporary);
         let backup = parent.join(&transaction.backup);
 
         match transaction.phase.as_str() {
             "backed_up" if !regular(path) => {
                 if regular(&temporary) {
-                    fs::rename(&temporary, path)?;
+                    settled(fs::rename(&temporary, path))?;
                 } else if regular(&backup) {
-                    fs::rename(&backup, path)?;
+                    settled(fs::rename(&backup, path))?;
                 }
             }
 
@@ -328,24 +423,21 @@ pub fn recover(path: impl AsRef<Path>) -> io::Result<()> {
                 let _ = fs::remove_file(&temporary);
             }
 
-            "prepared" if !regular(path) && regular(&backup) => {
-                fs::rename(&backup, path)?;
-            }
-
-            "installed" if !regular(path) && regular(&backup) => {
-                fs::rename(&backup, path)?;
+            "prepared" | "installed" if !regular(path) && regular(&backup) => {
+                settled(fs::rename(&backup, path))?;
             }
 
             _ => {}
         }
 
         if regular(path) {
-            private(path)?;
+            settled(private(path))?;
         }
 
         let _ = fs::remove_file(temporary);
         let _ = fs::remove_file(backup);
         let _ = fs::remove_file(journal);
+        let _ = fs::remove_file(live(path, stamp));
     }
 
     Ok(())
@@ -429,7 +521,7 @@ fn regular(path: &Path) -> bool {
 
 fn write_journal(path: &Path, transaction: &Transaction) -> io::Result<()> {
     let bytes = serde_json::to_vec(transaction).map_err(io::Error::other)?;
-    let temporary = path.with_file_name(format!(".journal-{}-{}", name(path), nonce()));
+    let temporary = path.with_file_name(format!(".journal-{}-{}", name(path), stamp()));
     let mut options = OpenOptions::new();
 
     options.write(true).create_new(true);
@@ -475,7 +567,7 @@ fn name(path: &Path) -> String {
     path.file_name().and_then(|value| value.to_str()).unwrap_or("state").into()
 }
 
-fn nonce() -> u128 {
+fn stamp() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_nanos())
 }
 
@@ -726,6 +818,75 @@ mod tests {
         for index in 0..8 {
             assert_eq!(load(root.join(format!("state-{index}.json")), 16).unwrap().unwrap(), b"19");
         }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_leaves_a_transaction_that_another_writer_still_holds() {
+        let root = root("live-transaction");
+        let path = root.join("state.json");
+        let temporary = root.join(".state.json.tmp-test");
+        let journal = root.join(".state.json.txn-test");
+        let live = super::live(&path, "test");
+
+        fs::write(&path, b"saved").unwrap();
+        fs::write(&temporary, b"next").unwrap();
+        super::private(&path).unwrap();
+
+        let transaction = Transaction {
+            path: "state.json".into(),
+            temporary: ".state.json.tmp-test".into(),
+            backup: ".state.json.backup-test".into(),
+            phase: "prepared".into(),
+        };
+
+        super::write_journal(&journal, &transaction).unwrap();
+
+        let writer = fs::OpenOptions::new().write(true).create_new(true).open(&live).unwrap();
+
+        writer.lock().unwrap();
+
+        assert_eq!(load(&path, 32).unwrap().unwrap(), b"saved");
+        assert!(temporary.exists() && journal.exists(), "a live transaction must be left alone");
+
+        drop(writer);
+
+        assert_eq!(load(&path, 32).unwrap().unwrap(), b"saved");
+        assert!(!temporary.exists() && !journal.exists() && !live.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn readers_never_break_a_concurrent_save_of_the_same_file() {
+        let root = root("save-while-loading");
+        let path = root.join("state.json");
+        let done = std::sync::atomic::AtomicBool::new(false);
+
+        save(&path, b"0").unwrap();
+
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                scope.spawn(|| {
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        assert!(load(&path, 16).unwrap().is_some(), "the file never goes missing");
+                    }
+                });
+            }
+
+            for revision in 1..=300 {
+                save(&path, revision.to_string()).unwrap();
+            }
+
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        assert_eq!(load(&path, 16).unwrap().unwrap(), b"300");
+
+        let leftovers = fs::read_dir(&root).unwrap().count();
+
+        assert_eq!(leftovers, 1, "only state.json remains");
 
         let _ = fs::remove_dir_all(root);
     }

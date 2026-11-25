@@ -872,7 +872,11 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
     .unwrap_err();
 
     assert!(error.to_string().contains("cannot load the installed echo plugin"), "{error}");
-    assert!(error.to_string().ends_with("The installation was not changed."));
+
+    assert!(error.to_string().ends_with(
+        "The installation was not changed.\nUninstall it with `krabb plugin uninstall echo` before \
+         updating."
+    ));
 
     let mut linked = Lock::default();
 
@@ -1053,4 +1057,50 @@ fn activation_reports_reach_the_json_result() {
     assert_eq!(finish::report(&root), None);
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn failures_end_with_one_next_action() {
+    let retried = super::unchanged("The latest release is unavailable.".into(), None).to_string();
+
+    assert_eq!(
+        retried,
+        "The latest release is unavailable.\nThe installation was not changed.\nTry again with \
+         `krabb update`."
+    );
+
+    let requested = super::unchanged("Network is down".into(), Some("0.3.0")).to_string();
+
+    assert!(requested.ends_with(
+        "Network is down.\nThe installation was not changed.\nTry again \
+         with `krabb update 0.3.0`."
+    ));
+
+    let own = super::unchanged(
+        "Archive exceeds the size limit.\nReport it at https://github.com/krabblab/krabb/issues."
+            .into(),
+        Some("0.3.0"),
+    )
+    .to_string();
+
+    assert_eq!(
+        own,
+        "Archive exceeds the size limit.\nThe installation was not changed.\nReport it at \
+         https://github.com/krabblab/krabb/issues."
+    );
+
+    let restored = super::ending(
+        "The update to 0.3.0 failed, so Krabb 0.2.0 was restored.\nPlugin echo uses a protocol \
+         Krabb 0.3.0 does not support.\nUninstall it with `krabb plugin uninstall echo` before \
+         updating.",
+        "The log at krabb.log has more detail.",
+        Some("0.3.0"),
+    );
+
+    assert_eq!(restored.matches('`').count(), 2, "one next action: {restored}");
+
+    assert!(
+        restored
+            .ends_with("detail.\nUninstall it with `krabb plugin uninstall echo` before updating.")
+    );
 }

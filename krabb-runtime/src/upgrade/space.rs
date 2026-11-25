@@ -58,7 +58,7 @@ fn fits(
         if free < need {
             return Err(format!(
                 "Updating needs {} free on the disk holding {}, but only {} is available.\nFree \
-                 {} and try again; nothing was changed.",
+                 {} on that disk.",
                 mebibytes(need),
                 path.display(),
                 mebibytes(free),
@@ -273,8 +273,7 @@ mod tests {
 
         let error = fits(&disks, &archives, |_| Ok(need - 1)).unwrap_err().to_string();
 
-        assert!(error.contains("nothing was changed"), "{error}");
-        assert!(error.contains("Free 0.1 MiB"), "{error}");
+        assert!(error.contains("Free 0.1 MiB on that disk."), "{error}");
 
         let old = snapshot::store(&home).join("home/config.toml");
 
