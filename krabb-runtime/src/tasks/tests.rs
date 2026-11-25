@@ -133,7 +133,7 @@ for line in sys.stdin:
         if mode in ['context-success', 'context-report']:
             seen = json.dumps(request['params']['messages'])
             if 'orchid dataset' not in seen:
-                assert any(tool['name'] == 'input' for tool in request['params']['tools'])
+                assert any(tool['name'] == 'task_read' for tool in request['params']['tools'])
                 total = int(seen.split(' characters are shown')[0].rsplit(' of ', 1)[1])
                 print(json.dumps({'jsonrpc':'2.0','id':778,'method':'host/tool','params':{
                     'name':'input','args':{'offset':total - 100}}}), flush=True)
@@ -197,7 +197,7 @@ for line in sys.stdin:
                               and count == 1):
             continue
         if mode == 'approval-handoff' and count == 2:
-            result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'task',
+            result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'task_classify',
                 'args':{'kind':'background','message':'I will finish the report in the background.',
                         'instruction':'Finish the verified report in the background.'}}]}
             print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
@@ -238,14 +238,14 @@ for line in sys.stdin:
                 args['message'] = ('Verified report includes the orchid dataset.'
                                    if mode == 'context-report'
                                    else 'Verified complete report. ' * 250)
-            result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'checkpoint','args':args}]}
+            result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'task_checkpoint','args':args}]}
         elif mode == 'native':
             print(json.dumps({'jsonrpc':'2.0','id':777,'method':'host/tool',
                               'params':{'name':'checkpoint','args':args}}), flush=True)
             response = json.loads(sys.stdin.readline())
             result = {'text':'This abandoned step must not be delivered.', 'stop':'stop'}
         else:
-            result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'checkpoint','args':args}]}
+            result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'task_checkpoint','args':args}]}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
     if method == 'shutdown':
         break

@@ -214,14 +214,14 @@ impl Store {
             host_receipt(
                 store,
                 &origin,
-                "task",
+                crate::routing::NAME,
                 &format!("{}-handoff", run.id),
                 "The background goal is saved. Its result will arrive automatically.",
             );
             host_receipt(
                 store,
                 &run.id,
-                "task",
+                crate::routing::NAME,
                 &format!("{}-handoff", run.id),
                 "The background goal is saved. Its result will arrive automatically.",
             );

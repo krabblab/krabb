@@ -27,8 +27,8 @@ pub(super) fn call(
             })
     };
 
-    match method {
-        "read" => {
+    match current(method) {
+        "file_read" => {
             if !catalog.owner(relative).is_some_and(visible) {
                 return Err(denied("File is not visible to this integration."));
             }
@@ -37,7 +37,7 @@ pub(super) fn call(
             Ok(json!({"text":read_confined(&file)?}))
         }
 
-        "write" => {
+        "file_write" => {
             if params["approve"] != true {
                 return Err(denied("Write approval is required."));
             }
@@ -73,7 +73,7 @@ pub(super) fn call(
             Err(denied("No unused filename is available."))
         }
 
-        "list" => {
+        "file_list" => {
             let mut items = std::collections::BTreeSet::new();
 
             for (entry, _) in catalog.entries().filter(|(_, owner)| visible(owner)) {
@@ -92,7 +92,7 @@ pub(super) fn call(
             Ok(json!({"items":items}))
         }
 
-        "search" => {
+        "file_search" => {
             let needle = params["text"]
                 .as_str()
                 .filter(|s| !s.is_empty())
@@ -196,68 +196,67 @@ mod tests {
         let write = |text: &str| json!({"path":"note.txt","text":text,"approve":true});
 
         assert!(
-            call(&policy, &request(&telegram, "write", json!({"path":"note.txt","text":"denied"})))
-                .is_err()
+            call(
+                &policy,
+                &request(&telegram, "file_write", json!({"path":"note.txt","text":"denied"}))
+            )
+            .is_err()
         );
 
-        assert_eq!(
-            call(&policy, &request(&telegram, "write", write("telegram secret"))).unwrap()["path"],
-            "note.txt"
-        );
+        let written = call(&policy, &request(&telegram, "file_write", write("telegram secret")));
 
-        assert_eq!(
-            call(&policy, &request(&discord, "read", json!({"path":"note.txt"}))).unwrap()["text"],
-            "telegram secret"
-        );
+        assert_eq!(written.unwrap()["path"], "note.txt");
 
-        assert!(call(&policy, &request(&slack, "read", json!({"path":"note.txt"}))).is_err());
+        let read = call(&policy, &request(&discord, "file_read", json!({"path":"note.txt"})));
+
+        assert_eq!(read.unwrap()["text"], "telegram secret");
+
+        assert!(call(&policy, &request(&slack, "file_read", json!({"path":"note.txt"}))).is_err());
         assert!(
-            call(&policy, &request(&slack, "list", json!({}))).unwrap()["items"]
+            call(&policy, &request(&slack, "file_list", json!({}))).unwrap()["items"]
                 .as_array()
                 .unwrap()
                 .is_empty()
         );
 
-        assert!(
-            call(&policy, &request(&slack, "search", json!({"text":"secret"}))).unwrap()["hits"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        let search =
+            |access| call(&policy, &request(access, "file_search", json!({"text":"secret"})));
 
-        assert_eq!(
-            call(&policy, &request(&discord, "search", json!({"text":"secret"}))).unwrap()["hits"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        let collision = call(&policy, &request(&discord, "write", write("discord note"))).unwrap();
+        assert!(search(&slack).unwrap()["hits"].as_array().unwrap().is_empty());
+        assert_eq!(search(&discord).unwrap()["hits"].as_array().unwrap().len(), 1);
+
+        let collision =
+            call(&policy, &request(&discord, "file_write", write("discord note"))).unwrap();
 
         assert_ne!(collision["path"], "note.txt");
         assert_eq!(std::fs::read_to_string(root.join("note.txt")).unwrap(), "telegram secret");
         assert!(
-            call(&policy, &request(&telegram, "read", json!({"path":collision["path"]}))).is_err()
-        );
-
-        assert!(
-            call(&policy, &request(&telegram, "read", json!({"path":"../data/system/KRAB.md"})))
+            call(&policy, &request(&telegram, "file_read", json!({"path":collision["path"]})))
                 .is_err()
         );
 
-        assert!(call(&policy, &request(&telegram, "shell", json!({}))).is_err());
+        assert!(
+            call(
+                &policy,
+                &request(&telegram, "file_read", json!({"path":"../data/system/KRAB.md"}))
+            )
+            .is_err()
+        );
+
+        assert!(call(&policy, &request(&telegram, "shell_run", json!({}))).is_err());
 
         std::fs::write(root.join("manual.txt"), "global reference").unwrap();
 
-        assert!(call(&policy, &request(&telegram, "read", json!({"path":"manual.txt"}))).is_err());
+        assert!(
+            call(&policy, &request(&telegram, "file_read", json!({"path":"manual.txt"}))).is_err()
+        );
         krabb_file::Ownership::open(&home, &root)
             .unwrap()
             .assign(Path::new("manual.txt"), "global")
             .unwrap();
-        assert_eq!(
-            call(&policy, &request(&slack, "read", json!({"path":"manual.txt"}))).unwrap()["text"],
-            "global reference"
-        );
+        let manual = call(&policy, &request(&slack, "file_read", json!({"path":"manual.txt"})));
+
+        assert_eq!(manual.unwrap()["text"], "global reference");
 
         #[cfg(unix)]
         {
@@ -268,7 +267,7 @@ mod tests {
                     &policy,
                     &request(
                         &telegram,
-                        "write",
+                        "file_write",
                         json!({"path":"escape/secret","text":"x","approve":true})
                     )
                 )

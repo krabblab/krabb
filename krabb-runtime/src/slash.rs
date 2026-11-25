@@ -406,7 +406,7 @@ pub(crate) async fn run(
 }
 
 /// Host tool the model uses when the user asks for a command in their own words.
-pub(crate) const TOOL: &str = "conversation";
+pub(crate) const TOOL: &str = "conversation_command";
 
 pub(crate) fn spec() -> ToolSpec {
     ToolSpec {
@@ -436,7 +436,7 @@ pub(crate) fn spec() -> ToolSpec {
     }
 }
 
-/// Runs the `conversation` tool for a turn, with the same scope a typed command would have.
+/// Runs the `conversation_command` tool for a turn, with the same scope a typed command would have.
 pub(crate) async fn call(
     host: &Host<'_>,
     caller: &Caller<'_>,

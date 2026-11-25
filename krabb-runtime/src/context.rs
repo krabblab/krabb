@@ -85,8 +85,8 @@ pub(super) struct Setup<'a> {
 const PLUGIN_LIMIT: usize = 32;
 
 const ADJUST: &str = "When the person explicitly asks you to change tools, shell, or approval \
-                      in this section, you may use the settings tool; the owner approves each \
-                      change. Restart only when they ask to apply it now.\n";
+                      in this section, you may use the settings_change tool; the owner approves \
+                      each change. Restart only when they ask to apply it now.\n";
 
 impl Setup<'_> {
     /// Agents have no settings section of their own, so they get no note.
@@ -493,11 +493,13 @@ mod tests {
         let plugins = plugins();
         let setup = telegram_setup(&telegram, &plugins);
 
-        assert!(!render(&setup).contains("settings tool"));
+        assert!(!render(&setup).contains("settings_change tool"));
 
         let text = render(&Setup { adjustable: true, ..setup });
 
-        assert!(text.contains("you may use the settings tool; the owner approves each change."));
+        assert!(
+            text.contains("you may use the settings_change tool; the owner approves each change.")
+        );
         assert!(text.contains("Restart only when they ask to apply it now."));
     }
 

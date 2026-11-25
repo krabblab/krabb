@@ -489,7 +489,7 @@ pub(crate) async fn answer_with_registry(
 
     messages.insert(0, messaging::context(session, &destination));
 
-    if let Some(name) = HOST_TOOLS.iter().find(|name| registry.owners.contains_key(**name)) {
+    if let Some(name) = reserved_tool(&registry) {
         return Err(format!("A plugin registered the reserved host tool `{name}`.").into());
     }
 
@@ -509,8 +509,8 @@ pub(crate) async fn answer_with_registry(
         registry.specs.push(task.clone());
 
         specs.push(task);
-        registry.specs.push(tasks::control_tool());
-        specs.push(tasks::control_tool());
+        registry.specs.extend(tasks::control_tools());
+        specs.extend(tasks::control_tools());
         registry.specs.push(slash::spec());
         specs.push(slash::spec());
         messages.insert(0, routing::context(session));
@@ -538,7 +538,8 @@ pub(crate) async fn answer_with_registry(
         .and_then(|run| sessions.lock().ok().and_then(|store| store.decided_approval(run)));
 
     if let (Some(run), Some(approval)) = (registry.run.clone(), decided) {
-        let tool = tasks::canonical(&approval.tool);
+        let (tool, args) =
+            aliases::current(&approval.tool, approval.args.clone(), |name| registry.owns(name));
 
         let text = if approval.decision != Some(true) {
             format!(
@@ -563,8 +564,8 @@ pub(crate) async fn answer_with_registry(
                 &registry,
                 &turn_id,
                 *call,
-                tool,
-                approval.args.clone(),
+                &tool,
+                args,
                 &provider.hello.id,
                 model,
                 ApprovalMode::Auto,
@@ -1064,8 +1065,9 @@ pub(crate) async fn answer_with_registry(
         merge_stream(&mut parsed, notes);
 
         for event in &mut parsed.events {
-            if let Event::Tool { name, .. } = event {
-                *name = tasks::canonical(name).into();
+            if let Event::Tool { name, args, .. } = event {
+                (*name, *args) =
+                    aliases::current(name, std::mem::take(args), |name| registry.owns(name));
             }
         }
 
@@ -1541,7 +1543,9 @@ pub(crate) async fn forward_stream(
             StreamNotice::Text(text)
         }
 
-        Some(Event::Tool { name, .. }) => StreamNotice::Tool(tasks::canonical(&name).into()),
+        Some(Event::Tool { name, args, .. }) => {
+            StreamNotice::Tool(aliases::name(&name, &args, |_| true).into())
+        }
         Some(Event::Error { .. } | Event::Context { .. }) | None => return Ok(()),
     };
 
@@ -1564,13 +1568,13 @@ pub(crate) fn merge_stream(reply: &mut ModelReply, notes: Vec<Request>) {
 }
 
 pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
-    match tasks::canonical(name) {
-        "checkpoint" | "input" => false,
-        tasks::CONTROL => args["action"] != "list",
-        "task" => matches!(args["kind"].as_str(), Some("background")),
-        "write"
-        | "patch"
-        | "shell"
+    match &*aliases::name(name, args, |_| false) {
+        tasks::CHECKPOINT | tasks::input::NAME => false,
+        name if tasks::action(name).is_some() => tasks::action(name) != Some("list"),
+        routing::NAME => matches!(args["kind"].as_str(), Some("background")),
+        "file_write"
+        | "file_patch"
+        | "shell_run"
         | "memory_remember"
         | "schedule_propose"
         | "schedule_cancel"
@@ -1581,10 +1585,10 @@ pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
         | "schedule_update"
         | "message_send"
         | settings::TOOL => true,
-        "read"
-        | "list"
-        | "search"
-        | "fetch"
+        "file_read"
+        | "file_list"
+        | "file_search"
+        | "web_fetch"
         | "memory_search"
         | "schedule_list"
         | "browser_open"
@@ -1598,12 +1602,12 @@ pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
         | "computer_screenshot"
         | "computer_windows" => false,
 
-        "data" => !matches!(
+        "data_query" => !matches!(
             args["operation"].as_str(),
             Some("list_databases" | "list_tables" | "describe_table" | "query")
         ),
 
-        "git" => true,
+        "git_run" => true,
 
         name if name.starts_with("browser_") => {
             !matches!(name, "browser_tabs" | "browser_snapshot" | "browser_screenshot")

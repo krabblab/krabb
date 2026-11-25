@@ -13,14 +13,14 @@ const TASK_PROMPT: &str = concat!(
     "There is no overall task lifetime deadline. ",
     "The host admits bounded inference and operation allowances. ",
     "Checkpoint before a limit; waiting does not extend an active allowance. ",
-    "Work in concrete increments, then call checkpoint with completed work and the exact next \
-        action before a step limit. ",
+    "Work in concrete increments, then call task_checkpoint with completed work and the exact \
+        next action before a step limit. ",
     "Use wait for external work with an appropriate delay. ",
-    "Save important milestones with checkpoint.update; do not send routine waiting messages. ",
+    "Save important milestones with task_checkpoint update; do not send routine waiting messages. ",
     "Continue automatically until the goal is achieved. ",
     "Use blocked when input or permission is required. ",
     "A normal reply is an internal draft, not completion. ",
-    "Finish only by calling checkpoint with state complete and the full result. ",
+    "Finish only by calling task_checkpoint with state complete and the full result. ",
     "Omit message to publish the most recent draft from this step. ",
     "If more work remains, checkpoint and continue without another human prompt. ",
     "The host delivers updates and completion to the original conversation. ",

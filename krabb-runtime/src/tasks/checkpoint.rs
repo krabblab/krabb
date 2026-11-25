@@ -109,9 +109,11 @@ pub(crate) fn apply(
     Ok(())
 }
 
+pub(crate) const NAME: &str = "task_checkpoint";
+
 pub(crate) fn tool() -> ToolSpec {
     ToolSpec {
-        name: "checkpoint".into(),
+        name: NAME.into(),
         description: Some(
             "Persist completed work and the exact next action, then yield this \
             execution step. The host resumes automatically without an overall lifetime deadline. \

@@ -79,9 +79,11 @@ impl Default for State {
     }
 }
 
+pub(crate) const NAME: &str = "task_classify";
+
 pub(super) fn tool(background: bool) -> ToolSpec {
     ToolSpec {
-        name: "task".into(),
+        name: NAME.into(),
         description: Some(format!(
             "Classify work before doing it. Fast is the default: answer greetings and readily \
                 available questions directly without calling this tool or announcing work. \
@@ -125,13 +127,13 @@ pub(super) fn context(session: &str) -> Message {
             text: "Classify the current request by the work it needs, not by provider latency. \
                 Fast requests such as greetings and simple questions with readily available \
                 answers need only the answer, with no waiting message. Thoughtful requests need \
-                research, fact checking, calculations, or generation: use the task tool to provide \
-                one brief contextual progress message in the user's language, then do the work. \
-                Substantial requests requiring multiple stages should use the task tool's \
-                background mode before starting work when available; the host delivers the \
-                finished result automatically. Do not invent a background task or promise later \
-                delivery when a handoff fails or is unavailable. Do not add canned \
-                acknowledgements to fast answers."
+                research, fact checking, calculations, or generation: use the task_classify tool \
+                to provide one brief contextual progress message in the user's language, then do \
+                the work. Substantial requests requiring multiple stages should use the \
+                task_classify tool's background mode before starting work when available; the \
+                host delivers the finished result automatically. Do not invent a background task \
+                or promise later delivery when a handoff fails or is unavailable. Do not add \
+                canned acknowledgements to fast answers."
                 .into(),
         }],
     }

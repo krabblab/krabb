@@ -265,7 +265,7 @@ pub(crate) fn approval_arguments(
 ) -> Result<String, PluginError> {
     let arguments = args.to_string();
 
-    let limit = if matches!(name, "schedule_propose" | "schedule_update" | "task") {
+    let limit = if matches!(name, "schedule_propose" | "schedule_update" | routing::NAME) {
         APPROVAL_SCHEDULE_LIMIT
     } else {
         APPROVAL_ARGUMENT_LIMIT
@@ -302,7 +302,8 @@ pub(crate) async fn agent_tool_request(
         return Ok(Response::fail(id, -32602, "A tool name is required."));
     };
 
-    let mut args = params["args"].clone();
+    let (name, mut args) = aliases::current(name, params["args"].clone(), |_| false);
+    let name = name.as_str();
 
     let Some(values) = args.as_object_mut() else {
         return Ok(Response::fail(id, -32602, "Tool arguments must be an object."));

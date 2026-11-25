@@ -51,7 +51,7 @@ impl Fixture {
             &self.registry,
             "turn",
             1,
-            "task",
+            routing::NAME,
             args,
             "fixture",
             "model",
@@ -267,7 +267,7 @@ for line in sys.stdin:
             result = {'text':'This duplicate acknowledgement must not be sent.', 'stop':'stop'}
         else:
             result = {'text':'', 'stop':'tool',
-                      'events':[{'kind':'tool','name':'task','args':args}]}
+                      'events':[{'kind':'tool','name':'task_classify','args':args}]}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
     if method == 'shutdown':
         break
@@ -429,14 +429,14 @@ for line in sys.stdin:
                 {'kind':'tool','name':'tasks','args':{'action':'pause','id':'task-1'}}]}
         elif generated == 2:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'tasks','args':{'action':'pause','id':own}}]}
+                {'kind':'tool','name':'task_pause','args':{'id':own}}]}
         elif generated == 3:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'tasks','args':{'action':'steer','id':own,
+                {'kind':'tool','name':'task_steer','args':{'id':own,
                     'instruction':'Cover only primary sources.'}}]}
         elif generated == 4:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'tasks','args':{'action':'steer','id':'task-1',
+                {'kind':'tool','name':'task_steer','args':{'id':'task-1',
                     'instruction':'Send the foreign report here.'}}]}
         else:
             (root / 'results').write_text(json.dumps(request['params']['messages']))
@@ -504,11 +504,10 @@ for line in sys.stdin:
     assert!(!results.contains("Confidential foreign checkpoint"), "{results}");
     assert_eq!(results.matches("does not belong to this conversation").count(), 2, "{results}");
 
-    let actions = tasks::control_tool().schema["properties"]["action"]["enum"].clone();
+    let controls = tasks::control_tools();
 
-    assert!(
-        !actions.as_array().unwrap().iter().any(|action| action == "approve" || action == "deny")
-    );
+    assert_eq!(controls.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), tasks::CONTROLS);
+    assert!(controls.iter().all(|tool| tool.schema["properties"].get("action").is_none()));
 
     let store = fixture.sessions.lock().unwrap();
 

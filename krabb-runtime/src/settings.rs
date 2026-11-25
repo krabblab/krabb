@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) const TOOL: &str = "settings";
+pub(crate) const TOOL: &str = "settings_change";
 
 /// The settings a conversation may change in its own section. Each one only widens or narrows
 /// what this conversation can do, and the owner approves every change.

@@ -3,14 +3,24 @@ use krabb_core::execution::budget::Grant;
 
 const EXTENSION_MINUTES: u64 = 24 * 60;
 
-pub(crate) const NAME: &str = "tasks";
+/// The control actions a model may take, each offered as its own `task_<action>` tool.
+pub(crate) const ACTIONS: [&str; 7] =
+    ["list", "pause", "resume", "cancel", "steer", "defer", "extend"];
 
-/// Earlier releases called the control tool `job`; saved conversations and approvals still do.
-pub(crate) const LEGACY_NAME: &str = "job";
+/// The tool names of the control actions, in the order of `ACTIONS`.
+pub(crate) const NAMES: [&str; 7] = [
+    "task_list",
+    "task_pause",
+    "task_resume",
+    "task_cancel",
+    "task_steer",
+    "task_defer",
+    "task_extend",
+];
 
-/// The current name of a host tool, so calls saved under an earlier name keep working.
-pub(crate) fn canonical(name: &str) -> &str {
-    if name == LEGACY_NAME { NAME } else { name }
+/// The control action a tool name stands for.
+pub(crate) fn action(name: &str) -> Option<&'static str> {
+    NAMES.iter().position(|tool| *tool == name).map(|index| ACTIONS[index])
 }
 
 /// Returns a refused task control as text so the caller can clarify instead of failing.
@@ -62,7 +72,7 @@ pub(crate) fn control(
                     "resume":task.deferred.as_ref().map(|receipt| &receipt.command.when),
                     "approval":task.approval.as_ref()
                         .filter(|approval| approval.decision.is_none())
-                        .map(|approval| canonical(&approval.tool)),
+                        .map(|approval| aliases::name(&approval.tool, &approval.args, |_| true)),
                     "inference":task.budget.as_ref().map(crate::accounting::view),
                 })
             })
@@ -301,27 +311,75 @@ fn extend(
     ))
 }
 
-pub(crate) fn tool() -> ToolSpec {
-    ToolSpec {
-        name: NAME.into(),
+/// One tool per control action, each with only the fields that action reads.
+pub(crate) fn tools() -> Vec<ToolSpec> {
+    let list = ToolSpec {
+        name: NAMES[0].into(),
         description: Some(
-            "Inspect tasks in this conversation or pause, resume, cancel, steer, defer, or \
-             extend one when the user asks, in any language. A running task stops only after its \
-             active step settles. Defer takes an exact time with a UTC offset or IANA timezone, \
-             such as 2030-11-12T09:00 Europe/Rome; resolve relative times yourself and ask when \
-             the timezone is unknown. Extend adds minutes to the task's inference allowance. \
-             Include command and revision from a previous receipt for safe retries. Completion \
-             and important updates arrive automatically; polling is unnecessary."
+            "List the tasks in this conversation with their status, checkpoint, and revision. \
+             Completion and important updates arrive automatically, so polling is unnecessary."
                 .into(),
         ),
+        schema: serde_json::json!({"type":"object", "properties":{}, "additionalProperties":false}),
+    };
+
+    let text = serde_json::json!({"type":"string"});
+
+    vec![
+        list,
+        spec(
+            "pause",
+            "Pause a task when the user asks, in any language. A running task stops only after \
+             its active step settles.",
+            None,
+        ),
+        spec("resume", "Resume a paused or blocked task when the user asks.", None),
+        spec(
+            "cancel",
+            "Cancel a task when the user asks. Already completed effects are preserved.",
+            None,
+        ),
+        spec(
+            "steer",
+            "Replace a task's instruction when the user asks to change its goal.",
+            Some(("instruction", text.clone())),
+        ),
+        spec(
+            "defer",
+            "Pause a task until an exact time when the user asks. Give the time with a UTC offset \
+             or IANA timezone, such as 2030-11-12T09:00 Europe/Rome. Resolve relative times \
+             yourself and ask when the timezone is unknown.",
+            Some(("when", text)),
+        ),
+        spec(
+            "extend",
+            "Add minutes to a task's inference allowance when the user asks.",
+            Some(("minutes", serde_json::json!({"type":"integer","minimum":1}))),
+        ),
+    ]
+}
+
+fn spec(action: &str, description: &str, field: Option<(&str, Value)>) -> ToolSpec {
+    let mut properties = serde_json::json!({
+        "id":{"type":"string"}, "command":{"type":"string"},
+        "revision":{"type":"integer","minimum":0}
+    });
+
+    let mut required = vec!["id"];
+
+    if let Some((key, value)) = field {
+        properties[key] = value;
+        required.push(key);
+    }
+
+    ToolSpec {
+        name: format!("task_{action}"),
+        description: Some(format!(
+            "{description} Include command and revision from a previous receipt for safe retries."
+        )),
         schema: serde_json::json!({
-            "type":"object", "properties": {
-                "action":{"type":"string",
-                    "enum":["list","pause","resume","cancel","steer","defer","extend"]},
-                "id":{"type":"string"}, "instruction":{"type":"string"},
-                "when":{"type":"string"}, "minutes":{"type":"integer","minimum":1},
-                "command":{"type":"string"}, "revision":{"type":"integer","minimum":0}
-            }, "required":["action"], "additionalProperties":false
+            "type":"object", "properties":properties, "required":required,
+            "additionalProperties":false
         }),
     }
 }

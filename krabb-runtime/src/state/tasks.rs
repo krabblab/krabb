@@ -370,7 +370,7 @@ impl Store {
                 host_receipt(
                     store,
                     &task.origin.session,
-                    "task",
+                    crate::routing::NAME,
                     &format!("{}-handoff", task.id),
                     "The background goal is saved. Its result will be delivered automatically.",
                 );
@@ -588,7 +588,7 @@ impl Store {
             host_receipt(
                 store,
                 id,
-                "checkpoint",
+                crate::tasks::CHECKPOINT,
                 &receipt,
                 "Checkpoint saved; this step has ended.",
             );

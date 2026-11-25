@@ -1997,19 +1997,19 @@ fn plugin_binary_path(home: &str, id: &str) -> std::path::PathBuf {
 fn read_only_tools() -> Vec<ToolSpec> {
     [
         (
-            "read",
+            "file_read",
             "Read a text file inside the active workspace.",
             serde_json::json!({"path": {"type": "string"}}),
             vec!["path"],
         ),
         (
-            "list",
+            "file_list",
             "List entries in a workspace directory.",
             serde_json::json!({"path": {"type": "string"}}),
             Vec::new(),
         ),
         (
-            "search",
+            "file_search",
             "Search workspace text for a phrase.",
             serde_json::json!({
                 "path": {"type": "string"},
@@ -2018,7 +2018,7 @@ fn read_only_tools() -> Vec<ToolSpec> {
             vec!["text"],
         ),
         (
-            "fetch",
+            "web_fetch",
             "Fetch bounded text from a public HTTPS URL.",
             serde_json::json!({"url": {"type": "string"}}),
             vec!["url"],
@@ -2054,7 +2054,7 @@ async fn serve_read_only_tool(
 
     let Some(name) = params["name"]
         .as_str()
-        .filter(|name| matches!(*name, "read" | "list" | "search" | "fetch"))
+        .filter(|name| matches!(*name, "file_read" | "file_list" | "file_search" | "web_fetch"))
     else {
         return Ok(Response::fail(id, -32000, "Only read-only tools are available in the TUI."));
     };
@@ -2082,14 +2082,16 @@ async fn serve_read_only_tool(
 
     let result = response.result.unwrap_or(Value::Null);
     let text = match name {
-        "read" => result["text"].as_str().unwrap_or_default().to_owned(),
-        "list" => result["items"]
+        "file_read" => result["text"].as_str().unwrap_or_default().to_owned(),
+        "file_list" => result["items"]
             .as_array()
             .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"))
             .unwrap_or_default(),
-        "search" => serde_json::to_string_pretty(&result["hits"]).unwrap_or_else(|_| "[]".into()),
+        "file_search" => {
+            serde_json::to_string_pretty(&result["hits"]).unwrap_or_else(|_| "[]".into())
+        }
 
-        "fetch" => {
+        "web_fetch" => {
             let status = result["status"].as_u64().unwrap_or_default();
             let content_type = result["content_type"].as_str().unwrap_or("unknown");
             let text = result["text"].as_str().unwrap_or_default();
@@ -4833,7 +4835,7 @@ fn format_approval_notice(
     let mut message = String::from("Approval needed.");
     message.push_str(&format!("\nTool: {tool}"));
 
-    if tool == "shell" {
+    if matches!(tool, "shell_run" | "shell") {
         message.push_str("\nCommand: ");
         message.push_str(command.unwrap_or("(command unavailable)"));
     } else {
@@ -6130,12 +6132,12 @@ mod tests {
         assert_eq!(
             super::format_approval_notice(
                 "approval-1",
-                "shell",
+                "shell_run",
                 "{\"command\":\"rm foo\"}",
                 Some("rm foo"),
                 "Krabb requests approval to run this shell command: rm foo.",
             ),
-            "Approval needed.\nTool: shell\nCommand: rm foo\nApprove: /approve approval-1\nDeny: /deny approval-1"
+            "Approval needed.\nTool: shell_run\nCommand: rm foo\nApprove: /approve approval-1\nDeny: /deny approval-1"
         );
 
         assert_eq!(
@@ -7924,8 +7926,8 @@ mod tests {
             for result in [
                 json!({"event":krabb_core::execution::ENVELOPE, "budget":{"total_millis":900_000}}),
                 json!({"event":"text", "text":"I'll check that."}),
-                json!({"event":"tool", "name":"read"}),
-                json!({"event":"tool", "name":"read"}),
+                json!({"event":"tool", "name":"file_read"}),
+                json!({"event":"tool", "name":"file_read"}),
                 json!({"event":"system", "progress":true, "text":"I'll check the file."}),
                 json!({"done":true, "text":"Here is the complete answer."}),
             ] {
@@ -7991,7 +7993,7 @@ mod tests {
     fn tui_advertises_only_read_only_workspace_tools() {
         let names = super::read_only_tools().into_iter().map(|tool| tool.name).collect::<Vec<_>>();
 
-        assert_eq!(names, ["read", "list", "search", "fetch"]);
+        assert_eq!(names, ["file_read", "file_list", "file_search", "web_fetch"]);
     }
 
     #[test]
@@ -8029,7 +8031,7 @@ mod tests {
             krabb_core::types::Request::call(
                 1,
                 "host/tool",
-                serde_json::json!({"name": "write", "args": {"path": "file", "text": "x"}}),
+                serde_json::json!({"name": "file_write", "args": {"path": "file", "text": "x"}}),
             ),
             None,
         )
@@ -8048,8 +8050,8 @@ mod tests {
             "case \"$line\" in\n",
             "*'\"method\":\"hello\"'*) printf '%s\\n' ",
             "'{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol\":{\"major\":0,\"minor\":1},\"id\":\"tools\",\"version\":\"0.1.0\",\"capabilities\":[\"tool\"]}}' ;;\n",
-            "*'\"method\":\"list\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"items\":[\"Cargo.toml\",\"src\"]}}\\n' \"$id\" ;;\n",
-            "*'\"method\":\"fetch\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"status\":200,\"content_type\":\"text/plain\",\"text\":\"Fetched text\",\"truncated\":true}}\\n' \"$id\" ;;\n",
+            "*'\"method\":\"file_list\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"items\":[\"Cargo.toml\",\"src\"]}}\\n' \"$id\" ;;\n",
+            "*'\"method\":\"web_fetch\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"status\":200,\"content_type\":\"text/plain\",\"text\":\"Fetched text\",\"truncated\":true}}\\n' \"$id\" ;;\n",
             "*'\"method\":\"shutdown\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"ok\":true}}\\n' \"$id\"; exit 0 ;;\n",
             "esac\n",
             "done\n",
@@ -8065,7 +8067,7 @@ mod tests {
             krabb_core::types::Request::call(
                 7,
                 "host/tool",
-                json!({"name": "list", "args": {"path": "."}}),
+                json!({"name": "file_list", "args": {"path": "."}}),
             ),
             Some("/workspace/project".into()),
         )
@@ -8079,7 +8081,7 @@ mod tests {
             krabb_core::types::Request::call(
                 8,
                 "host/tool",
-                json!({"name": "fetch", "args": {"url": "https://example.com"}}),
+                json!({"name": "web_fetch", "args": {"url": "https://example.com"}}),
             ),
             None,
         )

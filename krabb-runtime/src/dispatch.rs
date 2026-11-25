@@ -20,7 +20,7 @@ pub(crate) async fn tool_with_registry(
 
     let source = registry.source.clone().unwrap_or_else(|| origin::principal(memory_scope));
 
-    if name == "data" {
+    if name == "data_query" {
         let plugin = plugins
             .get("sqlite")
             .await
@@ -623,7 +623,7 @@ pub(crate) async fn execute_tool_with_registry(
     turn_id: &str,
     id: u64,
     name: &str,
-    mut args: serde_json::Value,
+    args: serde_json::Value,
     provider: &str,
     model: &str,
     approval_mode: ApprovalMode,
@@ -644,7 +644,8 @@ pub(crate) async fn execute_tool_with_registry(
     schedule_run_id: Option<u64>,
     tool_call: usize,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
-    let name = tasks::canonical(name);
+    let (name, mut args) = aliases::current(name, args, |name| registry.owns(name));
+    let name = name.as_str();
 
     if registry.route.handoff.borrow().is_some() {
         return Err("The background task is already saved; do not repeat its work.".into());
@@ -681,7 +682,8 @@ pub(crate) async fn execute_tool_with_registry(
         ));
     }
 
-    let _mutation = if (mutating(name, &args) && name != "task") || name == "checkpoint" {
+    let _mutation = if (mutating(name, &args) && name != routing::NAME) || name == tasks::CHECKPOINT
+    {
         Some(registry.route.gate.lock().await)
     } else {
         None
@@ -704,7 +706,7 @@ pub(crate) async fn execute_tool_with_registry(
         return Ok(ToolResult::text(tasks::input::read(&store, &run.id, &args)?));
     }
 
-    if name == "checkpoint" {
+    if name == tasks::CHECKPOINT {
         if registry.execution != state::SessionKind::Task {
             return Err("Checkpoints are available only inside a background task.".into());
         }
@@ -723,17 +725,18 @@ pub(crate) async fn execute_tool_with_registry(
         return Ok(ToolResult::text("Checkpoint saved; this execution step has ended."));
     }
 
-    if name == tasks::CONTROL {
+    if let Some(action) = tasks::action(name) {
         if channel == "scheduler" || !registry.execution.interactive() {
             return Err("Unattended work cannot control other background tasks.".into());
         }
 
-        if args["action"] == "list" {
-            return control_task(sessions, session, &args, plugins);
+        if action == "list" {
+            return control_task(sessions, session, action, &args, plugins);
         }
     }
 
-    let route = if name == "task" { Some(routing::Route::parse(args.clone())?) } else { None };
+    let route =
+        if name == routing::NAME { Some(routing::Route::parse(args.clone())?) } else { None };
 
     let _route_guard = if let Some(route) = &route {
         if !registry.execution.interactive() {
@@ -824,15 +827,15 @@ pub(crate) async fn execute_tool_with_registry(
     if workspace.is_some_and(worktree::isolated)
         && !(worktree::tool(name)
             && registry.owners.get(name).is_some_and(|owner| owner == "tools")
-            || matches!(
-                name,
-                "memory_search" | "memory_remember" | "data" | "task" | tasks::CONTROL
-            ))
+            || matches!(name, "memory_search" | "memory_remember" | "data_query" | routing::NAME)
+            || tasks::action(name).is_some())
     {
         return Err("This tool cannot enforce the isolated workspace boundary.".into());
     }
 
-    if matches!(name, "shell" | "git" | "patch") && !shell_enabled {
+    if matches!(&*aliases::name(name, &args, |_| false), "shell_run" | "git_run" | "file_patch")
+        && !shell_enabled
+    {
         return Err("Shell access is not authorized for this turn.".into());
     }
 
@@ -1165,8 +1168,8 @@ pub(crate) async fn execute_tool_with_registry(
         return Ok(ToolResult::text(format!("Background task {id} is saved.")));
     }
 
-    if name == tasks::CONTROL {
-        return control_task(sessions, session, &args, plugins);
+    if let Some(action) = tasks::action(name) {
+        return control_task(sessions, session, action, &args, plugins);
     }
 
     if name == settings::TOOL {
@@ -1348,15 +1351,20 @@ pub(crate) struct ScheduledMessage {
 pub(crate) fn control_task(
     sessions: &Arc<Mutex<state::Store>>,
     session: &str,
+    action: &str,
     args: &serde_json::Value,
     plugins: &Plugins,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
+    let mut args = args.clone();
+
+    args["action"] = action.into();
+
     let mut store = sessions.lock().map_err(|_| state::POISONED)?;
     let sender = tasks::sender(&store, session);
 
     Ok(tasks::refusal(tasks::control(
         &mut store,
-        args,
+        &args,
         session,
         sender.as_deref(),
         &plugins.tasks,
@@ -1422,26 +1430,27 @@ pub(crate) fn scheduled_message(
 }
 
 pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
-    let details = match tasks::canonical(name) {
-        tasks::CONTROL => {
-            let detail = match args["action"].as_str() {
-                Some("steer") => format!(
+    let (name, args) = aliases::current(name, args.clone(), |_| false);
+    let args = &args;
+
+    let details = match name.as_str() {
+        name if tasks::action(name).is_some() => {
+            let action = tasks::action(name).unwrap_or_default();
+
+            let detail = match action {
+                "steer" => format!(
                     " with instruction: {}",
                     args["instruction"].as_str().unwrap_or_default()
                 ),
-                Some("defer") => format!(" until {}", args["when"].as_str().unwrap_or_default()),
-                Some("extend") => format!(" by {} minutes", args["minutes"]),
+                "defer" => format!(" until {}", args["when"].as_str().unwrap_or_default()),
+                "extend" => format!(" by {} minutes", args["minutes"]),
                 _ => String::new(),
             };
 
-            format!(
-                "{} {}{detail}",
-                args["action"].as_str().unwrap_or_default(),
-                args["id"].as_str().unwrap_or_default()
-            )
+            format!("{action} {}{detail}", args["id"].as_str().unwrap_or_default())
         }
 
-        "task" => format!(
+        routing::NAME => format!(
             "start a background goal with automatic continuation and updates to {} / {}; \
                 unattended workspace tools: {}, shell: {}, workspace: {}",
             args["context"]["origin"]["channel"],
@@ -1480,24 +1489,24 @@ pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
             )
         }
 
-        "write" => format!("write to {}", args["path"].as_str().unwrap_or("a workspace path")),
+        "file_write" => format!("write to {}", args["path"].as_str().unwrap_or("a workspace path")),
 
         "memory_remember" => {
             format!("save memory {}", args["key"].as_str().unwrap_or("with the requested key"))
         }
 
-        "patch" => {
+        "file_patch" => {
             format!(
                 "apply a Git patch containing {} bytes, which may execute repository-configured programs",
                 args["text"].as_str().map_or(0, str::len)
             )
         }
 
-        "shell" => {
+        "shell_run" => {
             format!("run this shell command: {}", args["command"].as_str().unwrap_or("unknown"))
         }
 
-        "git" => format!(
+        "git_run" => format!(
             "run this Git operation, which may execute repository-configured programs: {}",
             args["args"]
         ),
@@ -1638,9 +1647,13 @@ pub(crate) async fn host_tool_with_registry(
         return Ok(Response::fail(id, -32601, "method not found"));
     }
 
-    let Some(name) = params["name"].as_str().map(tasks::canonical) else {
+    let Some(name) = params["name"].as_str() else {
         return Ok(Response::fail(id, -32602, "A tool name is required."));
     };
+
+    let args = params.get("args").cloned().unwrap_or(serde_json::Value::Null);
+    let (name, args) = aliases::current(name, args, |name| registry.owns(name));
+    let name = name.as_str();
 
     if name.starts_with("schedule_") && !registry.execution.interactive() {
         return Ok(Response::fail(
@@ -1680,8 +1693,6 @@ pub(crate) async fn host_tool_with_registry(
     if cancelled(sessions, session).unwrap_or(true) {
         return Ok(Response::fail(id, -32000, "The turn was cancelled."));
     }
-
-    let args = params.get("args").cloned().unwrap_or(serde_json::Value::Null);
 
     if let Err(message) = validate_tool_args(&args) {
         return Ok(Response::fail(id, -32602, message));

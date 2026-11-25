@@ -15,9 +15,9 @@ for line in sys.stdin:
         result = {'protocol':{'major':0,'minor':1},'id':'files','version':'0.1.0',
                   'capabilities':['tool']}
     elif method == 'tools/list':
-        result = {'tools':[{'name':'write','description':'Write a file.','schema':{
+        result = {'tools':[{'name':'__TOOL__','description':'Write a file.','schema':{
             'type':'object','properties':{'path':{'type':'string'},'text':{'type':'string'}}}}]}
-    elif method == 'write':
+    elif method == '__TOOL__':
         with (root / 'effects.jsonl').open('a') as output:
             output.write(json.dumps(request['params'], sort_keys=True) + '\n')
         result = {'text':'Written.'}
@@ -27,6 +27,11 @@ for line in sys.stdin:
 "#;
 
 async fn prompted() -> Fixture {
+    prompted_with("write").await
+}
+
+/// A fixture whose tools plugin offers its write tool under `tool`.
+async fn prompted_with(tool: &str) -> Fixture {
     let mut fixture = super::foreground::fixture();
 
     let mut config = fixture.context.config.clone();
@@ -36,10 +41,12 @@ async fn prompted() -> Fixture {
     fixture.context.config = config.clone();
     fixture.context.plugins.config = Arc::new(config);
 
-    let tools =
-        Process::start_with("python3", ["-u", "-c", TOOLS, fixture.context.home.to_str().unwrap()])
-            .await
-            .unwrap();
+    let tools = Process::start_with(
+        "python3",
+        ["-u", "-c", &TOOLS.replace("__TOOL__", tool), fixture.context.home.to_str().unwrap()],
+    )
+    .await
+    .unwrap();
 
     fixture.context.plugins.insert(Live::new(tools)).await;
     fixture
@@ -98,7 +105,11 @@ async fn pending() -> (Fixture, Arc<Live>, String) {
 }
 
 async fn pending_in(mode: &str) -> (Fixture, Arc<Live>, String) {
-    let mut fixture = prompted().await;
+    pending_with(mode, "write").await
+}
+
+async fn pending_with(mode: &str, tool: &str) -> (Fixture, Arc<Live>, String) {
+    let mut fixture = prompted_with(tool).await;
     let provider = fixture.provider(mode).await;
 
     let task = tokio::spawn(super::foreground::generate(
@@ -286,6 +297,38 @@ async fn a_pending_approval_survives_restart_and_runs_the_exact_action_once() {
     }
 
     assert_eq!(notices_matching(&fixture, "Approval needed before running write"), 1);
+
+    provider.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_saved_approval_under_an_earlier_name_runs_once_under_its_current_name() {
+    let (fixture, provider, id) = pending_with("approval", "file_write").await;
+
+    {
+        let mut store = fixture.context.sessions.lock().unwrap();
+        let approval = store.tasks.get_mut(&id).unwrap().approval.as_mut().unwrap();
+
+        assert_eq!(approval.tool, "file_write");
+
+        approval.tool = "write".into();
+    }
+
+    let worker = fixture.start();
+
+    reply(&fixture, "approve-1", "approve");
+
+    fixture.until(|store| store.tasks[&id].status == TaskStatus::Completed).await;
+    fixture.stop(worker).await;
+
+    assert_eq!(effects(&fixture).len(), 1);
+
+    assert!(fixture.context.sessions.lock().unwrap().sessions[&id].messages.iter().any(
+        |message| {
+            message.sender.as_deref() == Some("approval")
+                && message.content[0].render().contains("The user approved file_write")
+        }
+    ));
 
     provider.stop().await.unwrap();
 }
@@ -704,7 +747,7 @@ async fn an_approved_handoff_runs_once_and_is_not_replayed_by_later_steps() {
 
     assert_eq!(
         fixture.context.sessions.lock().unwrap().tasks[&id].approval.as_ref().unwrap().tool,
-        "task"
+        "task_classify"
     );
 
     reply(&fixture, "approve-handoff", "approve");

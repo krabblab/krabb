@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) const NAME: &str = "input";
+pub(crate) const NAME: &str = "task_read";
 pub(crate) const INLINE_LIMIT: usize = 16 * 1024;
 const EXCERPT: usize = 8 * 1024;
 const PAGE_LIMIT: usize = 16 * 1024;
@@ -37,7 +37,7 @@ pub(crate) fn bound(messages: &mut [Message], request: Option<&str>) -> bool {
         let note = format!(
             concat!(
                 "{}\n\n[The original request continues: {} of {} characters are shown. ",
-                "Call `input` with an offset to read the rest before relying on it.]"
+                "Call `task_read` with an offset to read the rest before relying on it.]"
             ),
             excerpt, EXCERPT, total
         );

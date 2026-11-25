@@ -41,6 +41,7 @@ use tracing::{debug, error, info, warn};
 
 mod accounting;
 mod agent;
+mod aliases;
 mod answer;
 pub(crate) mod approval;
 mod archive;
@@ -208,15 +209,27 @@ const SCHEDULE_CONCURRENCY: usize = 4;
 const SCHEDULE_CALL_RANGE: u64 = 1 << 20;
 type WorkspaceLocks = Arc<AsyncMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>;
 const COMMAND_OUTPUT: usize = 2 * 1024 * 1024;
-/// Task tools the host owns; plugins may not register these names.
-const HOST_TOOLS: [&str; 7] = [
-    "task",
-    tasks::CONTROL,
-    tasks::LEGACY_CONTROL,
-    "checkpoint",
+/// Tools the host owns, with their earlier names; plugins may not register these names.
+const HOST_TOOLS: [&str; 19] = [
+    routing::NAME,
+    tasks::CONTROLS[0],
+    tasks::CONTROLS[1],
+    tasks::CONTROLS[2],
+    tasks::CONTROLS[3],
+    tasks::CONTROLS[4],
+    tasks::CONTROLS[5],
+    tasks::CONTROLS[6],
+    tasks::CHECKPOINT,
     tasks::input::NAME,
     slash::TOOL,
     settings::TOOL,
+    aliases::CONTROLS[0],
+    aliases::CONTROLS[1],
+    aliases::HOST[0].0,
+    aliases::HOST[1].0,
+    aliases::HOST[2].0,
+    aliases::HOST[3].0,
+    aliases::HOST[4].0,
 ];
 
 const ACK_ATTEMPTS: u32 = 3;
@@ -296,6 +309,18 @@ struct ToolRegistry {
     execution: state::SessionKind,
     run: Option<krabb_core::task::Run>,
     restart: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ToolRegistry {
+    /// Whether a plugin or runner offers a tool under exactly this name.
+    fn owns(&self, name: &str) -> bool {
+        self.owners.contains_key(name) || self.operations.contains_key(name)
+    }
+}
+
+/// A host tool name, current or earlier, that a plugin tried to register.
+fn reserved_tool(registry: &ToolRegistry) -> Option<&'static str> {
+    HOST_TOOLS.into_iter().find(|name| registry.owners.contains_key(*name))
 }
 
 impl Default for Plugins {

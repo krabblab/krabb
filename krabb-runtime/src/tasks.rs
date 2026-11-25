@@ -9,11 +9,10 @@ mod policy;
 mod tests;
 mod worker;
 
-pub(super) use checkpoint::{apply, tool as checkpoint_tool};
+pub(super) use checkpoint::{NAME as CHECKPOINT, apply, tool as checkpoint_tool};
 
 pub(super) use control::{
-    LEGACY_NAME as LEGACY_CONTROL, NAME as CONTROL, canonical, control, refusal, sender,
-    tool as control_tool,
+    ACTIONS, NAMES as CONTROLS, action, control, refusal, sender, tools as control_tools,
 };
 
 pub(super) use foreground::{Answer, Failure, Foreground};

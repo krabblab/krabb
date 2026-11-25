@@ -4139,7 +4139,7 @@ done"##;
             super::super::StreamNotice::Approval {
                 chat: "chat".into(),
                 thread: None,
-                tool: "shell".into(),
+                tool: "shell_run".into(),
                 arguments: "{\"command\":\"rm foo\"}".into(),
                 command: Some("rm foo".into()),
                 text: "Krabb requests approval to run this shell command: rm foo.".into(),
@@ -4160,7 +4160,7 @@ done"##;
                 "event": "approval",
                 "id": "approval-id",
                 "text": "Krabb requests approval to run this shell command: rm foo.",
-                "tool": "shell",
+                "tool": "shell_run",
                 "arguments": "{\"command\":\"rm foo\"}",
                 "command": "rm foo"
             })
@@ -4286,8 +4286,8 @@ while IFS= read -r line; do
             if [ "$count" = 0 ]; then
                 count=1
                 case "$line" in
-                    *'"name":"read"'*)
-                        printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"read","args":{"path":"note.txt"},"approve":false}]}}'
+                    *'"name":"file_read"'*)
+                        printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"","stop":"tool","events":[{"kind":"tool","name":"file_read","args":{"path":"note.txt"},"approve":false}]}}'
                         ;;
                     *)
                         printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"workspace tools were not advertised","stop":"stop"}}'
@@ -4313,9 +4313,9 @@ while IFS= read -r line; do
             printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}'
             ;;
         *'"method":"tools/list"'*)
-            printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"read","description":"Read a fixture file.","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"file_read","description":"Read a fixture file.","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}}'
             ;;
-        *'"method":"read"'* | *'"method":"visible"'*)
+        *'"method":"file_read"'* | *'"method":"visible"'*)
             printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"text":"fixture note contents"}}'
             ;;
         *'"method":"shutdown"'*)
@@ -4573,16 +4573,16 @@ for line in sys.stdin:
         result = {"protocol": {"major": 0, "minor": 1}, "id": role,
                   "version": "0.1.0", "capabilities": ["model" if role == "fixture" else "tool"]}
     elif method == "generate":
-        result = {"text": "", "stop": "tool", "events": [{"kind": "tool", "name": "shell",
+        result = {"text": "", "stop": "tool", "events": [{"kind": "tool", "name": "shell_run",
                   "args": {"command": "touch started; sleep 2; echo changed > result"},
                   "approve": True}]}
     elif method == "tools/list" and role == "browser":
         result = {"tools": []}
     elif method == "tools/list":
-        result = {"tools": [{"name": "shell", "description": "Run a fixture shell command.",
+        result = {"tools": [{"name": "shell_run", "description": "Run a fixture shell command.",
                   "schema": {"type": "object", "properties": {"command": {"type": "string"}},
                              "required": ["command"], "additionalProperties": False}}]}
-    elif method == "shell":
+    elif method == "shell_run":
         assert request["params"]["approve"] is True
         subprocess.run(request["params"]["command"], shell=True, cwd=root, preexec_fn=os.setpgrp)
         result = {"text": "finished"}
@@ -6264,7 +6264,7 @@ for line in sys.stdin:
                 chat: "7".into(),
                 thread: None,
                 session: "telegram-7".into(),
-                tool: "write".into(),
+                tool: "file_write".into(),
                 args: json!({"path": "note.txt", "text": "approved"}),
             })
             .unwrap();

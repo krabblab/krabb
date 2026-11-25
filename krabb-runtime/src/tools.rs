@@ -4,24 +4,28 @@ use crate::*;
 
 pub(crate) fn tools(shell_enabled: bool) -> Vec<ToolSpec> {
     let mut definitions = vec![
-        ("read", "Read a text file.", &["path"] as &[&str]),
+        ("file_read", "Read a text file.", &["path"] as &[&str]),
         (
-            "write",
+            "file_write",
             "Write a text file with approval. Paths must remain inside the active workspace; use workspace-relative paths.",
             &["path", "text"],
         ),
-        ("list", "List workspace entries.", &["path"]),
-        ("search", "Search workspace text.", &["path", "text"]),
-        ("fetch", "Fetch bounded text from a public HTTPS URL.", &["url"]),
-        ("patch", "Apply an approved Git patch.", &["text"]),
-        ("git", "Run approved Git operations; repository filters may execute programs.", &["args"]),
+        ("file_list", "List workspace entries.", &["path"]),
+        ("file_search", "Search workspace text.", &["path", "text"]),
+        ("web_fetch", "Fetch bounded text from a public HTTPS URL.", &["url"]),
+        ("file_patch", "Apply an approved Git patch.", &["text"]),
+        (
+            "git_run",
+            "Run approved Git operations; repository filters may execute programs.",
+            &["args"],
+        ),
     ];
 
-    definitions.retain(|(name, _, _)| shell_enabled || !matches!(*name, "git" | "patch"));
+    definitions.retain(|(name, _, _)| shell_enabled || !matches!(*name, "git_run" | "file_patch"));
 
     if shell_enabled {
         definitions.push((
-            "shell",
+            "shell_run",
             "Run an approved local shell command; it may inspect available paths beyond the workspace.",
             &["command"],
         ));
@@ -93,7 +97,7 @@ pub(crate) fn memory_tools() -> Vec<ToolSpec> {
 
 pub(crate) fn data_tools() -> Vec<ToolSpec> {
     vec![ToolSpec {
-        name: "data".into(),
+        name: "data_query".into(),
         description: Some(
             "Use this capability when the user asks to model, organize, save, retrieve, update, or explore structured data. First list existing databases and tables, then reuse a compatible schema or create a database and table with named, typed columns before inserting records. Add optional columns or remove columns when the user asks to change a schema. Query records by exact field values; continue a truncated query with its next_after ID. Data writes belong to this conversation. list_databases also reports visible sources; set source only for reads from those sources. Do not use workspace files or memory for structured records. Ask the user to resolve ambiguous fields or types before creating a schema. Mutations follow Krabb's configured tool approval policy.".into(),
         ),
