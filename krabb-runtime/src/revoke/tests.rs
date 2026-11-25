@@ -91,6 +91,7 @@ fn uninstall_revokes_only_the_plugin_grants_and_exclusive_secrets() {
             secrets: vec!["KRABB_TELEGRAM_MODE".into(), "KRABB_TELEGRAM_TOKEN".into()],
             keyring: false,
             grants: 5,
+            ..Revoked::default()
         }
     );
 
@@ -205,7 +206,10 @@ fn an_unwritable_service_credential_copy_is_reported_as_partial_cleanup() {
     // A directory where the copy's lock file belongs blocks the write even for root.
     let name = copy.file_name().unwrap().to_str().unwrap();
 
-    std::fs::create_dir_all(copy.with_file_name(format!(".{name}.lock"))).unwrap();
+    let blocked = copy.with_file_name(format!(".{name}.lock"));
+
+    let _ = std::fs::remove_file(&blocked);
+    std::fs::create_dir_all(&blocked).unwrap();
 
     let revoked = revoke_with(&root, "telegram", &lock(), &service).unwrap();
 
