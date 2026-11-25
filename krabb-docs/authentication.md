@@ -87,13 +87,17 @@ precedence and must be removed separately.
 
 Telegram, Discord, Slack, WhatsApp, Signal, OpenAI, Anthropic, Gemini, OpenRouter,
 Ollama, and Codex then run a connection test with the saved values and report
-`Connection test passed.` Ollama checks that its host answers, Codex that it is signed
-in, Signal that `signal-cli` lists the account, and WhatsApp that the Graph API accepts
-the token for the phone number ID. A failed test explains what was rejected, but the
-values stay saved so you can rerun setup. The test is read-only and runs at most 20
-seconds. Plugins without one say so. Rerun the test later, without setup questions,
-with `krabb plugin check <id>`; with `--json`, the result has the plugin `id`, a
-`status` of `passed`, `failed`, or `skipped`, and a redacted `detail` for a failure.
+`Connection test passed.` Ollama checks that its host answers. Codex checks its API key
+when one is saved, and otherwise that the Codex CLI is signed in. Signal checks that
+`signal-cli` lists the account, and WhatsApp that the Graph API accepts the token for
+the phone number ID. A failed test explains what was rejected, but the values stay
+saved so you can rerun setup. The test sends no messages and runs at most 20 seconds.
+Plugins without one say so.
+
+Rerun the test later, without setup questions, with `krabb plugin check <id>`. It exits
+with status 1 when the test fails. With `--json`, standard output has the plugin `id`, a
+`status` of `passed`, `failed`, or `skipped`, and a redacted `detail` for a failure; a
+failure also writes the usual error document to standard error.
 WhatsApp setup also asks for the phone number ID, versioned Graph API URL, and
 listener address (default `127.0.0.1:8787`). Ollama setup asks for the API key and
 host (default `https://ollama.com`; use `http://127.0.0.1:11434` for a local server).

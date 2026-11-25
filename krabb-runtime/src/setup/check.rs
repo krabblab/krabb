@@ -50,7 +50,7 @@ pub(crate) async fn command(root: &Path, id: &str, json: bool) -> Result<(), cra
         let text = if result["status"] == "passed" {
             format!("The {id} connection test passed.")
         } else {
-            format!("{id} has no connection test, so its settings cannot be confirmed now.")
+            format!("Plugin {id} has no connection test, so Krabb cannot confirm its settings.")
         };
 
         println!("{text}");
@@ -66,7 +66,7 @@ pub(crate) async fn command(root: &Path, id: &str, json: bool) -> Result<(), cra
 fn failed(result: &Value, id: &str) -> String {
     let detail = crate::sentence(result["detail"].as_str().unwrap_or(UNAVAILABLE));
 
-    if detail.lines().last().is_some_and(|line| line.contains('`')) {
+    if detail.lines().last().is_some_and(crate::acts) {
         return format!("The {id} connection test failed: {detail}");
     }
 
@@ -102,18 +102,34 @@ async fn call(root: &Path, id: &str) -> Option<krabb_core::types::Response> {
     response.ok()
 }
 
-/// Bounds plugin text and strips anything shaped like a credential.
+/// Bounds plugin text, strips anything shaped like a credential, and neutralizes terminal
+/// control characters. A final line naming a command is kept whole, so clipping never cuts
+/// the plugin's own next action.
 fn detail(text: &str) -> String {
-    crate::clip(crate::redact_diagnostic(text.trim()), DETAIL)
+    let redacted = crate::redact_diagnostic(text.trim());
+
+    let bounded = match redacted.rsplit_once('\n') {
+        Some((body, last)) if crate::acts(last) => {
+            format!(
+                "{}\n{}",
+                crate::clip(body.to_owned(), DETAIL),
+                crate::clip(last.into(), DETAIL)
+            )
+        }
+
+        _ => crate::clip(redacted, DETAIL),
+    };
+
+    crate::terminal::printable(&bounded)
 }
 
 /// Renders the result as one line for terminal output.
 pub(super) fn line(result: &Value) -> Option<String> {
     match result["status"].as_str()? {
         "passed" => Some("Connection test passed.".into()),
-        "skipped" => Some(
-            "This plugin has no connection test, so its settings cannot be confirmed now.".into(),
-        ),
+        "skipped" => {
+            Some("This plugin has no connection test, so Krabb cannot confirm its settings.".into())
+        }
 
         "failed" => Some(format!(
             "Connection test failed: {}",

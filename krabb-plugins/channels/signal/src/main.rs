@@ -343,9 +343,11 @@ async fn check_with(account: &str, command: &str) -> krabb_core::Result<Value> {
     let args = ["-o", "json", "listAccounts"].map(str::to_owned);
     let accounts = run_with(command, &args).await?;
 
-    let listed = accounts.as_array().into_iter().flatten().any(|entry| {
-        entry.as_object().into_iter().flatten().any(|(_, value)| value.as_str() == Some(account))
-    });
+    let listed = accounts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|entry| entry["number"].as_str() == Some(account));
 
     if !listed {
         return Err(krabb_core::Error::Denied(
@@ -1724,7 +1726,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[cfg(unix)]
     #[tokio::test]
     async fn the_connection_test_needs_signal_cli_to_list_the_configured_account() {
         use std::os::unix::fs::PermissionsExt;
@@ -1751,6 +1752,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn polls_and_sends_through_a_configured_cli() {
         let poll = poll_with(

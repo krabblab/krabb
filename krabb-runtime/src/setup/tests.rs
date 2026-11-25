@@ -1385,7 +1385,7 @@ async fn connection_tests_never_show_the_account_or_fail_setup() {
     assert_eq!(result, json!({"status": "skipped"}));
     assert_eq!(
         check::line(&result).unwrap(),
-        "This plugin has no connection test, so its settings cannot be confirmed now."
+        "This plugin has no connection test, so Krabb cannot confirm its settings."
     );
 
     let undeclared = checked("check-undeclared", false, "never sent");
@@ -1437,11 +1437,22 @@ async fn rerunning_a_connection_test_ends_a_failure_with_one_next_action() {
     assert!(error.ends_with("Sign in with `krabb codex login`."), "{error}");
     assert_eq!(error.matches('`').count(), 2, "only the plugin's own next action: {error}");
 
+    let long = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"error":{{"code":-32000,"message":"{}\u001b]52;c;x\u0007\nSign in with `krabb codex login`."}}}}"#,
+        "Rejected ".repeat(60)
+    );
+
+    let clipped = checked("check-command-clipped", true, &long);
+    let error = check::command(&clipped, "probe", false).await.unwrap_err().to_string();
+
+    assert!(error.ends_with("\nSign in with `krabb codex login`."), "{error}");
+    assert!(!error.contains('\u{1b}') && !error.contains('\u{7}'), "{error:?}");
+
     let missing = check::command(&passed, "absent", false).await.unwrap_err().to_string();
 
     assert!(missing.ends_with("List installed plugins with `krabb plugin list`."), "{missing}");
 
-    for root in [passed, rejected, guided] {
+    for root in [passed, rejected, guided, clipped] {
         let _ = fs::remove_dir_all(root);
     }
 }

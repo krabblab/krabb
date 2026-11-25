@@ -1801,6 +1801,55 @@ done
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn the_connection_test_needs_a_signed_in_account() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
+        let fake = |account: &str| {
+            format!(
+                r#"#!/bin/sh
+
+if [ "$1" = "--version" ]; then
+    printf '%s\n' 'codex-cli 99.0.0'
+    exit 0
+fi
+
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    case "$line" in
+        *\"method\":\"initialize\"*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
+        *account/read*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"account":{account}}}}}\n' "$id" ;;
+    esac
+done
+"#
+            )
+        };
+
+        let signed = std::env::temp_dir()
+            .join(format!("krabb-codex-check-signed-{}-{nonce}", std::process::id()));
+
+        let signed_out = std::env::temp_dir()
+            .join(format!("krabb-codex-check-out-{}-{nonce}", std::process::id()));
+
+        write_binary(&signed, &fake(r#"{"type":"chatgpt"}"#)).unwrap();
+        write_binary(&signed_out, &fake("null")).unwrap();
+
+        assert!(super::check_with(signed.as_os_str().to_owned(), None).await.is_ok());
+
+        let error = super::check_with(signed_out.as_os_str().to_owned(), None)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.ends_with("Sign in with `krabb codex login`."), "{error}");
+
+        let _ = std::fs::remove_file(signed);
+        let _ = std::fs::remove_file(signed_out);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn generates_in_the_active_workspace_with_host_tools() {
         use std::time::{SystemTime, UNIX_EPOCH};
 

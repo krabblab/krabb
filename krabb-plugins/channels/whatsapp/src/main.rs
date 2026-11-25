@@ -386,7 +386,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
     let inbox = load_inbox()?;
     let app = App { client, queue: Arc::new(Mutex::new(inbox)) };
 
-    // Only the daemon polls, so a connection test never takes the port of the running plugin.
+    // Only channel intake polls, so a connection test never takes the running plugin's port.
     let webhook = Arc::new(tokio::sync::OnceCell::new());
 
     serve_with(

@@ -15,7 +15,8 @@ Semantic Versioning.
 - Let Krabb turn its own tools, shell, or approval on or off when you ask and approve.
 - Install official plugins from the plugin index without a source checkout.
 - List and install any published plugin version with `krabb plugin versions`.
-- Install pre-release plugins with `krabb plugin install --unstable`.
+- Guide setup prompts and test the connection after saving.
+- Rerun a plugin's connection test with `krabb plugin check`.
 - Recover interrupted home upgrades automatically.
 - Update Krabb and every installed plugin with `krabb update`.
 - Uninstall Krabb with one script, and purge every trace of it with `--purge`.
