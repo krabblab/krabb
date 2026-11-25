@@ -41,7 +41,6 @@ use tracing::{debug, error, info, warn};
 
 mod accounting;
 mod agent;
-mod aliases;
 mod answer;
 pub(crate) mod approval;
 mod archive;
@@ -210,8 +209,8 @@ const SCHEDULE_CONCURRENCY: usize = 4;
 const SCHEDULE_CALL_RANGE: u64 = 1 << 20;
 type WorkspaceLocks = Arc<AsyncMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>;
 const COMMAND_OUTPUT: usize = 2 * 1024 * 1024;
-/// Tools the host owns, with their earlier names; plugins may not register these names.
-const HOST_TOOLS: [&str; 19] = [
+/// Tools the host owns; plugins may not register these names.
+const HOST_TOOLS: [&str; 12] = [
     routing::NAME,
     tasks::CONTROLS[0],
     tasks::CONTROLS[1],
@@ -224,13 +223,6 @@ const HOST_TOOLS: [&str; 19] = [
     tasks::input::NAME,
     slash::TOOL,
     settings::TOOL,
-    aliases::CONTROLS[0],
-    aliases::CONTROLS[1],
-    aliases::HOST[0].0,
-    aliases::HOST[1].0,
-    aliases::HOST[2].0,
-    aliases::HOST[3].0,
-    aliases::HOST[4].0,
 ];
 
 const ACK_ATTEMPTS: u32 = 3;
@@ -314,14 +306,7 @@ struct ToolRegistry {
     restart: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl ToolRegistry {
-    /// Whether a plugin or runner offers a tool under exactly this name.
-    fn owns(&self, name: &str) -> bool {
-        self.owners.contains_key(name) || self.operations.contains_key(name)
-    }
-}
-
-/// A host tool name, current or earlier, that a plugin tried to register.
+/// A host tool name that a plugin tried to register.
 fn reserved_tool(registry: &ToolRegistry) -> Option<&'static str> {
     HOST_TOOLS.into_iter().find(|name| registry.owners.contains_key(*name))
 }

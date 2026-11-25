@@ -136,7 +136,7 @@ for line in sys.stdin:
                 assert any(tool['name'] == 'task_read' for tool in request['params']['tools'])
                 total = int(seen.split(' characters are shown')[0].rsplit(' of ', 1)[1])
                 print(json.dumps({'jsonrpc':'2.0','id':778,'method':'host/tool','params':{
-                    'name':'input','args':{'offset':total - 100}}}), flush=True)
+                    'name':'task_read','args':{'offset':total - 100}}}), flush=True)
                 seen = sys.stdin.readline()
                 with (root / 'paged').open('a') as output:
                     output.write(seen)
@@ -188,7 +188,7 @@ for line in sys.stdin:
         if mode in ['fast-budget', 'thoughtful-budget']:
             if mode == 'thoughtful-budget':
                 print(json.dumps({'jsonrpc':'2.0','id':777,'method':'host/tool',
-                    'params':{'name':'task','args':{'kind':'thoughtful',
+                    'params':{'name':'task_classify','args':{'kind':'thoughtful',
                               'message':'I will verify the sources before answering.'}}}), flush=True)
                 response = json.loads(sys.stdin.readline())
             (root / 'pending').touch()
@@ -222,7 +222,7 @@ for line in sys.stdin:
             args['update'] = {'importance':'milestone','text':'The source research is complete.'}
         if mode in ['operation', 'operation-foreground'] and count == 1:
             result = {'text':'','stop':'tool','events':[{'kind':'tool',
-                'name':'operation_runner_delegate','args':{'arguments':{},
+                'name':'runner_delegate','args':{'arguments':{},
                 'message':"I'll collect the external report when it is ready."}}]}
         elif mode == 'operation-foreground':
             result = {'text':'The external report is verified and complete.', 'stop':'stop'}
@@ -241,7 +241,7 @@ for line in sys.stdin:
             result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'task_checkpoint','args':args}]}
         elif mode == 'native':
             print(json.dumps({'jsonrpc':'2.0','id':777,'method':'host/tool',
-                              'params':{'name':'checkpoint','args':args}}), flush=True)
+                              'params':{'name':'task_checkpoint','args':args}}), flush=True)
             response = json.loads(sys.stdin.readline())
             result = {'text':'This abandoned step must not be delivered.', 'stop':'stop'}
         else:

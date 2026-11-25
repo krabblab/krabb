@@ -8125,7 +8125,7 @@ while IFS= read -r line; do
             printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"codex","version":"0.1.0","capabilities":["model"]}}'
             ;;
         *'"method":"generate"'*)
-            printf '%s\n' '{"jsonrpc":"2.0","id":71,"method":"host/tool","params":{"name":"list","args":{"path":"."}}}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":71,"method":"host/tool","params":{"name":"file_list","args":{"path":"."}}}'
             IFS= read -r tool_reply
             case "$tool_reply" in *Cargo.toml*src*) ;; *) exit 42 ;; esac
             printf '%s\n' '{"jsonrpc":"2.0","method":"event","params":{"event":{"kind":"text","text":"Directory entries: Cargo.toml, src."}}}'
@@ -8146,7 +8146,7 @@ while IFS= read -r line; do
         *'"method":"hello"'*)
             printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}'
             ;;
-        *'"method":"list"'*)
+        *'"method":"file_list"'*)
             printf '{"jsonrpc":"2.0","id":%s,"result":{"items":["Cargo.toml","src"]}}\n' "$request_id"
             ;;
         *'"method":"shutdown"'*)

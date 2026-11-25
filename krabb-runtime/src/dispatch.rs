@@ -623,7 +623,7 @@ pub(crate) async fn execute_tool_with_registry(
     turn_id: &str,
     id: u64,
     name: &str,
-    args: serde_json::Value,
+    mut args: serde_json::Value,
     provider: &str,
     model: &str,
     approval_mode: ApprovalMode,
@@ -644,9 +644,6 @@ pub(crate) async fn execute_tool_with_registry(
     schedule_run_id: Option<u64>,
     tool_call: usize,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
-    let (name, mut args) = aliases::current(name, args, |name| registry.owns(name));
-    let name = name.as_str();
-
     if registry.route.handoff.borrow().is_some() {
         return Err("The background task is already saved; do not repeat its work.".into());
     }
@@ -833,9 +830,7 @@ pub(crate) async fn execute_tool_with_registry(
         return Err("This tool cannot enforce the isolated workspace boundary.".into());
     }
 
-    if matches!(&*aliases::name(name, &args, |_| false), "shell_run" | "git_run" | "file_patch")
-        && !shell_enabled
-    {
+    if matches!(name, "shell_run" | "git_run" | "file_patch") && !shell_enabled {
         return Err("Shell access is not authorized for this turn.".into());
     }
 
@@ -1430,10 +1425,7 @@ pub(crate) fn scheduled_message(
 }
 
 pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
-    let (name, args) = aliases::current(name, args.clone(), |_| false);
-    let args = &args;
-
-    let details = match name.as_str() {
+    let details = match name {
         name if tasks::action(name).is_some() => {
             let action = tasks::action(name).unwrap_or_default();
 
@@ -1652,8 +1644,6 @@ pub(crate) async fn host_tool_with_registry(
     };
 
     let args = params.get("args").cloned().unwrap_or(serde_json::Value::Null);
-    let (name, args) = aliases::current(name, args, |name| registry.owns(name));
-    let name = name.as_str();
 
     if name.starts_with("schedule_") && !registry.execution.interactive() {
         return Ok(Response::fail(

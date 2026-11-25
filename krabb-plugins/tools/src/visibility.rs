@@ -27,7 +27,7 @@ pub(super) fn call(
             })
     };
 
-    match current(method) {
+    match method {
         "file_read" => {
             if !catalog.owner(relative).is_some_and(visible) {
                 return Err(denied("File is not visible to this integration."));

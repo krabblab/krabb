@@ -43,7 +43,7 @@ impl std::fmt::Debug for Offer {
 impl Offer {
     fn tool(&self) -> ToolSpec {
         ToolSpec {
-            name: format!("operation_{}_{}", self.plugin, self.spec.name),
+            name: format!("{}_{}", self.plugin, self.spec.name),
             description: Some(format!(
                 concat!(
                     "{} The host saves the operation handle, monitors it without inference, ",

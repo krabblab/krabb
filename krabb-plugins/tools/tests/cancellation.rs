@@ -18,9 +18,11 @@ fn git_worker() {
 async fn restart_stops_git_filter_descendants() {
     let repo = support::Repository::new("restart", "git_worker", true);
 
-    let process =
-        restart_stops(&repo.0, Request::call(2, "git", json!({"approve": true, "args": ["diff"]})))
-            .await;
+    let process = restart_stops(
+        &repo.0,
+        Request::call(2, "git_run", json!({"approve": true, "args": ["diff"]})),
+    )
+    .await;
 
     repo.assert_stopped().await;
     process.stop().await.unwrap();
@@ -74,7 +76,7 @@ async fn restart_stops_shell(name: &str, command: &str) {
 
     let process = restart_stops(
         &root,
-        Request::call(2, "shell", json!({"approve": true, "command": command})),
+        Request::call(2, "shell_run", json!({"approve": true, "command": command})),
     )
     .await;
 
@@ -193,7 +195,11 @@ async fn output_limit_cleanup_preserves_protocol_framing() {
 
     let response = timeout(
         Duration::from_secs(30),
-        process.call(Request::call(2, "shell", json!({"approve": true, "command": "output.cmd"}))),
+        process.call(Request::call(
+            2,
+            "shell_run",
+            json!({"approve": true, "command": "output.cmd"}),
+        )),
     )
     .await
     .unwrap()

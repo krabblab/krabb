@@ -12,7 +12,7 @@ mod worker;
 pub(super) use checkpoint::{NAME as CHECKPOINT, apply, tool as checkpoint_tool};
 
 pub(super) use control::{
-    ACTIONS, NAMES as CONTROLS, action, control, refusal, sender, tools as control_tools,
+    NAMES as CONTROLS, action, control, refusal, sender, tools as control_tools,
 };
 
 pub(super) use foreground::{Answer, Failure, Foreground};

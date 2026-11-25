@@ -1015,7 +1015,7 @@ async fn extended_discovery_requires_runner_identity_and_negotiated_capability()
     let tools = crate::operations::definitions(&offers);
 
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "operation_runner_delegate");
+    assert_eq!(tools[0].name, "runner_delegate");
     assert_eq!(effects(&fixture, "operation.start"), 0);
 
     legacy.stop().await.unwrap();
@@ -1040,7 +1040,7 @@ async fn runner_replacement_invalidates_offers_before_any_external_start() {
     let registry = ToolRegistry { run: Some(run), ..ToolRegistry::default() };
 
     let error = crate::operations::start(
-        &offers["operation_runner_delegate"],
+        &offers["runner_delegate"],
         &json!({"arguments":{}, "message":"I'll collect the report."}),
         42,
         &registry,
@@ -1097,7 +1097,7 @@ async fn runner_restart_invalidates_offers_before_any_external_start() {
     let registry = ToolRegistry { run: Some(run), ..ToolRegistry::default() };
 
     let error = crate::operations::start(
-        &offers["operation_runner_delegate"],
+        &offers["runner_delegate"],
         &json!({"arguments":{}, "message":"I'll collect the report."}),
         42,
         &registry,

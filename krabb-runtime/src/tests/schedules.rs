@@ -36,7 +36,7 @@ for line in sys.stdin:
         if not called:
             called = True
             args = {'path': 'note.txt'}
-            if tool == 'write':
+            if tool == 'file_write':
                 args['text'] = 'one authorized write'
             if mode == 'host':
                 print(json.dumps({'jsonrpc': '2.0', 'id': 77, 'method': 'host/tool',
@@ -53,11 +53,12 @@ for line in sys.stdin:
         result = {'tools': [{'name': name, 'description': 'Local fixture', 'schema': {
             'type': 'object',
             'properties': {'path': {'type': 'string'}, 'text': {'type': 'string'}},
-            'required': ['path'], 'additionalProperties': False}} for name in ['read', 'write']]}
-    elif method in ('read', 'write'):
+            'required': ['path'], 'additionalProperties': False}}
+            for name in ['file_read', 'file_write']]}
+    elif method in ('file_read', 'file_write'):
         params = request['params']
         assert pathlib.Path(params['workspace']) == root
-        if method == 'write':
+        if method == 'file_write':
             assert params['approve'] is True
             with (root / 'mutations').open('a') as output:
                 output.write('write\n')
@@ -77,14 +78,17 @@ for line in sys.stdin:
     let large_reply = format!("DONE: {}", "x".repeat(16 * 1024));
 
     let cases = if full {
-        vec![("write", large_reply.as_str(), false, true), ("read", &large_reply, false, false)]
+        vec![
+            ("file_write", large_reply.as_str(), false, true),
+            ("file_read", &large_reply, false, false),
+        ]
     } else {
         vec![
-            ("write", "RETRYABLE: Please run again.", false, true),
-            ("write", " \nRETRYABLE: Please run again.", false, true),
-            ("write", "DONE: Saved the file.", true, false),
-            ("read", "RETRYABLE: Please run again.", false, false),
-            ("read", "DONE: Read the file.", true, false),
+            ("file_write", "RETRYABLE: Please run again.", false, true),
+            ("file_write", " \nRETRYABLE: Please run again.", false, true),
+            ("file_write", "DONE: Saved the file.", true, false),
+            ("file_read", "RETRYABLE: Please run again.", false, false),
+            ("file_read", "DONE: Read the file.", true, false),
         ]
     };
 
@@ -180,7 +184,7 @@ for line in sys.stdin:
                 let store = sessions.lock().unwrap();
                 let session = &store.sessions["schedule-71"];
 
-                assert_eq!(session.phase, if tool == "write" { "unsafe" } else { "safe" });
+                assert_eq!(session.phase, if tool == "file_write" { "unsafe" } else { "safe" });
 
                 assert!(session.inflight.is_some());
 
@@ -197,7 +201,7 @@ for line in sys.stdin:
                 let session = &recovered.sessions["schedule-71"];
 
                 assert_eq!(session.status, "interrupted");
-                assert_eq!(session.queued.len(), usize::from(tool == "read"));
+                assert_eq!(session.queued.len(), usize::from(tool == "file_read"));
             } else {
                 let store = sessions.lock().unwrap();
                 let session = &store.sessions["schedule-71"];
@@ -213,7 +217,7 @@ for line in sys.stdin:
                 );
             }
 
-            if tool == "write" {
+            if tool == "file_write" {
                 assert_eq!(
                     fs::read_to_string(root.join("mutations")).unwrap(),
                     "write\n",

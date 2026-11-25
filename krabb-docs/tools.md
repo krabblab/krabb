@@ -5,68 +5,64 @@ is `radix_action` in snake case: the radix names the area or plugin, and the act
 verb. A tool appears only when its source is installed and the conversation's policy allows
 it.
 
-Renamed tools keep their earlier name as an alias, so saved conversations, approvals, and
-transcripts that used it still run. The bundled plugins' earlier names apply only when no
-installed plugin registers that exact name itself.
-
 ## Host
 
-Krabb itself owns these tools, and plugins cannot register their names or earlier names.
+Krabb itself owns these tools, and plugins cannot register their names.
 
-| Tool | Purpose | Earlier name |
-| --- | --- | --- |
-| `task_classify` | Classify a request as fast, thoughtful, or background, and start a background task. | `task` |
-| `task_list` | List the tasks in this conversation. | `job` or `tasks` with `list` |
-| `task_pause` | Pause a task after its active step settles. | `job` or `tasks` with `pause` |
-| `task_resume` | Resume a paused or blocked task. | `job` or `tasks` with `resume` |
-| `task_cancel` | Cancel a task and keep its completed effects. | `job` or `tasks` with `cancel` |
-| `task_steer` | Replace a task's instruction. | `job` or `tasks` with `steer` |
-| `task_defer` | Pause a task until an exact time. | `job` or `tasks` with `defer` |
-| `task_extend` | Add minutes to a task's inference allowance. | `job` or `tasks` with `extend` |
-| `task_checkpoint` | Save a background task's progress and end its step. | `checkpoint` |
-| `task_read` | Read part of a task's saved original request when it was too long to include. | `input` |
-| `conversation_command` | Run a conversation command the person asked for in their own words. | `conversation` |
-| `settings_change` | Change tools, shell, or approval in this conversation's settings section. | `settings` |
-| `message_send` | Send a message to the schedule's authorized destination during a schedule run. | |
+| Tool | Purpose |
+| --- | --- |
+| `task_classify` | Classify a request as fast, thoughtful, or background, and start a background task. |
+| `task_list` | List the tasks in this conversation. |
+| `task_pause` | Pause a task after its active step settles. |
+| `task_resume` | Resume a paused or blocked task. |
+| `task_cancel` | Cancel a task and keep its completed effects. |
+| `task_steer` | Replace a task's instruction. |
+| `task_defer` | Pause a task until an exact time. |
+| `task_extend` | Add minutes to a task's inference allowance. |
+| `task_checkpoint` | Save a background task's progress and end its step. |
+| `task_read` | Read part of a task's saved original request when it was too long to include. |
+| `conversation_command` | Run a conversation command the person asked for in their own words. |
+| `settings_change` | Change tools, shell, or approval in this conversation's settings section. |
+| `message_send` | Send a message to the schedule's authorized destination during a schedule run. |
 
 ## Tools Plugin
 
-| Tool | Purpose | Earlier name |
-| --- | --- | --- |
-| `file_read` | Read a text file in the workspace. | `read` |
-| `file_write` | Write a text file in the workspace, with approval. | `write` |
-| `file_list` | List workspace entries. | `list` |
-| `file_search` | Search workspace text. | `search` |
-| `file_patch` | Apply a Git patch, with approval and shell access. | `patch` |
-| `web_fetch` | Fetch bounded text from a public HTTPS URL. | `fetch` |
-| `git_run` | Run an approved Git operation, with shell access. | `git` |
-| `shell_run` | Run an approved shell command, with shell access. | `shell` |
+| Tool | Purpose |
+| --- | --- |
+| `file_read` | Read a text file in the workspace. |
+| `file_write` | Write a text file in the workspace, with approval. |
+| `file_list` | List workspace entries. |
+| `file_search` | Search workspace text. |
+| `file_patch` | Apply a Git patch, with approval and shell access. |
+| `web_fetch` | Fetch bounded text from a public HTTPS URL. |
+| `git_run` | Run an approved Git operation, with shell access. |
+| `shell_run` | Run an approved shell command, with shell access. |
 
 ## Memory
 
-| Tool | Purpose | Earlier name |
-| --- | --- | --- |
-| `memory_search` | Search memories visible in this conversation. | |
-| `memory_remember` | Save a memory in this conversation's scope. | |
+| Tool | Purpose |
+| --- | --- |
+| `memory_search` | Search memories visible in this conversation. |
+| `memory_remember` | Save a memory in this conversation's scope. |
 
 ## Scheduler
 
-| Tool | Purpose | Earlier name |
-| --- | --- | --- |
-| `schedule_propose` | Schedule a one-time or recurring task the person asked for. | |
-| `schedule_list` | List schedules with their status, from local administrators only. | |
-| `schedule_update` | Replace a schedule's destinations. | |
-| `schedule_pause` | Pause an active schedule. | |
-| `schedule_resume` | Resume a paused schedule. | |
-| `schedule_cancel` | Cancel a schedule's future runs. | |
-| `schedule_run` | Run a schedule now, or rerun a finished one-time task. | |
-| `schedule_retry` | Retry a task paused after failure or skipped while offline. | |
+| Tool | Purpose |
+| --- | --- |
+| `schedule_propose` | Schedule a one-time or recurring task the person asked for. |
+| `schedule_list` | List schedules with their status, from local administrators only. |
+| `schedule_update` | Replace a schedule's destinations. |
+| `schedule_pause` | Pause an active schedule. |
+| `schedule_resume` | Resume a paused schedule. |
+| `schedule_cancel` | Cancel a schedule's future runs. |
+| `schedule_run` | Run a schedule now, or rerun a finished one-time task. |
+| `schedule_retry` | Retry a task paused after failure or skipped while offline. |
 
 ## SQLite
 
-| Tool | Purpose | Earlier name |
-| --- | --- | --- |
-| `data_query` | Create, explore, and change structured databases, tables, and records. | `data` |
+| Tool | Purpose |
+| --- | --- |
+| `data_query` | Create, explore, and change structured databases, tables, and records. |
 
 ## Experimental
 
@@ -110,9 +106,9 @@ These plugins are outside the supported v0.1 scope.
 
 ### Runner
 
-| Tool | Purpose | Earlier name |
-| --- | --- | --- |
-| `runner_delegate` | Start an external A2A agent task that the host monitors and resumes. | `operation_runner_delegate` |
+| Tool | Purpose |
+| --- | --- |
+| `runner_delegate` | Start an external A2A agent task that the host monitors and resumes. |
 
 Runner offers each declared operation as `runner_<operation>`.
 

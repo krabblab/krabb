@@ -72,7 +72,7 @@ pub(crate) fn control(
                     "resume":task.deferred.as_ref().map(|receipt| &receipt.command.when),
                     "approval":task.approval.as_ref()
                         .filter(|approval| approval.decision.is_none())
-                        .map(|approval| aliases::name(&approval.tool, &approval.args, |_| true)),
+                        .map(|approval| &approval.tool),
                     "inference":task.budget.as_ref().map(crate::accounting::view),
                 })
             })

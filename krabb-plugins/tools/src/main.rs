@@ -57,18 +57,6 @@ const FETCH_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const FETCH_TEXT_LIMIT: usize = 48 * 1024;
 const FETCH_REDIRECT_LIMIT: usize = 3;
 
-/// Earlier names of these tools, which older hosts still call.
-const ALIASES: [(&str, &str); 8] = [
-    ("read", "file_read"),
-    ("write", "file_write"),
-    ("patch", "file_patch"),
-    ("list", "file_list"),
-    ("search", "file_search"),
-    ("fetch", "web_fetch"),
-    ("git", "git_run"),
-    ("shell", "shell_run"),
-];
-
 const COMMAND_LIMIT: Duration = Duration::from_secs(120);
 static SEARCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static FETCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -147,7 +135,7 @@ async fn call_with_sandbox(
         Request::Note { .. } => return Ok(None),
     };
 
-    let result = match current(&method) {
+    let result = match method.as_str() {
         "visible" => {
             let permit = timeout(SEARCH_TIME, searches().acquire_owned())
                 .await
@@ -354,11 +342,6 @@ async fn call_with_sandbox(
     };
 
     response(id, result)
-}
-
-/// The current name of a tool method, so a host that uses an earlier name still works.
-fn current(method: &str) -> &str {
-    ALIASES.iter().find(|(old, _)| *old == method).map_or(method, |(_, current)| current)
 }
 
 fn tool_specs(shell_enabled: bool) -> Vec<ToolSpec> {
@@ -2380,34 +2363,6 @@ mod tests {
 
             assert_eq!(fs::read_to_string(&path).unwrap(), "#!/bin/sh\nexit 0\n");
         }
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn earlier_tool_names_still_run() {
-        for (old, new) in super::ALIASES {
-            assert_eq!(super::current(old), new);
-            assert_eq!(super::current(new), new);
-            assert!(tool_specs(true).iter().any(|tool| tool.name == new));
-            assert!(!tool_specs(true).iter().any(|tool| tool.name == old));
-        }
-
-        let root = test_root("earlier-names");
-
-        fs::create_dir_all(&root).unwrap();
-
-        let policy = policy(&root);
-        let args = json!({"path": "note.txt", "text": "hello", "approve": true});
-
-        call(&policy, Request::call(1, "write", args)).await.unwrap().unwrap();
-
-        let read = call(&policy, Request::call(2, "read", json!({"path": "note.txt"})))
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(read.result.unwrap()["text"], "hello");
 
         let _ = fs::remove_dir_all(root);
     }

@@ -262,7 +262,7 @@ for line in sys.stdin:
             result = {'text':'Hello!' if mode == 'fast' else 'Verified answer.', 'stop':'stop'}
         elif mode == 'native':
             print(json.dumps({'jsonrpc':'2.0', 'id':777, 'method':'host/tool',
-                              'params':{'name':'task', 'args':args}}), flush=True)
+                              'params':{'name':'task_classify', 'args':args}}), flush=True)
             response = json.loads(sys.stdin.readline())
             result = {'text':'This duplicate acknowledgement must not be sent.', 'stop':'stop'}
         else:
@@ -425,8 +425,8 @@ for line in sys.stdin:
         generated += 1
         if generated == 1:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'list'}},
-                {'kind':'tool','name':'tasks','args':{'action':'pause','id':'task-1'}}]}
+                {'kind':'tool','name':'task_list','args':{}},
+                {'kind':'tool','name':'task_pause','args':{'id':'task-1'}}]}
         elif generated == 2:
             result = {'text':'', 'stop':'tool', 'events':[
                 {'kind':'tool','name':'task_pause','args':{'id':own}}]}

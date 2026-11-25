@@ -616,7 +616,7 @@ for line in sys.stdin:
         ("short denied write".into(), false, false),
     ] {
         let params = serde_json::json!({
-            "name": "write", "workspace": root,
+            "name": "file_write", "workspace": root,
             "args": {"path": "note.txt", "text": text, "workspace": "untrusted", "approve": true}
         });
 

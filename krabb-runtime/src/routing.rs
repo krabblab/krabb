@@ -261,13 +261,12 @@ mod tests {
         assert_eq!(Kind::Background.limit(), Duration::from_secs(600));
         assert_eq!(reply("Saved.".into()).text, "Saved.");
         assert!(clock().render().starts_with("Current host time: "));
-        assert!(mutating("task", &json!({"kind":"background"})));
-        assert!(!mutating("task", &json!({"kind":"thoughtful"})));
-        assert!(mutating("tasks", &json!({"action":"defer"})));
-        assert!(mutating("tasks", &json!({"action":"extend"})));
-        assert!(mutating("tasks", &json!({"action":"pause"})));
-        assert!(!mutating("tasks", &json!({"action":"list"})));
-        assert!(mutating("job", &json!({"action":"pause"})));
+        assert!(mutating(NAME, &json!({"kind":"background"})));
+        assert!(!mutating(NAME, &json!({"kind":"thoughtful"})));
+        assert!(mutating("task_defer", &json!({})));
+        assert!(mutating("task_extend", &json!({})));
+        assert!(mutating("task_pause", &json!({})));
+        assert!(!mutating("task_list", &json!({})));
     }
 
     #[tokio::test(start_paused = true)]

@@ -302,8 +302,7 @@ pub(crate) async fn agent_tool_request(
         return Ok(Response::fail(id, -32602, "A tool name is required."));
     };
 
-    let (name, mut args) = aliases::current(name, params["args"].clone(), |_| false);
-    let name = name.as_str();
+    let mut args = params["args"].clone();
 
     let Some(values) = args.as_object_mut() else {
         return Ok(Response::fail(id, -32602, "Tool arguments must be an object."));
