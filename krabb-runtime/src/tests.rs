@@ -1843,7 +1843,7 @@ fn advisory_lock_releases_after_drop() {
 #[test]
 fn a_lock_released_while_a_child_starts_is_acquired_and_a_held_one_is_not() {
     let root = test_root("lock-grace");
-    let held = lock_at(&root, ".grace.lock").unwrap();
+    let held = super::lock_at(&root, ".grace.lock").unwrap();
 
     // Stands in for a starting child that keeps the lock for a moment after it is dropped.
     let release = std::thread::spawn(move || {
@@ -1851,14 +1851,14 @@ fn a_lock_released_while_a_child_starts_is_acquired_and_a_held_one_is_not() {
         drop(held);
     });
 
-    assert!(lock_at(&root, ".grace.lock").is_ok());
+    assert!(super::lock_at(&root, ".grace.lock").is_ok());
 
     release.join().unwrap();
 
-    let _held = lock_at(&root, ".grace.lock").unwrap();
-    let busy = lock_at(&root, ".grace.lock").unwrap_err();
+    let _held = super::lock_at(&root, ".grace.lock").unwrap();
+    let busy = super::lock_at(&root, ".grace.lock").err().map(|error| error.kind());
 
-    assert_eq!(busy.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(busy, Some(std::io::ErrorKind::AlreadyExists));
 
     let _ = fs::remove_dir_all(root);
 }
