@@ -195,7 +195,7 @@ Provider search never becomes a local shell or filesystem call. Signed provider
 continuations stay opaque and are replayed only for their originating provider
 and model. Anthropic paused searches are buffered until complete; other adapters
 can stream visible text. Summary requests disable search. The optional Krabb
-`fetch` tool remains available for exact HTTPS URLs when channel tools are enabled.
+`web_fetch` tool remains available for exact HTTPS URLs when channel tools are enabled.
 
 ## Channels
 

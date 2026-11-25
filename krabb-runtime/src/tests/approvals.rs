@@ -22,11 +22,11 @@ for line in sys.stdin:
     if method == 'hello':
         result = {'protocol': {'major': 0, 'minor': 1}, 'id': 'tools',
                   'version': '0.1.0', 'capabilities': ['tool']}
-    elif method in ('shell', 'git'):
+    elif method in ('shell_run', 'git_run'):
         params = request['params']
         assert params['approve'] is True
         (root / 'dispatch.json').write_text(json.dumps(params))
-        if method == 'shell':
+        if method == 'shell_run':
             subprocess.run(params['command'], shell=True, cwd=root, timeout=1, check=True)
         result = {'text': 'executed'}
     elif method == 'shutdown':
@@ -72,18 +72,18 @@ for line in sys.stdin:
 
     for channel in ["tui", "telegram", "discord"] {
         for (name, args, mode, enabled, decision, rejected) in [
-            ("shell", long.clone(), ApprovalMode::Prompt, true, true, true),
-            ("shell", boundary(513), ApprovalMode::Prompt, true, true, true),
-            ("shell", escaped.clone(), ApprovalMode::Prompt, true, true, true),
-            ("shell", unicode.clone(), ApprovalMode::Prompt, true, true, true),
-            ("git", git.clone(), ApprovalMode::Prompt, true, true, true),
-            ("git", git_boundary(513), ApprovalMode::Prompt, true, true, true),
-            ("shell", boundary(512), ApprovalMode::Prompt, true, true, false),
-            ("git", git_boundary(512), ApprovalMode::Prompt, true, true, false),
-            ("shell", short.clone(), ApprovalMode::Prompt, true, false, false),
-            ("shell", short.clone(), ApprovalMode::Prompt, false, true, true),
-            ("shell", short.clone(), ApprovalMode::Off, true, true, true),
-            ("shell", long.clone(), ApprovalMode::Auto, true, true, false),
+            ("shell_run", long.clone(), ApprovalMode::Prompt, true, true, true),
+            ("shell_run", boundary(513), ApprovalMode::Prompt, true, true, true),
+            ("shell_run", escaped.clone(), ApprovalMode::Prompt, true, true, true),
+            ("shell_run", unicode.clone(), ApprovalMode::Prompt, true, true, true),
+            ("git_run", git.clone(), ApprovalMode::Prompt, true, true, true),
+            ("git_run", git_boundary(513), ApprovalMode::Prompt, true, true, true),
+            ("shell_run", boundary(512), ApprovalMode::Prompt, true, true, false),
+            ("git_run", git_boundary(512), ApprovalMode::Prompt, true, true, false),
+            ("shell_run", short.clone(), ApprovalMode::Prompt, true, false, false),
+            ("shell_run", short.clone(), ApprovalMode::Prompt, false, true, true),
+            ("shell_run", short.clone(), ApprovalMode::Off, true, true, true),
+            ("shell_run", long.clone(), ApprovalMode::Auto, true, true, false),
         ] {
             let (notices, mut events) = tokio::sync::mpsc::channel(1);
             let mut failed = None;
@@ -133,7 +133,7 @@ for line in sys.stdin:
                 if !rejected {
                     assert_eq!(arguments, args.to_string());
 
-                    if name == "shell" {
+                    if name == "shell_run" {
                         assert_eq!(command.as_deref(), args["command"].as_str());
                         assert!(text.contains(args["command"].as_str().unwrap()));
                     } else {
@@ -168,7 +168,7 @@ for line in sys.stdin:
             }
 
             assert_eq!(dispatched, !rejected && decision, "{channel}: {name}: {result:?}");
-            assert_eq!(sentinel, !rejected && decision && name == "shell");
+            assert_eq!(sentinel, !rejected && decision && name == "shell_run");
             assert_eq!(prompted, !rejected && mode == ApprovalMode::Prompt);
             assert!(!approvals.lock().await.has_pending());
 
@@ -213,10 +213,10 @@ fn approval_text_discloses_complete_mutation_arguments() {
             serde_json::json!({"session_id": "owned", "by": "css", "target": "#name", "value": "new value"}),
         ),
         ("computer_type", serde_json::json!({"session_id": "owned", "text": "desktop value"})),
-        ("write", serde_json::json!({"path": "note.txt", "text": "replacement"})),
-        ("patch", serde_json::json!({"text": "fixture patch"})),
+        ("file_write", serde_json::json!({"path": "note.txt", "text": "replacement"})),
+        ("file_patch", serde_json::json!({"text": "fixture patch"})),
         ("memory_remember", serde_json::json!({"key": "note", "value": "remembered"})),
-        ("data", serde_json::json!({"operation": "create_database", "database": "fixture"})),
+        ("data_query", serde_json::json!({"operation": "create_database", "database": "fixture"})),
         ("schedule_cancel", serde_json::json!({"id": 42})),
         ("custom_mutation", serde_json::json!({"value": "first"})),
         (
@@ -330,9 +330,9 @@ for line in sys.stdin:
             "value",
         ),
         ("computer_type", serde_json::json!({"session_id": "owned", "text": "first"}), "text"),
-        ("write", serde_json::json!({"path": "note.txt", "text": "first"}), "text"),
+        ("file_write", serde_json::json!({"path": "note.txt", "text": "first"}), "text"),
         (
-            "data",
+            "data_query",
             serde_json::json!({"operation": "create_database", "database": "first"}),
             "database",
         ),
@@ -508,7 +508,7 @@ for line in sys.stdin:
                         assert_eq!(request["params"]["activate"], true);
                         assert_eq!(request["params"]["instruction"], args["instruction"]);
                         assert_eq!(request["params"]["context"]["shell"], false);
-                    } else if *name == "data" {
+                    } else if *name == "data_query" {
                         let mut received = request["params"].clone();
 
                         assert_eq!(
@@ -570,7 +570,7 @@ for line in sys.stdin:
     if method == 'hello':
         result = {'protocol': {'major': 0, 'minor': 1}, 'id': 'tools',
                   'version': '0.1.0', 'capabilities': ['tool']}
-    elif method == 'write':
+    elif method == 'file_write':
         params = request['params']
         assert params['approve'] is True
         assert pathlib.Path(params['workspace']) == root
@@ -616,7 +616,7 @@ for line in sys.stdin:
         ("short denied write".into(), false, false),
     ] {
         let params = serde_json::json!({
-            "name": "write", "workspace": root,
+            "name": "file_write", "workspace": root,
             "args": {"path": "note.txt", "text": text, "workspace": "untrusted", "approve": true}
         });
 

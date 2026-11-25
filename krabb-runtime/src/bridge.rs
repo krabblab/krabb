@@ -541,7 +541,7 @@ pub(crate) async fn bridge_with_media(
                     mode: approval_mode,
                     sessions: Arc::clone(&sessions),
                     approvals: Arc::clone(&approvals),
-                    signals: Arc::clone(&plugins.jobs),
+                    signals: Arc::clone(&plugins.tasks),
                     shutdown: Arc::clone(&stop),
                     offset,
                     call: call.saturating_add(channels::INTAKE_CALLS),
@@ -579,9 +579,9 @@ pub(crate) async fn bridge_with_media(
             }
 
             let controlled = commanded
-                || jobs::dialog::channel(
+                || tasks::dialog::channel(
                     &mut *sessions.lock().map_err(|_| state::POISONED)?,
-                    &plugins.jobs,
+                    &plugins.tasks,
                     channel_id,
                     &event,
                 )?;
@@ -615,7 +615,7 @@ pub(crate) async fn bridge_with_media(
                     &sessions,
                     &mut offset,
                     &mut call,
-                    Some(&plugins.jobs),
+                    Some(&plugins.tasks),
                     None,
                 )
                 .await?
@@ -1048,7 +1048,7 @@ pub(crate) async fn bridge_with_media(
                     mode: approval_mode,
                     sessions: Arc::clone(&sessions),
                     approvals: Arc::clone(&approvals),
-                    signals: Arc::clone(&plugins.jobs),
+                    signals: Arc::clone(&plugins.tasks),
                     shutdown: Arc::clone(&stop),
                     offset,
                     call: call.saturating_add(channels::INTAKE_CALLS),
@@ -1192,10 +1192,10 @@ pub(crate) async fn bridge_with_media(
                         restart_tool(plugins, &id).await;
                     }
 
-                    if let Some(failure) = error.downcast_ref::<jobs::Failure>() {
+                    if let Some(failure) = error.downcast_ref::<tasks::Failure>() {
                         {
                             let mut store = sessions.lock().map_err(|_| state::POISONED)?;
-                            store.publish_job_notice(&failure.id)?;
+                            store.publish_task_notice(&failure.id)?;
                             store.clear(
                                 &session_name,
                                 if stop.is_signaled() { "interrupted" } else { "idle" },

@@ -56,6 +56,7 @@ const FETCH_CONNECT_TIME: Duration = Duration::from_secs(3);
 const FETCH_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const FETCH_TEXT_LIMIT: usize = 48 * 1024;
 const FETCH_REDIRECT_LIMIT: usize = 3;
+
 const COMMAND_LIMIT: Duration = Duration::from_secs(120);
 static SEARCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static FETCHES: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -155,7 +156,7 @@ async fn call_with_sandbox(
 
         "tools/list" => serde_json::json!({"tools": tool_specs(policy.shell != Shell::Off)}),
 
-        "read" => {
+        "file_read" => {
             let workspace = workspace(params["workspace"].as_str())?;
             let path = confined(
                 policy,
@@ -168,7 +169,7 @@ async fn call_with_sandbox(
             })
         }
 
-        "write" => {
+        "file_write" => {
             let workspace = workspace(params["workspace"].as_str())?;
             let path = params["path"].as_str().ok_or_else(|| denied("write.path is required"))?;
             let text = params["text"].as_str().ok_or_else(|| denied("write.text is required"))?;
@@ -183,7 +184,7 @@ async fn call_with_sandbox(
             json!({"ok": true})
         }
 
-        "list" => {
+        "file_list" => {
             let workspace = workspace(params["workspace"].as_str())?;
             let path = confined(
                 policy,
@@ -197,7 +198,7 @@ async fn call_with_sandbox(
             json!({"items": items})
         }
 
-        "search" => {
+        "file_search" => {
             let path = params["path"].as_str().unwrap_or(".").to_owned();
             let needle = params["text"]
                 .as_str()
@@ -229,12 +230,12 @@ async fn call_with_sandbox(
             json!({"hits": hits})
         }
 
-        "fetch" => {
+        "web_fetch" => {
             let url = params["url"].as_str().ok_or_else(|| denied("fetch.url is required"))?;
             fetch_url(url).await?
         }
 
-        "patch" => {
+        "file_patch" => {
             policy.shell(params["approve"].as_bool() == Some(true))?;
 
             if sandbox.is_some() {
@@ -274,7 +275,7 @@ async fn call_with_sandbox(
             json!({"ok": true})
         }
 
-        "git" => {
+        "git_run" => {
             let approved = params["approve"].as_bool() == Some(true);
             policy.shell(approved)?;
 
@@ -321,7 +322,7 @@ async fn call_with_sandbox(
             })
         }
 
-        "shell" => {
+        "shell_run" => {
             policy.shell(params["approve"].as_bool() == Some(true))?;
             let command =
                 params["command"].as_str().ok_or_else(|| denied("shell.command is required"))?;
@@ -345,28 +346,28 @@ async fn call_with_sandbox(
 
 fn tool_specs(shell_enabled: bool) -> Vec<ToolSpec> {
     let mut definitions = vec![
-        ("read", "Read a text file.", &["path"][..]),
+        ("file_read", "Read a text file.", &["path"][..]),
         (
-            "write",
+            "file_write",
             "Write a text file with approval. Paths must remain inside the active workspace; use workspace-relative paths.",
             &["path", "text"][..],
         ),
-        ("list", "List workspace entries.", &["path"][..]),
-        ("search", "Search workspace text.", &["path", "text"][..]),
-        ("fetch", "Fetch bounded text from a public HTTPS URL.", &["url"][..]),
-        ("patch", "Apply an approved Git patch.", &["text"][..]),
+        ("file_list", "List workspace entries.", &["path"][..]),
+        ("file_search", "Search workspace text.", &["path", "text"][..]),
+        ("web_fetch", "Fetch bounded text from a public HTTPS URL.", &["url"][..]),
+        ("file_patch", "Apply an approved Git patch.", &["text"][..]),
         (
-            "git",
+            "git_run",
             "Run approved Git operations; repository filters may execute programs.",
             &["args"][..],
         ),
     ];
 
-    definitions.retain(|(name, _, _)| shell_enabled || !matches!(*name, "git" | "patch"));
+    definitions.retain(|(name, _, _)| shell_enabled || !matches!(*name, "git_run" | "file_patch"));
 
     if shell_enabled {
         definitions.push((
-            "shell",
+            "shell_run",
             "Run an approved local shell command; it may inspect available paths beyond the workspace.",
             &["command"][..],
         ));
@@ -2143,14 +2144,18 @@ mod tests {
 
         let definitions = &response.result.unwrap()["tools"];
 
-        assert!(definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "read"));
-        assert!(definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "fetch"));
-        assert!(!definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "shell"));
-        assert!(tool_specs(true).iter().any(|tool| tool.name == "shell"));
+        assert!(definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "file_read"));
+        assert!(definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "web_fetch"));
+        assert!(!definitions.as_array().unwrap().iter().any(|tool| tool["name"] == "shell_run"));
+        assert!(tool_specs(true).iter().any(|tool| tool.name == "shell_run"));
 
         assert_eq!(
-            definitions.as_array().unwrap().iter().find(|tool| tool["name"] == "write").unwrap()["schema"]
-                ["required"],
+            definitions
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "file_write")
+                .unwrap()["schema"]["required"],
             json!(["path", "text"])
         );
 
@@ -2184,9 +2189,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
 
         assert!(
-            call(&policy(&root), Request::call(9, "fetch", json!({"url": "http://example.com/"})))
-                .await
-                .is_err()
+            call(
+                &policy(&root),
+                Request::call(9, "web_fetch", json!({"url": "http://example.com/"}))
+            )
+            .await
+            .is_err()
         );
 
         let _ = fs::remove_dir_all(root);
@@ -2337,7 +2345,7 @@ mod tests {
                 &policy,
                 Request::call(
                     1,
-                    "write",
+                    "file_write",
                     json!({
                         "path": "script", "text": "#!/bin/sh\nexit 0\n", "approve": true
                     }),
@@ -2372,7 +2380,7 @@ mod tests {
             &policy,
             Request::call(
                 1,
-                "write",
+                "file_write",
                 json!({"path": "note.txt", "text": "hello", "approve": true}),
             ),
         )
@@ -2386,7 +2394,7 @@ mod tests {
             &policy,
             Request::call(
                 11,
-                "write",
+                "file_write",
                 json!({"path": "a/b/note.txt", "text": "nested", "approve": true}),
             ),
         )
@@ -2396,7 +2404,7 @@ mod tests {
 
         assert_eq!(fs::read_to_string(root.join("a/b/note.txt")).unwrap(), "nested");
 
-        let read = call(&policy, Request::call(2, "read", json!({"path": "note.txt"})))
+        let read = call(&policy, Request::call(2, "file_read", json!({"path": "note.txt"})))
             .await
             .unwrap()
             .unwrap();
@@ -2412,7 +2420,7 @@ mod tests {
             &policy,
             Request::call(
                 8,
-                "read",
+                "file_read",
                 json!({"path": "nested.txt", "workspace": nested.display().to_string()}),
             ),
         )
@@ -2426,15 +2434,17 @@ mod tests {
             &policy,
             Request::call(
                 9,
-                "read",
+                "file_read",
                 json!({"path": "nested.txt", "workspace": root.parent().unwrap().display().to_string()}),
             ),
         )
         .await
         .is_err());
 
-        let listed =
-            call(&policy, Request::call(3, "list", json!({"path": "."}))).await.unwrap().unwrap();
+        let listed = call(&policy, Request::call(3, "file_list", json!({"path": "."})))
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(
             listed.result.unwrap()["items"]
@@ -2513,7 +2523,7 @@ mod tests {
             &Arc::new(policy(&root)),
             Request::call(
                 1,
-                "write",
+                "file_write",
                 json!({"path": "dangling", "text": "secret", "approve": true}),
             ),
         )
@@ -2570,8 +2580,9 @@ mod tests {
 
         let policy = Arc::new(policy(&root));
 
-        let error =
-            call(&policy, Request::call(1, "shell", json!({"command": "pwd"}))).await.unwrap_err();
+        let error = call(&policy, Request::call(1, "shell_run", json!({"command": "pwd"})))
+            .await
+            .unwrap_err();
 
         assert!(error.to_string().contains("disabled"));
 
@@ -2589,9 +2600,11 @@ mod tests {
 
         approved.shell = Shell::On;
 
-        let output =
-            call(&approved, Request::call(1, "shell", json!({"command": "pwd", "approve": true})))
-                .await;
+        let output = call(
+            &approved,
+            Request::call(1, "shell_run", json!({"command": "pwd", "approve": true})),
+        )
+        .await;
 
         #[cfg(any(target_os = "linux", windows))]
 
@@ -2601,13 +2614,16 @@ mod tests {
 
         assert!(output.unwrap_err().to_string().contains("Shell containment requires"));
 
-        assert!(call(&approved, Request::call(2, "read", json!({}))).await.is_err());
-        assert!(call(&approved, Request::call(3, "write", json!({"path": "x"}))).await.is_err());
+        assert!(call(&approved, Request::call(2, "file_read", json!({}))).await.is_err());
+
+        assert!(
+            call(&approved, Request::call(3, "file_write", json!({"path": "x"}))).await.is_err()
+        );
 
         assert!(
             call(
                 &approved,
-                Request::call(3, "write", json!({"path": "blocked/file", "text": "x"}))
+                Request::call(3, "file_write", json!({"path": "blocked/file", "text": "x"}))
             )
             .await
             .is_err()
@@ -2616,21 +2632,25 @@ mod tests {
         assert!(!root.join("blocked").exists());
 
         assert!(
-            call(&approved, Request::call(4, "write", json!({"path": "x", "text": "x"})))
+            call(&approved, Request::call(4, "file_write", json!({"path": "x", "text": "x"})))
                 .await
                 .is_err()
         );
 
-        assert!(call(&approved, Request::call(5, "search", json!({}))).await.is_err());
+        assert!(call(&approved, Request::call(5, "file_search", json!({}))).await.is_err());
 
         assert!(
-            call(&approved, Request::call(6, "list", json!({"path": "missing"}))).await.is_err()
+            call(&approved, Request::call(6, "file_list", json!({"path": "missing"})))
+                .await
+                .is_err()
         );
 
         for args in [vec!["status"], vec!["diff"], vec!["worktree", "list"]] {
-            let git =
-                call(&approved, Request::call(7, "git", json!({"args": args, "approve": true})))
-                    .await;
+            let git = call(
+                &approved,
+                Request::call(7, "git_run", json!({"args": args, "approve": true})),
+            )
+            .await;
 
             #[cfg(any(target_os = "linux", windows))]
 
@@ -2646,7 +2666,7 @@ mod tests {
                 &approved,
                 Request::call(
                     7,
-                    "git",
+                    "git_run",
                     json!({"args": ["worktree", "add", "../copy"], "approve": true})
                 )
             )
@@ -2659,7 +2679,7 @@ mod tests {
                 &approved,
                 Request::call(
                     7,
-                    "git",
+                    "git_run",
                     json!({"args": ["worktree", "add", "--detach", "../copy"], "approve": true})
                 )
             )
@@ -2672,7 +2692,7 @@ mod tests {
                 &approved,
                 Request::call(
                     7,
-                    "git",
+                    "git_run",
                     json!({"args": ["worktree", "remove", "../copy"], "approve": true})
                 )
             )
@@ -2691,7 +2711,7 @@ mod tests {
                 &approved,
                 Request::call(
                     7,
-                    "git",
+                    "git_run",
                     json!({
                         "args": ["worktree", "remove", sibling.display().to_string()],
                         "workspace": active.display().to_string(),
@@ -2706,16 +2726,19 @@ mod tests {
         assert!(
             call(
                 &approved,
-                Request::call(7, "git", json!({"args": ["status", 1], "approve": true}))
+                Request::call(7, "git_run", json!({"args": ["status", 1], "approve": true}))
             )
             .await
             .is_err()
         );
 
         assert!(
-            call(&approved, Request::call(8, "git", json!({"args": ["reset"], "approve": true})))
-                .await
-                .is_err()
+            call(
+                &approved,
+                Request::call(8, "git_run", json!({"args": ["reset"], "approve": true}))
+            )
+            .await
+            .is_err()
         );
 
         assert!(call(&approved, Request::call(9, "unknown", json!({}))).await.unwrap().is_none());
@@ -2775,7 +2798,7 @@ mod tests {
             &Arc::new(Policy { shell: Shell::On, ..policy(&root) }),
             Request::call(
                 1,
-                "git",
+                "git_run",
                 json!({
                     "args": ["worktree", "add", target.display().to_string()],
                     "approve": true
@@ -2864,7 +2887,7 @@ mod tests {
             &policy(&default_root),
             Request::call(
                 1,
-                "list",
+                "file_list",
                 json!({"path": ".", "workspace": selected_root.display().to_string()}),
             ),
         )
@@ -2878,7 +2901,7 @@ mod tests {
             &policy(&default_root),
             Request::call(
                 2,
-                "read",
+                "file_read",
                 json!({
                     "path": outside_file.display().to_string(),
                     "workspace": selected_root.display().to_string(),
@@ -2988,7 +3011,7 @@ mod tests {
             assert!(
                 call(
                     &policy,
-                    Request::call(1, "git", json!({"args": ["diff"], "approve": approved}))
+                    Request::call(1, "git_run", json!({"args": ["diff"], "approve": approved}))
                 )
                 .await
                 .is_err()
@@ -3000,7 +3023,7 @@ mod tests {
         let policy = Policy { shell: Shell::On, ..policy(&root) };
         let sandbox = Sandbox { runtime: "unused".into(), image: "unused".into() };
 
-        for name in ["git", "patch"] {
+        for name in ["git_run", "file_patch"] {
             assert!(
                 super::call_with_sandbox(
                     &policy,
@@ -3015,7 +3038,7 @@ mod tests {
         }
 
         assert!(
-            call(&policy, Request::call(2, "git", json!({"args": ["diff"], "approve": true})))
+            call(&policy, Request::call(2, "git_run", json!({"args": ["diff"], "approve": true})))
                 .await
                 .is_ok()
         );
@@ -3043,7 +3066,9 @@ mod tests {
 
         let policy = Arc::new(Policy { shell: Shell::On, ..policy(&root) });
 
-        assert!(call(&policy, Request::call(1, "patch", json!({"text": patch}))).await.is_err());
+        assert!(
+            call(&policy, Request::call(1, "file_patch", json!({"text": patch}))).await.is_err()
+        );
 
         assert!(
             patch_paths(
@@ -3054,7 +3079,7 @@ mod tests {
         );
 
         let result =
-            call(&policy, Request::call(2, "patch", json!({"text": patch, "approve": true})))
+            call(&policy, Request::call(2, "file_patch", json!({"text": patch, "approve": true})))
                 .await
                 .unwrap()
                 .unwrap();
@@ -3095,12 +3120,13 @@ mod isolation {
 
         assert!(file_at(&policy, ".krabb/media/note.txt", None).is_ok());
 
-        let result = call(&policy, Request::call(1, "search", json!({"path":".","text":"needle"})))
-            .await
-            .unwrap()
-            .unwrap()
-            .result
-            .unwrap();
+        let result =
+            call(&policy, Request::call(1, "file_search", json!({"path":".","text":"needle"})))
+                .await
+                .unwrap()
+                .unwrap()
+                .result
+                .unwrap();
 
         assert!(!result.to_string().contains("private.txt"));
         assert!(!result.to_string().contains("hidden.txt"));

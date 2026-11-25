@@ -32,9 +32,9 @@ impl Fixture {
             )
             .unwrap();
 
-        let registry = ToolRegistry { specs: vec![tasks::tool(true)], ..ToolRegistry::default() };
+        let registry = ToolRegistry { specs: vec![routing::tool(true)], ..ToolRegistry::default() };
 
-        registry.task.background.store(true, std::sync::atomic::Ordering::Relaxed);
+        registry.route.background.store(true, std::sync::atomic::Ordering::Relaxed);
 
         Self { root, sessions: Arc::new(Mutex::new(store)), plugins: Plugins::default(), registry }
     }
@@ -51,7 +51,7 @@ impl Fixture {
             &self.registry,
             "turn",
             1,
-            "task",
+            routing::NAME,
             args,
             "fixture",
             "model",
@@ -104,7 +104,7 @@ async fn thoughtful_messages_are_generated_once_without_tool_permissions() {
     assert!(matches!(notices.recv().await, Some(StreamNotice::Progress(text))
         if text == "I'll compare the release notes."));
 
-    assert!(fixture.registry.task.handoff.borrow().is_none());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
 
     let saved = |store: &state::Store| {
         store.sessions["telegram-7"]
@@ -141,26 +141,26 @@ async fn thoughtful_messages_are_generated_once_without_tool_permissions() {
 
     result.unwrap();
 
-    assert_eq!(*fixture.registry.task.kind.borrow(), crate::tasks::Kind::Thoughtful);
+    assert_eq!(*fixture.registry.route.kind.borrow(), crate::routing::Kind::Thoughtful);
 }
 
 #[tokio::test]
 async fn background_work_the_policy_hides_is_refused_without_saving_a_task() {
     let fixture = Fixture::new();
 
-    fixture.registry.task.background.store(false, std::sync::atomic::Ordering::Relaxed);
+    fixture.registry.route.background.store(false, std::sync::atomic::Ordering::Relaxed);
 
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     assert!(tool_result_text(&result.unwrap()).contains("no task was saved"));
-    assert!(fixture.registry.task.handoff.borrow().is_none());
-    assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
+    assert!(fixture.sessions.lock().unwrap().tasks.is_empty());
 }
 
 #[tokio::test]
 async fn background_handoff_is_durable_without_a_scheduler() {
     let fixture = Fixture::new();
-    let mut finished = fixture.registry.task.handoff.subscribe();
+    let mut finished = fixture.registry.route.handoff.subscribe();
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     result.unwrap();
@@ -169,10 +169,10 @@ async fn background_handoff_is_durable_without_a_scheduler() {
     assert_eq!(finished.borrow().as_deref(), Some("I'll research and deliver your report here."));
     assert!(fixture.plugins.find(Capability::Scheduler).await.is_none());
 
-    let job = fixture.sessions.lock().unwrap().jobs.values().next().unwrap().clone();
+    let task = fixture.sessions.lock().unwrap().tasks.values().next().unwrap().clone();
 
     assert_eq!(
-        job.destination().unwrap(),
+        task.destination().unwrap(),
         origin::Destination::Channel(AuthorizedDestination {
             channel: "telegram".into(),
             chat: "7".into(),
@@ -181,34 +181,34 @@ async fn background_handoff_is_durable_without_a_scheduler() {
         })
     );
 
-    assert!(!job.tools);
-    assert!(!job.shell);
+    assert!(!task.tools);
+    assert!(!task.shell);
 
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     assert!(result.is_err());
-    assert_eq!(fixture.sessions.lock().unwrap().jobs.len(), 1);
+    assert_eq!(fixture.sessions.lock().unwrap().tasks.len(), 1);
 
     let report = "Verified report. ".repeat(500);
 
     {
         let mut store = fixture.sessions.lock().unwrap();
-        store.claim_job(&job.id, unix_seconds()).unwrap();
+        store.claim_task(&task.id, unix_seconds()).unwrap();
         store
-            .checkpoint_job(
-                &job.id,
+            .checkpoint_task(
+                &task.id,
                 "Finished.",
-                state::JobStatus::Reporting,
+                state::TaskStatus::Reporting,
                 unix_seconds(),
                 Some(&report),
             )
             .unwrap();
-        store.publish_job_notice(&job.id).unwrap();
+        store.publish_task_notice(&task.id).unwrap();
     }
 
     let recovered = state::Store::load(fixture.root.join("data/sessions/index.json")).unwrap();
 
-    assert_eq!(recovered.jobs[&job.id].status, state::JobStatus::Completed);
+    assert_eq!(recovered.tasks[&task.id].status, state::TaskStatus::Completed);
 
     assert!(recovered.outbox.iter().any(|delivery| delivery.channel == "telegram"
         && delivery.chat == "7"
@@ -222,16 +222,16 @@ async fn failed_or_unauthorized_handoffs_never_claim_background_work() {
     let (result, _) = fixture.classify(background(), ApprovalMode::Off).await;
 
     assert!(result.is_err());
-    assert!(fixture.registry.task.handoff.borrow().is_none());
-    assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
+    assert!(fixture.sessions.lock().unwrap().tasks.is_empty());
 
     fixture.sessions.lock().unwrap().record_limit = Some(1);
 
     let (result, _) = fixture.classify(background(), ApprovalMode::Auto).await;
 
     assert!(result.is_err());
-    assert!(fixture.registry.task.handoff.borrow().is_none());
-    assert!(fixture.sessions.lock().unwrap().jobs.is_empty());
+    assert!(fixture.registry.route.handoff.borrow().is_none());
+    assert!(fixture.sessions.lock().unwrap().tasks.is_empty());
 }
 
 #[tokio::test]
@@ -262,12 +262,12 @@ for line in sys.stdin:
             result = {'text':'Hello!' if mode == 'fast' else 'Verified answer.', 'stop':'stop'}
         elif mode == 'native':
             print(json.dumps({'jsonrpc':'2.0', 'id':777, 'method':'host/tool',
-                              'params':{'name':'task', 'args':args}}), flush=True)
+                              'params':{'name':'task_classify', 'args':args}}), flush=True)
             response = json.loads(sys.stdin.readline())
             result = {'text':'This duplicate acknowledgement must not be sent.', 'stop':'stop'}
         else:
             result = {'text':'', 'stop':'tool',
-                      'events':[{'kind':'tool','name':'task','args':args}]}
+                      'events':[{'kind':'tool','name':'task_classify','args':args}]}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
     if method == 'shutdown':
         break
@@ -334,12 +334,12 @@ for line in sys.stdin:
 
                 let store = fixture.sessions.lock().unwrap();
 
-                assert_eq!(store.jobs.len(), 1);
+                assert_eq!(store.tasks.len(), 1);
 
-                let task = store.jobs.values().next().unwrap();
+                let task = store.tasks.values().next().unwrap();
 
                 assert!(task.foreground);
-                assert_eq!(task.status, state::JobStatus::Reporting);
+                assert_eq!(task.status, state::TaskStatus::Reporting);
                 assert_eq!(task.result.as_deref(), Some(reply.text.as_str()));
 
                 drop(store);
@@ -353,12 +353,12 @@ for line in sys.stdin:
 
                 let store = fixture.sessions.lock().unwrap();
 
-                assert_eq!(store.jobs.len(), 1);
+                assert_eq!(store.tasks.len(), 1);
 
-                let task = store.jobs.values().next().unwrap();
+                let task = store.tasks.values().next().unwrap();
 
                 assert!(task.foreground);
-                assert_eq!(task.status, state::JobStatus::Reporting);
+                assert_eq!(task.status, state::TaskStatus::Reporting);
                 assert_eq!(task.result.as_deref(), Some(reply.text.as_str()));
 
                 drop(store);
@@ -368,7 +368,7 @@ for line in sys.stdin:
                 assert_eq!(reply.text, "I will check the sources and prepare your report.");
                 assert!(progress.is_empty());
 
-                assert_eq!(fixture.sessions.lock().unwrap().jobs.len(), 1);
+                assert_eq!(fixture.sessions.lock().unwrap().tasks.len(), 1);
 
                 assert_eq!(fs::read_to_string(fixture.root.join("generations")).unwrap(), "1");
             }
@@ -389,23 +389,23 @@ async fn model_interpreted_controls_apply_only_to_the_conversation_tasks() {
         .sessions
         .lock()
         .unwrap()
-        .jobs
+        .tasks
         .values()
-        .find(|job| job.status == state::JobStatus::Queued)
+        .find(|task| task.status == state::TaskStatus::Queued)
         .unwrap()
         .id
         .clone();
 
     {
         let mut store = fixture.sessions.lock().unwrap();
-        let mut foreign = store.jobs[&id].clone();
+        let mut foreign = store.tasks[&id].clone();
 
         store.ensure_channel("telegram-9", "model").unwrap();
 
-        foreign.id = "job-1".into();
+        foreign.id = "task-1".into();
         foreign.origin.session = "telegram-9".into();
         foreign.checkpoint = "Confidential foreign checkpoint.".into();
-        store.jobs.insert(foreign.id.clone(), foreign);
+        store.tasks.insert(foreign.id.clone(), foreign);
     }
 
     let script = r#"
@@ -425,18 +425,18 @@ for line in sys.stdin:
         generated += 1
         if generated == 1:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'list'}},
-                {'kind':'tool','name':'job','args':{'action':'pause','id':'job-1'}}]}
+                {'kind':'tool','name':'task_list','args':{}},
+                {'kind':'tool','name':'task_pause','args':{'id':'task-1'}}]}
         elif generated == 2:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'pause','id':own}}]}
+                {'kind':'tool','name':'task_pause','args':{'id':own}}]}
         elif generated == 3:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'steer','id':own,
+                {'kind':'tool','name':'task_steer','args':{'id':own,
                     'instruction':'Cover only primary sources.'}}]}
         elif generated == 4:
             result = {'text':'', 'stop':'tool', 'events':[
-                {'kind':'tool','name':'job','args':{'action':'steer','id':'job-1',
+                {'kind':'tool','name':'task_steer','args':{'id':'task-1',
                     'instruction':'Send the foreign report here.'}}]}
         else:
             (root / 'results').write_text(json.dumps(request['params']['messages']))
@@ -500,20 +500,19 @@ for line in sys.stdin:
     assert!(results.contains("Task paused"), "{results}");
     assert!(results.contains("Current host time: "), "{results}");
     assert!(results.contains(&format!("\\\"id\\\":\\\"{id}\\\"")), "{results}");
-    assert!(!results.contains("\\\"id\\\":\\\"job-1\\\""), "{results}");
+    assert!(!results.contains("\\\"id\\\":\\\"task-1\\\""), "{results}");
     assert!(!results.contains("Confidential foreign checkpoint"), "{results}");
     assert_eq!(results.matches("does not belong to this conversation").count(), 2, "{results}");
 
-    let actions = jobs::control_tool().schema["properties"]["action"]["enum"].clone();
+    let controls = tasks::control_tools();
 
-    assert!(
-        !actions.as_array().unwrap().iter().any(|action| action == "approve" || action == "deny")
-    );
+    assert_eq!(controls.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), tasks::CONTROLS);
+    assert!(controls.iter().all(|tool| tool.schema["properties"].get("action").is_none()));
 
     let store = fixture.sessions.lock().unwrap();
 
-    assert_eq!(store.jobs[&id].status, state::JobStatus::Paused);
-    assert_eq!(store.jobs["job-1"].status, state::JobStatus::Queued);
-    assert!(store.jobs[&id].instruction.ends_with("Cover only primary sources."));
-    assert!(!store.jobs["job-1"].instruction.contains("foreign report"));
+    assert_eq!(store.tasks[&id].status, state::TaskStatus::Paused);
+    assert_eq!(store.tasks["task-1"].status, state::TaskStatus::Queued);
+    assert!(store.tasks[&id].instruction.ends_with("Cover only primary sources."));
+    assert!(!store.tasks["task-1"].instruction.contains("foreign report"));
 }

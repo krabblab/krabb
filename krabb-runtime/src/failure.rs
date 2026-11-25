@@ -112,7 +112,7 @@ pub(crate) fn retry(error: &(dyn std::error::Error + 'static), attempts: u32) ->
 
 /// Whether a foreground task's failure came from a provider fault that needs a restart; the
 /// task itself is reported through its notice, so only the provider is recovered.
-pub(crate) fn restarts(failure: &jobs::Failure) -> bool {
+pub(crate) fn restarts(failure: &tasks::Failure) -> bool {
     let cause = std::error::Error::source(failure).unwrap_or(failure);
 
     retry(cause, 1) == Retry::Restart
@@ -146,7 +146,7 @@ pub(crate) fn reply(error: &(dyn std::error::Error + 'static), retrying: bool) -
         return format!("{detail} I will retry automatically.");
     }
 
-    let Some(detail) = detail else { return tasks::ERROR.into() };
+    let Some(detail) = detail else { return routing::ERROR.into() };
 
     let next = match failure.kind {
         Kind::Denied | Kind::Missing | Kind::Invalid => {
@@ -175,18 +175,18 @@ pub(crate) fn settle(
 ) -> std::io::Result<()> {
     let failure = classify(error);
 
-    if store.job(id)?.status != state::JobStatus::Running {
+    if store.task(id)?.status != state::TaskStatus::Running {
         return Ok(());
     }
 
-    let replayable = store.job(id).is_ok_and(|job| !job.unsafe_step && !job.uncertain);
+    let replayable = store.task(id).is_ok_and(|task| !task.unsafe_step && !task.uncertain);
 
     if failure.kind.retryable() && replayable {
-        return store.retry_job_after(id, failure, unix_seconds());
+        return store.retry_task_after(id, failure, unix_seconds());
     }
 
     let reason = match core(error) {
-        _ if failure.kind == Kind::Unknown => tasks::ERROR.into(),
+        _ if failure.kind == Kind::Unknown => routing::ERROR.into(),
 
         Some(krabb_core::Error::Denied(reason) | krabb_core::Error::Limit(reason)) => {
             reason.clone()
@@ -196,13 +196,13 @@ pub(crate) fn settle(
         _ => error.to_string(),
     };
 
-    let checkpoint = store.job(id)?.checkpoint.clone();
+    let checkpoint = store.task(id)?.checkpoint.clone();
 
     let block = |store: &mut state::Store| {
-        store.checkpoint_job(
+        store.checkpoint_task(
             id,
             &checkpoint,
-            state::JobStatus::Blocked,
+            state::TaskStatus::Blocked,
             unix_seconds(),
             Some(&reason),
         )
@@ -213,10 +213,10 @@ pub(crate) fn settle(
     }
 
     store.atomic(|store| {
-        let job = store.jobs.get_mut(id).unwrap();
+        let task = store.tasks.get_mut(id).unwrap();
 
-        job.uncertain = true;
-        job.deferred = None;
+        task.uncertain = true;
+        task.deferred = None;
         block(store)
     })
 }
@@ -269,8 +269,8 @@ mod tests {
 
         assert_eq!(reply(throttled.as_ref(), false), "Slow down. Please retry.");
         assert_eq!(reply(throttled.as_ref(), true), "Slow down. I will retry automatically.");
-        assert_eq!(reply(unknown.as_ref(), false), tasks::ERROR);
-        assert_eq!(reply(host.as_ref(), false), tasks::ERROR);
+        assert_eq!(reply(unknown.as_ref(), false), routing::ERROR);
+        assert_eq!(reply(host.as_ref(), false), routing::ERROR);
 
         assert_eq!(
             reply(host.as_ref(), true),
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn a_failed_foreground_task_restarts_only_a_faulty_provider() {
         let task = |source: PluginError| {
-            jobs::Failure::new("task-1".into(), crate::state::JobStatus::Blocked, source)
+            tasks::Failure::new("task-1".into(), crate::state::TaskStatus::Blocked, source)
         };
 
         let crashed = std::io::Error::from(std::io::ErrorKind::BrokenPipe);

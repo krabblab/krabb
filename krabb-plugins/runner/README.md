@@ -31,7 +31,7 @@ Unrelated card overrides cannot reuse it or the configured origin mapping. Redir
 endpoints outside loopback are rejected.
 
 The plugin negotiates the `runner` capability and `operation.list` declarations.
-The host advertises `operation_runner_delegate` only after this negotiation.
+The host advertises `runner_delegate` only after this negotiation.
 Malformed declarations withhold extended tools while ordinary work stays available.
 Replacing or restarting runner invalidates previously discovered offers; new work
 must discover capabilities again. Existing saved handles remain available for

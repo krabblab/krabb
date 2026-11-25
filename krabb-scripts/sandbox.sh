@@ -43,7 +43,7 @@ trap cleanup EXIT
 
 cat >"$input" <<'EOF'
 {"jsonrpc":"2.0","id":1,"method":"hello","params":{}}
-{"jsonrpc":"2.0","id":2,"method":"shell","params":{"command":"touch sandbox-marker && ! touch /etc/krabb-marker && ! wget -q -T 2 -O - http://example.com","approve":true}}
+{"jsonrpc":"2.0","id":2,"method":"shell_run","params":{"command":"touch sandbox-marker && ! touch /etc/krabb-marker && ! wget -q -T 2 -O - http://example.com","approve":true}}
 {"jsonrpc":"2.0","id":3,"method":"shutdown","params":{}}
 EOF
 

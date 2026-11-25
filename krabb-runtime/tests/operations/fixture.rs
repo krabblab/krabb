@@ -247,7 +247,7 @@ impl Fixture {
         receipt["task"].as_str().unwrap().into()
     }
 
-    pub fn job(&self, id: &str) -> Value {
+    pub fn task(&self, id: &str) -> Value {
         let bytes = match fs::read(self.home.join("data/sessions/index.json")) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Value::Null,
@@ -262,10 +262,10 @@ impl Fixture {
     pub async fn until(&self, id: &str, label: &str, predicate: impl Fn(&Value) -> bool) -> Value {
         tokio::time::timeout(slow(20), async {
             loop {
-                let job = self.job(id);
+                let task = self.task(id);
 
-                if predicate(&job) {
-                    break job;
+                if predicate(&task) {
+                    break task;
                 }
 
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -275,7 +275,7 @@ impl Fixture {
         .unwrap_or_else(|_| {
             panic!(
                 "Timed out waiting for {label}: {}\n{}",
-                self.job(id),
+                self.task(id),
                 fs::read_to_string(self.root.join("host.stderr")).unwrap()
             )
         })

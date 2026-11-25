@@ -138,10 +138,10 @@ async fn busy_channel_intake_delivers_status_and_preserves_new_questions() {
                 }) {
                     let store = saved.lock().unwrap();
 
-                    assert_eq!(store.jobs.len(), 1);
+                    assert_eq!(store.tasks.len(), 1);
                     assert_eq!(
-                        store.jobs.values().next().unwrap().status,
-                        crate::state::JobStatus::Running
+                        store.tasks.values().next().unwrap().status,
+                        crate::state::TaskStatus::Running
                     );
 
                     assert_eq!(store.sessions["telegram-7-thread-4"].queued[0].id, "3");
@@ -194,7 +194,7 @@ async fn busy_channel_intake_delivers_status_and_preserves_new_questions() {
 
     assert_eq!(fs::read_to_string(root.join("generated")).unwrap(), "2");
     assert!(session.queued.is_empty());
-    assert_eq!(store.jobs.len(), 2);
+    assert_eq!(store.tasks.len(), 2);
     assert!(session.context().iter().all(|message| message.id != "2"));
     assert!(session.context().iter().any(|message| message.id == "3"));
 }
@@ -263,10 +263,10 @@ async fn a_busy_channel_pauses_the_report_and_answers_the_next_question_once() {
                 let running = saved
                     .lock()
                     .unwrap()
-                    .jobs
+                    .tasks
                     .values()
                     .next()
-                    .map(|job| job.id.clone())
+                    .map(|task| task.id.clone())
                     .filter(|_| observed.join("generated").exists());
 
                 if let Some(id) = running {
@@ -329,9 +329,9 @@ async fn a_busy_channel_pauses_the_report_and_answers_the_next_question_once() {
     assert_eq!(answers, [json!("telegram-3")]);
 
     let store = sessions.lock().unwrap();
-    let report = store.jobs.values().find(|job| job.instruction.contains("prepare the report"));
+    let report = store.tasks.values().find(|task| task.instruction.contains("prepare the report"));
 
-    assert_eq!(report.unwrap().status, crate::state::JobStatus::Paused);
+    assert_eq!(report.unwrap().status, crate::state::TaskStatus::Paused);
     assert!(store.sessions["telegram-7-thread-4"].queued.is_empty());
 }
 
@@ -648,7 +648,7 @@ async fn channel_turns_type_and_do_not_replay_model_rejections() {
 
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().any(|value| value["params"]["text"] == "Recovered"));
-    assert!(sent.iter().any(|value| value["params"]["text"] == crate::tasks::ERROR));
+    assert!(sent.iter().any(|value| value["params"]["text"] == crate::routing::ERROR));
 
     assert!(sessions.lock().unwrap().sessions["telegram-7-thread-4"].queued.is_empty());
 
@@ -1173,7 +1173,7 @@ async fn workspace_failure_worker() {
             let stored = crate::state::Store::load(root.join("data/sessions/index.json")).unwrap();
 
             assert_eq!(stored.sessions.values().filter(|session| !session.is_work()).count(), 2);
-            assert_eq!(stored.jobs.len(), 2);
+            assert_eq!(stored.tasks.len(), 2);
 
             let request = fs::read_to_string(root.join("model.json")).unwrap();
 

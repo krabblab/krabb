@@ -20,7 +20,7 @@ pub(crate) async fn tool_with_registry(
 
     let source = registry.source.clone().unwrap_or_else(|| origin::principal(memory_scope));
 
-    if name == "data" {
+    if name == "data_query" {
         let plugin = plugins
             .get("sqlite")
             .await
@@ -644,12 +644,12 @@ pub(crate) async fn execute_tool_with_registry(
     schedule_run_id: Option<u64>,
     tool_call: usize,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
-    if registry.task.handoff.borrow().is_some() {
+    if registry.route.handoff.borrow().is_some() {
         return Err("The background task is already saved; do not repeat its work.".into());
     }
 
     if let Some(run) = &registry.run {
-        sessions.lock().map_err(|_| state::POISONED)?.check_job_step(&run.id, run.generation)?;
+        sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
     }
 
     if registry.execution == state::SessionKind::Foreground
@@ -671,91 +671,93 @@ pub(crate) async fn execute_tool_with_registry(
             .lock()
             .map_err(|_| state::POISONED)?
             .request_approval(run, id, name, &args, &text)?;
-        registry.task.handoff.send_replace(Some(String::new()));
-        plugins.jobs.wake.notify_one();
+        registry.route.handoff.send_replace(Some(String::new()));
+        plugins.tasks.wake.notify_one();
 
         return Ok(ToolResult::text(
             "Approval was requested. Nothing ran; the host continues after the decision.",
         ));
     }
 
-    let _mutation = if (mutating(name, &args) && name != "task") || name == "checkpoint" {
-        Some(registry.task.gate.lock().await)
+    let _mutation = if (mutating(name, &args) && name != routing::NAME) || name == tasks::CHECKPOINT
+    {
+        Some(registry.route.gate.lock().await)
     } else {
         None
     };
 
     if let Some(run) = &registry.run {
-        sessions.lock().map_err(|_| state::POISONED)?.check_job_step(&run.id, run.generation)?;
+        sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
     }
 
-    let fast = *registry.task.kind.borrow() == tasks::Kind::Fast;
+    let fast = *registry.route.kind.borrow() == routing::Kind::Fast;
 
     if mutating(name, &args) && fast {
-        registry.task.kind.send_replace(tasks::Kind::Thoughtful);
+        registry.route.kind.send_replace(routing::Kind::Thoughtful);
     }
 
-    if name == jobs::input::NAME {
+    if name == tasks::input::NAME {
         let run = registry.run.as_ref().ok_or("This conversation has no saved task input.")?;
         let store = sessions.lock().map_err(|_| state::POISONED)?;
 
-        return Ok(ToolResult::text(jobs::input::read(&store, &run.id, &args)?));
+        return Ok(ToolResult::text(tasks::input::read(&store, &run.id, &args)?));
     }
 
-    if name == "checkpoint" {
-        if registry.execution != state::SessionKind::Job {
-            return Err("Checkpoints are available only inside a background job.".into());
+    if name == tasks::CHECKPOINT {
+        if registry.execution != state::SessionKind::Task {
+            return Err("Checkpoints are available only inside a background task.".into());
         }
 
         {
             let mut store = sessions.lock().map_err(|_| state::POISONED)?;
             let run = registry.run.as_ref().ok_or("Task generation is missing.")?;
-            store.check_job_step(&run.id, run.generation)?;
-            jobs::apply(&mut store, session, args)?;
+            store.check_task_step(&run.id, run.generation)?;
+            tasks::apply(&mut store, session, args)?;
         }
 
-        registry.task.handoff.send_replace(Some(String::new()));
+        registry.route.handoff.send_replace(Some(String::new()));
 
-        plugins.jobs.wake.notify_one();
+        plugins.tasks.wake.notify_one();
 
         return Ok(ToolResult::text("Checkpoint saved; this execution step has ended."));
     }
 
-    if name == "job" {
-        if matches!(channel, "job" | "scheduler") || !registry.execution.interactive() {
-            return Err("Unattended work cannot control other background jobs.".into());
+    if let Some(action) = tasks::action(name) {
+        if channel == "scheduler" || !registry.execution.interactive() {
+            return Err("Unattended work cannot control other background tasks.".into());
         }
 
-        if args["action"] == "list" {
-            return control_job(sessions, session, &args, plugins);
+        if action == "list" {
+            return control_task(sessions, session, action, &args, plugins);
         }
     }
 
-    let task = if name == "task" { Some(tasks::Task::parse(args.clone())?) } else { None };
+    let route =
+        if name == routing::NAME { Some(routing::Route::parse(args.clone())?) } else { None };
 
-    let _task_guard = if let Some(task) = &task {
+    let _route_guard = if let Some(route) = &route {
         if !registry.execution.interactive() {
             return Err("Scheduled execution cannot classify or create background tasks.".into());
         }
 
-        match task.kind {
-            tasks::Kind::Fast => return Ok(ToolResult::text("Answer the request directly.")),
+        match route.kind {
+            routing::Kind::Fast => return Ok(ToolResult::text("Answer the request directly.")),
 
-            tasks::Kind::Thoughtful => {
-                registry.task.kind.send_replace(tasks::Kind::Thoughtful);
+            routing::Kind::Thoughtful => {
+                registry.route.kind.send_replace(routing::Kind::Thoughtful);
 
-                if !registry.task.announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if !registry.route.announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     let saved = sessions
                         .lock()
                         .map_err(|_| state::POISONED)?
-                        .append_progress(session, &task.message);
+                        .append_progress(session, &route.message);
 
                     if let Err(error) = saved {
                         warn!(session, error = %error, "The progress message could not be saved.");
                     }
 
                     notices
-                        .send(StreamNotice::Progress(task.message.clone()))
+                        .send(StreamNotice::Progress(route.message.clone()))
                         .await
                         .map_err(|_| "The progress receiver is unavailable.")?;
                 }
@@ -763,8 +765,8 @@ pub(crate) async fn execute_tool_with_registry(
                 return Ok(ToolResult::text("Continue the work and return the complete answer."));
             }
 
-            tasks::Kind::Background => {
-                if !registry.task.background.load(std::sync::atomic::Ordering::Relaxed) {
+            routing::Kind::Background => {
+                if !registry.route.background.load(std::sync::atomic::Ordering::Relaxed) {
                     return Ok(ToolResult::text(
                         "Background tasks are unavailable here; no task was saved. Answer \
                             directly.",
@@ -781,20 +783,20 @@ pub(crate) async fn execute_tool_with_registry(
                     return Err("Start background work before performing mutating actions.".into());
                 }
 
-                let guard = registry.task.gate.lock().await;
+                let guard = registry.route.gate.lock().await;
 
-                if registry.task.handoff.borrow().is_some() {
+                if registry.route.handoff.borrow().is_some() {
                     return Err("The background task is already saved.".into());
                 }
 
                 args["context"] = if let Some(run) = &registry.run {
                     let store = sessions.lock().map_err(|_| state::POISONED)?;
-                    let job = store.job(&run.id)?;
-                    serde_json::json!({"provider":job.provider, "model":job.model,
-                        "workspace":job.workspace, "origin":job.origin,
-                        "tools":job.tools, "shell":job.shell})
+                    let task = store.task(&run.id)?;
+                    serde_json::json!({"provider":task.provider, "model":task.model,
+                        "workspace":task.workspace, "origin":task.origin,
+                        "tools":task.tools, "shell":task.shell})
                 } else {
-                    jobs::capture(
+                    tasks::capture(
                         &*sessions.lock().map_err(|_| state::POISONED)?,
                         provider,
                         model,
@@ -822,12 +824,13 @@ pub(crate) async fn execute_tool_with_registry(
     if workspace.is_some_and(worktree::isolated)
         && !(worktree::tool(name)
             && registry.owners.get(name).is_some_and(|owner| owner == "tools")
-            || matches!(name, "memory_search" | "memory_remember" | "data" | "task" | "job"))
+            || matches!(name, "memory_search" | "memory_remember" | "data_query" | routing::NAME)
+            || tasks::action(name).is_some())
     {
         return Err("This tool cannot enforce the isolated workspace boundary.".into());
     }
 
-    if matches!(name, "shell" | "git" | "patch") && !shell_enabled {
+    if matches!(name, "shell_run" | "git_run" | "file_patch") && !shell_enabled {
         return Err("Shell access is not authorized for this turn.".into());
     }
 
@@ -1108,8 +1111,8 @@ pub(crate) async fn execute_tool_with_registry(
 
                     (None, Some(run)) => {
                         sessions.lock().map_err(|_| state::POISONED)?.escalate_approval(run)?;
-                        registry.task.handoff.send_replace(Some(String::new()));
-                        plugins.jobs.wake.notify_one();
+                        registry.route.handoff.send_replace(Some(String::new()));
+                        plugins.tasks.wake.notify_one();
 
                         return Ok(ToolResult::text(
                             "The approval is saved with the task. Nothing ran; it continues after \
@@ -1139,29 +1142,29 @@ pub(crate) async fn execute_tool_with_registry(
         store.phase_turn(session, registry.run.as_ref(), "unsafe")?;
     }
 
-    if let Some(task) = task {
+    if let Some(route) = route {
         let id = if let Some(run) = &registry.run {
             sessions
                 .lock()
                 .map_err(|_| state::POISONED)?
-                .promote_foreground(run, &task.instruction)?;
+                .promote_foreground(run, &route.instruction)?;
             run.id.clone()
         } else {
-            jobs::enqueue(
+            tasks::enqueue(
                 &mut *sessions.lock().map_err(|_| state::POISONED)?,
-                &task,
+                &route,
                 &args["context"],
             )?
         };
 
-        registry.task.handoff.send_replace(Some(task.message));
-        plugins.jobs.wake.notify_one();
+        registry.route.handoff.send_replace(Some(route.message));
+        plugins.tasks.wake.notify_one();
 
-        return Ok(ToolResult::text(format!("Background job {id} is saved.")));
+        return Ok(ToolResult::text(format!("Background task {id} is saved.")));
     }
 
-    if name == "job" {
-        return control_job(sessions, session, &args, plugins);
+    if let Some(action) = tasks::action(name) {
+        return control_task(sessions, session, action, &args, plugins);
     }
 
     if name == settings::TOOL {
@@ -1340,21 +1343,26 @@ pub(crate) struct ScheduledMessage {
 }
 
 /// Applies a model-issued task control for the conversation's current sender.
-pub(crate) fn control_job(
+pub(crate) fn control_task(
     sessions: &Arc<Mutex<state::Store>>,
     session: &str,
+    action: &str,
     args: &serde_json::Value,
     plugins: &Plugins,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
-    let mut store = sessions.lock().map_err(|_| state::POISONED)?;
-    let sender = jobs::sender(&store, session);
+    let mut args = args.clone();
 
-    Ok(jobs::refusal(jobs::control(
+    args["action"] = action.into();
+
+    let mut store = sessions.lock().map_err(|_| state::POISONED)?;
+    let sender = tasks::sender(&store, session);
+
+    Ok(tasks::refusal(tasks::control(
         &mut store,
-        args,
+        &args,
         session,
         sender.as_deref(),
-        &plugins.jobs,
+        &plugins.tasks,
         false,
     )))
 }
@@ -1418,25 +1426,23 @@ pub(crate) fn scheduled_message(
 
 pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
     let details = match name {
-        "job" => {
-            let detail = match args["action"].as_str() {
-                Some("steer") => format!(
+        name if tasks::action(name).is_some() => {
+            let action = tasks::action(name).unwrap_or_default();
+
+            let detail = match action {
+                "steer" => format!(
                     " with instruction: {}",
                     args["instruction"].as_str().unwrap_or_default()
                 ),
-                Some("defer") => format!(" until {}", args["when"].as_str().unwrap_or_default()),
-                Some("extend") => format!(" by {} minutes", args["minutes"]),
+                "defer" => format!(" until {}", args["when"].as_str().unwrap_or_default()),
+                "extend" => format!(" by {} minutes", args["minutes"]),
                 _ => String::new(),
             };
 
-            format!(
-                "{} task {}{detail}",
-                args["action"].as_str().unwrap_or_default(),
-                args["id"].as_str().unwrap_or_default()
-            )
+            format!("{action} {}{detail}", args["id"].as_str().unwrap_or_default())
         }
 
-        "task" => format!(
+        routing::NAME => format!(
             "start a background goal with automatic continuation and updates to {} / {}; \
                 unattended workspace tools: {}, shell: {}, workspace: {}",
             args["context"]["origin"]["channel"],
@@ -1475,24 +1481,24 @@ pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
             )
         }
 
-        "write" => format!("write to {}", args["path"].as_str().unwrap_or("a workspace path")),
+        "file_write" => format!("write to {}", args["path"].as_str().unwrap_or("a workspace path")),
 
         "memory_remember" => {
             format!("save memory {}", args["key"].as_str().unwrap_or("with the requested key"))
         }
 
-        "patch" => {
+        "file_patch" => {
             format!(
                 "apply a Git patch containing {} bytes, which may execute repository-configured programs",
                 args["text"].as_str().map_or(0, str::len)
             )
         }
 
-        "shell" => {
+        "shell_run" => {
             format!("run this shell command: {}", args["command"].as_str().unwrap_or("unknown"))
         }
 
-        "git" => format!(
+        "git_run" => format!(
             "run this Git operation, which may execute repository-configured programs: {}",
             args["args"]
         ),
@@ -1637,6 +1643,8 @@ pub(crate) async fn host_tool_with_registry(
         return Ok(Response::fail(id, -32602, "A tool name is required."));
     };
 
+    let args = params.get("args").cloned().unwrap_or(serde_json::Value::Null);
+
     if name.starts_with("schedule_") && !registry.execution.interactive() {
         return Ok(Response::fail(
             id,
@@ -1675,8 +1683,6 @@ pub(crate) async fn host_tool_with_registry(
     if cancelled(sessions, session).unwrap_or(true) {
         return Ok(Response::fail(id, -32000, "The turn was cancelled."));
     }
-
-    let args = params.get("args").cloned().unwrap_or(serde_json::Value::Null);
 
     if let Err(message) = validate_tool_args(&args) {
         return Ok(Response::fail(id, -32602, message));
@@ -1727,7 +1733,7 @@ pub(crate) async fn host_tool_with_registry(
                 sessions
                     .lock()
                     .map_err(|_| krabb_core::Error::Protocol(state::POISONED.into()))?
-                    .uncertain_job_step(&run.id, run.generation)
+                    .uncertain_task_step(&run.id, run.generation)
                     .map_err(krabb_core::Error::Io)?;
             }
 
@@ -1743,7 +1749,7 @@ pub(crate) async fn host_tool_with_registry(
                 sessions
                     .lock()
                     .map_err(|_| krabb_core::Error::Protocol(state::POISONED.into()))?
-                    .uncertain_job_step(&run.id, run.generation)
+                    .uncertain_task_step(&run.id, run.generation)
                     .map_err(krabb_core::Error::Io)?;
             }
 

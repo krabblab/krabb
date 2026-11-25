@@ -41,7 +41,7 @@ pub async fn serve() -> krabb_core::Result<()> {
                 }
 
                 json!({"text":"", "stop":"tool", "events":[{"kind":"tool",
-                "name":"operation_runner_delegate", "args":{
+                "name":"runner_delegate", "args":{
                     "arguments":arguments,
                     "message":"I will verify the external report and return here when it finishes."
                 }}]})

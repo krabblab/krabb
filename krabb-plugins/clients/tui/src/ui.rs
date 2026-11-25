@@ -1119,6 +1119,7 @@ fn message_timestamp(id: &str) -> Option<String> {
         ["tui", "system", "interaction", "assistant", timestamp, ..]
         | ["tui", "system", "notice", timestamp, ..]
         | ["schedule", "notice", "at", timestamp, ..]
+        | ["task", "notice", "at", timestamp, ..]
         | ["job", "notice", "at", timestamp, ..]
         | ["progress", "at", timestamp, ..] => *timestamp,
         _ => return None,
@@ -1638,9 +1639,9 @@ where
                         || app.session_working
                         || !app.pending_interactions.is_empty();
                     let ordinary = !command.starts_with('/') && !command.starts_with('!');
-                    let is_task_control = krabb_core::task::command(command);
+                    let is_task_command = krabb_core::task::command(command);
                     let is_live_control = (ordinary && !app.compaction_active)
-                        || is_task_control
+                        || is_task_command
                         || matches!(
                             command,
                             "/approvals" | "/approve" | "/deny" | "/quit" | "/exit"
@@ -1710,7 +1711,7 @@ where
                         line.clone()
                     };
 
-                    if !(is_task_control
+                    if !(is_task_command
                         || busy && ordinary
                         || matches!(line.as_str(), "/clear" | "/quit" | "/exit"))
                     {
@@ -5276,6 +5277,11 @@ mod tests {
 
         assert_eq!(nanoseconds, milliseconds);
         assert_eq!(scheduled, milliseconds);
+        assert_eq!(
+            super::message_timestamp("task-notice-at-1700000000000-task-7-event-2"),
+            milliseconds
+        );
+
         assert_eq!(
             super::message_timestamp("job-notice-at-1700000000000-job-7-event-2"),
             milliseconds

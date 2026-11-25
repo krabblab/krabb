@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn directory(index: &Path, id: &str) -> std::io::Result<PathBuf> {
-    if !valid(id) || !is_job_session(id) {
+    if !valid(id) || !is_task_session(id) {
         return Err(std::io::Error::other("Invalid task journal identity."));
     }
 
@@ -25,7 +25,7 @@ pub(super) fn cleanup(index: &Path, sessions: &BTreeMap<String, String>) -> std:
         let entry = entry?;
         let id = entry.file_name().to_string_lossy().into_owned();
 
-        if !entry.file_type()?.is_dir() || !valid(&id) || !is_job_session(&id) {
+        if !entry.file_type()?.is_dir() || !valid(&id) || !is_task_session(&id) {
             continue;
         }
 
@@ -57,13 +57,13 @@ mod tests {
         let root = crate::tests::test_root("task-journals");
         let path = root.join("data/sessions/index.json");
         let mut store = Store::load(&path).unwrap();
-        store.ensure_job("job-1", "model").unwrap();
+        store.ensure_task("task-1", "model").unwrap();
         store
             .push(
-                "job-1",
+                "task-1",
                 Message {
                     id: "private-context".into(),
-                    session: "job-1".into(),
+                    session: "task-1".into(),
                     role: Role::User,
                     sender: None,
                     content: vec![krabb_core::Content::Text {
@@ -75,14 +75,14 @@ mod tests {
         let recovered = Store::load(&path).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let key = index["sessions"]["job-1"].as_str().unwrap();
+        let key = index["sessions"]["task-1"].as_str().unwrap();
 
-        assert_eq!(index["version"], 15);
-        assert_eq!(index["journals"], serde_json::json!(["job-1"]));
-        assert!(root.join(format!("data/tasks/job-1/records/{key}.json")).is_file());
+        assert_eq!(index["version"], 16);
+        assert_eq!(index["journals"], serde_json::json!(["task-1"]));
+        assert!(root.join(format!("data/tasks/task-1/records/{key}.json")).is_file());
         assert!(!root.join(format!("data/sessions/records/{key}.json")).exists());
         assert_eq!(
-            recovered.sessions["job-1"].context()[0].content[0].render(),
+            recovered.sessions["task-1"].context()[0].content[0].render(),
             "A private report draft"
         );
     }
@@ -92,18 +92,18 @@ mod tests {
         let root = crate::tests::test_root("task-journal-retention");
         let path = root.join("data/sessions/index.json");
         let mut store = Store::load(&path).unwrap();
-        store.ensure_job("job-1", "model").unwrap();
-        let records = directory(&path, "job-1").unwrap();
+        store.ensure_task("task-1", "model").unwrap();
+        let records = directory(&path, "task-1").unwrap();
         std::fs::write(records.join("notes.txt"), "keep these notes").unwrap();
         std::fs::write(records.join("foreign.json"), "{\"id\":\"someone-else\"}").unwrap();
-        store.sessions.remove("job-1");
+        store.sessions.remove("task-1");
         store.save().unwrap();
 
         assert_eq!(std::fs::read_to_string(records.join("notes.txt")).unwrap(), "keep these notes");
         assert!(records.join("foreign.json").is_file());
         assert_eq!(std::fs::read_dir(records).unwrap().count(), 2);
         assert!(Store::load(&path).unwrap().sessions.is_empty());
-        assert!(directory(&path, "../job-1").is_err());
+        assert!(directory(&path, "../task-1").is_err());
         assert!(directory(&path, "conversation").is_err());
     }
 
@@ -113,16 +113,16 @@ mod tests {
         let path = root.join("data/sessions/index.json");
         let mut store = Store::load(&path).unwrap();
 
-        store.ensure_job("job-1", "model").unwrap();
+        store.ensure_task("task-1", "model").unwrap();
 
-        let orphan = root.join("data/tasks/job-2/records");
+        let orphan = root.join("data/tasks/task-2/records");
 
         std::fs::create_dir_all(&orphan).unwrap();
         store.save().unwrap();
 
         assert!(orphan.is_dir());
 
-        store.ensure_job("job-3", "model").unwrap();
+        store.ensure_task("task-3", "model").unwrap();
 
         assert!(!orphan.exists());
     }
@@ -143,8 +143,8 @@ mod tests {
 
         std::os::unix::fs::symlink(&outside, &tasks).unwrap();
 
-        assert!(store.ensure_job("job-1", "model").is_err());
-        assert!(!store.sessions.contains_key("job-1"));
+        assert!(store.ensure_task("task-1", "model").is_err());
+        assert!(!store.sessions.contains_key("task-1"));
         assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
     }
 }
