@@ -109,7 +109,7 @@ fn detail(text: &str) -> String {
     let redacted = crate::redact_diagnostic(text.trim());
 
     let bounded = match redacted.rsplit_once('\n') {
-        Some((body, last)) if crate::acts(last) => {
+        Some((body, last)) if crate::acts(last) && last.len() <= DETAIL => {
             format!(
                 "{}\n{}",
                 crate::clip(body.to_owned(), DETAIL),

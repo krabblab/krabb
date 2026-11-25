@@ -2101,15 +2101,26 @@ mod tests {
 
         let served = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buffer = vec![0; 4096];
-            let read = socket.read(&mut buffer).await.unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0; 1024];
+
+            // Headers may arrive in more than one read, so read until the blank line.
+            while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut chunk).await.unwrap();
+
+                if read == 0 {
+                    break;
+                }
+
+                buffer.extend_from_slice(&chunk[..read]);
+            }
 
             let reply =
                 format!("HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}");
 
             socket.write_all(reply.as_bytes()).await.unwrap();
 
-            String::from_utf8_lossy(&buffer[..read]).into_owned()
+            String::from_utf8_lossy(&buffer).into_owned()
         });
 
         (address, served)
@@ -2117,7 +2128,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_connection_test_reads_the_phone_number_with_the_token() {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let (graph, served) = answer_once("200 OK").await;
 
         super::check_with(&client, &format!("{graph}/v20.0/"), "1234", "token-1").await.unwrap();

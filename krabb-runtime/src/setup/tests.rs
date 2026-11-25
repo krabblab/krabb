@@ -1439,7 +1439,7 @@ async fn rerunning_a_connection_test_ends_a_failure_with_one_next_action() {
     assert_eq!(error.matches('`').count(), 2, "only the plugin's own next action: {error}");
 
     let long = format!(
-        r#"{{"jsonrpc":"2.0","id":2,"error":{{"code":-32000,"message":"{}\u001b]52;c;x\u0007\nSign in with `krabb codex login`."}}}}"#,
+        r#"{{"jsonrpc":"2.0","id":2,"error":{{"code":-32000,"message":"\u001b]52;c;x\u0007{}\nSign in with `krabb codex login`."}}}}"#,
         "Rejected ".repeat(60)
     );
 
@@ -1448,6 +1448,7 @@ async fn rerunning_a_connection_test_ends_a_failure_with_one_next_action() {
 
     assert!(error.ends_with("\nSign in with `krabb codex login`."), "{error}");
     assert!(!error.contains('\u{1b}') && !error.contains('\u{7}'), "{error:?}");
+    assert!(error.contains('\u{fffd}'), "the escape is neutralized, not clipped away: {error:?}");
 
     let missing = check::command(&passed, "absent", false).await.unwrap_err().to_string();
 

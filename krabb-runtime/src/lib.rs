@@ -801,7 +801,7 @@ fn sentence(value: impl Into<String>) -> String {
 }
 
 /// Whether a line of a failure tells the user what to run or where to go next.
-pub(crate) fn acts(line: &str) -> bool {
+fn acts(line: &str) -> bool {
     line.contains('`') || line.contains("https://")
 }
 
