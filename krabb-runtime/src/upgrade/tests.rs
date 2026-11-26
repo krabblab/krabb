@@ -908,6 +908,33 @@ fn interrupted_downloads_and_incompatible_plugins_never_reach_the_installation()
 }
 
 #[test]
+fn staging_for_a_pre_release_host_follows_plugin_pre_releases_without_a_pin() {
+    let root = temp_root("stage-prerelease-host");
+    let home = root.join("home");
+    let base = format!("file://{}", release(&root, "0.2.0-rc.1").display());
+    let location = publish(&root, ECHO, "0.2.0-rc.1");
+    let load = || index::load_from(&home, &location);
+    let mut lock = Lock::default();
+
+    fs::create_dir_all(&home).unwrap();
+    lock.plugins.insert("echo".into(), entry("0.1.0", "index:echo", false));
+
+    let target = stage::Inspection { version: "0.2.0-rc.1".into(), ..inspection(Some(NEXT)) };
+    let mut staged = stage::prepare(&home, "0.2.0-rc.1", Some(&base)).unwrap();
+
+    stage::plugins(&mut staged, &lock, &target, &load).unwrap();
+
+    let plan = stage::plan(&staged.dir).unwrap();
+
+    assert!(plan.plugins[0].file.contains("-v0.2.0-rc.1-"));
+    assert_eq!(plan.plugins[0].pin, None);
+
+    drop(staged);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn staging_keeps_pre_release_pins_on_pre_releases() {
     let root = temp_root("stage-unstable");
     let home = root.join("home");
