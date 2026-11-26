@@ -109,7 +109,8 @@ jobs:
         shell: bash
 
         run: |
-          plugins=$(python3 krabb-scripts/plugins.py official ghcr.io/krabblab/krabb/plugins)
+          set -euo pipefail
+          plugins=$(python3 krabb-scripts/plugins.py ids ghcr.io/krabblab/krabb/plugins)
           echo "KRABB_PLUGINS=$plugins" >> "$GITHUB_ENV"
 
       - if: matrix.os == 'windows'
@@ -117,7 +118,7 @@ jobs:
         shell: pwsh
 
         run: |
-          $plugins = python krabb-scripts/plugins.py official ghcr.io/krabblab/krabb/plugins
+          $plugins = python krabb-scripts/plugins.py ids ghcr.io/krabblab/krabb/plugins
           if ($LASTEXITCODE -ne 0) { throw "Listing the official plugins failed." }
           "KRABB_PLUGINS=$plugins" >> $env:GITHUB_ENV
 

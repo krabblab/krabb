@@ -61,12 +61,16 @@ class Fake(plugins.Registry):
         super().__init__(REGISTRY)
 
         self.manifests = dict(manifests or {})
+        self.blobs = {}
 
     def tags(self):
         return list(self.manifests)
 
     def manifest(self, tag):
         return self.manifests.get(tag)
+
+    def blob(self, digest):
+        return self.blobs.get(digest)
 
     def oras(self, command, cwd, failure):
         if command[0] == 'manifest':
@@ -446,18 +450,42 @@ class Publication(unittest.TestCase):
 
         self.assertIn('telegram', output.call_args.args[0].split())
 
-    def test_official_plugins_are_the_ones_the_index_lists(self):
-        registry = Fake({'tools-0.1.0': version_manifest('tools', '0.1.0'),
-                         'echo-0.1.0': version_manifest('echo', '0.1.0', 'crashes on start'),
-                         'echo-0.2.0': version_manifest('echo', '0.2.0'),
-                         'a2a-0.1.0': {'annotations': {plugins.TITLE: 'a2a'}, 'layers': []},
-                         'index': {'annotations': {}, 'layers': []}})
+    def test_ids_are_read_from_the_published_index(self):
+        registry = Fake()
+        digest = 'sha256:' + 'c' * 64
+        registry.manifests['index'] = {'layers': [{'digest': digest}]}
+        registry.blobs = {digest: {'plugins': {'tools': [], 'echo': []}}}
 
         with mock.patch.object(plugins, 'Registry', return_value=registry), \
                 mock.patch('builtins.print') as output:
-            self.assertEqual(plugins.main(['official', REGISTRY]), 0)
+            self.assertEqual(plugins.main(['ids', REGISTRY]), 0)
 
         self.assertEqual(output.call_args.args[0], '["echo","tools"]')
+
+        for index in [None, {'layers': []}, {'layers': [{'digest': '../../tags'}]}]:
+            registry.manifests['index'] = index
+
+            with self.assertRaisesRegex(plugins.Failure, 'no readable plugin index'):
+                plugins.ids(registry)
+
+    def test_redirected_blobs_are_fetched_without_the_token(self):
+        registry = plugins.Registry(REGISTRY)
+        registry.bearer = 'secret'
+        storage = 'https://pkg-containers.githubusercontent.com/blob?signed'
+
+        redirect = plugins.urllib.error.HTTPError('url', 307, 'redirect',
+                                                  {'Location': storage}, None)
+        opener = mock.Mock(open=mock.Mock(side_effect=redirect))
+
+        stored = mock.MagicMock()
+        stored.__enter__.return_value.read.return_value = b'{"plugins": {}}'
+
+        with mock.patch.object(plugins.urllib.request, 'build_opener', return_value=opener), \
+                mock.patch.object(plugins.urllib.request, 'urlopen',
+                                  return_value=stored) as fetched:
+            self.assertEqual(registry.blob('sha256:' + 'd' * 64), {'plugins': {}})
+
+        self.assertEqual(fetched.call_args.args[0], storage)
 
 
 if __name__ == '__main__':
