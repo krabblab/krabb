@@ -41,7 +41,7 @@ These small/efficient defaults were verified against official catalogs on **2026
 | Plugin / route | Default | Official source |
 | --- | --- | --- |
 | OpenAI | `gpt-6-luna` | [Model documentation](https://developers.openai.com/api/docs/models/gpt-6-luna) |
-| Codex API key and ChatGPT sign-in | `gpt-6-luna` | [Codex models](https://learn.chatgpt.com/docs/models) |
+| Codex | `gpt-6-luna` | [Codex models](https://learn.chatgpt.com/docs/models) |
 | Anthropic | `claude-haiku-5-5` | [Haiku overview](https://platform.claude.com/docs/en/models/haiku-5-5/overview) |
 | Gemini | `gemini-3.5-flash-lite` | [Flash-Lite documentation](https://aistudio.google.com/docs/models/gemini-3.5-flash-lite) |
 | OpenRouter | `deepseek/deepseek-v4.1-flash` | [OpenRouter model](https://openrouter.ai/deepseek/deepseek-v4.1-flash) |
@@ -174,7 +174,7 @@ separate search service when native search is unavailable.
 
 | Provider | Native search behavior |
 | --- | --- |
-| OpenAI / Codex API key | Responses `web_search` for supported model families |
+| OpenAI | Responses `web_search` for supported model families |
 | Codex sign-in | Live web search through Codex app-server |
 | Anthropic | Web search when model metadata advertises support |
 | Gemini | Google Search grounding; Gemini 3 can combine it with function tools |
@@ -240,8 +240,8 @@ a direct message and check the reply. Existing channels run alongside new ones.
 For group conversations, configure [channel policy](configuration.md#channel-policy).
 
 `krabb plugin setup <id>` is the full command. All plugins declaring secrets or
-settings support setup, including intelligence plugins: `krabb openai setup`
-configures an API key, while `krabb codex login` performs personal account sign-in.
+settings support setup, including intelligence plugins such as `krabb openai setup` for an
+API key. Codex has no key and signs in with `krabb codex login` instead.
 See [shared setup](authentication.md#plugin-setup) for service paths, environment
 overrides, and activation details.
 

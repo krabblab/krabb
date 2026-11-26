@@ -101,7 +101,7 @@ described in the
 | Provider | Inference | What setup asks for |
 | --- | --- | --- |
 | OpenAI, Anthropic, Gemini, OpenRouter | Remote | The provider's API key |
-| Codex | Remote | An OpenAI API key, or `krabb codex login` with the Codex CLI installed |
+| Codex | Remote | `krabb codex login` with the Codex CLI installed |
 | Ollama | Local or remote | The local server address, such as `http://127.0.0.1:11434`; an API key for Ollama Cloud |
 
 Telegram and Discord need a bot token, Slack needs bot and app tokens, Signal

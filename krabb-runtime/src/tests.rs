@@ -5212,32 +5212,52 @@ fn service_environment_materializes_declared_credentials() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
 fn services_find_programs_on_the_installing_shell_path_and_the_usual_folders() {
-    let environment = BTreeMap::from([
-        ("PATH".into(), "/custom/bin:relative/bin::/usr/bin".into()),
-        ("HOME".into(), "/Users/owner".into()),
-    ]);
-
-    assert_eq!(
-        super::search_path(&environment),
-        "/custom/bin:/usr/bin:/Users/owner/.local/bin:/opt/homebrew/bin:/usr/local/bin:/bin:\
-         /usr/sbin:/sbin"
-    );
-
-    assert_eq!(
-        super::search_path(&BTreeMap::new()),
-        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    );
-
     let root = test_root("service-path");
+    let home = root.join("home");
+    let tools = root.join("tools");
+    let open = root.join("open");
 
-    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(home.join(".local/bin")).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::create_dir_all(&open).unwrap();
+
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    }
+
+    let shell = format!(
+        "{}:relative/bin:{}:{}:/usr/bin:{}",
+        tools.display(),
+        open.display(),
+        root.join("missing").display(),
+        tools.display()
+    );
+
+    let environment =
+        BTreeMap::from([("PATH".into(), shell), ("HOME".into(), home.display().to_string())]);
+
+    let path = super::search_path(&environment);
+    let folders = path.split(':').collect::<Vec<_>>();
+    let local = home.join(".local/bin").display().to_string();
+    let tools = tools.display().to_string();
+
+    let position = |wanted: &str| folders.iter().position(|folder| *folder == wanted);
+
+    assert!(position("/usr/bin") < position(&local));
+    assert!(position(&local) < position(&tools));
+    assert_eq!(folders.iter().filter(|folder| **folder == tools).count(), 1);
+    assert!(!path.contains("relative") && !path.contains("missing"));
+    assert!(!path.contains(&open.display().to_string()));
 
     let values = service_environment_from(&root.join("krabb.service"), root.clone(), &environment);
-    let path = values.unwrap().into_iter().find(|(name, _)| name == "PATH").map(|(_, path)| path);
+    let saved = values.unwrap().into_iter().find(|(name, _)| name == "PATH").map(|(_, path)| path);
 
-    assert_eq!(path.is_some(), cfg!(not(windows)));
+    assert_eq!(saved, Some(path));
 
     let _ = fs::remove_dir_all(root);
 }

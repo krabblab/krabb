@@ -149,16 +149,25 @@ async fn check_at(
 ) -> krabb_core::Result<()> {
     let host = validate_host(host, key.is_some())?;
 
-    if !cloud(&host) {
-        let mut request = client.get(format!("{host}/api/tags"));
-
-        if let Some(key) = key {
-            request = request.bearer_auth(key);
-        }
-
-        return krabb_http::accepted(request, "Ollama").await;
+    if cloud(&host) {
+        return check_key(client, &host, key).await;
     }
 
+    let mut request = client.get(format!("{host}/api/tags"));
+
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+
+    krabb_http::accepted(request, "Ollama").await
+}
+
+/// Tests KEY against HOST's running-model list, which Ollama Cloud serves only with a key.
+async fn check_key(
+    client: &reqwest::Client,
+    host: &str,
+    key: Option<String>,
+) -> krabb_core::Result<()> {
     let Some(key) = key else {
         return Err(krabb_core::Error::Denied(format!(
             "Ollama Cloud needs an API key.\nCreate one at {KEYS}, then run `krabb plugin setup \
@@ -178,6 +187,10 @@ async fn check_at(
             "Ollama Cloud rejected the API key.\nCreate a new one at {KEYS}, then run `krabb \
              plugin setup ollama`."
         )));
+    }
+
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Ollama").await);
     }
 
     Ok(())
@@ -202,10 +215,8 @@ async fn models_at(
         return Err(krabb_http::rejected(response, "Ollama").await);
     }
 
-    let body: serde_json::Value =
-        serde_json::from_str(&read(response, "Ollama").await?).map_err(|error| {
-            krabb_core::Error::Denied(format!("Ollama models are invalid: {error}."))
-        })?;
+    let body: serde_json::Value = serde_json::from_str(&read(response, "Ollama").await?)
+        .map_err(|_| krabb_core::Error::Denied("Ollama returned an invalid model list.".into()))?;
 
     let lines = body["models"]
         .as_array()
@@ -1235,14 +1246,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ollama_cloud_needs_a_key_and_hosts_may_end_in_api() {
-        let client = reqwest::Client::new();
-        let error = super::check_at(&client, "https://ollama.com", None).await.unwrap_err();
+    async fn ollama_cloud_needs_a_working_key() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let missing = super::check_at(&client, "https://ollama.com", None).await.unwrap_err();
 
-        assert!(error.to_string().contains("Ollama Cloud needs an API key."), "{error}");
+        assert!(missing.to_string().contains("Ollama Cloud needs an API key."), "{missing}");
         assert!(super::cloud("https://ollama.com"));
         assert!(!super::cloud("http://127.0.0.1:11434"));
 
+        let (host, served) = answer_once("200 OK").await;
+
+        super::check_key(&client, &host, Some("cloud-key".into())).await.unwrap();
+
+        let request = served.await.unwrap().to_ascii_lowercase();
+
+        assert!(request.starts_with("get /api/ps "), "{request}");
+        assert!(request.contains("authorization: bearer cloud-key"), "{request}");
+
+        for (status, message) in [
+            ("401 Unauthorized", "Ollama Cloud rejected the API key."),
+            ("500 Internal Server Error", "Ollama"),
+        ] {
+            let (host, _) = answer_once(status).await;
+            let error = super::check_key(&client, &host, Some("cloud-key".into())).await;
+
+            assert!(error.unwrap_err().to_string().contains(message), "{status}");
+        }
+    }
+
+    #[test]
+    fn hosts_may_end_in_the_api_path() {
         assert_eq!(
             super::validate_host("https://ollama.com/api/", true).unwrap(),
             "https://ollama.com"

@@ -62,7 +62,6 @@ for an interactive account sign-in:
 | Configure a channel | `krabb <id> setup` | Follow the [channel guide](providers.md#platform-setup) for required values and external setup. |
 | Enter a Telegram bot token | `krabb telegram setup` | Krabb prompts and saves it securely. |
 | Enter an Anthropic API key | `krabb anthropic setup` | The same secure setup workflow. |
-| Enter a Codex API key | `krabb codex setup` | Krabb stores the API key. |
 | Sign in to a personal Codex account | `krabb codex login` | The plugin runs its account sign-in flow. |
 the plugin's declared secrets and settings; neither invokes custom login flows.
 Plugins without declared secrets or settings do not gain a setup shortcut. See
@@ -93,8 +92,8 @@ precedence and must be removed separately.
 
 Telegram, Discord, Slack, WhatsApp, Signal, OpenAI, Anthropic, Gemini, OpenRouter,
 Ollama, and Codex then run a connection test with the saved values and report
-`Connection test passed.` Ollama checks that its host answers. Codex checks its API key
-when one is saved, and otherwise that the Codex CLI is signed in. Signal checks that
+`Connection test passed.` Ollama checks that its host answers, and for Ollama Cloud that
+its API key works. Codex checks that the Codex CLI is signed in. Signal checks that
 `signal-cli` lists the account, and WhatsApp that the Graph API accepts the token for
 the phone number ID. A failed test explains what was rejected, but the values stay
 saved so you can rerun setup. The test sends no messages and runs at most 20 seconds.

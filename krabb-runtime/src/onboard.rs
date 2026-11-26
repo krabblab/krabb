@@ -626,7 +626,10 @@ impl Guide {
             Some(0) => {
                 let login = vec!["codex".to_owned(), "login".to_owned()];
 
-                crate::external_command_at(login, false, self.root.clone()).await?;
+                if crate::external_command_at(login, false, self.root.clone()).await.is_err() {
+                    self.note("Codex is not signed in, so sign in later with `krabb codex login`.");
+                }
+
                 self.spaced = false;
                 Ok(Flow::Next)
             }
@@ -682,7 +685,7 @@ impl Guide {
         if let Some(provider) = &provider
             && self.interactive
             && crate::service_path().is_file()
-            && let Some(problem) = self.working(provider).await
+            && let Some(problem) = self.blocker(provider).await
         {
             println!("{problem}");
             return Ok(());
@@ -695,7 +698,7 @@ impl Guide {
     /// Why the running Krabb cannot answer with PROVIDER yet, with the one next step, or none
     /// when the service answers and the provider loaded. Init writes and starts the service just
     /// before this, so a slow start gets the same wait `krabb tui` gives it.
-    async fn working(&self, provider: &str) -> Option<String> {
+    async fn blocker(&self, provider: &str) -> Option<String> {
         let running = matches!(crate::service_manager_state(), Ok(crate::ServiceState::Active));
 
         if let Err(error) =
@@ -704,15 +707,20 @@ impl Guide {
             return Some(format!("Your Krabb is set up, but it does not answer yet.\n{error}"));
         }
 
-        let status = crate::status::status_at(&self.root).await.ok()?;
-        let states = status["plugin_states"].as_array()?;
-        let state = states.iter().find(|state| state["id"] == provider)?;
+        let status = crate::status::status_at(&self.root).await.ok();
+        let states = status.as_ref().and_then(|status| status["plugin_states"].as_array());
+        let state = states.and_then(|states| states.iter().find(|state| state["id"] == provider));
 
-        if state["state"] == "ready" {
+        if state.is_some_and(|state| state["state"] == "ready") {
             return None;
         }
 
-        let next = crate::status::next_action(&status)?;
+        // Only the provider's own state counts here, not the first problem anywhere.
+        let next = state
+            .and_then(|state| {
+                crate::status::next_action(&serde_json::json!({"plugin_states": [state]}))
+            })
+            .unwrap_or_else(|| "Check every part with `krabb status`.".into());
 
         Some(format!("Your Krabb is set up, but the {provider} provider is not ready.\n{next}"))
     }
