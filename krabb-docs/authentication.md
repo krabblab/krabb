@@ -165,10 +165,9 @@ pass Codex OAuth tokens to the Codex HTTP client.
 
 Krabb does not pin a Codex CLI release. It checks that the CLI starts and
 validates each required app-server response. If a Codex update changes the
-protocol or a required operation, Krabb fails closed with an error. Codex
-CLI is required only for personal Codex sign-in; OpenAI API-key authentication
-and other providers do not require it. Use an OpenAI API key for unattended
-shared deployments.
+protocol or a required operation, Krabb fails closed with an error. Only the
+Codex provider needs the Codex CLI. For unattended shared deployments, use the
+OpenAI provider with an API key.
 
 ## Channel Trust
 

@@ -587,6 +587,59 @@ impl Guide {
             self.done(&format!("Installed {} {kind}.", offer.id));
         }
 
+        let flow = self.configure(offer).await?;
+
+        if matches!(flow, Flow::Next) && offer.id == "codex" {
+            return self.sign_in_to_codex().await;
+        }
+
+        Ok(flow)
+    }
+
+    /// Codex signs in with the person's ChatGPT account through its own CLI, not a key.
+    async fn sign_in_to_codex(&mut self) -> Result<Flow, Error> {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let binary = std::env::var_os("KRABB_CODEX_BINARY").map(PathBuf::from);
+
+        if binary.is_none() && crate::service::codex_binary_from_path(&path).is_none() {
+            self.note(
+                "Install the Codex CLI from https://developers.openai.com/codex/cli, then sign \
+                 in with `krabb codex login`.",
+            );
+
+            return Ok(Flow::Next);
+        }
+
+        if crate::codex_auth() {
+            self.done("Codex is signed in.");
+            return Ok(Flow::Next);
+        }
+
+        if !self.interactive {
+            self.note("Sign in to Codex with `krabb codex login`.");
+            return Ok(Flow::Next);
+        }
+
+        match self.ask("Sign in to Codex with your ChatGPT account now?", &YES_LATER)? {
+            None => Ok(Flow::Stop),
+
+            Some(0) => {
+                let login = vec!["codex".to_owned(), "login".to_owned()];
+
+                crate::external_command_at(login, false, self.root.clone()).await?;
+                self.spaced = false;
+                Ok(Flow::Next)
+            }
+
+            Some(_) => {
+                self.note("Sign in later with `krabb codex login`.");
+                Ok(Flow::Next)
+            }
+        }
+    }
+
+    /// Asks for OFFER's secrets and settings when it has any left to set.
+    async fn configure(&mut self, offer: &Offer) -> Result<Flow, Error> {
         if !crate::setup::needed(&self.root, offer.id)? {
             return Ok(Flow::Next);
         }

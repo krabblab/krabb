@@ -5159,7 +5159,7 @@ fn service_environment_materializes_declared_credentials() {
     environment.insert("KRABB_SANDBOX_RUNTIME".into(), "docker".into());
     environment.insert("KRABB_SANDBOX_IMAGE".into(), "local/tool:latest".into());
     environment.insert("KRABB_CREDENTIALS".into(), configured.display().to_string());
-    environment.insert("KRABB_CODEX_KEY".into(), "secret".into());
+    environment.insert("KRABB_OPENAI_KEY".into(), "secret".into());
 
     let service = root.join("krabb.service");
     let values = service_environment_from(&service, root.clone(), &environment).unwrap();
@@ -5192,7 +5192,7 @@ fn service_environment_materializes_declared_credentials() {
     assert!(!fs::read_to_string(&credential_path).unwrap().contains("secret"));
 
     assert_eq!(credentials["KRABB_TELEGRAM_TOKEN"], "old");
-    assert_eq!(credentials["KRABB_CODEX_KEY"], "secret");
+    assert_eq!(credentials["KRABB_OPENAI_KEY"], "secret");
 
     assert!(
         values.iter().any(|(name, value)| name == "KRABB_SANDBOX_RUNTIME" && value == "docker")

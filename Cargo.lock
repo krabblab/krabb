@@ -2139,15 +2139,9 @@ dependencies = [
 name = "krabb-plugin-codex"
 version = "0.1.0-rc.3"
 dependencies = [
- "futures-util",
- "keyring",
  "krabb-core",
- "krabb-file",
- "krabb-http",
  "krabb-log",
  "krabb-openai",
- "krabb-test",
- "reqwest",
  "serde_json",
  "tokio",
 ]

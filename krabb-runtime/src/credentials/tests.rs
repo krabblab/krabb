@@ -365,7 +365,6 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
     let providers = [
         ("telegram", "KRABB_TELEGRAM_TOKEN"),
         ("discord", "KRABB_DISCORD_TOKEN"),
-        ("codex", "KRABB_CODEX_KEY"),
         ("anthropic", "KRABB_ANTHROPIC_KEY"),
         ("openai", "KRABB_OPENAI_KEY"),
         ("openrouter", "KRABB_OPENROUTER_KEY"),
@@ -444,7 +443,7 @@ fn service_capture_preserves_custom_credential_and_key_paths() {
     let environment = BTreeMap::from([
         ("KRABB_CREDENTIALS".into(), source.display().to_string()),
         ("KRABB_CREDENTIALS_KEY".into(), key.display().to_string()),
-        ("KRABB_CODEX_KEY".into(), "synthetic-service-override".into()),
+        ("KRABB_OPENAI_KEY".into(), "synthetic-service-override".into()),
     ]);
 
     let service = root.join("service");
@@ -455,7 +454,7 @@ fn service_capture_preserves_custom_credential_and_key_paths() {
     let path = crate::service_credentials_path(&service);
     let stored = read(&path, &key).unwrap();
 
-    assert_eq!(stored["KRABB_CODEX_KEY"], "synthetic-service-override");
+    assert_eq!(stored["KRABB_OPENAI_KEY"], "synthetic-service-override");
     assert_eq!(stored["KRABB_SETUP_TEST"], "synthetic-do-not-use");
     assert!(!fs::read_to_string(path).unwrap().contains("synthetic"));
     assert!(!root.join("credentials.key").exists());

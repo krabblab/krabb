@@ -598,7 +598,6 @@ pub(crate) fn env_for(
         "KRABB_DB",
         "KRABB_WHISPER",
         "KRABB_WHISPER_COMMAND",
-        "KRABB_CODEX_BASE_URL",
         "KRABB_CODEX_CONTEXT_LENGTH",
         "KRABB_OPENAI_BASE_URL",
         "KRABB_OPENAI_MODEL",
@@ -751,12 +750,7 @@ pub(crate) fn ready_with(
                 || file_credential_at(credentials, key, &["KRABB_DISCORD_TOKEN"])
         }
 
-        "codex" => {
-            env_nonempty("KRABB_CODEX_KEY")
-                || keyring("codex")
-                || file_credential_at(credentials, key, &["KRABB_CODEX_KEY"])
-                || codex_auth()
-        }
+        "codex" => codex_auth(),
 
         "anthropic" => {
             env_nonempty("KRABB_ANTHROPIC_KEY")

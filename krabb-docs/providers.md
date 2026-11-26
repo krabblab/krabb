@@ -20,7 +20,7 @@ vendor-specific fields inside the plugin process.
 
 | Plugin | Service | Credential route |
 | --- | --- | --- |
-| `codex` | OpenAI Responses / Chat Completions or Codex app-server | `KRABB_CODEX_KEY` or Codex-managed sign-in; optional `KRABB_CODEX_BASE_URL` |
+| `codex` | Codex app-server | ChatGPT sign-in through the Codex CLI with `krabb codex login` |
 | `openai` | OpenAI API | `KRABB_OPENAI_KEY`; optional `KRABB_OPENAI_MODEL` and `KRABB_OPENAI_BASE_URL` |
 | `anthropic` | Anthropic Messages | `KRABB_ANTHROPIC_KEY` or encrypted credentials; optional `KRABB_ANTHROPIC_BASE_URL` |
 | `gemini` | Gemini Developer API | `KRABB_GEMINI_KEY` or encrypted credentials |
@@ -82,21 +82,21 @@ key route. Model plugins accept normalized messages and return a bounded `ModelR
 They validate provider status codes, response bodies, tool calls, and stream
 events before returning them to the host. A rejected malformed or missing-resource
 request includes the provider's JSON error message, first line only and clipped to
-200 characters; other rejected bodies are not echoed. The Codex plugin uses an explicit
-API key when configured; otherwise it delegates to the installed Codex CLI
-app-server and its ChatGPT sign-in. Personal Codex sign-in requires Codex CLI
-to be installed; other providers and API-key authentication do not require it.
+200 characters; other rejected bodies are not echoed. The Codex plugin delegates to
+the installed Codex CLI app-server and its ChatGPT sign-in, so it needs the Codex CLI;
+to use an OpenAI API key, choose the OpenAI provider instead. `krabb init` offers the
+sign-in right after installing Codex.
 The adapter validates app-server responses and fails closed if required
 operations are incompatible. Run `krabb codex login` or
 `krabb codex login --device` to authenticate.
 
 OpenAI and OpenRouter send the full tool catalog supplied by the host. The
 runtime permits up to 16 tool invocations per turn, counted once each across
-model steps. OpenAI, OpenRouter, Anthropic, Ollama, and the Codex API-key adapter
+model steps. OpenAI, OpenRouter, Anthropic, and Ollama
 coalesce text by size or a short timer and send at most 256 text notifications
 per request. The final reply retains all generated text within
 the response size limit, including text received after notifications stop.
-Codex API-key and Ollama streams complete at their terminal marker without waiting
+Ollama streams complete at their terminal marker without waiting
 for transport closure. Trailing data cannot change the completed reply or invalidate
 it, including when it shares a transport chunk with the marker.
 OpenRouter resolves implicit selections using `KRABB_OPENROUTER_MODEL`, then its
@@ -240,7 +240,7 @@ a direct message and check the reply. Existing channels run alongside new ones.
 For group conversations, configure [channel policy](configuration.md#channel-policy).
 
 `krabb plugin setup <id>` is the full command. All plugins declaring secrets or
-settings support setup, including intelligence plugins: `krabb codex setup`
+settings support setup, including intelligence plugins: `krabb openai setup`
 configures an API key, while `krabb codex login` performs personal account sign-in.
 See [shared setup](authentication.md#plugin-setup) for service paths, environment
 overrides, and activation details.

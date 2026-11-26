@@ -34,7 +34,6 @@ pub(crate) const SERVICE_VARIABLES: &[&str] = &[
     "KRABB_MEDIA",
     "KRABB_WHISPER",
     "KRABB_WHISPER_COMMAND",
-    "KRABB_CODEX_BASE_URL",
     "KRABB_CODEX_CONTEXT_LENGTH",
     "KRABB_OPENAI_BASE_URL",
     "KRABB_OPENAI_MODEL",
@@ -85,7 +84,6 @@ pub(crate) const SERVICE_VARIABLES: &[&str] = &[
 pub(crate) const SERVICE_SECRETS: &[&str] = &[
     "KRABB_TELEGRAM_TOKEN",
     "KRABB_DISCORD_TOKEN",
-    "KRABB_CODEX_KEY",
     "KRABB_OPENAI_KEY",
     "KRABB_A2A_TOKEN",
     "KRABB_OPENROUTER_KEY",

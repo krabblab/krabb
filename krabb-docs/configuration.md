@@ -355,8 +355,6 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_XVFB` | Optional path to the Xvfb executable; defaults to `Xvfb` on `PATH` |
 | `KRABB_COMPUTER_STARTUP` | Optional absolute path to one fixed application started in the Linux isolated display |
 | `KRABB_COMPUTER_STARTUP_ARGS` | Optional JSON array of fixed arguments for that Linux application |
-| `KRABB_CODEX_KEY` | Optional Codex compatible API key |
-| `KRABB_CODEX_BASE_URL` | Optional Codex compatible API base |
 | `KRABB_OPENAI_KEY` | OpenAI API key |
 | `KRABB_OPENAI_MODEL` | Default OpenAI model |
 | `KRABB_OPENAI_BASE_URL` | OpenAI-compatible API base |
