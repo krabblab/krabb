@@ -4813,7 +4813,7 @@ fn recovers_locks_and_plugin_staging() {
             default: false,
             hash,
             version: "0.1.0".into(),
-            protocol: Protocol::CURRENT,
+            protocol: Protocol { major: 0, minor: 1 },
             capabilities: Vec::new(),
             permissions: Vec::new(),
             variables: Vec::new(),
