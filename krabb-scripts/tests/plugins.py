@@ -475,6 +475,7 @@ class Publication(unittest.TestCase):
 
         redirect = plugins.urllib.error.HTTPError('url', 307, 'redirect',
                                                   {'Location': storage}, None)
+
         opener = mock.Mock(open=mock.Mock(side_effect=redirect))
 
         stored = mock.MagicMock()
