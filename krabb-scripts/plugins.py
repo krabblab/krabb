@@ -61,6 +61,7 @@ PROTOCOL = 'io.github.krabblab.plugin.protocol'
 PERMISSIONS = 'io.github.krabblab.plugin.permissions'
 SECRETS = 'io.github.krabblab.plugin.secrets'
 WITHDRAWN = 'io.github.krabblab.plugin.withdrawn'
+KRABB = 'io.github.krabblab.plugin.krabb'
 
 TARGETS = {
     'x86_64-unknown-linux-gnu': 'tar.gz',
@@ -234,6 +235,9 @@ def manifests(root=ROOT):
         if not VERSION.match(manifest['version']):
             raise Failure(f"Plugin {plugin} has an invalid version: {manifest['version']}.")
 
+        if 'krabb' in manifest and not VERSION.match(str(manifest['krabb'])):
+            raise Failure(f"Plugin {plugin} names an invalid Krabb version: {manifest['krabb']}.")
+
         crate = tomllib.loads((path.parent / 'Cargo.toml').read_text()).get('package', {})
         crate = crate.get('version') if isinstance(crate, dict) else None
 
@@ -299,6 +303,9 @@ def push(registry, source, manifest, files, dist, created):
         SECRETS: json.dumps(manifest.get('secrets', [])),
     }
 
+    if 'krabb' in manifest:
+        annotations[KRABB] = manifest['krabb']
+
     command = ['push', f'{registry}:{plugin}-{version}', '--artifact-type', ARTIFACT_TYPE]
 
     for key, value in annotations.items():
@@ -357,6 +364,12 @@ def release(tag, manifest):
 
     if annotations.get(WITHDRAWN):
         entry['yanked'] = annotations[WITHDRAWN]
+
+    if KRABB in annotations:
+        if not VERSION.match(annotations[KRABB]):
+            return None
+
+        entry['krabb'] = annotations[KRABB]
 
     return plugin, entry
 
