@@ -60,7 +60,7 @@ impl Picker {
         }
     }
 
-    /// The option lines and the hint, indented to sit under a numbered question.
+    /// The option lines, then the hint after a blank line.
     fn lines(&self, options: &[&str], color: bool) -> Vec<String> {
         let mut lines = options
             .iter()

@@ -86,10 +86,12 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
 - Put one sentence on each line. Merge two short sentences into one rather than sharing
   a line.
 - Use no semicolons. Join clauses with "and", "so", or "because", or start a new line.
-- Group related lines under a short title, with a blank line before and after each
-  group and none inside it.
-- Number questions and steps, and state each one's limits and an example, such as
-  `Up to 40 characters, for example: Pinch`.
+- Group related lines under a short title, with a blank line before the title and none
+  after it.
+- Put a question directly above its choices or answer, and one blank line between a
+  finished step and the next question.
+- Leave questions and steps unnumbered, and state each question's limits and an example,
+  such as `Up to 40 characters, for example: Pinch`.
 - Offer choices as a vertical list with a `›` marker on the selection, moved with the
   arrow keys. Without a terminal, take the choice from a flag instead.
 - Say each thing once. Instead of repeating a summary or printing a file's contents,
@@ -100,8 +102,9 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
   like any other.
 - Mark finished steps with `✓` and a full sentence that names the kind of thing, such as
   `✓ Installed openai provider.`
-- Set headers, prompts, and the selection in bold Coral, hints in faint text, examples
-  in faint italics, and values that must stand out, such as links, in bold.
+- Set titles, `✓` marks, and the selection in bold Coral, questions in the normal text
+  color, hints in faint text, examples in faint italics, and values that must stand out,
+  such as links, in bold.
 - Keep every line readable without color, because `NO_COLOR`, `TERM=dumb`, and pipes
   print plain text.
 - Start every line at the left edge. Don't indent hints, choices, or answers to line up
@@ -111,15 +114,12 @@ commands, and TUI messages. Model-facing prompts and tool results are exempt.
 
 ```text
 Identity
-
-1. What should your Krabb be called?
+What should your Krabb be called?
 Up to 40 characters, for example: Pinch
 |> Pinch
 
 Intelligence
-
-2. Which provider should your Krabb think with?
-
+Which provider should your Krabb think with?
 › OpenAI
   Anthropic
   Ollama Local

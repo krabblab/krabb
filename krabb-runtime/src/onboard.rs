@@ -98,7 +98,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
     let mut guide = Guide {
         root: crate::home(),
         color: crate::style::colors(),
-        number: 0,
+        spaced: true,
         named: args.steps.clone(),
         interactive,
     };
@@ -117,7 +117,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         };
 
         if let Flow::Stop = flow {
-            println!();
+            guide.gap();
             println!("Setup stopped.");
             println!("Continue any time with `krabb init`.");
             return Ok(());
@@ -194,40 +194,54 @@ enum Flow {
 struct Guide {
     root: PathBuf,
     color: bool,
-    number: usize,
+    /// Whether the last line printed was blank or a section title, so a question needs no gap.
+    spaced: bool,
     named: Vec<Step>,
     interactive: bool,
 }
 
 impl Guide {
-    fn section(&self, title: &str) {
-        println!("\n{}\n", accent(title, self.color));
+    fn section(&mut self, title: &str) {
+        println!("\n{}", accent(title, self.color));
+        self.spaced = true;
     }
 
-    fn done(&self, text: &str) {
+    fn done(&mut self, text: &str) {
         println!("{} {text}", accent("✓", self.color));
+        self.spaced = false;
     }
 
-    fn note(&self, text: &str) {
+    fn note(&mut self, text: &str) {
         println!("{}", dim(text, self.color));
+        self.spaced = false;
     }
 
-    /// Numbers the next question and styles it as a heading.
-    fn heading(&mut self, question: &str) -> String {
-        self.number += 1;
-
-        format!("{}\n", accent(&format!("{}. {question}", self.number), self.color))
+    /// Separates a finished step from what comes next with one blank line.
+    fn gap(&mut self) {
+        if !self.spaced {
+            println!();
+            self.spaced = true;
+        }
     }
 
-    /// Asks a numbered question with a vertical picker, or `None` when the person stops.
+    /// Prints the gap before a question and returns the question's line.
+    fn question(&mut self, text: &str) -> String {
+        self.gap();
+        self.spaced = false;
+
+        format!("{text}\n")
+    }
+
+    /// Asks a question with a vertical picker, or `None` when the person stops.
     fn ask(&mut self, question: &str, options: &[&str]) -> std::io::Result<Option<usize>> {
-        let heading = self.heading(question);
+        let heading = self.question(question);
 
-        eprintln!("{heading}");
+        eprint!("{heading}");
 
         let answer = crate::choice::pick(options, 0)?;
 
         eprintln!();
+        self.spaced = true;
         Ok(answer)
     }
 
@@ -244,7 +258,7 @@ impl Guide {
         }
     }
 
-    fn home(&self) -> Result<Flow, Error> {
+    fn home(&mut self) -> Result<Flow, Error> {
         self.section("Home");
 
         if crate::home::regular_file_present(&self.root.join("config.toml")) {
@@ -345,7 +359,7 @@ impl Guide {
     }
 
     /// Notes when the environment or `clients.cli` makes the CLI use another provider or model.
-    fn overridden(&self, provider: &str, model: &str) -> Result<(), Error> {
+    fn overridden(&mut self, provider: &str, model: &str) -> Result<(), Error> {
         let config = crate::load_config_at(&self.root)?;
         let (used, used_model) = crate::selection::client(&config, "cli", (None, None));
 
@@ -372,7 +386,9 @@ impl Guide {
             return Ok(Some(keep));
         }
 
+        self.gap();
         self.note(&format!("Looking up the {provider} models."));
+        self.spaced = true;
 
         let models = listed(&self.root, config, provider).await;
         let mut heading = None;
@@ -408,9 +424,12 @@ impl Guide {
             |model| format!("Press Enter to keep {model}."),
         );
 
-        let heading = heading.unwrap_or_else(|| self.heading("Which model should your Krabb use?"));
+        let heading =
+            heading.unwrap_or_else(|| self.question("Which model should your Krabb use?"));
 
         let mut error = None;
+
+        self.spaced = false;
 
         loop {
             let prompt = match &error {
@@ -420,7 +439,12 @@ impl Guide {
 
             match crate::setup::line(&prompt) {
                 Ok(typed) => match typed_model(&typed, &keep) {
-                    Ok(model) => return Ok(Some(model)),
+                    Ok(model) => {
+                        eprintln!();
+                        self.spaced = true;
+                        return Ok(Some(model));
+                    }
+
                     Err(problem) => error = Some(problem),
                 },
 
@@ -452,6 +476,7 @@ impl Guide {
 
             Some(0) => {
                 crate::hatch::run(HatchArgs::default(), &self.root, false).await?;
+                self.spaced = false;
                 Ok(Flow::Next)
             }
 
@@ -476,7 +501,11 @@ impl Guide {
         }
 
         let offer = match flag {
-            Some("none") => return Ok(Flow::Next),
+            Some("none") => {
+                self.note("Add a place to talk later with `krabb init channel`.");
+                return Ok(Flow::Next);
+            }
+
             Some(id) => find(&PLACES, id)?,
 
             None => {
@@ -575,10 +604,10 @@ impl Guide {
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect();
 
-        let options = crate::setup::Options::new(offer.id, defaults, self.number);
+        let options = crate::setup::Options::new(offer.id, defaults, true);
 
         match crate::setup::run(options, &self.root, false).await {
-            Ok(number) => self.number = number,
+            Ok(()) => self.spaced = false,
 
             Err(error) if error.to_string() == crate::setup::CANCELLED => {
                 self.note(&later);
@@ -591,8 +620,8 @@ impl Guide {
         Ok(Flow::Next)
     }
 
-    fn finish(&self) -> Result<(), Error> {
-        println!();
+    fn finish(&mut self) -> Result<(), Error> {
+        self.gap();
 
         let ready = ready_provider(&self.root)?.is_some();
         let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
