@@ -137,13 +137,9 @@ jobs:
 
           cd "$GITHUB_WORKSPACE"
 
-          unstable=false
-          case "$version" in *-*) unstable=true ;; esac
-
           {
             echo "KRABB_EXPECTED=$version"
             echo "KRABB_VERSION=$version"
-            echo "KRABB_UNSTABLE=$unstable"
           } >> "$GITHUB_ENV"
 
       - if: matrix.os != 'windows'
@@ -197,12 +193,10 @@ jobs:
 
         run: |
           set -euo pipefail
-          flags=(--yes)
-          [ "$KRABB_UNSTABLE" = true ] && flags+=(--unstable)
           failed=()
 
           for id in $(jq -r '.[]' <<<"$KRABB_PLUGINS"); do
-            if ! krabb plugin install "$id" "${flags[@]}" < /dev/null; then
+            if ! krabb plugin install "$id" --yes < /dev/null; then
               failed+=("$id")
             fi
           done
@@ -426,13 +420,11 @@ jobs:
         shell: pwsh
 
         run: |
-          $flags = @("--yes")
-          if ($env:KRABB_UNSTABLE -eq "true") { $flags += "--unstable" }
           $plugins = $env:KRABB_PLUGINS | ConvertFrom-Json
           $failed = @()
 
           foreach ($id in $plugins) {
-            krabb plugin install $id @flags
+            krabb plugin install $id --yes
             if ($LASTEXITCODE -ne 0) { $failed += $id }
           }
 

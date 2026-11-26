@@ -186,7 +186,8 @@ pub(super) fn plugins(
             continue;
         }
 
-        let unstable = pin.is_some_and(|version| !releases::stable(version));
+        let pinned_prerelease = pin.is_some_and(|version| !releases::stable(version));
+        let unstable = pinned_prerelease || index::follows_prereleases(&inspection.version);
 
         let choice = match index::newest(published, id, unstable, protocol) {
             Ok(choice) => choice,
@@ -211,7 +212,7 @@ pub(super) fn plugins(
         let archive = index::pull(published, id, &choice, &staged.dir)?;
         let digest = choice.artifact.sha256.clone();
         let version = &choice.release.version;
-        let pin = (!releases::stable(version)).then(|| version.clone());
+        let pin = (pinned_prerelease && !releases::stable(version)).then(|| version.clone());
         let manifest = inspect_plugin(id, &archive, &digest)?;
         let file = archive.file_name().map(|name| name.to_string_lossy().into_owned());
 
