@@ -446,6 +446,19 @@ class Publication(unittest.TestCase):
 
         self.assertIn('telegram', output.call_args.args[0].split())
 
+    def test_official_plugins_are_the_ones_the_index_lists(self):
+        registry = Fake({'tools-0.1.0': version_manifest('tools', '0.1.0'),
+                         'echo-0.1.0': version_manifest('echo', '0.1.0', 'crashes on start'),
+                         'echo-0.2.0': version_manifest('echo', '0.2.0'),
+                         'a2a-0.1.0': {'annotations': {plugins.TITLE: 'a2a'}, 'layers': []},
+                         'index': {'annotations': {}, 'layers': []}})
+
+        with mock.patch.object(plugins, 'Registry', return_value=registry), \
+                mock.patch('builtins.print') as output:
+            self.assertEqual(plugins.main(['official', REGISTRY]), 0)
+
+        self.assertEqual(output.call_args.args[0], '["echo","tools"]')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

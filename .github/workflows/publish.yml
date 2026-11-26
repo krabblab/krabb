@@ -39,6 +39,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Generate Checksums
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\0' \
+              | sort -z \
+              | xargs -0 -r sha256sum
+          ) > dist/SHA256SUMS
+          test "$(wc -l < dist/SHA256SUMS)" -eq 6
+
       # The release stays a draft until every file is attached, so installers that read the
       # latest release never see it half uploaded.
       - name: Publish GitHub Release

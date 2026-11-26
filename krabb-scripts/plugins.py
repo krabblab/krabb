@@ -13,6 +13,9 @@ publish DIST REGISTRY SOURCE
     Push each of those versions from DIST, rebuild the index, and confirm that anonymous
     clients can pull it. Published versions are never changed.
 
+official REGISTRY
+    Print the IDs of the plugins with a version in REGISTRY, as a JSON array.
+
 index REGISTRY
     Rebuild the index from the tags in REGISTRY, and push it when it changed.
 
@@ -363,6 +366,14 @@ def document(registry):
     return content, hashlib.sha256(content).hexdigest(), count, foreign
 
 
+def official(registry):
+    """The IDs of the plugins the index lists, sorted."""
+
+    content = document(registry)[0]
+
+    return sorted(json.loads(content)['plugins'])
+
+
 def versions(count):
     return f"{count} plugin version{'' if count == 1 else 's'}"
 
@@ -503,6 +514,8 @@ def main(arguments):
                 print(' '.join(unpublished(Registry(registry), manifests())))
             case ['publish', dist, registry, source]:
                 publish(Path(dist), registry, source)
+            case ['official', registry]:
+                print(json.dumps(official(Registry(registry)), separators=(',', ':')))
             case ['index', registry]:
                 index(Registry(registry))
             case ['withdraw', registry, plugin, version, reason]:

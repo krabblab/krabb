@@ -163,14 +163,6 @@ jobs:
       names: core
       artifact: krabb-v${{ needs.prepare.outputs.version }}
 
-  checksum:
-    name: Checksum
-    needs: [prepare, package]
-    uses: ./.github/workflows/checksum.yml
-
-    with:
-      version: ${{ needs.prepare.outputs.version }}
-
   # A release whose archives do not install and run on every target is never published.
   install:
     name: Install
@@ -191,7 +183,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [prepare, checksum, install, update]
+    needs: [prepare, install, update]
     uses: ./.github/workflows/publish.yml
 
     permissions:
