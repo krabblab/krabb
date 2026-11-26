@@ -341,6 +341,7 @@ fn pins_explain_their_risk_and_how_to_follow_updates() {
 
     if target == Some(LINUX) {
         assert!(old.contains("the latest supported version is 0.2.0"), "{old}");
+
         assert!(
             pin(&index, "echo", "0.2.0", false).unwrap().starts_with("echo is pinned to 0.2.0.")
         );
