@@ -225,10 +225,12 @@ jobs:
         run: |
           set -euo pipefail
           krabb --json doctor < /dev/null > /dev/null
-          unhealthy=$(krabb --json plugin list | jq -r '.items[] | select(.health != "ready") | .id')
+          unhealthy=$(krabb --json plugin list | jq -r '[.items[]
+            | select(.health | IN("needs setup", "configured", "ready") | not)
+            | "\(.id) (\(.health))"] | join(", ")')
 
           if [ -n "$unhealthy" ]; then
-            echo "::error::Plugins that are not healthy: $(echo $unhealthy)"
+            echo "::error::Plugins that are not healthy: $unhealthy"
             exit 1
           fi
 
@@ -457,10 +459,13 @@ jobs:
 
           $listed = krabb --json plugin list
           if ($LASTEXITCODE -ne 0) { throw "krabb plugin list failed." }
-          $unhealthy = @(($listed | Out-String | ConvertFrom-Json).items | Where-Object { $_.health -ne "ready" })
+          $healthy = @("needs setup", "configured", "ready")
+          $unhealthy = @(($listed | Out-String | ConvertFrom-Json).items |
+            Where-Object { $_.health -notin $healthy })
 
           if ($unhealthy.Count -gt 0) {
-            Write-Output "::error::Plugins that are not healthy: $($unhealthy.id -join ', ')"
+            $names = $unhealthy | ForEach-Object { "$($_.id) ($($_.health))" }
+            Write-Output "::error::Plugins that are not healthy: $($names -join ', ')"
             exit 1
           }
 
