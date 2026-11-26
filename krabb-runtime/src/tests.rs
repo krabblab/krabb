@@ -5208,6 +5208,36 @@ fn service_environment_materializes_declared_credentials() {
 }
 
 #[test]
+fn services_find_programs_on_the_installing_shell_path_and_the_usual_folders() {
+    let environment = BTreeMap::from([
+        ("PATH".into(), "/custom/bin:relative/bin::/usr/bin".into()),
+        ("HOME".into(), "/Users/owner".into()),
+    ]);
+
+    assert_eq!(
+        super::search_path(&environment),
+        "/custom/bin:/usr/bin:/Users/owner/.local/bin:/opt/homebrew/bin:/usr/local/bin:/bin:\
+         /usr/sbin:/sbin"
+    );
+
+    assert_eq!(
+        super::search_path(&BTreeMap::new()),
+        "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    );
+
+    let root = test_root("service-path");
+
+    fs::create_dir_all(&root).unwrap();
+
+    let values = service_environment_from(&root.join("krabb.service"), root.clone(), &environment);
+    let path = values.unwrap().into_iter().find(|(name, _)| name == "PATH").map(|(_, path)| path);
+
+    assert_eq!(path.is_some(), cfg!(not(windows)));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn services_preserve_explicit_browser_and_computer_settings() {
     let root = test_root("service-desktop");
 

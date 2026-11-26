@@ -9,6 +9,11 @@ check = true
 name = "KRABB_CODEX_CONTEXT_LENGTH"
 default = "auto"
 
+[[requires]]
+program = "codex"
+setting = "KRABB_CODEX_BINARY"
+help = "Install the Codex CLI from https://developers.openai.com/codex/cli, then run `krabb service install --force`."
+
 [[commands]]
 name = "codex"
 description = "Manage Codex sign-in and list available models."

@@ -152,6 +152,10 @@ pub(crate) fn service_environment_from(
         values.push(("KRABB_CODEX_BINARY".into(), binary.display().to_string()));
     }
 
+    if cfg!(not(windows)) {
+        values.push(("PATH".into(), search_path(environment)));
+    }
+
     let configured = environment
         .get("KRABB_CREDENTIALS")
         .filter(|value| !value.is_empty())
@@ -230,6 +234,25 @@ pub(crate) fn service_environment_from(
     }
 
     Ok(values)
+}
+
+/// The PATH the service starts plugins with: the installing shell's folders, then the usual
+/// program folders, so programs such as `codex` resolve as they do in a terminal. A service
+/// manager otherwise starts the daemon with a minimal PATH. Relative folders are dropped,
+/// because they would resolve against the service's working directory.
+pub(crate) fn search_path(environment: &BTreeMap<String, String>) -> String {
+    let shell = environment.get("PATH").map(String::as_str).unwrap_or_default();
+    let local = environment.get("HOME").map(|home| format!("{home}/.local/bin"));
+    let usual = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+    let mut folders = Vec::<&str>::new();
+
+    for folder in shell.split(':').chain(local.as_deref()).chain(usual) {
+        if folder.starts_with('/') && !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+
+    folders.join(":")
 }
 
 pub(crate) fn codex_binary_from_path(path: &str) -> Option<PathBuf> {
