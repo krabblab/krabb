@@ -36,6 +36,12 @@ can move a readable store to that key backend. The daemon must be able to access
 the same keyring or key file. On a headless server without a usable keyring,
 the encrypted file works without an interactive unlock after a restart.
 
+Each Krabb process reads the key from the keyring once and keeps it in memory, so
+a command asks for keyring access at most once. On macOS, choose Always Allow when
+the keychain asks: `krabb` and the background service each ask once, and again
+after an update replaces them. Set `KRABB_KEYRING=0` before `krabb init` to keep
+the key in the protected file instead.
+
 Keep both files private and outside version control. Back up the fallback key
 securely: losing it makes the encrypted credentials unrecoverable. Moving only
 the credentials file does not move its key. Encryption protects a copied

@@ -569,3 +569,24 @@ fn forgetting_removes_only_named_values_and_keeps_the_backend() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_credential_key_is_read_from_the_keyring_once_per_process() {
+    let memory = std::sync::Mutex::new(BTreeMap::new());
+    let reads = Cell::new(0);
+
+    let fetch = || {
+        reads.set(reads.get() + 1);
+        Ok(vec![7; 32])
+    };
+
+    assert_eq!(remembered(&memory, "a", fetch).unwrap(), vec![7; 32]);
+    assert_eq!(remembered(&memory, "a", fetch).unwrap(), vec![7; 32]);
+    assert_eq!(reads.get(), 1);
+
+    let failed = remembered(&memory, "b", || Err("locked".into()));
+
+    assert!(failed.is_err());
+    assert_eq!(remembered(&memory, "b", fetch).unwrap(), vec![7; 32]);
+    assert_eq!(reads.get(), 2);
+}

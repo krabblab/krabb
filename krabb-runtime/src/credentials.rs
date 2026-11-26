@@ -44,6 +44,29 @@ trait Keyring {
 
 struct Native;
 
+/// Credential keys this process already read, so the keyring asks for access at most once.
+#[cfg(not(test))]
+static KEYS: std::sync::Mutex<BTreeMap<String, Vec<u8>>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The key with ID from MEMORY, or FETCH's key, which MEMORY then keeps.
+fn remembered(
+    memory: &std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+    id: &str,
+    fetch: impl FnOnce() -> Result<Vec<u8>, Error>,
+) -> Result<Vec<u8>, Error> {
+    if let Some(key) = memory.lock().ok().and_then(|keys| keys.get(id).cloned()) {
+        return Ok(key);
+    }
+
+    let key = fetch()?;
+
+    if let Ok(mut keys) = memory.lock() {
+        keys.insert(id.to_owned(), key.clone());
+    }
+
+    Ok(key)
+}
+
 #[cfg(not(test))]
 impl Keyring for Native {
     fn available(&self) -> bool {
@@ -51,9 +74,11 @@ impl Keyring for Native {
     }
 
     fn get(&self, id: &str) -> Result<Vec<u8>, Error> {
-        keyring::Entry::new("it.airscript.krabb", &format!("credentials:{id}"))
-            .and_then(|entry| entry.get_secret())
-            .map_err(|_| "Credential keyring is locked, missing, or unavailable.".into())
+        remembered(&KEYS, id, || {
+            keyring::Entry::new("it.airscript.krabb", &format!("credentials:{id}"))
+                .and_then(|entry| entry.get_secret())
+                .map_err(|_| "Credential keyring is locked, missing, or unavailable.".into())
+        })
     }
 
     fn set(&self, id: &str, key: &[u8]) -> Result<(), Error> {
