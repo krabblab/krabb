@@ -98,7 +98,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
     let mut guide = Guide {
         root: crate::home(),
         color: crate::style::colors(),
-        number: 0,
+        spaced: std::cell::Cell::new(true),
         named: args.steps.clone(),
         interactive,
     };
@@ -117,7 +117,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         };
 
         if let Flow::Stop = flow {
-            println!();
+            guide.gap();
             println!("Setup stopped.");
             println!("Continue any time with `krabb init`.");
             return Ok(());
@@ -194,40 +194,54 @@ enum Flow {
 struct Guide {
     root: PathBuf,
     color: bool,
-    number: usize,
+    /// Whether the last line printed was blank or a section title, so a question needs no gap.
+    spaced: std::cell::Cell<bool>,
     named: Vec<Step>,
     interactive: bool,
 }
 
 impl Guide {
     fn section(&self, title: &str) {
-        println!("\n{}\n", accent(title, self.color));
+        println!("\n{}", accent(title, self.color));
+        self.spaced.set(true);
     }
 
     fn done(&self, text: &str) {
         println!("{} {text}", accent("✓", self.color));
+        self.spaced.set(false);
     }
 
     fn note(&self, text: &str) {
         println!("{}", dim(text, self.color));
+        self.spaced.set(false);
     }
 
-    /// Numbers the next question and styles it as a heading.
-    fn heading(&mut self, question: &str) -> String {
-        self.number += 1;
-
-        format!("{}\n", accent(&format!("{}. {question}", self.number), self.color))
+    /// Separates a finished step from what comes next with one blank line.
+    fn gap(&self) {
+        if !self.spaced.get() {
+            println!();
+            self.spaced.set(true);
+        }
     }
 
-    /// Asks a numbered question with a vertical picker, or `None` when the person stops.
+    /// The next question, after a gap from the step before it.
+    fn heading(&self, question: &str) -> String {
+        self.gap();
+        self.spaced.set(false);
+
+        format!("{question}\n")
+    }
+
+    /// Asks a question with a vertical picker, or `None` when the person stops.
     fn ask(&mut self, question: &str, options: &[&str]) -> std::io::Result<Option<usize>> {
         let heading = self.heading(question);
 
-        eprintln!("{heading}");
+        eprint!("{heading}");
 
         let answer = crate::choice::pick(options, 0)?;
 
         eprintln!();
+        self.spaced.set(true);
         Ok(answer)
     }
 
@@ -372,6 +386,7 @@ impl Guide {
             return Ok(Some(keep));
         }
 
+        self.gap();
         self.note(&format!("Looking up the {provider} models."));
 
         let models = listed(&self.root, config, provider).await;
@@ -575,10 +590,10 @@ impl Guide {
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect();
 
-        let options = crate::setup::Options::new(offer.id, defaults, self.number);
+        let options = crate::setup::Options::new(offer.id, defaults, true);
 
         match crate::setup::run(options, &self.root, false).await {
-            Ok(number) => self.number = number,
+            Ok(()) => self.spaced.set(false),
 
             Err(error) if error.to_string() == crate::setup::CANCELLED => {
                 self.note(&later);
@@ -592,7 +607,7 @@ impl Guide {
     }
 
     fn finish(&self) -> Result<(), Error> {
-        println!();
+        self.gap();
 
         let ready = ready_provider(&self.root)?.is_some();
         let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");

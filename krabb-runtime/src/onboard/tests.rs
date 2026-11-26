@@ -13,12 +13,19 @@ fn args(flags: &[&str]) -> InitArgs {
 }
 
 fn guide(root: PathBuf) -> Guide {
-    Guide { root, color: false, number: 0, named: Vec::new(), interactive: false }
+    Guide {
+        root,
+        color: false,
+        spaced: std::cell::Cell::new(true),
+        named: Vec::new(),
+        interactive: false,
+    }
 }
 
 #[test]
 fn steps_run_in_order_from_names_flags_or_the_terminal() {
     assert_eq!(plan(&args(&[]), true).unwrap(), ALL);
+
     assert_eq!(plan(&args(&[]), false).unwrap(), [Step::Home]);
 
     let named = plan(&args(&["service", "home", "home"]), false).unwrap();

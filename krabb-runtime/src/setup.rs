@@ -87,14 +87,14 @@ pub(super) struct Options {
     /// Suggested values that replace a setting's declared default, such as a local host.
     #[arg(skip)]
     defaults: BTreeMap<String, String>,
-    /// How many questions came before, so a guide that runs setup keeps one numbering.
+    /// Whether a guide runs setup right after it installed the plugin, so it needs no intro.
     #[arg(skip)]
-    asked: usize,
+    guided: bool,
 }
 
 impl Options {
-    pub(super) fn new(id: &str, defaults: BTreeMap<String, String>, asked: usize) -> Self {
-        Self { id: id.into(), no_activate: false, defaults, asked }
+    pub(super) fn new(id: &str, defaults: BTreeMap<String, String>, guided: bool) -> Self {
+        Self { id: id.into(), no_activate: false, defaults, guided }
     }
 }
 
@@ -145,7 +145,7 @@ pub(super) async fn command(
 
     let SetupCommand::Setup { no_activate } = cli.command;
 
-    let options = Options { no_activate, ..Options::new(id, BTreeMap::new(), 0) };
+    let options = Options { no_activate, ..Options::new(id, BTreeMap::new(), false) };
 
     run(options, root, json || cli.json).await?;
     Ok(())
@@ -199,8 +199,8 @@ fn fields(root: &Path, id: &str) -> Result<Vec<Field>, Error> {
         .collect())
 }
 
-/// Asks for and saves the plugin's secrets and settings, and returns the last question number.
-pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<usize, Error> {
+/// Asks for and saves the plugin's secrets and settings.
+pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(), Error> {
     let mut fields = fields(root, &options.id)?;
 
     for field in &mut fields {
@@ -221,22 +221,21 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<usi
             && !options.defaults.contains_key(&field.name);
     }
 
+    let color = crate::style::colors();
+
     if !fields.is_empty() {
         interactive()?;
-        eprintln!("Let's set up the {} plugin.", options.id);
-        eprintln!("Nothing is saved until the last answer, and Esc cancels.");
-    }
 
-    let color = crate::style::colors();
-    let mut number = options.asked;
-
-    let answers = collect(&fields, |field, error| {
-        if error.is_none() {
-            number += 1;
+        if !options.guided {
+            eprintln!("Let's set up the {} plugin.", options.id);
         }
 
-        prompt(field, number, color, error)
-    })?;
+        let cancel = "Nothing is saved until the last answer, and Esc cancels.";
+
+        eprintln!("{}", crate::style::dim(cancel, color));
+    }
+
+    let answers = collect(&fields, |field, error| prompt(field, color, error))?;
     let changes = summary(&fields, &answers);
 
     let backend = super::credentials::update(
@@ -287,7 +286,7 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<usi
         );
     }
 
-    Ok(number)
+    Ok(())
 }
 
 async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Value {
@@ -441,13 +440,13 @@ fn interactive() -> Result<(), Error> {
     Ok(())
 }
 
-fn prompt(field: &Field, number: usize, color: bool, error: Option<&str>) -> Result<String, Error> {
+fn prompt(field: &Field, color: bool, error: Option<&str>) -> Result<String, Error> {
     interactive()?;
 
     if let Some(error) = error {
         eprintln!("{error}\nTry again, or press Esc to cancel.");
     } else {
-        eprint!("{}", heading(field, number, color));
+        eprint!("{}", heading(field, color));
     }
 
     read(!field.secret)
@@ -480,9 +479,9 @@ fn read(echo: bool) -> Result<String, Error> {
 }
 
 /// What the person sets and how to answer, shown once per field; never a saved value.
-fn heading(field: &Field, number: usize, color: bool) -> String {
+fn heading(field: &Field, color: bool) -> String {
     let prompt = &field.prompt;
-    let mut title = crate::style::accent(&format!("{number}. {}", field.label()), color);
+    let mut title = field.label().to_owned();
 
     if field.label() != field.name {
         title.push_str(&crate::style::dim(&format!("  {}", field.name), color));

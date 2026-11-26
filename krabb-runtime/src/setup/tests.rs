@@ -510,7 +510,12 @@ async fn nonterminal_setup_fails_before_writing() {
     let root = fixture("telegram", &["KRABB_SETUP_A"], vec![]);
 
     let error = run(
-        Options { id: "telegram".into(), no_activate: true, defaults: BTreeMap::new(), asked: 0 },
+        Options {
+            id: "telegram".into(),
+            no_activate: true,
+            defaults: BTreeMap::new(),
+            guided: false,
+        },
         &root,
         false,
     )
@@ -1191,9 +1196,9 @@ fn prompts_explain_fields_and_show_how_enter_behaves() {
     field.secret = true;
 
     assert_eq!(
-        heading(&field, 1, false),
+        heading(&field, false),
         concat!(
-            "\n1. Bot token  KRABB_SETUP_TOKEN\n",
+            "\nBot token  KRABB_SETUP_TOKEN\n",
             "Ask @BotFather.\n",
             "Get it at https://t.me/BotFather\n",
             "For example: 123:abc\n",
@@ -1220,8 +1225,8 @@ fn prompts_explain_fields_and_show_how_enter_behaves() {
     let host = described("KRABB_SETUP_HOST", Prompt::default(), false, Some("https://ollama.com"));
 
     assert_eq!(
-        heading(&host, 2, false),
-        "\n2. KRABB_SETUP_HOST\nPress Enter to use https://ollama.com.\n"
+        heading(&host, false),
+        "\nKRABB_SETUP_HOST\nPress Enter to use https://ollama.com.\n"
     );
 
     let mut plain = host;

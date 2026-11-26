@@ -382,13 +382,15 @@ pub(crate) fn interview(
     let mut answers = Vec::with_capacity(QUESTIONS.len());
     let mut section = "";
 
-    for (index, question) in QUESTIONS.iter().enumerate() {
+    for question in &QUESTIONS {
         if question.section != section {
             section = question.section;
             writeln!(output, "\n{}", crate::style::accent(section, color))?;
+        } else {
+            writeln!(output)?;
         }
 
-        answers.push(ask(input, output, index + 1, question, color)?);
+        answers.push(ask(input, output, question, color)?);
     }
 
     writeln!(output)?;
@@ -399,17 +401,12 @@ pub(crate) fn interview(
 fn ask(
     input: &mut impl BufRead,
     output: &mut impl Write,
-    number: usize,
     question: &Question,
     color: bool,
 ) -> std::io::Result<Option<String>> {
     let limit = format!("Up to {} characters, for example:", question.limit);
 
-    writeln!(
-        output,
-        "\n{}",
-        crate::style::accent(&format!("{number}. {}", question.prompt), color)
-    )?;
+    writeln!(output, "{}", question.prompt)?;
     writeln!(
         output,
         "{} {}",
@@ -547,7 +544,7 @@ pub(crate) async fn run(args: HatchArgs, root: &Path, json: bool) -> Result<(), 
         eprintln!("{}\n", draft.summary);
 
         loop {
-            eprintln!("Save this personality?\n");
+            eprintln!("Save this personality?");
 
             let choice = crate::choice::pick(&["Save it", "Show the files", "Discard it"], 0)?;
 
@@ -735,10 +732,12 @@ mod tests {
 
         assert!(output.starts_with("Your Krabb already has a personality.\n"));
         assert!(output.contains("Press Enter on any question to keep its current setting."));
-        assert!(output.contains("\nIdentity\n\n1. What should your Krabb be called?\n"));
+        assert!(output.contains("\nIdentity\nWhat should your Krabb be called?\n"));
         assert!(output.contains("\nUp to 40 characters, for example: Pinch\n"));
         assert!(output.contains("Keep this answer to 40 characters or fewer.\n"));
-        assert!(output.contains("\nWork\n\n7. How should it get things done?"));
+        assert!(output.contains("\nWork\nHow should it get things done?"));
+        assert!(output.contains("|> \nWhat should it call you?\n"));
+        assert!(!output.contains("1. "));
         assert_eq!(output.matches("\nVoice\n").count(), 1);
     }
 
