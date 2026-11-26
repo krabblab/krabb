@@ -11,7 +11,7 @@ interactive = false
 
 [protocol]
 major = 0
-minor = 1
+minor = 2
 
 [setup.KRABB_A2A_TOKEN]
 label = "Bearer token"

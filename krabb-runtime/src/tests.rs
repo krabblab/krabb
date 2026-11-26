@@ -4341,6 +4341,7 @@ fn validates_manifests_and_environment() {
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),
+        krabb: None,
     };
 
     assert!(manifest.validate().is_ok());
@@ -4414,6 +4415,7 @@ fn validates_manifests_and_environment() {
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
+            krabb: None,
         },
         &Config::default(),
         test_home,
@@ -4461,6 +4463,7 @@ fn validates_manifests_and_environment() {
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
+            krabb: None,
         },
         &config,
         test_home,
@@ -4483,6 +4486,7 @@ fn validates_manifests_and_environment() {
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
+            krabb: None,
         },
         &Config::default(),
         test_home,
@@ -4514,6 +4518,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
+            krabb: None,
         },
         &Config::default(),
         Path::new("/tmp/krabb-home"),
@@ -4808,7 +4813,7 @@ fn recovers_locks_and_plugin_staging() {
             default: false,
             hash,
             version: "0.1.0".into(),
-            protocol: Protocol::CURRENT,
+            protocol: Protocol { major: 0, minor: 1 },
             capabilities: Vec::new(),
             permissions: Vec::new(),
             variables: Vec::new(),
@@ -5893,6 +5898,7 @@ fn manifest_round_trips() {
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),
+        krabb: None,
     };
 
     let text = toml::to_string(&value).unwrap();
@@ -5906,6 +5912,25 @@ fn manifest_round_trips() {
     escaped.version = "0.1.0\u{1b}[2J".into();
 
     assert!(escaped.validate().unwrap_err().contains("visible text"));
+
+    let mut needy = value.clone();
+
+    needy.krabb = Some("99.0.0".into());
+
+    assert!(needy.validate().is_ok());
+
+    assert_eq!(
+        needy.needs_newer_krabb().unwrap(),
+        "Plugin echo 0.1.0 needs Krabb 99.0.0 or newer.\nUpdate Krabb with `krabb update`."
+    );
+
+    needy.krabb = Some("0.0.1".into());
+
+    assert!(needy.needs_newer_krabb().is_none());
+
+    needy.krabb = Some("soon".into());
+
+    assert!(needy.validate().unwrap_err().contains("must name a Krabb version"));
 
     let mut described = value;
 

@@ -82,6 +82,11 @@ one was waiting.
 The first publication creates the `plugins` package as private. Make it public
 once in the package settings and run the Release workflow again.
 
+Before releasing, check plugin compatibility as
+[DEPRECATIONS.md](../DEPRECATIONS.md#plugin-compatibility) describes. `make bump`
+warns when `krabb-core` changed since the last release but the plugin protocol
+did not.
+
 Published versions are never changed or removed. To withdraw a broken version,
 run the Withdraw workflow with the plugin ID, the version, and a reason. Krabb
 then skips the version when choosing one, installs it only when it is named

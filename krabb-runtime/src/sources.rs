@@ -113,6 +113,11 @@ pub(crate) fn link_recorded(
     }
 
     manifest.validate().map_err(|error| format!("Invalid plugin manifest: {error}"))?;
+
+    if let Some(error) = manifest.needs_newer_krabb() {
+        return Err(error.into());
+    }
+
     validate_commands(home_root, &source.id, &manifest.commands)?;
 
     updates::state::check(home_root, load_lock_at(home_root)?.plugins.get(&source.id), &manifest)?;

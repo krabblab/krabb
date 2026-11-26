@@ -36,7 +36,7 @@ async fn plugin_main() -> krabb_core::Result<()> {
     serve_events_concurrent(
         Hello {
             formats: vec![],
-            protocol: Protocol { major: 0, minor: 1 },
+            protocol: Protocol::CURRENT,
             id: "anthropic".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],

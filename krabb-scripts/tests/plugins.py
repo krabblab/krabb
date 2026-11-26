@@ -189,6 +189,40 @@ class Publication(unittest.TestCase):
 
         self.assertFalse(pushed.called)
 
+    def test_the_oldest_krabb_a_version_needs_reaches_the_index(self):
+        path = self.root / 'krabb-plugins/channels/echo/krabb-plugin.toml'
+        text = path.read_text()
+
+        path.write_text('krabb = "0.1.0-rc.3"\n' + text)
+        self.archives('echo', '0.2.0')
+
+        registry = Fake({'tools-0.1.0': version_manifest('tools', '0.1.0')})
+
+        self.publish(registry)
+
+        plugin, entry = plugins.release('echo-0.2.0', registry.manifests['echo-0.2.0'])
+
+        self.assertEqual((plugin, entry['krabb']), ('echo', '0.1.0-rc.3'))
+
+        tools = plugins.release('tools-0.1.0', registry.manifests['tools-0.1.0'])[1]
+
+        self.assertNotIn('krabb', tools)
+
+        broken = version_manifest('echo', '0.3.0')
+        broken['annotations'][plugins.KRABB] = 'soon'
+
+        self.assertIsNone(plugins.release('echo-0.3.0', broken))
+
+        for value in ['0.1.0\n', 7]:
+            broken['annotations'][plugins.KRABB] = value
+
+            self.assertIsNone(plugins.release('echo-0.3.0', broken))
+
+        path.write_text('krabb = "soon"\n' + text)
+
+        with self.assertRaisesRegex(plugins.Failure, 'invalid Krabb version: soon'):
+            plugins.manifests(self.root)
+
     def test_the_index_is_rebuilt_from_tags_and_skips_foreign_ones(self):
         registry = Fake({'tools-0.1.0': version_manifest('tools', '0.1.0'),
                          'a2a-0.1.0': {'annotations': {plugins.TITLE: 'a2a'}, 'layers': []},

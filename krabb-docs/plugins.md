@@ -25,10 +25,11 @@ version = "0.1.0"
 capabilities = ["model"]
 permissions = ["network"]
 secrets = ["KRABB_CODEX_KEY"]
+krabb = "0.1.0"
 
 [protocol]
 major = 0
-minor = 1
+minor = 2
 
 [[commands]]
 name = "example"
@@ -42,8 +43,11 @@ the operator what changes. Command names must be unique across installed plugins
 and cannot shadow native commands. Capability, permission, and secret lists are
 validated for known, unique values before a plugin can be installed or started.
 Protocol minor versions are backward-compatible: this host accepts plugins
-declaring 0.0 or 0.1. The current protocol is 0.1, and all bundled plugins
-declare 0.1.
+declaring 0.0 through 0.2. The current protocol is 0.2, and all bundled plugins
+declare 0.2. The optional `krabb` key names the oldest Krabb version the plugin
+works with, for a plugin that relies on host behavior the protocol does not
+cover, such as a tool name; older Krabb versions refuse to install it and say
+which version it needs.
 
 `plugins.lock` records the canonical source, revision marker, SHA-256 of the
 manifest and executable, protocol, version, capabilities, permissions, secrets,
@@ -492,7 +496,7 @@ secrets = []
 
 [protocol]
 major = 0
-minor = 1
+minor = 2
 
 [[commands]]
 name = "hello"
@@ -557,8 +561,9 @@ contain only the host. Every published version is a tag in one public OCI
 repository, `ghcr.io/krabblab/krabb/plugins`, and the repository's `index` tag
 holds a summary that release automation rebuilds from those tags, so it never
 drifts from what is published. Each plugin lists every published version with
-its protocol, release date, permissions, secret names, an optional withdrawal
-reason, and one SHA-256 digest and size per target:
+its protocol, the oldest Krabb it works with when its manifest names one, release
+date, permissions, secret names, an optional withdrawal reason, and one SHA-256
+digest and size per target:
 
 ```json
 {
@@ -568,7 +573,8 @@ reason, and one SHA-256 digest and size per target:
     "telegram": [
       {
         "version": "0.1.0",
-        "protocol": {"major": 0, "minor": 1},
+        "protocol": {"major": 0, "minor": 2},
+        "krabb": "0.1.0",
         "released": "2026-11-20",
         "permissions": ["network", "filesystem"],
         "secrets": ["KRABB_TELEGRAM_TOKEN"],
@@ -591,9 +597,9 @@ another index from an OCI reference such as `ghcr.io/owner/plugins:index`, an
 `https://` URL, or a `file://` path; a `file://` index may also name a `file://`
 registry directory laid out as `blobs/sha256/<digest>`.
 
-Compatibility comes only from the plugin protocol: a version installs
-automatically when its protocol has the host's major version and a minor version
-no newer than the host's. On a stable Krabb, pre-release versions such as
+A version installs automatically when its protocol has the host's major version
+and a minor version no newer than the host's, and when the host is at least the
+`krabb` version the plugin names, if any. On a stable Krabb, pre-release versions such as
 `0.2.0-rc.1` install only when named or with `--unstable`; a pre-release of Krabb
 installs them by default.
 

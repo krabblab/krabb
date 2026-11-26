@@ -16,7 +16,7 @@ interactive = false
 
 [protocol]
 major = 0
-minor = 1
+minor = 2
 
 [setup.KRABB_CODEX_KEY]
 label = "API key"

@@ -23,6 +23,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         commands: commands.clone(),
         state: None,
         requires: Vec::new(),
+        krabb: None,
     };
 
     fs::write(plugin.join("krabb-plugin.toml"), toml::to_string(&manifest).unwrap()).unwrap();

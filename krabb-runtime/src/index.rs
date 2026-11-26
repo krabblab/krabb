@@ -53,7 +53,41 @@ pub(crate) struct Release {
     /// Why the version was withdrawn; withdrawn versions install only when named.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) yanked: Option<String>,
+    /// The oldest Krabb version this plugin version works with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) krabb: Option<String>,
     pub(crate) artifacts: BTreeMap<String, Artifact>,
+}
+
+/// The Krabb a plugin version must fit: the protocol it speaks and its own version.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Host<'a> {
+    pub(crate) protocol: Protocol,
+    pub(crate) version: &'a str,
+}
+
+impl Host<'static> {
+    pub(crate) const CURRENT: Self = Self { protocol: Protocol::CURRENT, version: crate::VERSION };
+}
+
+impl Host<'_> {
+    /// Whether this host speaks the release's protocol and is as new as the release needs.
+    pub(crate) fn fits(&self, release: &Release) -> bool {
+        self.protocol.compatible(release.protocol)
+            && release.krabb.as_deref().is_none_or(|minimum| self.at_least(minimum))
+    }
+
+    /// Whether this host is at least MINIMUM, the oldest Krabb a plugin version works with.
+    pub(crate) fn at_least(&self, minimum: &str) -> bool {
+        releases::compare(self.version, minimum).is_ge()
+    }
+}
+
+/// The error for plugin ID at VERSION, which needs Krabb KRABB or newer.
+pub(crate) fn needs_krabb(id: &str, version: &str, krabb: &str) -> String {
+    format!(
+        "Plugin {id} {version} needs Krabb {krabb} or newer.\nUpdate Krabb with `krabb update`."
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -96,7 +130,7 @@ pub(crate) fn resolve(home: &Path, id: &str, version: Option<&str>) -> Result<So
 }
 
 fn unpacked(index: &Index, id: &str, version: Option<&str>) -> Result<SourceRoot, Error> {
-    let choice = select(index, id, version, Protocol::CURRENT)?;
+    let choice = select(index, id, version, Host::CURRENT)?;
     let download = temp("krabb-download")?;
 
     let result = pull(index, id, &choice, &download).and_then(|archive| {
@@ -116,7 +150,7 @@ pub(crate) fn selected(home: &Path, entry: &Entry) -> Result<Option<String>, Err
 
     let index = load(home)?;
 
-    Ok(Some(select(&index, id, version, Protocol::CURRENT)?.release.version.clone()))
+    Ok(Some(select(&index, id, version, Host::CURRENT)?.release.version.clone()))
 }
 
 /// Whether an official plugin already runs its selected version or a newer one, so an
@@ -340,6 +374,10 @@ fn validate(index: &Index, local: bool) -> Result<(), String> {
                 ));
             }
 
+            if release.krabb.as_deref().is_some_and(|krabb| !releases::valid_version(krabb)) {
+                return Err(format!("{id} {} names an invalid Krabb version", release.version));
+            }
+
             for (target, artifact) in &release.artifacts {
                 if !hex_digest(&artifact.sha256) {
                     return Err(format!(
@@ -380,16 +418,16 @@ fn registry(value: &str, local: bool) -> bool {
         })
 }
 
-/// Picks `version`, or the newest stable, non-withdrawn version that speaks `protocol`.
+/// Picks `version`, or the newest stable, non-withdrawn version that fits `host`.
 pub(crate) fn select<'a>(
     index: &'a Index,
     id: &str,
     version: Option<&str>,
-    protocol: Protocol,
+    host: Host<'_>,
 ) -> Result<Choice<'a>, Error> {
-    let unstable = follows_prereleases(crate::VERSION);
+    let unstable = follows_prereleases(host.version);
 
-    select_for(index, id, version, unstable, protocol, std::env::consts::OS, std::env::consts::ARCH)
+    select_for(index, id, version, unstable, host, std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// Whether a Krabb at VERSION installs each plugin's newest version, pre-releases included,
@@ -399,20 +437,20 @@ pub(crate) fn follows_prereleases(version: &str) -> bool {
     !releases::stable(version)
 }
 
-/// The newest version that speaks `protocol`, including pre-releases when `unstable`.
+/// The newest version that fits `host`, including pre-releases when `unstable`.
 pub(crate) fn newest<'a>(
     index: &'a Index,
     id: &str,
     unstable: bool,
-    protocol: Protocol,
+    host: Host<'_>,
 ) -> Result<Choice<'a>, Error> {
-    select_for(index, id, None, unstable, protocol, std::env::consts::OS, std::env::consts::ARCH)
+    select_for(index, id, None, unstable, host, std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// The pin for the newest version of `id`, pre-releases included; none when it is stable.
 pub(crate) fn unstable(home: &Path, id: &str) -> Result<Option<String>, Error> {
     let index = load(home)?;
-    let version = &newest(&index, id, true, Protocol::CURRENT)?.release.version;
+    let version = &newest(&index, id, true, Host::CURRENT)?.release.version;
 
     Ok((!releases::stable(version)).then(|| version.clone()))
 }
@@ -422,7 +460,7 @@ fn select_for<'a>(
     id: &str,
     version: Option<&str>,
     unstable: bool,
-    protocol: Protocol,
+    host: Host<'_>,
     os: &str,
     arch: &str,
 ) -> Result<Choice<'a>, Error> {
@@ -450,13 +488,17 @@ fn select_for<'a>(
                     )
                 })?;
 
-            if !protocol.compatible(release.protocol) {
+            if !host.protocol.compatible(release.protocol) {
                 return Err(format!(
                     "Plugin {id} {version} needs plugin protocol {}.{}, which this version of \
                      Krabb does not support.\nSee every release with `krabb plugin versions {id}`.",
                     release.protocol.major, release.protocol.minor
                 )
                 .into());
+            }
+
+            if let Some(krabb) = release.krabb.as_deref().filter(|krabb| !host.at_least(krabb)) {
+                return Err(needs_krabb(id, version, krabb).into());
             }
 
             release
@@ -468,12 +510,12 @@ fn select_for<'a>(
                 .filter(|release| {
                     release.yanked.is_none()
                         && (unstable || releases::stable(&release.version))
-                        && protocol.compatible(release.protocol)
+                        && host.fits(release)
                 })
                 .collect::<Vec<_>>();
 
             if supported.is_empty() {
-                return Err(Unavailable::new(id, releases, unstable, protocol, target).into());
+                return Err(Unavailable::new(id, releases, unstable, host, target).into());
             }
 
             supported
@@ -506,34 +548,40 @@ fn select_for<'a>(
 pub(crate) struct Unavailable {
     id: String,
     prerelease: bool,
+    /// Whether a release would fit once Krabb is updated.
+    update: bool,
 }
 
 impl Unavailable {
-    fn new(
-        id: &str,
-        releases: &[Release],
-        unstable: bool,
-        protocol: Protocol,
-        target: &str,
-    ) -> Self {
+    fn new(id: &str, releases: &[Release], unstable: bool, host: Host<'_>, target: &str) -> Self {
+        let usable =
+            |release: &&Release| release.yanked.is_none() && release.artifacts.contains_key(target);
+
         let prerelease = !unstable
-            && releases.iter().any(|release| {
-                release.yanked.is_none()
-                    && !releases::stable(&release.version)
-                    && protocol.compatible(release.protocol)
-                    && release.artifacts.contains_key(target)
+            && releases
+                .iter()
+                .filter(usable)
+                .any(|release| !releases::stable(&release.version) && host.fits(release));
+
+        let update = !prerelease
+            && releases.iter().filter(usable).any(|release| {
+                (unstable || releases::stable(&release.version))
+                    && host.protocol.compatible(release.protocol)
+                    && release.krabb.as_deref().is_some_and(|krabb| !host.at_least(krabb))
             });
 
-        Self { id: id.to_owned(), prerelease }
+        Self { id: id.to_owned(), prerelease, update }
     }
 
-    /// The command that installs the plugin anyway, or that lists its releases.
+    /// The command that installs the plugin anyway, updates Krabb, or lists the releases.
     pub(crate) fn next(&self) -> String {
         if self.prerelease {
             format!(
                 "Install the newest pre-release with `krabb plugin install {} --unstable`.",
                 self.id
             )
+        } else if self.update {
+            "Update Krabb with `krabb update`.".to_owned()
         } else {
             format!("See every release with `krabb plugin versions {}`.", self.id)
         }
@@ -548,6 +596,8 @@ impl std::fmt::Display for Unavailable {
                 "No stable release of plugin {} works with this version of Krabb.",
                 self.id
             )
+        } else if self.update {
+            write!(formatter, "Plugin {} needs a newer version of Krabb.", self.id)
         } else {
             write!(formatter, "No release of plugin {} works with this version of Krabb.", self.id)
         }
@@ -642,7 +692,7 @@ pub(crate) fn notice(home: &Path, id: &str, version: &str) -> Option<String> {
 fn pin(index: &Index, id: &str, version: &str, follows: bool) -> Option<String> {
     let release = index.plugins.get(id)?.iter().find(|release| release.version == version)?;
     let newest_version = |unstable| {
-        newest(index, id, unstable, Protocol::CURRENT).ok().map(|choice| &choice.release.version)
+        newest(index, id, unstable, Host::CURRENT).ok().map(|choice| &choice.release.version)
     };
 
     let latest = newest_version(follows);
@@ -738,6 +788,8 @@ struct Row<'a> {
     permissions: &'a [String],
     secrets: &'a [String],
     yanked: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    krabb: Option<&'a str>,
     compatible: bool,
     available: bool,
     latest: bool,
@@ -751,8 +803,11 @@ fn notes(row: &Row) -> Vec<String> {
         row.installed.then(|| "installed".to_owned()),
         (!releases::stable(row.version)).then(|| "pre-release".to_owned()),
         row.yanked.map(|reason| format!("withdrawn: {reason}")),
-        (!row.compatible)
+        (!Protocol::CURRENT.compatible(row.protocol))
             .then(|| format!("needs protocol {}.{}", row.protocol.major, row.protocol.minor)),
+        row.krabb
+            .filter(|krabb| !Host::CURRENT.at_least(krabb))
+            .map(|krabb| format!("needs Krabb {krabb} or newer")),
         (!row.available).then(|| "no build for this system".to_owned()),
     ]
     .into_iter()
@@ -771,7 +826,7 @@ fn history<'a>(
     })?;
 
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-    let latest = select_for(index, id, None, unstable, Protocol::CURRENT, os, arch)
+    let latest = select_for(index, id, None, unstable, Host::CURRENT, os, arch)
         .ok()
         .map(|choice| choice.release);
     let target = releases::target(os, arch).map(|(t, _)| t);
@@ -794,6 +849,7 @@ fn history<'a>(
                 permissions: &release.permissions,
                 secrets: &release.secrets,
                 yanked: release.yanked.as_deref(),
+                krabb: release.krabb.as_deref(),
                 compatible,
                 available,
                 latest,

@@ -1318,9 +1318,20 @@ struct Manifest {
     /// External programs the plugin runs, which Krabb cannot install for it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requires: Vec<requirement::Requirement>,
+    /// The oldest Krabb version this plugin version works with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    krabb: Option<String>,
 }
 
 impl Manifest {
+    /// Why this Krabb is too old for the plugin, when the manifest needs a newer one. Call it
+    /// after `validate`, which refuses a malformed `krabb` value.
+    fn needs_newer_krabb(&self) -> Option<String> {
+        let krabb = self.krabb.as_deref().filter(|krabb| !index::Host::CURRENT.at_least(krabb))?;
+
+        Some(index::needs_krabb(&self.id, &self.version, krabb))
+    }
+
     fn validate(&self) -> Result<(), String> {
         if !valid(&self.id) {
             return Err("Plugin IDs must contain lowercase letters, digits, or hyphens.".into());
@@ -1332,6 +1343,10 @@ impl Manifest {
 
         if !Protocol::CURRENT.compatible(self.protocol) {
             return Err("Plugin protocol is not compatible with this daemon.".into());
+        }
+
+        if self.krabb.as_deref().is_some_and(|krabb| !releases::valid_version(krabb)) {
+            return Err("The krabb key must name a Krabb version, such as 0.1.0.".into());
         }
 
         if let Some(state) = &self.state {

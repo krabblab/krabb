@@ -189,7 +189,9 @@ pub(super) fn plugins(
         let pinned_prerelease = pin.is_some_and(|version| !releases::stable(version));
         let unstable = pinned_prerelease || index::follows_prereleases(&inspection.version);
 
-        let choice = match index::newest(published, id, unstable, protocol) {
+        let host = index::Host { protocol, version: &inspection.version };
+
+        let choice = match index::newest(published, id, unstable, host) {
             Ok(choice) => choice,
             Err(_) if compatible => continue,
 
