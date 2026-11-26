@@ -167,8 +167,10 @@ jobs:
   # drills install plugins from the index, so they wait for this run's plugins to publish.
   install:
     name: Install
-    needs: [prepare, package, plugins]
-    if: ${{ !cancelled() && needs.package.result == 'success' && needs.plugins.result != 'failure' }}
+    needs: [prepare, package, plan, plugins]
+    if: >-
+      ${{ !cancelled() && needs.package.result == 'success' && needs.plan.result != 'failure' &&
+          needs.plugins.result != 'failure' }}
     uses: ./.github/workflows/install.yml
 
     with:
@@ -177,8 +179,10 @@ jobs:
   # A release that cannot update an earlier build or roll back to it is never published.
   update:
     name: Update
-    needs: [prepare, package, plugins]
-    if: ${{ !cancelled() && needs.package.result == 'success' && needs.plugins.result != 'failure' }}
+    needs: [prepare, package, plan, plugins]
+    if: >-
+      ${{ !cancelled() && needs.package.result == 'success' && needs.plan.result != 'failure' &&
+          needs.plugins.result != 'failure' }}
     uses: ./.github/workflows/update.yml
 
     with:
@@ -187,6 +191,7 @@ jobs:
   publish:
     name: Publish
     needs: [prepare, install, update]
+    if: ${{ !cancelled() && needs.install.result == 'success' && needs.update.result == 'success' }}
     uses: ./.github/workflows/publish.yml
 
     permissions:

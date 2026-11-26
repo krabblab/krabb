@@ -538,7 +538,9 @@ When `plugin install` is given one or more IDs without `--source`, Krabb
 installs each from the [official plugin index](#official-plugin-index): the
 newest stable, non-withdrawn version whose protocol this host supports and that
 has a build for this target. A pre-release of Krabb picks the newest such version
-with pre-releases included, whatever its number. The lock records the source as `index:<id>`, which
+with pre-releases included, whatever its number. A pre-release plugin installed
+this way stays after Krabb moves to a stable release, until a newer stable plugin
+version replaces it. The lock records the source as `index:<id>`, which
 `plugin update` follows to newer versions. `<id>@<version>` installs and pins one
 published version instead (recorded as `index:<id>@<version>`); a pinned version
 other than the latest is used at your own risk, and `<id>@latest` returns to

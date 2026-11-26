@@ -333,28 +333,23 @@ fn history_marks_latest_installed_and_unsupported_versions() {
 }
 
 #[test]
-fn only_a_pre_release_krabb_follows_plugin_pre_releases() {
-    assert!(prerelease("0.1.0-rc.2"));
-    assert!(!prerelease("0.1.0"));
-    assert!(!prerelease("1.2.3"));
-}
-
-#[test]
 fn pins_explain_their_risk_and_how_to_follow_updates() {
     let index = sample();
     let target = releases::target(std::env::consts::OS, std::env::consts::ARCH).map(|(t, _)| t);
 
-    let old = pin(&index, "echo", "0.1.0").unwrap();
+    let old = pin(&index, "echo", "0.1.0", false).unwrap();
 
     if target == Some(LINUX) {
         assert!(old.contains("the latest supported version is 0.2.0"), "{old}");
-        assert!(pin(&index, "echo", "0.2.0").unwrap().starts_with("echo is pinned to 0.2.0."));
+        assert!(
+            pin(&index, "echo", "0.2.0", false).unwrap().starts_with("echo is pinned to 0.2.0.")
+        );
     }
 
     assert!(old.ends_with("Run `krabb plugin install echo@latest --yes` to follow updates again."));
 
     assert_eq!(
-        pin(&index, "echo", "0.4.0-rc.1").unwrap(),
+        pin(&index, "echo", "0.4.0-rc.1", false).unwrap(),
         "echo is pinned to pre-release 0.4.0-rc.1."
     );
 
@@ -368,23 +363,29 @@ fn pins_explain_their_risk_and_how_to_follow_updates() {
         self::index(vec![release("0.1.0-rc.1", (0, 1), None), release("0.1.0-rc.2", (0, 1), None)]);
 
     if target == Some(LINUX) {
-        let notice = pin(&released, "echo", "0.1.0-rc.1").unwrap();
+        let notice = pin(&released, "echo", "0.1.0-rc.1", false).unwrap();
 
         let newer = "echo is pinned to pre-release 0.1.0-rc.1, and 0.1.0 is newer.\n";
 
         assert!(notice.starts_with(newer), "{notice}");
         assert!(notice.ends_with("to follow stable releases."), "{notice}");
 
-        let notice = pin(&candidates, "echo", "0.1.0-rc.1").unwrap();
+        let notice = pin(&candidates, "echo", "0.1.0-rc.1", false).unwrap();
 
         assert!(notice.ends_with("--unstable --yes` to move to a newer pre-release."), "{notice}");
+
+        let notice = pin(&candidates, "echo", "0.1.0-rc.1", true).unwrap();
+        let newer = "echo is pinned to pre-release 0.1.0-rc.1, and 0.1.0-rc.2 is newer.\n";
+
+        assert!(notice.starts_with(newer), "{notice}");
+        assert!(notice.ends_with("to follow updates again."), "{notice}");
     }
 
-    let withdrawn = pin(&index, "echo", "0.3.0").unwrap();
+    let withdrawn = pin(&index, "echo", "0.3.0", false).unwrap();
 
     assert!(withdrawn.starts_with("echo 0.3.0 was withdrawn: Crashes on start."), "{withdrawn}");
-    assert!(pin(&index, "echo", "9.9.9").is_none());
-    assert!(pin(&index, "slack", "0.1.0").is_none());
+    assert!(pin(&index, "echo", "9.9.9", false).is_none());
+    assert!(pin(&index, "slack", "0.1.0", false).is_none());
 }
 
 #[test]

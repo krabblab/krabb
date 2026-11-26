@@ -387,7 +387,7 @@ pub(crate) fn select<'a>(
     version: Option<&str>,
     protocol: Protocol,
 ) -> Result<Choice<'a>, Error> {
-    let unstable = prerelease(crate::VERSION);
+    let unstable = follows_prereleases(crate::VERSION);
 
     select_for(index, id, version, unstable, protocol, std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -395,7 +395,7 @@ pub(crate) fn select<'a>(
 /// Whether a Krabb at VERSION installs each plugin's newest version, pre-releases included,
 /// without `--unstable`. Plugin versions are independent of Krabb's; the protocol decides
 /// which ones a host can load.
-pub(crate) fn prerelease(version: &str) -> bool {
+pub(crate) fn follows_prereleases(version: &str) -> bool {
     !releases::stable(version)
 }
 
@@ -635,16 +635,17 @@ fn token(host: &str, repository: &str) -> Result<String, Error> {
 
 /// Explains a pinned install and names the newest supported version when it differs.
 pub(crate) fn notice(home: &Path, id: &str, version: &str) -> Option<String> {
-    pin(&*load(home).ok()?, id, version)
+    pin(&*load(home).ok()?, id, version, follows_prereleases(crate::VERSION))
 }
 
-fn pin(index: &Index, id: &str, version: &str) -> Option<String> {
+/// The notice for a pin to VERSION; `follows` is whether this host follows pre-releases.
+fn pin(index: &Index, id: &str, version: &str, follows: bool) -> Option<String> {
     let release = index.plugins.get(id)?.iter().find(|release| release.version == version)?;
     let newest_version = |unstable| {
         newest(index, id, unstable, Protocol::CURRENT).ok().map(|choice| &choice.release.version)
     };
 
-    let latest = newest_version(false);
+    let latest = newest_version(follows);
     let newer = |candidate: &str| releases::compare(candidate, version).is_gt();
 
     let follow = format!("Run `krabb plugin install {id}@latest --yes` to");
@@ -663,12 +664,14 @@ fn pin(index: &Index, id: &str, version: &str) -> Option<String> {
 
             _ => format!("{id} is pinned to {version}.\n{follow} follow updates again."),
         }
-    } else if let Some(stable) = latest.filter(|stable| newer(stable)) {
+    } else if let Some(latest) = latest.filter(|latest| newer(latest)) {
+        let target = if follows { "updates again" } else { "stable releases" };
+
         format!(
-            "{id} is pinned to pre-release {version}, and {stable} is newer.\n{follow} follow \
-            stable releases."
+            "{id} is pinned to pre-release {version}, and {latest} is newer.\n{follow} follow \
+            {target}."
         )
-    } else if newest_version(true).is_some_and(|candidate| newer(candidate)) {
+    } else if !follows && newest_version(true).is_some_and(|candidate| newer(candidate)) {
         format!(
             "{id} is pinned to pre-release {version}.\nRun `krabb plugin install {id} --unstable \
             --yes` to move to a newer pre-release."
@@ -687,7 +690,8 @@ pub(crate) fn versions(home: &Path, id: &str, json: bool) -> Result<(), Error> {
     }
 
     let index = load(home)?;
-    let rows = history(&index, id, installed(home, id).as_deref(), prerelease(crate::VERSION))?;
+    let rows =
+        history(&index, id, installed(home, id).as_deref(), follows_prereleases(crate::VERSION))?;
 
     if json {
         println!(

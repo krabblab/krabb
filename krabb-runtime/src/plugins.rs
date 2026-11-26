@@ -69,7 +69,8 @@ pub(crate) async fn plugin(
                 let id = source.id.clone();
                 let spinner = terminal::progress(format!("{action} plugin {id}..."), json);
 
-                let pin = if unstable { index::unstable(&root, &id) } else { Ok(None) };
+                let pins = unstable && !index::follows_prereleases(crate::VERSION);
+                let pin = if pins { index::unstable(&root, &id) } else { Ok(None) };
 
                 if let Ok(Some(version)) = &pin {
                     source.version = Some(version.clone());
