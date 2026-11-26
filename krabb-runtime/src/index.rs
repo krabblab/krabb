@@ -392,8 +392,9 @@ pub(crate) fn select<'a>(
     select_for(index, id, version, unstable, protocol, std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// Whether a Krabb at VERSION follows plugin pre-releases without `--unstable`, because a
-/// pre-release host is published together with the plugin pre-releases it was tested with.
+/// Whether a Krabb at VERSION installs each plugin's newest version, pre-releases included,
+/// without `--unstable`. Plugin versions are independent of Krabb's; the protocol decides
+/// which ones a host can load.
 pub(crate) fn prerelease(version: &str) -> bool {
     !releases::stable(version)
 }
