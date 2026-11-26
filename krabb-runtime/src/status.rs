@@ -386,7 +386,7 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
 }
 
 /// The one command that moves the installation forward, as a sentence.
-fn next_action(value: &serde_json::Value) -> Option<String> {
+pub(crate) fn next_action(value: &serde_json::Value) -> Option<String> {
     if value["recovery"]["from"].is_string() && value["recovery"]["accepted"] != true {
         return Some("Undo the unfinished update with `krabb update --rollback`.".into());
     }

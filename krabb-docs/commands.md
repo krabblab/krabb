@@ -676,13 +676,18 @@ in the home holds them for every conversation without its own choice, names any
 `KRABB_MODEL_PLUGIN`, `KRABB_MODEL`, or `clients.cli` override, and says that no
 restart is needed and whether the running daemon already uses them. Without a
 terminal, the step keeps the earlier model or the default. Naming the step when a
-provider is set also offers to change only its model.
+provider is set also offers to change only its model. After installing Codex, the step
+offers to sign in with your ChatGPT account, or says how to install the Codex CLI.
+
+When the background service is installed, the guide ends by waiting for it to answer
+and checking that the provider loaded. If either fails, it says so with the one next
+step instead of saying your Krabb is ready.
 
 `krabb doctor` is read-only; `krabb doctor --fix` creates missing safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
 
 `krabb hatch` personalizes your Krabb. Run it without arguments and it asks eight
-numbered questions in three sections: identity (name, what to call you, personality),
+questions in three sections: identity (name, what to call you, personality),
 voice (tone, writing style, language), and work (way of working, anything else). Each
 question shows its character limit and an example; press Enter to keep the current
 setting. Answer in your own words and in any language; the model ignores answers that

@@ -124,7 +124,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         }
     }
 
-    guide.finish()
+    guide.finish().await
 }
 
 /// Which steps to run: named ones, those a flag answers, or all of them in a terminal.
@@ -673,14 +673,48 @@ impl Guide {
         Ok(Flow::Next)
     }
 
-    fn finish(&mut self) -> Result<(), Error> {
+    async fn finish(&mut self) -> Result<(), Error> {
         self.gap();
 
-        let ready = ready_provider(&self.root)?.is_some();
+        let provider = ready_provider(&self.root)?;
         let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
 
-        println!("{}", closing(ready, terminal));
+        if let Some(provider) = &provider
+            && self.interactive
+            && crate::service_path().is_file()
+            && let Some(problem) = self.working(provider).await
+        {
+            println!("{problem}");
+            return Ok(());
+        }
+
+        println!("{}", closing(provider.is_some(), terminal));
         Ok(())
+    }
+
+    /// Why the running Krabb cannot answer with PROVIDER yet, with the one next step, or none
+    /// when the service answers and the provider loaded. Init writes and starts the service just
+    /// before this, so a slow start gets the same wait `krabb tui` gives it.
+    async fn working(&self, provider: &str) -> Option<String> {
+        let running = matches!(crate::service_manager_state(), Ok(crate::ServiceState::Active));
+
+        if let Err(error) =
+            crate::require_tui_daemon(&self.root, running, crate::DAEMON_STARTUP_CHECKS).await
+        {
+            return Some(format!("Your Krabb is set up, but it does not answer yet.\n{error}"));
+        }
+
+        let status = crate::status::status_at(&self.root).await.ok()?;
+        let states = status["plugin_states"].as_array()?;
+        let state = states.iter().find(|state| state["id"] == provider)?;
+
+        if state["state"] == "ready" {
+            return None;
+        }
+
+        let next = crate::status::next_action(&status)?;
+
+        Some(format!("Your Krabb is set up, but the {provider} provider is not ready.\n{next}"))
     }
 }
 

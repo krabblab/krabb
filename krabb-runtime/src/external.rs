@@ -369,7 +369,7 @@ pub(crate) async fn tui_command(
 }
 
 /// How many half-second checks the TUI waits for a service that runs but does not answer yet.
-const DAEMON_STARTUP_CHECKS: u32 = 30;
+pub(crate) const DAEMON_STARTUP_CHECKS: u32 = 30;
 
 /// Requires a daemon that answers. A RUNNING service may still be loading plugins or waiting
 /// for keychain access, so the TUI gives it up to CHECKS half-second checks first.
