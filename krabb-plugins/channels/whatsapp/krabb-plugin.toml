@@ -17,7 +17,7 @@ default = "127.0.0.1:8787"
 
 [protocol]
 major = 0
-minor = 1
+minor = 2
 
 [setup.KRABB_WHATSAPP_TOKEN]
 label = "Access token"

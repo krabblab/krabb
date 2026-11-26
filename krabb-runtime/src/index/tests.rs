@@ -104,6 +104,7 @@ fn versions_that_need_a_newer_krabb_are_skipped_and_explained() {
     let index = index(vec![release("0.1.0", (0, 1), None), newer.clone()]);
 
     assert_eq!(pick(&index, None).unwrap(), "0.1.0");
+
     assert_eq!(
         pick(&index, Some("0.3.0")).unwrap_err(),
         "Plugin echo 0.3.0 needs Krabb 0.3.0-rc.1 or newer.\nUpdate Krabb with `krabb update`."

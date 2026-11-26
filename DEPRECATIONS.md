@@ -26,6 +26,18 @@ The policy covers every interface people, scripts, or plugins depend on:
 
 A security fix may remove an interface at once; its release notes say so.
 
+### Plugin Compatibility
+
+Two settings keep a plugin off a Krabb it cannot work with:
+
+- **The plugin protocol** covers the messages between Krabb and plugins. Raise its
+  minor version when plugins start relying on a new or changed message or field, and
+  its major version when Krabb stops accepting older plugins. A Krabb refuses plugins
+  with a newer protocol than its own.
+- **The `krabb` manifest key** names the oldest Krabb a plugin version works with.
+  Set it when a plugin relies on host behavior the protocol does not cover, such as a
+  tool name or a setup field kind. Plugin versions stay independent of Krabb's.
+
 ### Saved Data
 
 Changes to the data in a Krabb home are versioned migrations, never compatibility

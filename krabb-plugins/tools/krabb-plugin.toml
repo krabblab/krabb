@@ -5,7 +5,7 @@ permissions = ["filesystem", "network", "process"]
 
 [protocol]
 major = 0
-minor = 1
+minor = 2
 
 [[requires]]
 setting = "KRABB_SANDBOX_RUNTIME"

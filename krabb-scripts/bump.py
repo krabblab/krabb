@@ -25,6 +25,9 @@ KRABB = 'krabb'
 KRABB_PACKAGES = ['krabb', 'krabb-daemon']
 VERSION = re.compile(r'^(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$')
 HEADING = re.compile(r'^## \[(?P<version>[^\]]+)\](?P<date>.*)$', re.MULTILINE)
+PROTOCOL = re.compile(r'pub const CURRENT: Self = Self \{ major: (\d+), minor: (\d+) \};')
+CORE = 'krabb-core/src'
+TYPES = f'{CORE}/types.rs'
 NORMAL = {None, 'build'}
 
 
@@ -318,11 +321,44 @@ def apply(bumps, root=ROOT, today=None):
     metadata(root)
 
 
-def confirmed(bumps, assume):
+def protocol(text):
+    """The plugin protocol version a `types.rs` declares, such as `0.2`."""
+
+    found = PROTOCOL.search(text or '')
+
+    return found and f'{found[1]}.{found[2]}'
+
+
+def unchanged_protocol(bumps, root=ROOT):
+    """A warning when a Krabb bump changes `krabb-core` but keeps the plugin protocol."""
+
+    krabb = next((component for component, _ in bumps if component.name == KRABB), None)
+    commit = krabb and base(krabb, root)
+
+    if not commit or not git('diff', '--quiet', commit, '--', CORE, root=root,
+                             check=False).returncode:
+        return None
+
+    before = protocol(git('show', f'{commit}:{TYPES}', root=root, check=False).stdout)
+    current = protocol((root / TYPES).read_text())
+
+    if before != current:
+        return None
+
+    return (f'krabb-core changed since Krabb {krabb.version}, and the plugin protocol is still '
+            f'{current}. Raise it if plugins rely on the change, as DEPRECATIONS.md describes.')
+
+
+def confirmed(bumps, assume, root=ROOT):
     print('[INFO] Planned release bumps:')
 
     for component, version in bumps:
         print(f'  {component.name}: {component.version} -> {version}')
+
+    warning = unchanged_protocol(bumps, root)
+
+    if warning:
+        print(f'[WARN] {warning}')
 
     sys.stdout.flush()
 
@@ -356,7 +392,7 @@ def main(argv=None, root=ROOT):
 
             return 0
 
-        if not confirmed(bumps, arguments.yes):
+        if not confirmed(bumps, arguments.yes, root):
             print('[INFO] No version was changed.')
             return 1
 

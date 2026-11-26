@@ -254,6 +254,33 @@ class Bump(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn('Unknown component nope', output)
 
+    def test_a_krabb_bump_warns_when_core_changed_but_the_protocol_did_not(self):
+        types = self.root / bump.TYPES
+        current = 'pub const CURRENT: Self = Self { major: 0, minor: 2 };\n'
+
+        types.parent.mkdir(parents=True)
+        types.write_text(current)
+        self.git('add', '.')
+
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                 '-c', 'commit.gpgsign=false', 'commit', '-q', '--amend', '--no-edit')
+
+        krabb = bump.components(self.root)['krabb']
+        bumps = [(krabb, '0.1.1')]
+
+        self.assertIsNone(bump.unchanged_protocol(bumps, self.root))
+
+        types.write_text(current + 'pub struct Added;\n')
+
+        warning = bump.unchanged_protocol(bumps, self.root)
+
+        self.assertIn('the plugin protocol is still 0.2', warning)
+        self.assertIsNone(bump.unchanged_protocol([], self.root))
+
+        types.write_text(current.replace('minor: 2', 'minor: 3'))
+
+        self.assertIsNone(bump.unchanged_protocol(bumps, self.root))
+
     def test_repository_components_are_discovered(self):
         found = bump.components()
 

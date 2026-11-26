@@ -5918,6 +5918,7 @@ fn manifest_round_trips() {
     needy.krabb = Some("99.0.0".into());
 
     assert!(needy.validate().is_ok());
+
     assert_eq!(
         needy.needs_newer_krabb().unwrap(),
         "Plugin echo 0.1.0 needs Krabb 99.0.0 or newer.\nUpdate Krabb with `krabb update`."

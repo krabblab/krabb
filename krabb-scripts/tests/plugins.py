@@ -203,6 +203,7 @@ class Publication(unittest.TestCase):
         plugin, entry = plugins.release('echo-0.2.0', registry.manifests['echo-0.2.0'])
 
         self.assertEqual((plugin, entry['krabb']), ('echo', '0.1.0-rc.3'))
+
         tools = plugins.release('tools-0.1.0', registry.manifests['tools-0.1.0'])[1]
 
         self.assertNotIn('krabb', tools)

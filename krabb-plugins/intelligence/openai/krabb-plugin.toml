@@ -11,7 +11,7 @@ default = "auto"
 
 [protocol]
 major = 0
-minor = 1
+minor = 2
 
 [setup.KRABB_OPENAI_KEY]
 label = "API key"
