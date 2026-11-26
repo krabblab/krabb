@@ -342,6 +342,9 @@ def unchanged_protocol(bumps, root=ROOT):
     before = protocol(git('show', f'{commit}:{TYPES}', root=root, check=False).stdout)
     current = protocol((root / TYPES).read_text())
 
+    if current is None:
+        return f'{TYPES} no longer declares Protocol::CURRENT as bump.py expects; update bump.py.'
+
     if before != current:
         return None
 

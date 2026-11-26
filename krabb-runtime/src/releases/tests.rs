@@ -11,7 +11,17 @@ fn versions_follow_the_installer_format() {
         assert!(valid_version(version), "{version}");
     }
 
-    for version in ["", "0.1", "v0.1.0", "0.1.x", "0.1.0-", "0..1", "0.1.0+build", "main"] {
+    for version in [
+        "",
+        "0.1",
+        "v0.1.0",
+        "0.1.x",
+        "0.1.0-",
+        "0..1",
+        "0.1.0+build",
+        "main",
+        "18446744073709551616.0.0",
+    ] {
         assert!(!valid_version(version), "{version}");
     }
 }
@@ -19,6 +29,7 @@ fn versions_follow_the_installer_format() {
 #[test]
 fn targets_cover_the_published_matrix() {
     assert_eq!(target("linux", "x86_64"), Some(("x86_64-unknown-linux-gnu", "tar.gz")));
+
     assert_eq!(target("macos", "aarch64"), Some(("aarch64-apple-darwin", "tar.gz")));
     assert_eq!(target("windows", "aarch64"), Some(("aarch64-pc-windows-msvc", "zip")));
     assert_eq!(target("freebsd", "x86_64"), None);

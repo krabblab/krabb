@@ -226,16 +226,16 @@ def manifests(root=ROOT):
         manifest = tomllib.loads(path.read_text())
         plugin = manifest['id']
 
-        if not ID.match(plugin):
+        if not ID.fullmatch(plugin):
             raise Failure(f'Plugin ID {plugin} is not valid.')
 
         if plugin in found:
             raise Failure(f'Plugin {plugin} has more than one manifest.')
 
-        if not VERSION.match(manifest['version']):
+        if not VERSION.fullmatch(manifest['version']):
             raise Failure(f"Plugin {plugin} has an invalid version: {manifest['version']}.")
 
-        if 'krabb' in manifest and not VERSION.match(str(manifest['krabb'])):
+        if 'krabb' in manifest and not VERSION.fullmatch(str(manifest['krabb'])):
             raise Failure(f"Plugin {plugin} names an invalid Krabb version: {manifest['krabb']}.")
 
         crate = tomllib.loads((path.parent / 'Cargo.toml').read_text()).get('package', {})
@@ -323,7 +323,8 @@ def release(tag, manifest):
     protocol = annotations.get(PROTOCOL, '')
 
     if not (plugin and version and re.fullmatch(r'[0-9]+\.[0-9]+', protocol)) or \
-            tag != f'{plugin}-{version}' or not ID.match(plugin) or not VERSION.match(version):
+            tag != f'{plugin}-{version}' or not ID.fullmatch(plugin) or \
+            not VERSION.fullmatch(version):
         return None
 
     artifacts = {}
@@ -366,7 +367,7 @@ def release(tag, manifest):
         entry['yanked'] = annotations[WITHDRAWN]
 
     if KRABB in annotations:
-        if not VERSION.match(annotations[KRABB]):
+        if not isinstance(annotations[KRABB], str) or not VERSION.fullmatch(annotations[KRABB]):
             return None
 
         entry['krabb'] = annotations[KRABB]
@@ -485,7 +486,7 @@ def publish(dist, reference, source, root=ROOT, now=None):
 
 
 def withdraw(reference, plugin, version, reason):
-    if not ID.match(plugin) or not VERSION.match(version):
+    if not ID.fullmatch(plugin) or not VERSION.fullmatch(version):
         raise Failure(f'Plugin {plugin} {version} is not a valid plugin version.')
 
     if not reason.strip():

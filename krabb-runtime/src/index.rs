@@ -73,13 +73,21 @@ impl Host<'static> {
 impl Host<'_> {
     /// Whether this host speaks the release's protocol and is as new as the release needs.
     pub(crate) fn fits(&self, release: &Release) -> bool {
-        self.protocol.compatible(release.protocol) && self.recent(release.krabb.as_deref())
+        self.protocol.compatible(release.protocol)
+            && release.krabb.as_deref().is_none_or(|minimum| self.at_least(minimum))
     }
 
     /// Whether this host is at least MINIMUM, the oldest Krabb a plugin version works with.
-    pub(crate) fn recent(&self, minimum: Option<&str>) -> bool {
-        minimum.is_none_or(|minimum| releases::compare(self.version, minimum).is_ge())
+    pub(crate) fn at_least(&self, minimum: &str) -> bool {
+        releases::compare(self.version, minimum).is_ge()
     }
+}
+
+/// The error for plugin ID at VERSION, which needs Krabb KRABB or newer.
+pub(crate) fn needs_krabb(id: &str, version: &str, krabb: &str) -> String {
+    format!(
+        "Plugin {id} {version} needs Krabb {krabb} or newer.\nUpdate Krabb with `krabb update`."
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -489,13 +497,8 @@ fn select_for<'a>(
                 .into());
             }
 
-            if let Some(krabb) = release.krabb.as_deref().filter(|krabb| !host.recent(Some(krabb)))
-            {
-                return Err(format!(
-                    "Plugin {id} {version} needs Krabb {krabb} or newer.\nUpdate Krabb with \
-                     `krabb update`."
-                )
-                .into());
+            if let Some(krabb) = release.krabb.as_deref().filter(|krabb| !host.at_least(krabb)) {
+                return Err(needs_krabb(id, version, krabb).into());
             }
 
             release
@@ -564,7 +567,7 @@ impl Unavailable {
             && releases.iter().filter(usable).any(|release| {
                 (unstable || releases::stable(&release.version))
                     && host.protocol.compatible(release.protocol)
-                    && !host.recent(release.krabb.as_deref())
+                    && release.krabb.as_deref().is_some_and(|krabb| !host.at_least(krabb))
             });
 
         Self { id: id.to_owned(), prerelease, update }
@@ -803,7 +806,7 @@ fn notes(row: &Row) -> Vec<String> {
         (!Protocol::CURRENT.compatible(row.protocol))
             .then(|| format!("needs protocol {}.{}", row.protocol.major, row.protocol.minor)),
         row.krabb
-            .filter(|krabb| !Host::CURRENT.recent(Some(krabb)))
+            .filter(|krabb| !Host::CURRENT.at_least(krabb))
             .map(|krabb| format!("needs Krabb {krabb} or newer")),
         (!row.available).then(|| "no build for this system".to_owned()),
     ]
@@ -834,7 +837,7 @@ fn history<'a>(
     Ok(sorted
         .into_iter()
         .map(|release| {
-            let compatible = Host::CURRENT.fits(release);
+            let compatible = Protocol::CURRENT.compatible(release.protocol);
             let available = target.is_some_and(|target| release.artifacts.contains_key(target));
             let latest = latest.is_some_and(|latest| latest.version == release.version);
             let installed = installed == Some(release.version.as_str());

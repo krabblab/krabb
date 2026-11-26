@@ -281,6 +281,10 @@ class Bump(unittest.TestCase):
 
         self.assertIsNone(bump.unchanged_protocol(bumps, self.root))
 
+        types.write_text('pub const CURRENT: Protocol = Protocol::new(0, 3);\n')
+
+        self.assertIn('update bump.py', bump.unchanged_protocol(bumps, self.root))
+
     def test_repository_components_are_discovered(self):
         found = bump.components()
 

@@ -213,6 +213,11 @@ class Publication(unittest.TestCase):
 
         self.assertIsNone(plugins.release('echo-0.3.0', broken))
 
+        for value in ['0.1.0\n', 7]:
+            broken['annotations'][plugins.KRABB] = value
+
+            self.assertIsNone(plugins.release('echo-0.3.0', broken))
+
         path.write_text('krabb = "soon"\n' + text)
 
         with self.assertRaisesRegex(plugins.Failure, 'invalid Krabb version: soon'):

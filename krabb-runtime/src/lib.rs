@@ -1324,15 +1324,12 @@ struct Manifest {
 }
 
 impl Manifest {
-    /// Why this Krabb is too old for the plugin, when the manifest needs a newer one.
+    /// Why this Krabb is too old for the plugin, when the manifest needs a newer one. Call it
+    /// after `validate`, which refuses a malformed `krabb` value.
     fn needs_newer_krabb(&self) -> Option<String> {
-        let krabb =
-            self.krabb.as_deref().filter(|krabb| !index::Host::CURRENT.recent(Some(krabb)))?;
+        let krabb = self.krabb.as_deref().filter(|krabb| !index::Host::CURRENT.at_least(krabb))?;
 
-        Some(format!(
-            "Plugin {} {} needs Krabb {krabb} or newer.\nUpdate Krabb with `krabb update`.",
-            self.id, self.version
-        ))
+        Some(index::needs_krabb(&self.id, &self.version, krabb))
     }
 
     fn validate(&self) -> Result<(), String> {

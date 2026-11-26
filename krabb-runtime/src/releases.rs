@@ -123,7 +123,12 @@ pub(super) fn stable(version: &str) -> bool {
 }
 
 pub(super) fn valid_version(version: &str) -> bool {
-    let digits = |value: &str| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+    let digits = |value: &str| {
+        !value.is_empty()
+            && value.bytes().all(|b| b.is_ascii_digit())
+            && value.parse::<u64>().is_ok()
+    };
+
     let mut parts = version.splitn(3, '.');
 
     let (Some(major), Some(minor), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {

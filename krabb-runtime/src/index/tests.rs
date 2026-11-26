@@ -121,6 +121,21 @@ fn versions_that_need_a_newer_krabb_are_skipped_and_explained() {
 
     assert_eq!(unavailable.to_string(), "Plugin echo needs a newer version of Krabb.");
     assert_eq!(unavailable.next(), "Update Krabb with `krabb update`.");
+
+    let mut future = release("0.4.0", (0, 1), None);
+
+    future["krabb"] = "99.0.0".into();
+
+    let mixed = self::index(vec![future, release("0.5.0-rc.1", (0, 1), None)]);
+    let error = select_for(&mixed, "echo", None, false, HOST, "linux", "x86_64").err().unwrap();
+
+    assert!(error.downcast_ref::<Unavailable>().unwrap().next().contains("--unstable"));
+
+    let rows = history(&mixed, "echo", None, false).unwrap();
+    let notes = notes(rows.iter().find(|row| row.version == "0.4.0").unwrap());
+
+    assert!(notes.contains(&"needs Krabb 99.0.0 or newer".to_owned()), "{notes:?}");
+    assert!(rows.iter().all(|row| row.compatible));
 }
 
 #[test]

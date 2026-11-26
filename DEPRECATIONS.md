@@ -28,7 +28,7 @@ A security fix may remove an interface at once; its release notes say so.
 
 ### Plugin Compatibility
 
-Two settings keep a plugin off a Krabb it cannot work with:
+Two checks keep a plugin off a Krabb it cannot work with:
 
 - **The plugin protocol** covers the messages between Krabb and plugins. Raise its
   minor version when plugins start relying on a new or changed message or field, and
