@@ -4,6 +4,7 @@ use super::*;
 
 const DIGEST: &str = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12";
 const LINUX: &str = "x86_64-unknown-linux-gnu";
+const HOST: Host<'static> = Host { protocol: Protocol::CURRENT, version: "0.2.0" };
 
 fn release(version: &str, protocol: (u16, u16), yanked: Option<&str>) -> Value {
     serde_json::json!({
@@ -45,7 +46,7 @@ fn pick(index: &Index, version: Option<&str>) -> Result<String, String> {
 }
 
 fn choose(index: &Index, version: Option<&str>, unstable: bool) -> Result<String, String> {
-    select_for(index, "echo", version, unstable, Protocol::CURRENT, "linux", "x86_64")
+    select_for(index, "echo", version, unstable, HOST, "linux", "x86_64")
         .map(|choice| choice.release.version.clone())
         .map_err(|error| error.to_string())
 }
@@ -72,27 +73,70 @@ fn selection_prefers_the_newest_supported_stable_version() {
     assert!(pick(&index, Some("1.0.0")).unwrap_err().contains("needs plugin protocol 1.0"));
     assert!(pick(&index, Some("9.9.9")).unwrap_err().contains("has no version 9.9.9"));
 
-    let error = select_for(&index, "slack", None, false, Protocol::CURRENT, "linux", "x86_64");
+    let error = select_for(&index, "slack", None, false, HOST, "linux", "x86_64");
 
     assert!(error.err().unwrap().to_string().contains("not in the official plugin index"));
 
-    let error = select_for(&index, "echo", None, false, Protocol::CURRENT, "macos", "aarch64");
+    let error = select_for(&index, "echo", None, false, HOST, "macos", "aarch64");
 
     assert!(error.err().unwrap().to_string().contains("No release of plugin echo has a build"));
 
-    let error =
-        select_for(&index, "echo", Some("0.1.0"), false, Protocol::CURRENT, "macos", "aarch64");
+    let error = select_for(&index, "echo", Some("0.1.0"), false, HOST, "macos", "aarch64");
 
     assert!(error.err().unwrap().to_string().contains("has no build for aarch64-apple-darwin"));
 
-    let error = select_for(&index, "echo", None, false, Protocol::CURRENT, "plan9", "x86_64");
+    let error = select_for(&index, "echo", None, false, HOST, "plan9", "x86_64");
 
     assert!(error.err().unwrap().to_string().contains("--source"));
 
-    let next =
-        select_for(&index, "echo", None, false, Protocol { major: 1, minor: 2 }, "linux", "x86_64");
+    let next = Host { protocol: Protocol { major: 1, minor: 2 }, ..HOST };
+    let next = select_for(&index, "echo", None, false, next, "linux", "x86_64");
 
     assert_eq!(next.unwrap().release.version, "1.0.0");
+}
+
+#[test]
+fn versions_that_need_a_newer_krabb_are_skipped_and_explained() {
+    let mut newer = release("0.3.0", (0, 1), None);
+
+    newer["krabb"] = "0.3.0-rc.1".into();
+
+    let index = index(vec![release("0.1.0", (0, 1), None), newer.clone()]);
+
+    assert_eq!(pick(&index, None).unwrap(), "0.1.0");
+    assert_eq!(
+        pick(&index, Some("0.3.0")).unwrap_err(),
+        "Plugin echo 0.3.0 needs Krabb 0.3.0-rc.1 or newer.\nUpdate Krabb with `krabb update`."
+    );
+
+    let updated = Host { version: "0.3.0", ..HOST };
+    let choice = select_for(&index, "echo", None, false, updated, "linux", "x86_64").unwrap();
+
+    assert_eq!(choice.release.version, "0.3.0");
+
+    let only = self::index(vec![newer]);
+    let error = select_for(&only, "echo", None, false, HOST, "linux", "x86_64").err().unwrap();
+    let unavailable = error.downcast_ref::<Unavailable>().unwrap();
+
+    assert_eq!(unavailable.to_string(), "Plugin echo needs a newer version of Krabb.");
+    assert_eq!(unavailable.next(), "Update Krabb with `krabb update`.");
+}
+
+#[test]
+fn an_index_naming_an_invalid_krabb_version_is_refused() {
+    let mut broken = release("0.1.0", (0, 1), None);
+
+    broken["krabb"] = "soon".into();
+
+    let value = serde_json::json!({
+        "schema": 1,
+        "registry": "ghcr.io/krabblab/krabb/plugins",
+        "plugins": {"echo": [broken]},
+    });
+
+    let index = serde_json::from_value::<Index>(value).unwrap();
+
+    assert_eq!(validate(&index, false).unwrap_err(), "echo 0.1.0 names an invalid Krabb version");
 }
 
 #[test]
@@ -113,9 +157,8 @@ fn unstable_selection_includes_pre_releases_but_not_withdrawn_versions() {
         "No stable release of plugin echo works with this version of Krabb."
     );
 
-    let error = select_for(&candidates, "echo", None, false, Protocol::CURRENT, "linux", "x86_64")
-        .err()
-        .unwrap();
+    let error =
+        select_for(&candidates, "echo", None, false, HOST, "linux", "x86_64").err().unwrap();
 
     assert_eq!(
         error.downcast_ref::<Unavailable>().unwrap().next(),
@@ -129,9 +172,7 @@ fn unstable_selection_includes_pre_releases_but_not_withdrawn_versions() {
         "No release of plugin echo works with this version of Krabb."
     );
 
-    let error = select_for(&withdrawn, "echo", None, true, Protocol::CURRENT, "linux", "x86_64")
-        .err()
-        .unwrap();
+    let error = select_for(&withdrawn, "echo", None, true, HOST, "linux", "x86_64").err().unwrap();
 
     assert_eq!(
         error.downcast_ref::<Unavailable>().unwrap().next(),
@@ -241,7 +282,7 @@ fn local_indexes_pull_verified_archives_from_local_registries() {
     fs::write(&path, value.to_string()).unwrap();
 
     let index = load_from(&root, &format!("file://{}", path.display())).unwrap();
-    let choice = select(&index, "echo", None, Protocol::CURRENT).unwrap();
+    let choice = select(&index, "echo", None, Host::CURRENT).unwrap();
     let archive = pull(&index, "echo", &choice, &root).unwrap();
 
     assert_eq!(fs::read(&archive).unwrap(), content);

@@ -112,6 +112,10 @@ pub(crate) fn link_recorded(
         return Err(format!("Plugin {} requires unsupported protocol.", manifest.id).into());
     }
 
+    if let Some(error) = manifest.needs_newer_krabb() {
+        return Err(error.into());
+    }
+
     manifest.validate().map_err(|error| format!("Invalid plugin manifest: {error}"))?;
     validate_commands(home_root, &source.id, &manifest.commands)?;
 

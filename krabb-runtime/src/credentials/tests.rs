@@ -394,6 +394,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
             commands: vec![],
             state: None,
             requires: Vec::new(),
+            krabb: None,
         };
 
         let environment = crate::env_for(&manifest, &crate::Config::default(), &root).unwrap();
@@ -422,6 +423,7 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
         commands: vec![],
         state: None,
         requires: Vec::new(),
+        krabb: None,
     };
 
     fs::remove_file(&key).unwrap();

@@ -861,7 +861,7 @@ pub(crate) fn changed(
     if let Some((official, version)) = index::official(entry) {
         let index = index::load(root)?;
 
-        let choice = match index::select(&index, official, version, Protocol::CURRENT) {
+        let choice = match index::select(&index, official, version, index::Host::CURRENT) {
             Ok(choice) => choice,
 
             Err(error) => {

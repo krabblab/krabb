@@ -583,6 +583,10 @@ pub(crate) fn inspect_update(
         return Err(format!("Plugin {id} requires unsupported protocol.").into());
     }
 
+    if let Some(error) = manifest.needs_newer_krabb() {
+        return Err(error.into());
+    }
+
     validate_commands(home_root, id, &manifest.commands)?;
     super::state::check(home_root, Some(entry), &manifest)?;
 
@@ -796,6 +800,10 @@ pub(crate) fn prepare_update(
 
     if !Protocol::CURRENT.compatible(manifest.protocol) {
         return Err(format!("Plugin {id} requires unsupported protocol.").into());
+    }
+
+    if let Some(error) = manifest.needs_newer_krabb() {
+        return Err(error.into());
     }
 
     validate_commands(home_root, id, &manifest.commands)?;
