@@ -454,7 +454,8 @@ host's protocol supports, from any directory, and follows new versions on
 `plugin update`. `<id>@<version>` installs and pins any published version at your
 own risk, including withdrawn ones; versions the host's protocol cannot load are
 refused. `<id>@latest` removes the pin. `--unstable` installs the newest version,
-pre-releases included, and pins it when it is a pre-release. `plugin versions <id>`
+pre-releases included, and pins it when it is a pre-release. A pre-release of Krabb
+installs and follows plugin pre-releases without `--unstable` or a pin. `plugin versions <id>`
 lists every published version with its release date and marks the latest, installed,
 withdrawn, pre-release, and unsupported ones. Sources may be local paths, Git
 revisions, or HTTPS archives with a `#sha256=` digest. `--link` is for local

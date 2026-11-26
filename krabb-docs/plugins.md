@@ -537,7 +537,8 @@ the existing plugins as protocol references.
 When `plugin install` is given one or more IDs without `--source`, Krabb
 installs each from the [official plugin index](#official-plugin-index): the
 newest stable, non-withdrawn version whose protocol this host supports and that
-has a build for this target. The lock records the source as `index:<id>`, which
+has a build for this target. A pre-release of Krabb considers plugin pre-releases
+too, so it installs the plugins published with it. The lock records the source as `index:<id>`, which
 `plugin update` follows to newer versions. `<id>@<version>` installs and pins one
 published version instead (recorded as `index:<id>@<version>`); a pinned version
 other than the latest is used at your own risk, and `<id>@latest` returns to
@@ -590,8 +591,9 @@ registry directory laid out as `blobs/sha256/<digest>`.
 
 Compatibility comes only from the plugin protocol: a version installs
 automatically when its protocol has the host's major version and a minor version
-no newer than the host's. Pre-release versions such as `0.2.0-rc.1` install only
-when named or with `--unstable`.
+no newer than the host's. On a stable Krabb, pre-release versions such as
+`0.2.0-rc.1` install only when named or with `--unstable`; a pre-release of Krabb
+installs them by default.
 
 With `--link` and no `--source`, Krabb looks for each plugin in the local
 `krabb-plugins/<id>` directory or in a category directory such as

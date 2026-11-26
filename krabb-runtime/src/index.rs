@@ -387,7 +387,15 @@ pub(crate) fn select<'a>(
     version: Option<&str>,
     protocol: Protocol,
 ) -> Result<Choice<'a>, Error> {
-    select_for(index, id, version, false, protocol, std::env::consts::OS, std::env::consts::ARCH)
+    let unstable = prerelease(crate::VERSION);
+
+    select_for(index, id, version, unstable, protocol, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Whether a Krabb at VERSION follows plugin pre-releases without `--unstable`, because a
+/// pre-release host is published together with the plugin pre-releases it was tested with.
+pub(crate) fn prerelease(version: &str) -> bool {
+    !releases::stable(version)
 }
 
 /// The newest version that speaks `protocol`, including pre-releases when `unstable`.
@@ -678,7 +686,7 @@ pub(crate) fn versions(home: &Path, id: &str, json: bool) -> Result<(), Error> {
     }
 
     let index = load(home)?;
-    let rows = history(&index, id, installed(home, id).as_deref())?;
+    let rows = history(&index, id, installed(home, id).as_deref(), prerelease(crate::VERSION))?;
 
     if json {
         println!(
@@ -747,13 +755,21 @@ fn notes(row: &Row) -> Vec<String> {
     .collect()
 }
 
-fn history<'a>(index: &'a Index, id: &str, installed: Option<&str>) -> Result<Vec<Row<'a>>, Error> {
+fn history<'a>(
+    index: &'a Index,
+    id: &str,
+    installed: Option<&str>,
+    unstable: bool,
+) -> Result<Vec<Row<'a>>, Error> {
     let releases = index.plugins.get(id).ok_or_else(|| {
         format!("Plugin {id} is not in the official plugin index, so check the ID.")
     })?;
 
-    let latest = select(index, id, None, Protocol::CURRENT).ok().map(|choice| choice.release);
-    let target = releases::target(std::env::consts::OS, std::env::consts::ARCH).map(|(t, _)| t);
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    let latest = select_for(index, id, None, unstable, Protocol::CURRENT, os, arch)
+        .ok()
+        .map(|choice| choice.release);
+    let target = releases::target(os, arch).map(|(t, _)| t);
     let mut sorted = releases.iter().collect::<Vec<_>>();
 
     sorted.sort_by(|left, right| releases::compare(&right.version, &left.version));

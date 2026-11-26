@@ -300,7 +300,7 @@ fn unreachable_indexes_fall_back_to_the_cached_copy() {
 #[test]
 fn history_marks_latest_installed_and_unsupported_versions() {
     let index = sample();
-    let rows = history(&index, "echo", Some("0.1.0")).unwrap();
+    let rows = history(&index, "echo", Some("0.1.0"), false).unwrap();
 
     let summary = rows
         .iter()
@@ -322,7 +322,21 @@ fn history_marks_latest_installed_and_unsupported_versions() {
 
     assert!(rows[4].installed);
     assert!(!rows[0].compatible);
-    assert!(history(&sample(), "slack", None).is_err());
+    assert!(history(&sample(), "slack", None, false).is_err());
+
+    let rows = history(&index, "echo", Some("0.1.0"), true).unwrap();
+
+    if suffix.is_empty() {
+        assert!(rows[1].latest);
+        assert!(!rows[3].latest);
+    }
+}
+
+#[test]
+fn only_a_pre_release_krabb_follows_plugin_pre_releases() {
+    assert!(prerelease("0.1.0-rc.2"));
+    assert!(!prerelease("0.1.0"));
+    assert!(!prerelease("1.2.3"));
 }
 
 #[test]
