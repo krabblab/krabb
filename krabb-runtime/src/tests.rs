@@ -1557,7 +1557,7 @@ fn formats_status_health_details_only_when_present() {
 #[tokio::test]
 async fn tui_reports_a_human_readable_daemon_requirement() {
     let root = test_root("tui-daemon-required");
-    let error = super::require_tui_daemon(&root).await.unwrap_err();
+    let error = super::require_tui_daemon(&root, false, 0).await.unwrap_err();
 
     assert_eq!(
         error.to_string(),
@@ -1566,6 +1566,11 @@ async fn tui_reports_a_human_readable_daemon_requirement() {
             "Start it with `krabb service start` or run `krabb-daemon`."
         )
     );
+
+    let starting = super::require_tui_daemon(&root, true, 1).await.unwrap_err().to_string();
+
+    assert!(starting.starts_with("The Krabb service is running but not answering yet."));
+    assert!(starting.ends_with(&format!("see the log in {}.", root.join("logs").display())));
 }
 
 #[test]

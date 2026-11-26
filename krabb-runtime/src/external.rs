@@ -297,7 +297,9 @@ pub(crate) async fn tui_command(
     root: &Path,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    require_tui_daemon(root).await?;
+    let running = matches!(service_manager_state(), Ok(ServiceState::Active));
+
+    require_tui_daemon(root, running, DAEMON_STARTUP_CHECKS).await?;
 
     let tui_manifest = verify_plugin_integrity(root, "tui", &path)?;
 
@@ -366,10 +368,21 @@ pub(crate) async fn tui_command(
     Ok(())
 }
 
+/// How many half-second checks the TUI waits for a service that runs but does not answer yet.
+const DAEMON_STARTUP_CHECKS: u32 = 30;
+
+/// Requires a daemon that answers. A RUNNING service may still be loading plugins or waiting
+/// for keychain access, so the TUI gives it up to CHECKS half-second checks first.
 pub(crate) async fn require_tui_daemon(
     root: &Path,
+    running: bool,
+    checks: u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if control_at("status", serde_json::json!({}), root).await?.is_none() {
+    if control_at("status", serde_json::json!({}), root).await?.is_some() {
+        return Ok(());
+    }
+
+    if !running {
         return Err(concat!(
             "The Krabb daemon is not running.\n",
             "Start it with `krabb service start` or run `krabb-daemon`."
@@ -377,7 +390,20 @@ pub(crate) async fn require_tui_daemon(
         .into());
     }
 
-    Ok(())
+    for _ in 0..checks {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        if control_at("status", serde_json::json!({}), root).await?.is_some() {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "The Krabb service is running but not answering yet.\nIf the keychain asks for \
+         access, choose Always Allow; otherwise see the log in {}.",
+        root.join("logs").display()
+    )
+    .into())
 }
 
 pub(crate) fn verify_plugin_integrity(

@@ -17,14 +17,17 @@ Changing the saved host does not require reinstalling the Krabb service.
 | Local | `http://127.0.0.1:11434` | An exact model tag installed on that server |
 | Another server | Its reachable base URL, including the port | A model installed on that server |
 
-Use a base URL without `/api` or `/v1`; the plugin appends `/api/chat`. Loopback
-refers to the machine or container running the Krabb daemon.
+Use a base URL without `/v1`; the plugin appends `/api/chat` and ignores a trailing
+`/api`. Loopback refers to the machine or container running the Krabb daemon.
+`krabb ollama models` lists the models the server offers, which `krabb init` shows as
+choices.
 
 Setup prompts for the API key, host, thinking mode, and context length, in that order.
 Thinking defaults to `false` for a lightweight setup; context length defaults to
 `auto`, leaving the allocation to Ollama. For local
 use, press Enter at the API-key prompt to leave it empty and clear any previously
-saved key. The local Ollama server requires no key. Cloud use requires a valid key.
+saved key. The local Ollama server requires no key. Cloud use requires a valid key,
+and the connection test checks it.
 Nonempty environment values override saved settings. Remove old overrides before
 using setup as described under [Existing Service Overrides](#existing-service-overrides).
 See [authentication](../../../krabb-docs/authentication.md#plugin-setup) for storage

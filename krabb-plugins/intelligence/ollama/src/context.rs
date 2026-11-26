@@ -26,9 +26,9 @@ pub(super) async fn profile(
                 krabb_core::Error::Denied("Ollama context discovery failed.".into())
             })?;
 
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            // Cloud and proxy endpoints may not expose the local runner's allocation.
-            4096
+        // Cloud and proxy endpoints may not expose the local runner's allocation.
+        let allocated = if response.status() == reqwest::StatusCode::NOT_FOUND {
+            None
         } else if !response.status().is_success() {
             return Err(krabb_core::Error::Denied(format!(
                 "Ollama context discovery was rejected with {}.",
@@ -37,7 +37,12 @@ pub(super) async fn profile(
         } else {
             let body: serde_json::Value =
                 serde_json::from_str(&super::read(response, "Ollama").await?)?;
-            running(&body, model).unwrap_or(4096)
+            running(&body, model)
+        };
+
+        match allocated {
+            Some(tokens) => tokens,
+            None => shown(client, &host, model, key).await.unwrap_or(4096),
         }
     };
 
@@ -53,6 +58,36 @@ pub(super) async fn profile(
         configured,
     )?;
     Ok(Profile { execution: Some(execution), window: Some(window), compact: false, search: false })
+}
+
+/// The context length the model's own details report, for a model that is not running yet.
+async fn shown(
+    client: &reqwest::Client,
+    host: &str,
+    model: &str,
+    key: Option<&str>,
+) -> Option<u64> {
+    let mut request =
+        client.post(format!("{host}/api/show")).json(&serde_json::json!({"model": model}));
+
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+
+    let response = request.timeout(std::time::Duration::from_secs(10)).send().await.ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value =
+        serde_json::from_str(&super::read(response, "Ollama").await.ok()?).ok()?;
+
+    body["model_info"]
+        .as_object()?
+        .iter()
+        .find(|(name, _)| name.ends_with(".context_length"))
+        .and_then(|(_, tokens)| tokens.as_u64())
 }
 
 fn running(body: &serde_json::Value, model: &str) -> Option<u64> {
@@ -81,6 +116,24 @@ mod tests {
         assert_eq!(running(&body, "small:latest"), Some(4096));
         assert_eq!(running(&body, "missing"), None);
         assert_eq!(running(&json!({}), "small"), None);
+    }
+
+    #[tokio::test]
+    async fn models_that_are_not_running_report_their_own_context_length() {
+        let shown =
+            r#"{"model_info":{"general.architecture":"gptoss","gptoss.context_length":131072}}"#;
+        let responses = vec![(200, r#"{"models":[]}"#.into()), (200, shown.into())];
+        let (base, server) = krabb_test::http::responses(responses).await;
+
+        let result =
+            profile(&reqwest::Client::new(), "big", &base, "auto", Some("fixture")).await.unwrap();
+
+        assert_eq!(result.window.map(|window| window.tokens), Some(131072));
+
+        let requests = server.await.unwrap();
+
+        assert!(requests[1].headers.starts_with("POST /api/show "));
+        assert!(requests[1].headers.to_lowercase().contains("authorization: bearer fixture"));
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use krabb_core::{
 #[cfg(not(test))]
 use krabb_core::{
     plugin::serve_events_concurrent,
-    types::{Capability, Hello, Protocol},
+    types::{Capability, CommandSpec, Hello, Protocol},
 };
 
 use futures_util::{Stream, StreamExt};
@@ -47,7 +47,11 @@ async fn plugin_main() -> krabb_core::Result<()> {
             id: "ollama".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             capabilities: vec![Capability::Model, Capability::Vision, Capability::Context],
-            commands: vec![],
+            commands: vec![CommandSpec {
+                name: "ollama".into(),
+                description: "List the models this Ollama server offers.".into(),
+                interactive: false,
+            }],
         },
         move |request, emitter| {
             let client = client.clone();
@@ -95,6 +99,18 @@ async fn generate(
         return Ok(Some(Response::ok(id, json!({}))));
     }
 
+    if method == "command" {
+        if params["args"] != json!(["models"]) {
+            return Err(krabb_core::Error::Denied(
+                "Unknown Ollama command.\nList the models with `krabb ollama models`.".into(),
+            ));
+        }
+
+        let text = models_at(client, &host(), credential()).await?;
+
+        return Ok(Some(Response::ok(id, json!({"text": text}))));
+    }
+
     if method == "model.info" {
         let host = host();
 
@@ -121,19 +137,93 @@ async fn generate(
     generate_at(client, id, input, &host(), &mut emitter).await
 }
 
-/// Confirms the Ollama server at HOST answers its model list, sending KEY when one is saved.
+/// Where Ollama Cloud keys are created, for errors about a missing or rejected key.
+const KEYS: &str = "https://ollama.com/settings/keys";
+
+/// Confirms the Ollama server at HOST answers, sending KEY when one is saved. Ollama Cloud
+/// lists its models without a key, so a cloud host is tested where the key is required.
 async fn check_at(
     client: &reqwest::Client,
     host: &str,
     key: Option<String>,
 ) -> krabb_core::Result<()> {
-    let mut request = client.get(format!("{}/api/tags", host.trim_end_matches('/')));
+    let host = validate_host(host, key.is_some())?;
+
+    if !cloud(&host) {
+        let mut request = client.get(format!("{host}/api/tags"));
+
+        if let Some(key) = key {
+            request = request.bearer_auth(key);
+        }
+
+        return krabb_http::accepted(request, "Ollama").await;
+    }
+
+    let Some(key) = key else {
+        return Err(krabb_core::Error::Denied(format!(
+            "Ollama Cloud needs an API key.\nCreate one at {KEYS}, then run `krabb plugin setup \
+             ollama`."
+        )));
+    };
+
+    let response = client
+        .get(format!("{host}/api/ps"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .map_err(|error| krabb_http::transport(&error, "Ollama"))?;
+
+    if matches!(response.status().as_u16(), 401 | 403) {
+        return Err(krabb_core::Error::Denied(format!(
+            "Ollama Cloud rejected the API key.\nCreate a new one at {KEYS}, then run `krabb \
+             plugin setup ollama`."
+        )));
+    }
+
+    Ok(())
+}
+
+/// The models the Ollama server at HOST offers, one `  name - name` line each.
+async fn models_at(
+    client: &reqwest::Client,
+    host: &str,
+    key: Option<String>,
+) -> krabb_core::Result<String> {
+    let host = validate_host(host, key.is_some())?;
+    let mut request = client.get(format!("{host}/api/tags"));
 
     if let Some(key) = key {
         request = request.bearer_auth(key);
     }
 
-    krabb_http::accepted(request, "Ollama").await
+    let response = request.send().await.map_err(|error| krabb_http::transport(&error, "Ollama"))?;
+
+    if !response.status().is_success() {
+        return Err(krabb_http::rejected(response, "Ollama").await);
+    }
+
+    let body: serde_json::Value =
+        serde_json::from_str(&read(response, "Ollama").await?).map_err(|error| {
+            krabb_core::Error::Denied(format!("Ollama models are invalid: {error}."))
+        })?;
+
+    let lines = body["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model["name"].as_str())
+        .map(|name| format!("  {name} - {name}"))
+        .collect::<Vec<_>>();
+
+    Ok(format!("Ollama models\n{}", lines.join("\n")))
+}
+
+/// Whether HOST is Ollama's cloud, which requires an API key for everything but its model list.
+fn cloud(host: &str) -> bool {
+    reqwest::Url::parse(host)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|name| name == "ollama.com" || name.ends_with(".ollama.com"))
 }
 
 /// The Ollama server Krabb talks to: a local or self-hosted one, or Ollama's cloud.
@@ -588,7 +678,10 @@ fn validate_host(host: &str, authenticated: bool) -> krabb_core::Result<String> 
         return Err(krabb_core::Error::Denied("Ollama credentials require HTTPS outside loopback, and the host cannot embed credentials, a query, or a fragment.".into()));
     }
 
-    Ok(url.as_str().trim_end_matches('/').into())
+    // People often copy the API base, which ends in `/api`; requests add that part themselves.
+    let host = url.as_str().trim_end_matches('/');
+
+    Ok(host.strip_suffix("/api").unwrap_or(host).into())
 }
 
 fn credential() -> Option<String> {
@@ -1138,6 +1231,36 @@ mod tests {
         let (host, _) = answer_once("401 Unauthorized").await;
 
         assert!(super::check_at(&client, &host, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_needs_a_key_and_hosts_may_end_in_api() {
+        let client = reqwest::Client::new();
+        let error = super::check_at(&client, "https://ollama.com", None).await.unwrap_err();
+
+        assert!(error.to_string().contains("Ollama Cloud needs an API key."), "{error}");
+        assert!(super::cloud("https://ollama.com"));
+        assert!(!super::cloud("http://127.0.0.1:11434"));
+
+        assert_eq!(
+            super::validate_host("https://ollama.com/api/", true).unwrap(),
+            "https://ollama.com"
+        );
+        assert_eq!(
+            super::validate_host("http://127.0.0.1:11434", false).unwrap(),
+            "http://127.0.0.1:11434"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_models_command_lists_the_server_models() {
+        let body = r#"{"models":[{"name":"gpt-oss:120b"},{"name":"qwen3:8b"}]}"#;
+        let (host, served) = krabb_test::http::responses(vec![(200, body.into())]).await;
+
+        let text = super::models_at(&reqwest::Client::new(), &host, None).await.unwrap();
+
+        assert_eq!(text, "Ollama models\n  gpt-oss:120b - gpt-oss:120b\n  qwen3:8b - qwen3:8b");
+        assert!(served.await.unwrap()[0].headers.starts_with("GET /api/tags "));
     }
 }
 
