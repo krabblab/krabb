@@ -13,6 +13,9 @@ publish DIST REGISTRY SOURCE
     Push each of those versions from DIST, rebuild the index, and confirm that anonymous
     clients can pull it. Published versions are never changed.
 
+ids REGISTRY
+    Print the IDs of the plugins in the published index of REGISTRY, as a JSON array.
+
 index REGISTRY
     Rebuild the index from the tags in REGISTRY, and push it when it changed.
 
@@ -70,6 +73,7 @@ TARGETS = {
 
 MEDIA = {'tar.gz': 'application/gzip', 'zip': 'application/zip'}
 ID = re.compile(r'^[a-z0-9-]+$')
+REDIRECTS = (301, 302, 303, 307, 308)
 VERSION = re.compile(r'^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$')
 REGISTRY = re.compile(r'^[a-z0-9.:-]+(/[a-z0-9._-]+)+$')
 NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
@@ -162,7 +166,21 @@ class Registry:
             if error.code == 404:
                 return None, None
 
-            raise
+            location = error.headers.get('Location') if error.headers else None
+
+            if error.code not in REDIRECTS or not location:
+                raise
+        except (OSError, ValueError) as error:
+            raise Failure(f'The registry {self.reference} is unreachable: {error}.') from error
+
+        return self.stored(urllib.parse.urljoin(url, location))
+
+    def stored(self, url):
+        """A blob from the storage host a registry redirected to, fetched without the token."""
+
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                return json.loads(response.read(DOCUMENT_LIMIT)), response.headers
         except (OSError, ValueError) as error:
             raise Failure(f'The registry {self.reference} is unreachable: {error}.') from error
 
@@ -185,6 +203,14 @@ class Registry:
 
     def manifest(self, tag):
         return self.get(f'/v2/{self.repository}/manifests/{tag}', OCI_MANIFEST)[0]
+
+    def blob(self, digest):
+        """The JSON blob with DIGEST, or None when the digest is malformed or missing."""
+
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+            return None
+
+        return self.get(f'/v2/{self.repository}/blobs/{digest}')[0]
 
 
 def manifests(root=ROOT):
@@ -363,6 +389,19 @@ def document(registry):
     return content, hashlib.sha256(content).hexdigest(), count, foreign
 
 
+def ids(registry):
+    """The IDs of the plugins the published index lists, sorted."""
+
+    manifest = registry.manifest(INDEX_TAG)
+    layers = (manifest or {}).get('layers') or [{}]
+    value = registry.blob(layers[0].get('digest', ''))
+
+    if not isinstance(value, dict) or not isinstance(value.get('plugins'), dict):
+        raise Failure(f'The registry {registry.reference} has no readable plugin index.')
+
+    return sorted(value['plugins'])
+
+
 def versions(count):
     return f"{count} plugin version{'' if count == 1 else 's'}"
 
@@ -483,7 +522,7 @@ def pullable(registry, digests):
                 with opener.open(request, timeout=30):
                     pass
             except urllib.error.HTTPError as error:
-                if error.code not in (301, 302, 303, 307, 308):
+                if error.code not in REDIRECTS:
                     return False
     except (OSError, ValueError):
         return False
@@ -503,6 +542,8 @@ def main(arguments):
                 print(' '.join(unpublished(Registry(registry), manifests())))
             case ['publish', dist, registry, source]:
                 publish(Path(dist), registry, source)
+            case ['ids', registry]:
+                print(json.dumps(ids(Registry(registry)), separators=(',', ':')))
             case ['index', registry]:
                 index(Registry(registry))
             case ['withdraw', registry, plugin, version, reason]:
