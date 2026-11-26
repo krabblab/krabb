@@ -230,9 +230,10 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
             eprintln!("Let's set up the {} plugin.", options.id);
         }
 
-        let cancel = "Nothing is saved until the last answer, and Esc cancels.";
-
-        eprintln!("{}", crate::style::dim(cancel, color));
+        eprintln!(
+            "{}",
+            crate::style::dim("Nothing is saved until the last answer, and Esc cancels.", color)
+        );
     }
 
     let answers = collect(&fields, |field, error| prompt(field, color, error))?;
@@ -261,7 +262,7 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     if json {
         println!("{}", serde_json::to_string(&result)?);
     } else {
-        println!("\n✓ Saved the {} settings.", options.id);
+        println!("\n{} Saved the {} settings.", crate::style::accent("✓", color), options.id);
 
         let rows = changes
             .iter()

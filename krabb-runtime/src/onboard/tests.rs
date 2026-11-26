@@ -13,13 +13,7 @@ fn args(flags: &[&str]) -> InitArgs {
 }
 
 fn guide(root: PathBuf) -> Guide {
-    Guide {
-        root,
-        color: false,
-        spaced: std::cell::Cell::new(true),
-        named: Vec::new(),
-        interactive: false,
-    }
+    Guide { root, color: false, spaced: true, named: Vec::new(), interactive: false }
 }
 
 #[test]
@@ -100,7 +94,7 @@ fn choices_cover_every_official_provider_channel_and_client() {
 #[test]
 fn the_home_step_creates_or_keeps_the_home() {
     let root = crate::tests::test_root("onboard-home");
-    let guide = guide(root.clone());
+    let mut guide = guide(root.clone());
 
     let error = guide.require_home().unwrap_err().to_string();
 
@@ -294,4 +288,23 @@ async fn providers_with_a_models_command_offer_their_models() {
     assert_eq!(configured(&root).unwrap(), Some(("lister".into(), "m-two".into())));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn questions_follow_a_title_directly_and_a_finished_step_after_a_gap() {
+    let mut guide = guide(PathBuf::from("unused"));
+
+    guide.section("Intelligence");
+
+    assert_eq!(guide.question("Which provider?"), "Which provider?\n");
+    assert!(!guide.spaced);
+
+    guide.done("Installed openai provider.");
+    guide.gap();
+
+    assert!(guide.spaced);
+
+    guide.gap();
+
+    assert!(guide.spaced);
 }
