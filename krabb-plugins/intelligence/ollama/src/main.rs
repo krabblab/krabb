@@ -239,6 +239,7 @@ async fn generate_at(
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
     let limits = execution::limits(&input)?;
+
     let stream = input.stream;
 
     // Only a stream shows the progress that earns renewals, so only it watches for them.
@@ -1246,6 +1247,7 @@ mod tests {
             super::validate_host("https://ollama.com/api/", true).unwrap(),
             "https://ollama.com"
         );
+
         assert_eq!(
             super::validate_host("http://127.0.0.1:11434", false).unwrap(),
             "http://127.0.0.1:11434"
