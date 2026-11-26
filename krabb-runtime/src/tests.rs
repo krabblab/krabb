@@ -1844,12 +1844,18 @@ fn advisory_lock_releases_after_drop() {
 fn a_lock_released_while_a_child_starts_is_acquired_and_a_held_one_is_not() {
     let root = test_root("lock-grace");
     let held = super::lock_at(&root, ".grace.lock").unwrap();
+    let started = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let running = started.clone();
 
     // Stands in for a starting child that keeps the lock for a moment after it is dropped.
+    // It drops the lock as soon as it runs, because a slow runner can delay a sleeping
+    // thread past the retry window.
     let release = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        running.wait();
         drop(held);
     });
+
+    started.wait();
 
     assert!(super::lock_at(&root, ".grace.lock").is_ok());
 
