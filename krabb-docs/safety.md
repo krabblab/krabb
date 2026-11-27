@@ -96,9 +96,10 @@ an explicit delivery retry does not rerun model or tool work. Unix plugins run i
 private process sessions; host cancellation and restart cleanup terminate shell
 commands in those sessions even when they use separate process groups.
 Linux host shells inherit a syscall filter that rejects `setsid` and `setpgid`,
-so descendants cannot detach from cleanup. macOS and other Unix host shells start in
-their own process group without that filter, so cleanup stops descendants that stay in
-the group or the plugin session, and the container sandbox is the stronger choice there.
+so descendants cannot detach from cleanup. macOS and other non-Linux Unix host shells
+start in their own process group without that filter: a descendant that starts its own
+session or process group survives cancellation, and setuid programs keep their
+privileges. The container sandbox is the stronger choice there.
 Windows tool commands start suspended and enter a kill-on-close Job Object before
 execution. Completion, failure, cancellation, and plugin termination stop their
 descendants, including background commands whose parent has already exited.

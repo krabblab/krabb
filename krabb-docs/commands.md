@@ -320,8 +320,11 @@ interrupts the current turn and preserves separately queued requests.
 
 Typed `!command` shell execution requires `clients.tui.shell` and runs on the host in the
 workspace, in its own process group on Linux and macOS and in a Job Object on Windows.
-Linux also blocks process-group and session changes. Esc waits for process cleanup before completing
-cancellation, and the next command receives a fresh cancellation token.
+Krabb removes its credential variables from the command's environment. Linux also blocks
+process-group and session changes. On macOS and other non-Linux Unix, a descendant that
+starts its own session or process group survives cancellation, and setuid programs keep
+their privileges. Esc waits for process cleanup before completing cancellation, and the
+next command receives a fresh cancellation token.
 
 ## Conversation Commands
 

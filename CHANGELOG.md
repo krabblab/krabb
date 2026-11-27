@@ -62,8 +62,7 @@ Semantic Versioning.
   checks cannot overwrite the contributor's branch, index, or Git configuration.
 - Preserve supported rich formatting in channels, including streamed edits and scheduled messages.
 - Research user-supplied URLs with live Codex search and distinguish retrieval failures from missing pages.
-- Give agents file, Git, shell, browser, and desktop tools with access controls.
-- Run approved shell commands on macOS without Docker or Podman.
+- Give agents file, Git, shell, browser, and desktop tools with access controls on every platform.
 - Connect agents and tools through ACP, A2A, AG-UI, and MCP.
 - Save memories and organize data across conversations.
 - Run scheduled tasks once and deliver results independently to multiple chats.

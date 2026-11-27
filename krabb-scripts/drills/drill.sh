@@ -163,6 +163,34 @@ install_health() {
     [ -z "$unhealthy" ] || fail "Plugins that are not healthy: $unhealthy"
 }
 
+# The published tools plugin can predate the host shell, so only this run's archive is checked.
+install_shell() {
+    local tools="$KRABB_HOME/plugins/tools/bin/krabb-plugin-tools" workspace result request
+    local archives=("$RUNNER_TEMP"/release/krabb-tools-v*-"$KRABB_TARGET.$KRABB_ARCHIVE")
+
+    if [ ! -f "${archives[0]}" ]; then
+        echo "The tools plugin comes from the published index; the host shell check is skipped."
+        return
+    fi
+
+    test -x "$tools" || fail "The tools plugin is not installed."
+    workspace="$RUNNER_TEMP/shell"
+    mkdir -p "$workspace"
+
+    request='{"jsonrpc":"2.0","id":1,"method":"shell_run",'
+    request+='"params":{"command":"pwd -P > marker","approve":true}}'
+
+    result=$(printf '%s\n' "$request" |
+        env -u KRABB_SANDBOX_RUNTIME -u KRABB_SANDBOX_IMAGE KRABB_ROOT="$workspace" \
+            KRABB_SHELL=ask "$tools") || fail "The tools plugin failed."
+
+    jq -se 'any(.[]; .id == 1 and .result.status == 0)' <<<"$result" > /dev/null ||
+        fail "The host shell did not run: $result"
+
+    [ "$(cat "$workspace/marker")" = "$(cd "$workspace" && pwd -P)" ] ||
+        fail "The host shell did not run in the workspace."
+}
+
 install_daemon() {
     local log="$RUNNER_TEMP/daemon.log" pid
 
@@ -440,6 +468,7 @@ main() {
         status) krabb --json status < /dev/null ;;
         plugins) install_plugins ;;
         health) install_health ;;
+        shell) install_shell ;;
         daemon) install_daemon ;;
         service) install_service ;;
         uninstall) install_uninstall ;;

@@ -106,6 +106,10 @@ jobs:
       - name: Check Plugin Health
         run: ${{ env.KRABB_DRILL }} health
 
+      - if: matrix.os != 'windows'
+        name: Run The Host Shell
+        run: ${{ env.KRABB_DRILL }} shell
+
       - name: Start, Stop, And Restart The Daemon
         run: ${{ env.KRABB_DRILL }} daemon
 
