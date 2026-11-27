@@ -173,6 +173,7 @@ enum EngineEvent {
     InputQueued { input: String, receipt: String },
     InputRejected { input: String, reason: String },
     Progress(String),
+    DraftDiscarded,
     AssistantFinished,
     GenerationFinished { interrupted: bool },
 }
@@ -541,6 +542,7 @@ where
     while let Ok(event) = event_rx.try_recv() {
         match event {
             EngineEvent::AssistantText(text) => reply.push_str(&text),
+            EngineEvent::DraftDiscarded => reply.clear(),
             EngineEvent::ControlNotice(text) => receipt = Some(text),
 
             EngineEvent::RequestFailed(_) | EngineEvent::SystemNotice(_) => failed = true,
@@ -4801,6 +4803,13 @@ async fn control_as(
                 }
 
                 if value["event"] == "tool" {
+                    // The daemon keeps no text from tool steps, so the client drops it too.
+                    if !streamed.is_empty()
+                        && let Some(events) = &events
+                    {
+                        let _ = events.send(EngineEvent::DraftDiscarded);
+                    }
+
                     streamed.clear();
                     continue;
                 }
@@ -4925,6 +4934,8 @@ fn format_approval_notice(
     } else {
         message.push_str(&format!("\nArguments: {arguments}"));
         message.push_str("\nAction: ");
+
+        let details = details.split("\nArguments:").next().unwrap_or(details);
 
         let action = details
             .trim()
@@ -6245,6 +6256,17 @@ mod tests {
                 "Krabb requests approval to write to foo..",
             ),
             "Approval needed.\nTool: write\nArguments: {\"path\":\"foo\"}\nAction: write to foo\nApprove: /approve approval-2\nDeny: /deny approval-2"
+        );
+
+        assert_eq!(
+            super::format_approval_notice(
+                "approval-4",
+                "file_write",
+                "{\"path\":\"a.html\"}",
+                None,
+                "Krabb requests approval to write to a.html.\nArguments: {\"path\":\"a.html\"}",
+            ),
+            "Approval needed.\nTool: file_write\nArguments: {\"path\":\"a.html\"}\nAction: write to a.html\nApprove: /approve approval-4\nDeny: /deny approval-4"
         );
     }
 
@@ -8166,6 +8188,8 @@ mod tests {
             receiver.recv().await,
             Some(super::EngineEvent::AssistantText("I'll check that.".into()))
         );
+
+        assert_eq!(receiver.recv().await, Some(super::EngineEvent::DraftDiscarded));
 
         assert_eq!(
             receiver.recv().await,

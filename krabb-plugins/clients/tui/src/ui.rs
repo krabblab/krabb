@@ -207,9 +207,19 @@ impl Default for TuiPreferences {
     }
 }
 
+/// Where streamed text began, so text that turns out to precede a tool call can be removed.
+struct Draft {
+    start: usize,
+    trimmed: usize,
+    reply_pending: bool,
+    reply_system: bool,
+}
+
 #[derive(Default)]
 struct App {
     transcript: String,
+    transcript_trimmed: usize,
+    draft: Option<Draft>,
     transcript_generation: u64,
     transcript_layout: Option<TranscriptLayout>,
     reveal_queue: VecDeque<String>,
@@ -730,7 +740,7 @@ where
                     }
 
                     Some(crate::EngineEvent::AssistantText(text)) => {
-                        let interactions = app.push_assistant_output(text);
+                        let interactions = app.push_assistant_text(text);
 
                         persist_interactions(&home, &mut app, interactions, host).await;
                     }
@@ -756,6 +766,8 @@ where
                     Some(crate::EngineEvent::SystemNotice(text)) => app.push_system(&text),
 
                     Some(crate::EngineEvent::Progress(text)) => app.push_progress(&text),
+
+                    Some(crate::EngineEvent::DraftDiscarded) => app.discard_draft(),
 
                     Some(crate::EngineEvent::AssistantFinished) => {
                         app.finish_streamed_interactions();
@@ -875,7 +887,7 @@ where
         while let Ok(event) = engine_event_rx.try_recv() {
             match event {
                 crate::EngineEvent::AssistantText(text) => {
-                    let interactions = app.push_assistant_output(text);
+                    let interactions = app.push_assistant_text(text);
 
                     persist_interactions(&home, &mut app, interactions, host).await;
                 }
@@ -901,6 +913,8 @@ where
                 crate::EngineEvent::SystemNotice(text) => app.push_system(&text),
 
                 crate::EngineEvent::Progress(text) => app.push_progress(&text),
+
+                crate::EngineEvent::DraftDiscarded => app.discard_draft(),
 
                 crate::EngineEvent::UserSaved(line) => app.mark_user_line_saved(&line),
 
@@ -1924,8 +1938,13 @@ where
                         line.clone()
                     };
 
+                    let is_approval = matches!(command, "/approvals" | "/approve" | "/deny")
+                        || command.starts_with("/approve ")
+                        || command.starts_with("/deny ");
+
                     if !(is_task_command
                         || busy && ordinary
+                        || app.generation_active && is_approval
                         || matches!(line.as_str(), "/clear" | "/quit" | "/exit"))
                     {
                         app.begin_interaction(&line);
@@ -3995,6 +4014,7 @@ impl App {
     }
 
     fn finish_streamed_interactions(&mut self) {
+        self.draft = None;
         self.reply_pending = false;
         self.pending_interactions.clear();
         self.completed_interactions.clear();
@@ -4034,6 +4054,7 @@ impl App {
         self.context_usage = session.context_usage;
         self.session_working = session.working;
         self.transcript = render_messages(&session.messages, &self.name);
+        self.draft = None;
         self.dismiss_approvals();
         self.invalidate_transcript_layout();
         self.transcript_scroll.follow_latest();
@@ -4131,6 +4152,7 @@ impl App {
 
         if self.pending_clear && self.context_output.contains("Conversation cleared.") {
             self.transcript.clear();
+            self.draft = None;
             self.invalidate_transcript_layout();
             self.transcript_scroll.follow_latest();
             self.pending_clear = false;
@@ -4210,6 +4232,7 @@ impl App {
             }
 
             self.transcript.drain(..boundary);
+            self.transcript_trimmed = self.transcript_trimmed.saturating_add(boundary);
         }
 
         self.invalidate_transcript_layout();
@@ -4259,6 +4282,49 @@ impl App {
         interactions
     }
 
+    fn push_assistant_text(&mut self, value: String) -> Vec<SavedInteraction> {
+        let draft = if self.draft.is_none() {
+            self.reveal_all();
+
+            Some(Draft {
+                start: self.transcript.len(),
+                trimmed: self.transcript_trimmed,
+                reply_pending: self.reply_pending,
+                reply_system: self.reply_system,
+            })
+        } else {
+            None
+        };
+
+        let interactions = self.push_assistant_output(value);
+
+        if draft.is_some() {
+            self.draft = draft;
+        }
+
+        interactions
+    }
+
+    fn discard_draft(&mut self) {
+        let Some(draft) = self.draft.take() else {
+            return;
+        };
+
+        self.reveal_all();
+
+        let trimmed = self.transcript_trimmed.saturating_sub(draft.trimmed);
+        let mut start = draft.start.saturating_sub(trimmed).min(self.transcript.len());
+
+        while !self.transcript.is_char_boundary(start) {
+            start -= 1;
+        }
+
+        self.transcript.truncate(start);
+        self.reply_pending = draft.reply_pending;
+        self.reply_system = draft.reply_system;
+        self.invalidate_transcript_layout();
+    }
+
     fn push_user(&mut self, value: &str) {
         let label = format_role_label("You", Some(&current_timestamp()));
         self.push_label(&label);
@@ -4270,7 +4336,8 @@ impl App {
         let text = normalize_output(format!("{value}\n"));
         self.append_visible(&text);
 
-        if !text.trim().is_empty() {
+        // The daemon refuses appends during a turn, and saving later would misplace the notice.
+        if !text.trim().is_empty() && !self.generation_active {
             self.interaction_sequence = self.interaction_sequence.saturating_add(1);
             self.completed_system_messages.push(SavedSystemMessage {
                 session: self.session.clone(),
@@ -4364,6 +4431,7 @@ impl App {
 
     fn push_label(&mut self, label: &str) {
         self.reveal_all();
+        self.draft = None;
 
         while self.transcript.ends_with('\n') {
             self.transcript.pop();
@@ -4837,6 +4905,62 @@ mod tests {
     }
 
     #[test]
+    fn text_before_a_tool_call_leaves_only_the_progress_and_the_reply() {
+        let mut app = App {
+            name: "Krabb".into(),
+            session: "tui".into(),
+            generation_active: true,
+            reply_pending: true,
+            typewriter: true,
+            ..App::default()
+        };
+
+        app.push_user("Check the weather.");
+        app.reply_pending = true;
+
+        let before = app.transcript.clone();
+
+        app.push_assistant_text("I'll check the weather.".into());
+        app.discard_draft();
+
+        assert_eq!(app.transcript, before);
+        assert!(app.reply_pending);
+        assert!(app.reveal_queue.is_empty());
+
+        app.push_progress("I'll check the weather.");
+        app.push_assistant_text("Controllo il meteo.".into());
+        app.discard_draft();
+        app.push_assistant_text("It is sunny.".into());
+        app.reveal_all();
+
+        assert_eq!(app.transcript.matches("I'll check the weather.").count(), 1);
+        assert!(!app.transcript.contains("Controllo il meteo."));
+        assert!(app.transcript.ends_with("It is sunny."));
+
+        app.finish_streamed_interactions();
+        app.discard_draft();
+
+        assert!(app.transcript.contains("It is sunny."));
+    }
+
+    #[test]
+    fn a_discarded_draft_survives_transcript_trimming() {
+        let mut app = App { name: "Krabb".into(), session: "tui".into(), ..App::default() };
+
+        app.append_visible(&"x".repeat(super::TRANSCRIPT_LIMIT - 4));
+        app.reply_pending = true;
+        app.push_assistant_text("draft text that overflows".into());
+        app.reveal_all();
+
+        assert!(app.transcript_trimmed > 0);
+
+        app.discard_draft();
+
+        assert!(app.transcript.bytes().all(|byte| byte == b'x'));
+        assert!(app.reply_pending);
+    }
+
+    #[test]
     fn progress_speaks_as_the_agent_and_is_left_for_the_daemon_to_save() {
         let mut app = App {
             name: "Krabb".into(),
@@ -4884,6 +5008,24 @@ mod tests {
             "Krabb | {}\n",
             super::message_timestamp(&messages[1].id).unwrap()
         )));
+    }
+
+    #[test]
+    fn notices_during_a_turn_are_shown_but_not_saved_after_the_reply() {
+        let mut app = App {
+            name: "Krabb".into(),
+            session: "tui".into(),
+            generation_active: true,
+            ..App::default()
+        };
+
+        app.push_system("Approval needed.");
+        app.push_system("Approval accepted.");
+
+        assert!(app.transcript.contains("Approval needed."));
+        assert!(app.transcript.contains("Approval accepted."));
+        assert!(app.take_persistable_system_messages().is_empty());
+        assert!(app.approval_reply_pending);
     }
 
     #[test]
