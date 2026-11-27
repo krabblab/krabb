@@ -26,6 +26,9 @@ local DIST TARGET OUT REGISTRY
 index REGISTRY
     Rebuild the index from the tags in REGISTRY, and push it when it changed.
 
+stale REGISTRY
+    Print true when the index of REGISTRY differs from the one its tags make, else false.
+
 withdraw REGISTRY ID VERSION REASON
     Mark a published version as withdrawn, then rebuild the index.
 
@@ -596,6 +599,15 @@ def leftover(tags):
               file=sys.stderr)
 
 
+def stale(registry):
+    """Whether the pushed index differs from the one the version tags make."""
+
+    digest = document(registry)[1]
+    layers = (registry.manifest(INDEX_TAG) or {}).get('layers') or [{}]
+
+    return layers[0].get('digest') != f'sha256:{digest}'
+
+
 def index(registry, attempts=5):
     """Rebuilds the index from every version tag and pushes it when it changed.
 
@@ -734,6 +746,8 @@ def main(arguments):
                 print(local(Path(dist), target, Path(out), Registry(registry)))
             case ['index', registry]:
                 index(Registry(registry))
+            case ['stale', registry]:
+                print(str(stale(Registry(registry))).lower())
             case ['withdraw', registry, plugin, version, reason]:
                 withdraw(registry, plugin, version, reason)
             case _:

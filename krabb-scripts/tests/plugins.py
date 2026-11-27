@@ -228,9 +228,19 @@ class Publication(unittest.TestCase):
                          'a2a-0.1.0': {'annotations': {plugins.TITLE: 'a2a'}, 'layers': []},
                          'echo-9.9.9': version_manifest('echo', '0.1.0')})
 
+        self.assertTrue(plugins.stale(registry))
+
         with mock.patch.object(plugins, 'oras', registry.oras), \
                 mock.patch('builtins.print') as output:
             digest = plugins.index(registry)
+
+        self.assertFalse(plugins.stale(registry))
+
+        with mock.patch.object(plugins, 'Registry', return_value=registry), \
+                mock.patch('builtins.print') as stale:
+            self.assertEqual(plugins.main(['stale', REGISTRY]), 0)
+
+        stale.assert_called_once_with('false')
 
         warnings = [call.args[0] for call in output.call_args_list
                     if call.kwargs.get('file') is plugins.sys.stderr]
