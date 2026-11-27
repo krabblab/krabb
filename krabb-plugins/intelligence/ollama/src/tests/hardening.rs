@@ -79,6 +79,12 @@ async fn clean_disconnect_before_completion_is_an_error() {
     let error = live_stream(1, chunks, &mut emitter).await.unwrap_err();
 
     assert!(error.to_string().contains("completion marker"));
+
+    assert!(matches!(
+        error,
+        krabb_core::Error::Failed { failure, .. }
+            if failure.kind == krabb_core::failure::Kind::Transient
+    ));
 }
 
 #[test]

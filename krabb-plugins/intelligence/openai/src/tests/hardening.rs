@@ -81,6 +81,12 @@ async fn clean_disconnect_before_completion_is_an_error() {
     let error = stream_body(1, chunks, &mut emitter).await.unwrap_err();
 
     assert!(error.to_string().contains("completion marker"));
+
+    assert!(matches!(
+        error,
+        krabb_core::Error::Failed { failure, .. }
+            if failure.kind == krabb_core::failure::Kind::Transient
+    ));
 }
 
 #[tokio::test]
@@ -199,4 +205,24 @@ fn unmatched_tool_results_do_not_leave_native_calls_open() {
     assert_eq!(encoded.matches("Execution status is unknown").count(), 2);
     assert_eq!(values.last().unwrap()["role"], "user");
     assert!(values.last().unwrap()["content"].as_str().unwrap().contains("first result"));
+}
+
+#[tokio::test]
+async fn an_overloaded_stream_is_transient_and_other_errors_are_final() {
+    for (kind, transient) in [("server_error", true), ("invalid_request_error", false)] {
+        let (sender, _receiver) = tokio::sync::mpsc::channel(256);
+        let mut emitter = Emitter::new(sender);
+        let line = format!("data: {{\"error\":{{\"type\":\"{kind}\"}}}}\n");
+        let chunks = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(line.into_bytes())]);
+        let error = stream_body(1, chunks, &mut emitter).await.unwrap_err();
+
+        assert_eq!(
+            matches!(
+                error,
+                krabb_core::Error::Failed { failure, .. }
+                    if failure.kind == krabb_core::failure::Kind::Transient
+            ),
+            transient
+        );
+    }
 }
