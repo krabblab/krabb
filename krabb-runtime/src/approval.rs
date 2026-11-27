@@ -10,6 +10,10 @@ use serde_json::Value;
 use subtle::ConstantTimeEq;
 use tokio::sync::{oneshot, watch};
 
+pub(crate) mod facts;
+pub(crate) mod purpose;
+mod shell;
+
 const LIMIT: usize = 32;
 const LIFE: Duration = Duration::from_secs(300);
 const ID_BYTES: usize = 12;
@@ -38,10 +42,13 @@ pub(crate) struct View {
     pub id: String,
     pub target: Target,
     pub expires: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub summary: String,
 }
 
 struct Pending {
     target: Target,
+    summary: String,
     workspace: Option<String>,
     expires: u64,
     answer: oneshot::Sender<bool>,
@@ -63,10 +70,17 @@ impl Gate {
 
     #[cfg(test)]
     pub fn issue(&mut self, target: Target) -> io::Result<Challenge> {
-        self.issue_in(target, None)
+        self.issue_in(target, None, String::new())
     }
 
-    pub fn issue_in(&mut self, target: Target, workspace: Option<String>) -> io::Result<Challenge> {
+    /// Issues a challenge for TARGET in WORKSPACE. SUMMARY describes it for listings; the
+    /// challenge binds only the target, the workspace, and its expiry.
+    pub fn issue_in(
+        &mut self,
+        target: Target,
+        workspace: Option<String>,
+        summary: String,
+    ) -> io::Result<Challenge> {
         let now = now()?;
         let target_size = serde_json::to_vec(&target).map_err(io::Error::other)?.len();
 
@@ -89,7 +103,7 @@ impl Gate {
         let expires = now.saturating_add(LIFE.as_secs());
         let (answer, receiver) = oneshot::channel();
         let (completion, _) = watch::channel(());
-        let pending = Pending { target, workspace, expires, answer, completion };
+        let pending = Pending { target, summary, workspace, expires, answer, completion };
         let approve = token(&self.key, &id, &pending, b'a')?;
         let deny = token(&self.key, &id, &pending, b'd')?;
         self.pending.insert(id, pending);
@@ -219,6 +233,7 @@ impl Gate {
                 id: id.clone(),
                 target: pending.target.clone(),
                 expires: pending.expires,
+                summary: pending.summary.clone(),
             })
             .collect())
     }
@@ -376,7 +391,8 @@ mod tests {
         destination.session = "another-conversation".into();
 
         for approved in [true, false] {
-            let challenge = gate.issue_in(source.clone(), workspace.clone()).unwrap();
+            let challenge =
+                gate.issue_in(source.clone(), workspace.clone(), String::new()).unwrap();
             let id = gate.list().unwrap()[0].id.clone();
 
             assert_eq!(gate.resolve_local(&id, approved), Some(approved));
@@ -393,7 +409,7 @@ mod tests {
 
         let mut cancelled = source;
         cancelled.args = serde_json::json!({"path": "cancelled.txt"});
-        let challenge = gate.issue_in(cancelled.clone(), workspace.clone()).unwrap();
+        let challenge = gate.issue_in(cancelled.clone(), workspace.clone(), String::new()).unwrap();
         let id = gate.list().unwrap()[0].id.clone();
         drop(challenge.answer);
 
@@ -562,7 +578,7 @@ mod tests {
         let mut gate = Gate::new().unwrap();
         let operation = target();
         let workspace = Some("/workspace".into());
-        let challenge = gate.issue_in(operation.clone(), workspace.clone()).unwrap();
+        let challenge = gate.issue_in(operation.clone(), workspace.clone(), String::new()).unwrap();
 
         assert_eq!(
             gate.resolve(
@@ -586,7 +602,7 @@ mod tests {
         gate.decisions[0].3 = 0;
 
         assert_eq!(gate.decision(&operation, &workspace, |_| true), None);
-        let challenge = gate.issue_in(operation.clone(), workspace.clone()).unwrap();
+        let challenge = gate.issue_in(operation.clone(), workspace.clone(), String::new()).unwrap();
 
         assert_eq!(
             gate.resolve(

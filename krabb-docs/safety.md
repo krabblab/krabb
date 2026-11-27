@@ -55,6 +55,29 @@ Confined Unix file writes preserve existing regular files’ ordinary permission
 bits, including executable bits. New files use mode `0600`; replacement files
 do not inherit set-user-ID, set-group-ID, or sticky bits.
 
+### Approval Prompts
+
+Every approval, in Telegram, Discord, any other channel that shows approvals, the
+TUI, ACP, and saved task approvals, has the same three parts:
+
+1. A fact line Krabb writes from the tool and its arguments, never from the model: the
+   kind of action, its targets, and whether it writes, deletes, uses the network, or
+   needs admin rights. It reads POSIX shells, cmd, and PowerShell, including `apt`,
+   `brew`, `winget`, and `choco` installs and `rm`, `del`, `rmdir`, and `Remove-Item`.
+2. The model's reason, labelled `Krabb says:`, when it gave one. It is clipped to one
+   line of 160 characters with control characters escaped.
+3. The exact command or arguments, once.
+
+```text
+Install packages with apt: htop, tmux. It uses the network and needs admin rights.
+Krabb says: Install htop and tmux as you asked
+Command: apt install htop tmux
+```
+
+The fact line is a reading aid; review the exact request below it. The reason never
+changes what an approval binds to: the same action with a different reason matches the
+same approval.
+
 ### Container Sandbox
 
 When shell tools are enabled, a Docker or Podman sandbox can keep approved

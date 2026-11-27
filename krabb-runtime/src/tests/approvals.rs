@@ -253,7 +253,7 @@ fn approval_text_discloses_complete_mutation_arguments() {
             }),
         ),
     ] {
-        let text = approval_text(name, &args);
+        let text = approval_text(name, &args, None);
 
         assert!(text.contains(&args.to_string()), "Incomplete {name} approval: {text}");
 
@@ -261,7 +261,7 @@ fn approval_text_discloses_complete_mutation_arguments() {
 
         other["different"] = serde_json::json!("second");
 
-        assert_ne!(text, approval_text(name, &other));
+        assert_ne!(text, approval_text(name, &other, None));
     }
 }
 
@@ -688,6 +688,37 @@ for line in sys.stdin:
             assert!(!root.join("note.txt").exists());
         }
     }
+
+    let params = serde_json::json!({
+        "name": "file_write", "workspace": root,
+        "args": {"path": "note.txt", "text": "hi", "purpose": "Save the note"}
+    });
+
+    let mut question = String::new();
+
+    let response = agent_tool_request(7, &params, &tools, &root, ApprovalMode::Prompt, |asked| {
+        question = asked.into();
+        true
+    })
+    .await
+    .unwrap();
+
+    let mut dispatched = response.result.unwrap();
+    let reviewed = serde_json::json!({"path": "note.txt", "text": "hi", "workspace": root});
+
+    dispatched.as_object_mut().unwrap().remove("approve");
+
+    assert_eq!(
+        question,
+        format!(
+            "Write the file note.txt (1 line, 2 bytes). It replaces any file already there.\n\
+                Krabb says: Save the note\nArguments: {reviewed}\nApprove?"
+        )
+    );
+
+    assert_eq!(dispatched, reviewed);
+
+    fs::remove_file(root.join("note.txt")).unwrap();
 
     let response = agent_tool_request(
         8,

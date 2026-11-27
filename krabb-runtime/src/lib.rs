@@ -686,6 +686,8 @@ fn validate_registered_args(
 
     let mut model_args = args.clone();
 
+    approval::purpose::take(&registry.specs, name, &mut model_args);
+
     if let Value::Object(values) = &mut model_args {
         values.remove("approve");
     }

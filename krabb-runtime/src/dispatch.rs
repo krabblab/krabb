@@ -641,6 +641,8 @@ pub(crate) async fn execute_tool_with_registry(
         return Err("The background task is already saved; do not repeat its work.".into());
     }
 
+    let purpose = approval::purpose::take(&registry.specs, name, &mut args);
+
     if let Some(run) = &registry.run {
         sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
     }
@@ -649,7 +651,7 @@ pub(crate) async fn execute_tool_with_registry(
         && approval_mode == ApprovalMode::Prompt
         && mutating(name, &args)
     {
-        let text = approval_text(name, &args);
+        let text = approval_text(name, &args, purpose.as_deref());
 
         if text.len() > APPROVAL_TEXT_LIMIT {
             return Err(failure::blocked(concat!(
@@ -1016,13 +1018,23 @@ pub(crate) async fn execute_tool_with_registry(
         (true, ApprovalMode::Prompt) => {
             let arguments = approval_display(name, &args, channel)?;
 
-            let text = if name == settings::TOOL {
+            let (summary, text) = if name == settings::TOOL {
                 let source =
                     registry.source.as_ref().ok_or("This conversation has no settings section.")?;
 
-                settings::describe(source, &args)?
+                let summary = approval::facts::summary(
+                    settings::describe(source, &args)?,
+                    purpose.as_deref(),
+                );
+
+                (summary.clone(), summary)
             } else {
-                approval_message(name, &args, &approval_view(name, &args, channel))
+                let shown = approval_view(name, &args, channel);
+
+                (
+                    approval_summary(name, &args, purpose.as_deref()),
+                    approval_message(name, &args, &shown, purpose.as_deref()),
+                )
             };
 
             if text.len() > APPROVAL_TEXT_LIMIT {
@@ -1072,7 +1084,8 @@ pub(crate) async fn execute_tool_with_registry(
 
                 true
             } else {
-                let challenge = approvals.lock().await.issue_in(target, approval_workspace)?;
+                let challenge =
+                    approvals.lock().await.issue_in(target, approval_workspace, summary)?;
 
                 // A settings change is never saved to resume later, so no stored approval can
                 // grant authority after the conversation has moved on.
@@ -1591,100 +1604,47 @@ pub(crate) fn approval_display(
     approval_arguments(name, args)
 }
 
-pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
-    approval_message(name, args, args)
+pub(crate) fn approval_text(name: &str, args: &serde_json::Value, purpose: Option<&str>) -> String {
+    approval_message(name, args, args, purpose)
 }
 
-/// Describes the action ARGS request, then lists SHOWN, the arguments the approver reviews.
+/// The host's fact line for ARGS, then the model's PURPOSE when it gave one.
+pub(crate) fn approval_summary(
+    name: &str,
+    args: &serde_json::Value,
+    purpose: Option<&str>,
+) -> String {
+    approval::facts::summary(approval::facts::fact(name, args), purpose)
+}
+
+/// Describes the action ARGS request, then shows SHOWN, the arguments the approver reviews,
+/// once: a shell command as itself, anything else as JSON.
 pub(crate) fn approval_message(
     name: &str,
     args: &serde_json::Value,
     shown: &serde_json::Value,
+    purpose: Option<&str>,
 ) -> String {
-    let details = match name {
-        name if tasks::action(name).is_some() => {
-            let action = tasks::action(name).unwrap_or_default();
+    let summary = approval_summary(name, args, purpose);
 
-            let detail = match action {
-                "steer" => format!(
-                    " with instruction: {}",
-                    args["instruction"].as_str().unwrap_or_default()
-                ),
-                "defer" => format!(" until {}", args["when"].as_str().unwrap_or_default()),
-                "extend" => format!(" by {} minutes", args["minutes"]),
-                _ => String::new(),
-            };
-
-            format!("{action} {}{detail}", args["id"].as_str().unwrap_or_default())
-        }
-
-        routing::NAME => format!(
-            "start a background goal with automatic continuation and updates to {} / {}; \
-                unattended workspace tools: {}, shell: {}, workspace: {}",
-            args["context"]["origin"]["channel"],
-            args["context"]["origin"]["chat"],
-            args["context"]["tools"] == true,
-            args["context"]["shell"] == true,
-            args["context"]["workspace"],
-        ),
-
-        "schedule_propose" => {
-            let destination = if let Some(destinations) = args["context"].get("destinations") {
-                format!("outbound destinations {destinations}")
-            } else {
-                args["context"]
-                    .get("message_destination")
-                    .filter(|value| !value.is_null())
-                    .map_or_else(
-                        || "no outbound message destination".into(),
-                        |value| {
-                            format!(
-                                "outbound messages to channel {}, chat {}, private {}, thread {}",
-                                value["channel"].as_str().unwrap_or("invalid"),
-                                value["chat"].as_str().unwrap_or("invalid"),
-                                value["private"].as_bool().unwrap_or(false),
-                                value["thread"].as_str().unwrap_or("none"),
-                            )
-                        },
-                    )
-            };
-
-            format!(
-                "create a scheduled task with {destination}; unattended workspace tools: {}, shell: {}, workspace: {}",
-                args["context"]["tools"] == true,
-                args["context"]["shell"] == true,
-                args["context"]["workspace"],
-            )
-        }
-
-        "file_write" => format!(
-            "write to {}",
-            args["path"].as_str().unwrap_or("a workspace path").escape_debug()
-        ),
-
-        "memory_remember" => {
-            format!("save memory {}", args["key"].as_str().unwrap_or("with the requested key"))
-        }
-
-        "file_patch" => {
-            format!(
-                "apply a Git patch containing {} bytes, which may execute repository-configured programs",
-                args["text"].as_str().map_or(0, str::len)
-            )
-        }
-
-        "shell_run" => {
-            format!("run this shell command: {}", args["command"].as_str().unwrap_or("unknown"))
-        }
-
-        "git_run" => format!(
-            "run this Git operation, which may execute repository-configured programs: {}",
-            args["args"]
-        ),
-        _ => format!("run the {name} tool"),
+    let Some((command, rest)) = shown
+        .as_object()
+        .filter(|_| name == "shell_run")
+        .and_then(|values| Some((values.get("command")?.as_str()?, values)))
+    else {
+        return format!("{summary}\nArguments: {shown}");
     };
 
-    format!("Krabb requests approval to {details}.\nArguments: {shown}")
+    let mut rest = rest.clone();
+    rest.remove("command");
+
+    let command = approval::facts::visible(command);
+
+    if rest.is_empty() {
+        format!("{summary}\nCommand: {command}")
+    } else {
+        format!("{summary}\nCommand: {command}\nArguments: {}", serde_json::Value::Object(rest))
+    }
 }
 
 pub(crate) fn approval_params(

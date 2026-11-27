@@ -100,8 +100,21 @@ operations and plugin guides for detailed schedule and memory behavior.
 
 ## Tools And Safety
 
-Live approvals and `/approvals` display complete tool arguments. The host rejects
-prompt-mode requests that exceed its review limits before issuing a challenge.
+Live approvals and `/approvals` show what the action does in plain words, the reason
+Krabb gives for it, and then the complete tool arguments once:
+
+```text
+Approval needed.
+Delete files and folders: build.
+Krabb says: Clean the old build before rebuilding
+Command: rm -rf build
+Approve: /approve 3f2a…
+Deny: /deny 3f2a…
+```
+
+Large file writes show a marked preview in the live approval; `/approvals` shows all of
+the text. The host rejects prompt-mode requests that exceed its review limits before
+issuing a challenge.
 
 TUI model tools are enabled by default, and `krabb init` installs the `tools` plugin with
 the TUI. Turn them off in `config.toml`:

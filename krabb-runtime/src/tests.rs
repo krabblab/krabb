@@ -19,6 +19,9 @@ mod schedules;
 mod approvals;
 
 #[cfg(unix)]
+mod explanations;
+
+#[cfg(unix)]
 mod channels;
 
 #[cfg(unix)]
@@ -8361,7 +8364,7 @@ done
             };
 
             assert!(text.contains(&format!(
-                "unattended workspace tools: {capabilities}, shell: {capabilities}"
+                "Unattended workspace tools: {capabilities}, shell: {capabilities}"
             )));
 
             assert!(text.contains("chat 12345"));
@@ -8547,7 +8550,7 @@ fn large_tui_file_writes_get_a_marked_preview_and_keep_their_full_text() {
 
     let arguments = super::approval_display("file_write", &args, "tui").unwrap();
     let shown = super::approval_view("file_write", &args, "tui");
-    let text = super::approval_message("file_write", &args, &shown);
+    let text = super::approval_message("file_write", &args, &shown, None);
 
     assert!(arguments.contains("report.html"));
     assert!(arguments.contains(&format!("[{} bytes, 2000 lines;", page.len())));
@@ -8570,7 +8573,8 @@ fn large_tui_file_writes_get_a_marked_preview_and_keep_their_full_text() {
     let shown = super::approval_view("file_write", &quoted, "tui");
 
     assert!(
-        super::approval_message("file_write", &quoted, &shown).len() <= super::APPROVAL_TEXT_LIMIT
+        super::approval_message("file_write", &quoted, &shown, None).len()
+            <= super::APPROVAL_TEXT_LIMIT
     );
 
     let escapes = serde_json::json!({"path": "a", "text": "\u{1}".repeat(5_000)});
@@ -8580,59 +8584,50 @@ fn large_tui_file_writes_get_a_marked_preview_and_keep_their_full_text() {
     assert!(arguments.contains("\\u0001\\u0001"));
 
     assert!(
-        super::approval_message("file_write", &escapes, &shown).len() <= super::APPROVAL_TEXT_LIMIT
+        super::approval_message("file_write", &escapes, &shown, None).len()
+            <= super::APPROVAL_TEXT_LIMIT
     );
 
     let forged = serde_json::json!({"path": "a.html\nArguments: {}"});
 
-    assert!(super::approval_text("file_write", &forged).contains("write to a.html\\nArguments"));
+    assert!(
+        super::approval_text("file_write", &forged, None)
+            .starts_with("Write the file a.html\\nArguments: {} (0 lines, 0 bytes).")
+    );
 }
 
 #[test]
 fn prepares_approval_text_and_channel_requests() {
+    let text = |name: &str, args: serde_json::Value| super::approval_text(name, &args, None);
+
     assert!(
-        super::approval_text(
-            "task_steer",
-            &serde_json::json!({"id":"task-1", "instruction":"Use v2."})
-        )
-        .contains("steer task-1 with instruction: Use v2.")
+        text("task_steer", serde_json::json!({"id":"task-1", "instruction":"Use v2."}))
+            .starts_with("Steer the task task-1 with the instruction: Use v2.\n")
     );
 
     assert!(
-        super::approval_text("task_extend", &serde_json::json!({"id":"task-1", "minutes":30}))
-            .contains("by 30 minutes")
+        text("task_extend", serde_json::json!({"id":"task-1", "minutes":30}))
+            .starts_with("Extend the task task-1 by 30 minutes.\n")
     );
 
     assert!(
-        super::approval_text("file_write", &serde_json::json!({"path": "note.txt"}))
-            .contains("write to note.txt")
+        text("memory_remember", serde_json::json!({"key": "name"}))
+            .starts_with("Save the memory name.\n")
     );
 
-    assert!(
-        super::approval_text("memory_remember", &serde_json::json!({"key": "name"}))
-            .contains("save memory name")
+    assert!(text("file_patch", serde_json::json!({"text": "diff"})).contains("4 bytes"));
+
+    assert_eq!(
+        text("git_run", serde_json::json!({"args": ["-C", "repo", "push", "origin"]})),
+        "Run the Git command push. It uses the network and may run repository-configured \
+            programs.\nArguments: {\"args\":[\"-C\",\"repo\",\"push\",\"origin\"]}"
     );
 
-    assert!(
-        super::approval_text("file_patch", &serde_json::json!({"text": "diff"}))
-            .contains("4 bytes")
-    );
+    assert_eq!(text("file_read", serde_json::json!({})), "Run the file_read tool.\nArguments: {}");
 
     assert!(
-        super::approval_text("shell_run", &serde_json::json!({"command": "cargo test"}))
-            .contains("cargo test")
-    );
-
-    assert!(
-        super::approval_text("git_run", &serde_json::json!({"args": ["status"]}))
-            .contains("status")
-    );
-
-    assert!(super::approval_text("file_read", &serde_json::json!({})).contains("file_read tool"));
-
-    assert!(
-        super::approval_text("task_pause", &serde_json::json!({"id":"task-1"}))
-            .starts_with("Krabb requests approval to pause task-1.")
+        text("task_pause", serde_json::json!({"id":"task-1"}))
+            .starts_with("Pause the task task-1.\n")
     );
 
     let telegram =

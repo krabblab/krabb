@@ -13,6 +13,7 @@ Semantic Versioning.
 - Let Krabb read the GIFs, stickers, PDFs, and audio files you send in chat.
 - Attach files and clipboard images in the TUI by pasting a path or pressing Ctrl+V.
 - Let Krabb turn its own tools, shell, or approval on or off when you ask and approve.
+- See what each approval does in plain words, with Krabb's reason, before you decide.
 - Install official plugins from the plugin index without a source checkout.
 - List and install any published plugin version with `krabb plugin versions`.
 - Install pre-release plugins with `krabb plugin install --unstable`.

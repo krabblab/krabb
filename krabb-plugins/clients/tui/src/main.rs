@@ -55,6 +55,8 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 const COMPACTION_TIMEOUT: Duration = Duration::from_secs(305);
 #[cfg(test)]
 const SAVED_REPLY_LIMIT: usize = 16 * 1024;
+/// How approvals from daemons before fact lines began.
+const LEGACY_APPROVAL: &str = "Krabb requests approval to ";
 // 365 days (one year), expressed in seconds.
 const MAX_SCHEDULE_DELAY_SECONDS: u64 = 31_536_000;
 
@@ -4925,6 +4927,31 @@ fn format_approval_notice(
     command: Option<&str>,
     details: &str,
 ) -> String {
+    let details = details.trim();
+
+    if details.is_empty() || details.starts_with(LEGACY_APPROVAL) {
+        return format_legacy_approval_notice(id, tool, arguments, command, details);
+    }
+
+    let mut message = format!("Approval needed.\n{details}");
+
+    if !details.lines().any(|line| line.starts_with("Command: ") || line.starts_with("Arguments: "))
+    {
+        message.push_str(&format!("\nArguments: {arguments}"));
+    }
+
+    message.push_str(&format!("\nApprove: /approve {id}\nDeny: /deny {id}"));
+    message
+}
+
+/// Formats an approval from a daemon that predates fact lines, whose text repeats the action.
+fn format_legacy_approval_notice(
+    id: &str,
+    tool: &str,
+    arguments: &str,
+    command: Option<&str>,
+    details: &str,
+) -> String {
     let mut message = String::from("Approval needed.");
     message.push_str(&format!("\nTool: {tool}"));
 
@@ -4939,7 +4966,7 @@ fn format_approval_notice(
 
         let action = details
             .trim()
-            .strip_prefix("Krabb requests approval to ")
+            .strip_prefix(LEGACY_APPROVAL)
             .unwrap_or(details.trim())
             .trim_end_matches('.');
 
@@ -5020,16 +5047,23 @@ fn format_approvals(value: &Value) -> String {
                 .and_then(|values| values.remove("text"))
                 .and_then(|text| text.as_str().map(str::to_owned));
 
+            let heading = match item["summary"].as_str().filter(|summary| !summary.is_empty()) {
+                Some(summary) => {
+                    format!("{id}: {tool} for {session}\n{summary}\nArguments: {args}")
+                }
+
+                None => format!("{id}: {tool} for {session} — {args}"),
+            };
+
             Some(match text {
                 Some(text) => format!(
-                    "{id}: {tool} for {session} — {args}\n--- text of {id}: {} bytes, {} lines \
-                     ---\n{}\n--- end of {id} ---",
+                    "{heading}\n--- text of {id}: {} bytes, {} lines ---\n{}\n--- end of {id} ---",
                     text.len(),
                     text.lines().count(),
                     reviewable(&text)
                 ),
 
-                None => format!("{id}: {tool} for {session} — {args}"),
+                None => heading,
             })
         })
         .collect::<Vec<_>>();
@@ -6266,6 +6300,72 @@ mod tests {
         assert_eq!(
             super::format_approval(&serde_json::json!({"approval": "auto"})),
             "Approvals: auto.\n> "
+        );
+    }
+
+    #[test]
+    fn formats_live_approvals_with_the_fact_purpose_and_exact_request_once() {
+        let install = "Install packages with apt: htop, tmux. It uses the network and needs \
+            admin rights.\nKrabb says: Install htop and tmux as you asked\nCommand: apt install \
+            htop tmux";
+
+        assert_eq!(
+            super::format_approval_notice(
+                "approval-1",
+                "shell_run",
+                "{\"command\":\"apt install htop tmux\"}",
+                Some("apt install htop tmux"),
+                install,
+            ),
+            format!(
+                "Approval needed.\n{install}\nApprove: /approve approval-1\nDeny: /deny approval-1"
+            )
+        );
+
+        let write = "Write the file notes.txt (3 lines, 14 bytes). It replaces any file already \
+            there.\nArguments: {\"path\":\"notes.txt\",\"text\":\"one\\ntwo\\nthree\\n\"}";
+
+        let shown = super::format_approval_notice("approval-2", "file_write", "{}", None, write);
+
+        assert_eq!(shown.matches("notes.txt").count(), 2);
+        assert_eq!(shown.matches("Arguments: ").count(), 1);
+
+        let settings = "Set channels.telegram.shell = true in Krabb's config.toml.";
+
+        assert_eq!(
+            super::format_approval_notice(
+                "approval-3",
+                "settings_change",
+                "{\"setting\":\"shell\"}",
+                None,
+                settings
+            ),
+            format!(
+                "Approval needed.\n{settings}\nArguments: {{\"setting\":\"shell\"}}\nApprove: \
+                    /approve approval-3\nDeny: /deny approval-3"
+            )
+        );
+    }
+
+    #[test]
+    fn lists_pending_approvals_with_their_summary_when_the_daemon_sends_one() {
+        let value = json!({
+            "items": [{
+                "id": "0123456789abcdef01234567",
+                "summary": "Delete files and folders: build.\nKrabb says: Clean up",
+                "target": {
+                    "session": "tui-default",
+                    "tool": "shell_run",
+                    "args": {"command": "rm -rf build"}
+                }
+            }]
+        });
+
+        assert_eq!(
+            super::format_approvals(&value),
+            "Pending approvals:\n0123456789abcdef01234567: shell_run for tui-default\nDelete \
+                files and folders: build.\nKrabb says: Clean up\nArguments: \
+                {\"command\":\"rm -rf build\"}\nUse /approve <id> or /deny <id>.\n> "
         );
     }
 
