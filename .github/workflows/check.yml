@@ -37,7 +37,7 @@ jobs:
   workspace:
     name: Workspace
     runs-on: ubuntu-latest
-    container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
+    container: ${{ inputs.container_image || 'rust:1.96-trixie' }}
 
     defaults:
       run:
@@ -75,7 +75,7 @@ jobs:
   format:
     name: Format
     runs-on: ubuntu-latest
-    container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
+    container: ${{ inputs.container_image || 'rust:1.96-trixie' }}
 
     defaults:
       run:
@@ -103,7 +103,7 @@ jobs:
   loops:
     name: Loops
     runs-on: ubuntu-latest
-    container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
+    container: ${{ inputs.container_image || 'rust:1.96-trixie' }}
 
     defaults:
       run:
@@ -126,7 +126,7 @@ jobs:
   msrv:
     name: Minimum Rust Version
     runs-on: ubuntu-latest
-    container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
+    container: ${{ inputs.container_image || 'rust:1.96-trixie' }}
 
     defaults:
       run:
@@ -149,7 +149,7 @@ jobs:
   windows_gnu:
     name: Windows GNU
     runs-on: ubuntu-latest
-    container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
+    container: ${{ inputs.container_image || 'rust:1.96-trixie' }}
 
     # Set for the whole job so the Cargo cache key includes it.
     env:

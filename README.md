@@ -167,7 +167,7 @@ Common starting points:
 
 ## Development
 
-Use Rust 1.89 or newer and Cargo. Run the complete local checks before opening
+Use Rust 1.96 or newer and Cargo. Run the complete local checks before opening
 a pull request:
 
 ```sh

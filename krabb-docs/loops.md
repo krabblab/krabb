@@ -141,7 +141,7 @@ explicitly.
   disabled. Reviewers require Landlock ABI 3+; verification runs in the host.
 
 Final gates require the repository toolchain, including cargo-llvm-cov, cargo-deny,
-cargo-audit, Agentskill, and Rust 1.89. They run `make verify`, documentation and shell
+cargo-audit, Agentskill, and Rust 1.96. They run `make verify`, documentation and shell
 checks, all-target/MSRV builds, release smoke tests, and dependency audits. Agent calls
 use your configured provider; automated product tests must not call paid provider APIs.
 

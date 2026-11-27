@@ -167,12 +167,12 @@ run_final_verification() {
         done
 
         toolchain_status=0
-        run_verification_command 'Rust 1.89 availability' cargo +1.89 --version || \
+        run_verification_command 'Rust 1.96 availability' cargo +1.96 --version || \
             toolchain_status=$?
         if (( toolchain_status == EXIT_VERIFICATION_TIMEOUT )); then
             exit "$toolchain_status"
         elif (( toolchain_status != 0 )); then
-            print_error 'Required Rust 1.89 toolchain is not available.'
+            print_error 'Required Rust 1.96 toolchain is not available.'
             exit "$EXIT_VERIFICATION"
         fi
 
@@ -204,7 +204,7 @@ run_final_verification() {
         print_info 'Running MSRV workspace check (5/10)...'
         run_verification_command \
             'MSRV workspace check' \
-            cargo +1.89 check \
+            cargo +1.96 check \
             --workspace \
             --all-targets \
             --locked || exit $?

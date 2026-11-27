@@ -18,11 +18,14 @@ substantial changes through an issue before opening a pull request. Use
 ```sh
 git clone https://github.com/krabblab/krabb.git
 cd krabb
-rustup toolchain install 1.89.0
+rustup toolchain install 1.96.0
 lefthook install
 cargo build --workspace --locked
 make verify
 ```
+
+The minimum Rust version is a stable release at least 6 months old. Raise it
+in one change across `Cargo.toml`, CI, and these guides.
 
 Lefthook runs fast checks before commits. `make verify` runs formatting,
 Clippy, locked compilation, all tests, coverage, builds, and metrics. Provider
@@ -88,7 +91,7 @@ make ci
 The command first runs the Check, Test, and Build preflight commands directly
 on the current machine. Only after that passes does it use act's medium
 `catthehacker/ubuntu:act-latest` image and a cached local CI image based on it
-with Rust 1.89 and the native Docker architecture (`linux/arm64` or
+with Rust 1.96 and the native Docker architecture (`linux/arm64` or
 `linux/amd64`). Docker keeps the images and action cache locally, so subsequent
 runs do not download the runner again.
 The command runs Check, Agentskill, Security, the native Linux tests, the

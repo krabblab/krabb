@@ -9,7 +9,7 @@ die() {
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 act_bin=${KRABB_ACT_BIN:-act}
 act_image=${KRABB_ACT_IMAGE:-catthehacker/ubuntu:act-latest}
-container_image=${KRABB_CI_IMAGE:-krabb-ci:rust-1.89}
+container_image=${KRABB_CI_IMAGE:-krabb-ci:rust-1.96}
 
 case "$(uname -m)" in
     aarch64|arm64)
