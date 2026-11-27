@@ -209,7 +209,7 @@ jobs:
 
   krabb:
     name: Publish Krabb
-    needs: [plan, install, update, plugins]
+    needs: [plan, build, install, update, plugins]
     if: >-
       ${{ !cancelled() && needs.plan.outputs.publish == 'true' &&
           needs.plan.outputs.release == 'true' && needs.install.result == 'success' &&
@@ -239,14 +239,16 @@ jobs:
       - name: Collect The Release
         env:
           KRABB_VERSION: ${{ needs.plan.outputs.version }}
+          KRABB_TARGETS: ${{ needs.build.outputs.targets }}
 
         run: |
           set -euo pipefail
+          targets=$(jq length <<<"$KRABB_TARGETS")
           mkdir release
           cp dist/*/krabb-core-v"$KRABB_VERSION"-* release/
           cat dist/*/SHA256SUMS | sort -k 2 > release/SHA256SUMS
-          test "$(find release -name 'krabb-core-*' | wc -l)" -eq 6
-          test "$(wc -l < release/SHA256SUMS)" -eq 6
+          test "$(find release -name 'krabb-core-*' | wc -l)" -eq "$targets"
+          test "$(wc -l < release/SHA256SUMS)" -eq "$targets"
           (cd release && sha256sum --check --strict SHA256SUMS)
 
       # The release stays a draft until every file is attached, so installers that read the

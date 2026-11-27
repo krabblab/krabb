@@ -4,7 +4,7 @@
 # GITHUB_ENV and GITHUB_PATH, so the workflow lists them as named steps.
 set -euo pipefail
 
-REGISTRY=ghcr.io/krabblab/krabb/plugins
+REGISTRY="ghcr.io/$(printf '%s' "${GITHUB_REPOSITORY:-krabblab/krabb}" | tr '[:upper:]' '[:lower:]')/plugins"
 
 usage() {
     printf '%s\n' 'Usage: krabb-scripts/drills/drill.sh STEP'
