@@ -457,7 +457,7 @@ pub(crate) async fn answer_with_registry(
         };
 
         fix = setup.shell_fix();
-        section = setup.section();
+        section = setup.section().filter(|_| registry.execution.interactive());
 
         if let Some(message) = setup.message(session) {
             messages.insert(0, message);
@@ -484,12 +484,7 @@ pub(crate) async fn answer_with_registry(
 
     let permissions = permissions::Permissions::offered(&specs, &registry.owners, policy);
 
-    let after = messages
-        .iter()
-        .rposition(|message| message.id.starts_with(state::SYSTEM_CONTEXT))
-        .map_or(0, |index| index + 1);
-
-    messages.insert(after, permissions.message(session));
+    messages.insert(permissions::position(&messages), permissions.message(session));
 
     if schedules {
         let channels = plugins

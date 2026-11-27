@@ -44,8 +44,9 @@ impl Place {
     }
 
     pub(crate) fn current() -> Self {
-        let runtime = std::env::var("KRABB_SANDBOX_RUNTIME").ok();
-        let image = std::env::var("KRABB_SANDBOX_IMAGE").ok();
+        let value = |name| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
+        let runtime = value("KRABB_SANDBOX_RUNTIME");
+        let image = value("KRABB_SANDBOX_IMAGE");
         let host = cfg!(any(target_os = "linux", windows));
 
         Self::of(runtime.as_deref(), image.as_deref(), host, root())
@@ -90,6 +91,18 @@ fn root() -> bool {
 #[cfg(not(unix))]
 fn root() -> bool {
     false
+}
+
+/// Where the summary goes: after the charter, runtime, and personalization block that leads the
+/// turn's system messages.
+pub(crate) fn position(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .take_while(|message| message.role == Role::System)
+        .enumerate()
+        .filter(|(_, message)| message.id.starts_with(state::SYSTEM_CONTEXT))
+        .last()
+        .map_or(0, |(index, _)| index + 1)
 }
 
 /// How a change waits for approval in prompt mode.
@@ -236,7 +249,7 @@ impl Permissions {
 
     fn approval(&self) -> String {
         let mode = match (self.approval, self.asking) {
-            (ApprovalMode::Off, _) => "off; changes are blocked, so only reads run.",
+            (ApprovalMode::Off, _) => "off; changes are blocked.",
 
             (ApprovalMode::Prompt, Asking::Prompt) => {
                 "prompt; changes run after approval (the owner may approve from another chat)."
@@ -500,8 +513,46 @@ mod tests {
         assert!(text.contains("- Write files: no, because approval mode off blocks changes.\n"));
         assert!(text.contains("- Shell commands: no, because approval mode off blocks changes.\n"));
         assert!(text.contains("web_fetch reads public HTTPS pages and browser tools open sites."));
-        assert!(text.contains("- Approval mode: off; changes are blocked, so only reads run."));
+        assert!(text.contains("- Approval mode: off; changes are blocked. Set by `approval`"));
         assert!(!text.contains("available on the host"));
+    }
+
+    #[test]
+    fn describes_a_channel_with_approval_and_tools_off() {
+        let permissions =
+            Permissions::offered(&[], &BTreeMap::new(), policy(ApprovalMode::Off, false));
+
+        let text = render(&permissions);
+
+        assert!(text.contains("- Read and search files: no.\n"));
+        assert!(text.contains("- Write files: no.\n"));
+        assert!(text.contains("- Shell commands: no.\n"));
+        assert!(text.contains("- Approval mode: off; changes are blocked.\n"));
+        assert!(!text.contains("only reads run"));
+    }
+
+    #[test]
+    fn follows_the_leading_system_context_block() {
+        let message = |id: &str, role| Message {
+            id: id.into(),
+            session: "chat".into(),
+            role,
+            sender: None,
+            content: Vec::new(),
+        };
+
+        let messages = [
+            message("krabb-communication", Role::System),
+            message("krabb-context-charter", Role::System),
+            message("krabb-context-runtime", Role::System),
+            message("krabb-context-KLAW.md", Role::System),
+            message("user", Role::User),
+            message("krabb-context-stray", Role::System),
+        ];
+
+        assert_eq!(position(&messages), 4);
+        assert_eq!(position(&messages[4..]), 0);
+        assert_eq!(position(&messages[..1]), 0);
     }
 
     #[test]
