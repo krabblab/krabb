@@ -372,51 +372,7 @@ pub(crate) fn service_at_with_status(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match command {
         ServiceCommand::Install(args) => {
-            match std::fs::symlink_metadata(path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err("Service definition cannot be a symbolic link.".into());
-                }
-
-                Ok(_) if !args.force => {
-                    return Err(format!(
-                        "A service definition already exists at {}.\nUse `--force` to replace it.",
-                        path.display()
-                    )
-                    .into());
-                }
-
-                Ok(_) => {}
-
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-
-            let executable = daemon_executable()?;
-            let environment = service_environment(path)?;
-
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            let definition = service_text(&executable, &environment);
-            #[cfg(target_os = "windows")]
-            {
-                windows_service_install(&executable, &environment, args.force, path, &definition)?;
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            secure(path, definition.as_bytes())?;
-
-            let copy = service_path_value(service_credentials_path(path))?;
-
-            if !environment
-                .iter()
-                .any(|(name, value)| name == "KRABB_CREDENTIALS" && *value == copy)
-            {
-                remove_service_credentials(path)?;
-            }
-
-            info!("Service installed.");
+            install_at(path, args.force)?;
 
             if json {
                 println!(
@@ -516,6 +472,57 @@ pub(crate) fn service_at_with_status(
         }
     }
 
+    Ok(())
+}
+
+/// Writes the service definition at PATH, replacing one only when FORCE is set, and prints
+/// nothing, so guided setup can report the outcome in its own words.
+pub(crate) fn install_at(
+    path: &Path,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("Service definition cannot be a symbolic link.".into());
+        }
+
+        Ok(_) if !force => {
+            return Err(format!(
+                "A service definition already exists at {}.\nUse `--force` to replace it.",
+                path.display()
+            )
+            .into());
+        }
+
+        Ok(_) => {}
+
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let executable = daemon_executable()?;
+    let environment = service_environment(path)?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let definition = service_text(&executable, &environment);
+    #[cfg(target_os = "windows")]
+    {
+        windows_service_install(&executable, &environment, force, path, &definition)?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    secure(path, definition.as_bytes())?;
+
+    let copy = service_path_value(service_credentials_path(path))?;
+
+    if !environment.iter().any(|(name, value)| name == "KRABB_CREDENTIALS" && *value == copy) {
+        remove_service_credentials(path)?;
+    }
+
+    info!("Service installed.");
     Ok(())
 }
 

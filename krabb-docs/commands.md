@@ -678,8 +678,14 @@ in the home holds them for every conversation without its own choice, names any
 `KRABB_MODEL_PLUGIN`, `KRABB_MODEL`, or `clients.cli` override, and says that no
 restart is needed and whether the running daemon already uses them. Without a
 terminal, the step keeps the earlier model or the default. Naming the step when a
-provider is set also offers to change only its model. After installing Codex, the step
-offers to sign in with your ChatGPT account, or says how to install the Codex CLI.
+provider is set also offers to change only its model. Codex skips its optional context
+length, which stays `auto` until `krabb plugin setup codex` changes it. Before Codex is
+chosen or kept, the step checks the Codex CLI: when it is missing, the guide stops with
+where to install it, and when it is not signed in, the guide runs the ChatGPT sign-in in
+a terminal. If sign-in fails, is cancelled, or there is no terminal, the guide stops and
+says to run `krabb codex login`, then `krabb init` again. The `hatch` step runs only when
+the provider can answer, and otherwise names the fix and moves on. The `service` step
+shows only its own outcome, not the service commands' messages.
 
 When the background service is installed, the guide ends by waiting for it to answer
 and checking that the provider loaded. If either fails, it says so with the one next

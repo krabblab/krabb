@@ -308,3 +308,39 @@ fn questions_follow_a_title_directly_and_a_finished_step_after_a_gap() {
 
     assert!(guide.spaced);
 }
+
+#[test]
+fn codex_needs_its_cli_and_a_sign_in_before_the_guide_goes_on() {
+    assert_eq!(codex_need(false, false, true), Codex::Install);
+    assert_eq!(codex_need(false, true, false), Codex::Install);
+    assert_eq!(codex_need(true, true, false), Codex::Ready);
+    assert_eq!(codex_need(true, false, true), Codex::SignIn);
+    assert_eq!(codex_need(true, false, false), Codex::Unsigned);
+
+    for flow in [INSTALL_CODEX, SIGN_IN_CODEX] {
+        let Flow::Blocked { why, next } = flow else { panic!("the guide goes on") };
+
+        assert!(!why.ends_with('.'));
+        assert!(next.ends_with("then run `krabb init` again."));
+    }
+}
+
+#[test]
+fn hatching_waits_for_codex_to_answer() {
+    assert_eq!(hatch_wait(Codex::Ready), None);
+    assert!(hatch_wait(Codex::Install).unwrap().contains("developers.openai.com/codex/cli"));
+
+    for need in [Codex::SignIn, Codex::Unsigned] {
+        assert!(hatch_wait(need).unwrap().contains("`krabb codex login`"));
+    }
+}
+
+#[tokio::test]
+async fn codex_skips_setup_and_other_providers_need_no_sign_in() {
+    let mut guide = guide(PathBuf::from("unused"));
+    let codex = find(&PROVIDERS, "codex").unwrap();
+
+    assert!(matches!(guide.configure(codex).await.unwrap(), Flow::Next));
+    assert!(matches!(guide.sign_in("openai").await.unwrap(), Flow::Next));
+    assert!(guide.spaced);
+}
