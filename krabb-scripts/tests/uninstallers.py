@@ -133,6 +133,19 @@ class Uninstallers(unittest.TestCase):
         self.assertNotIn('security', self.recorded())
         self.assertNotIn('secret-tool', self.recorded())
 
+    def test_sections_are_separated_by_one_blank_line(self):
+        result = self.run_uninstaller()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(result.stdout.startswith('\n'), result.stdout)
+        self.assertNotIn('\n\n\n', result.stdout)
+
+        starts = [group.splitlines()[0] for group in result.stdout.strip().split('\n\n')]
+
+        self.assertTrue(starts[0].startswith('[INFO] Removed:'), result.stdout)
+        self.assertTrue(any(start.startswith('[INFO] Kept ') for start in starts), result.stdout)
+        self.assertTrue(starts[-1].startswith('[INFO] Remove KRABB_* secrets'), result.stdout)
+
     def test_purge_removes_everything_krabb_created_and_lists_the_rest(self):
         stores = self.root / 'stores'
         project = self.root / 'project'

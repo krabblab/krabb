@@ -215,9 +215,11 @@ case ":$PATH:" in
             *) profile='~/.profile' ;;
         esac
 
+        printf '\n'
         info "Add $prefix/bin to your PATH by adding this line to $profile, then open a new terminal:"
         printf '%s\n' "$line"
         ;;
 esac
 
+printf '\n'
 info 'Set up Krabb with `krabb init`.'

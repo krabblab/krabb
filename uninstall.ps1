@@ -23,6 +23,13 @@ function Write-Uninstall([string] $Message) {
     Write-Output "[INFO] $Message"
 }
 
+# Starts a group of output lines, with one blank line before it once anything was printed.
+$script:spaced = $false
+function Start-Section {
+    if ($script:spaced) { Write-Output "" }
+    $script:spaced = $true
+}
+
 # Native tools report failures through exit codes; a missing or broken one must not stop the
 # uninstall, so each call is isolated and only its exit code counts.
 function Invoke-Tool([string] $Program, [string[]] $Arguments) {
@@ -98,6 +105,7 @@ if ($Purge -and -not $Yes) {
     Write-Output "conversations, its credential entry, and the stores Krabb created elsewhere."
     $answer = Read-Host "Purge Krabb? [y/N]"
     if ($answer -notmatch '^(y|yes)$') { Stop-Uninstall "Nothing was removed." }
+    $script:spaced = $true
 }
 
 function Remove-Krabb([string] $Path) {
@@ -249,6 +257,7 @@ foreach ($name in "KRABB_ROOT", "KRABB_MEDIA", "KRABB_CODEX_HOME") {
     if ($value -and (Test-Path -LiteralPath $value)) { $kept.Add("$value from $name") }
 }
 
+Start-Section
 if ($removed.Count -gt 0) {
     Write-Uninstall "Removed:"
     $removed | ForEach-Object { Write-Output "  $_" }
@@ -257,13 +266,16 @@ if ($removed.Count -gt 0) {
 }
 
 if ($kept.Count -gt 0) {
+    Start-Section
     Write-Uninstall "Kept:"
     $kept | ForEach-Object { Write-Output "  $_" }
 }
 
 if (-not $Purge -and $isHome) {
+    Start-Section
     Write-Uninstall "Kept $krabbHome with your plugins, settings, credentials, and conversations."
     Write-Uninstall "Remove them too with ``uninstall.ps1 -Purge``."
 }
 
+Start-Section
 Write-Uninstall "Remove KRABB_* secrets set in your environment, and revoke keys where they were issued."
