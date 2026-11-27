@@ -173,6 +173,7 @@ enum EngineEvent {
     InputQueued { input: String, receipt: String },
     InputRejected { input: String, reason: String },
     Progress(String),
+    DraftDiscarded,
     AssistantFinished,
     GenerationFinished { interrupted: bool },
 }
@@ -541,6 +542,7 @@ where
     while let Ok(event) = event_rx.try_recv() {
         match event {
             EngineEvent::AssistantText(text) => reply.push_str(&text),
+            EngineEvent::DraftDiscarded => reply.clear(),
             EngineEvent::ControlNotice(text) => receipt = Some(text),
 
             EngineEvent::RequestFailed(_) | EngineEvent::SystemNotice(_) => failed = true,
@@ -4801,6 +4803,13 @@ async fn control_as(
                 }
 
                 if value["event"] == "tool" {
+                    // The daemon keeps no text from tool steps, so the client drops it too.
+                    if !streamed.is_empty()
+                        && let Some(events) = &events
+                    {
+                        let _ = events.send(EngineEvent::DraftDiscarded);
+                    }
+
                     streamed.clear();
                     continue;
                 }
@@ -4926,6 +4935,8 @@ fn format_approval_notice(
         message.push_str(&format!("\nArguments: {arguments}"));
         message.push_str("\nAction: ");
 
+        let details = details.split("\nArguments:").next().unwrap_or(details);
+
         let action = details
             .trim()
             .strip_prefix("Krabb requests approval to ")
@@ -5000,8 +5011,26 @@ fn format_approvals(value: &Value) -> String {
             let target = &item["target"];
             let tool = target["tool"].as_str().unwrap_or("tool");
             let session = target["session"].as_str().unwrap_or("unknown session");
-            let args = target["args"].to_string();
-            Some(format!("{id}: {tool} for {session} — {args}"))
+            let mut args = target["args"].clone();
+
+            let text = args
+                .as_object_mut()
+                .filter(|_| matches!(tool, "file_write" | "file_patch"))
+                .filter(|values| values["text"].is_string())
+                .and_then(|values| values.remove("text"))
+                .and_then(|text| text.as_str().map(str::to_owned));
+
+            Some(match text {
+                Some(text) => format!(
+                    "{id}: {tool} for {session} — {args}\n--- text of {id}: {} bytes, {} lines \
+                     ---\n{}\n--- end of {id} ---",
+                    text.len(),
+                    text.lines().count(),
+                    reviewable(&text)
+                ),
+
+                None => format!("{id}: {tool} for {session} — {args}"),
+            })
         })
         .collect::<Vec<_>>();
 
@@ -5010,6 +5039,34 @@ fn format_approvals(value: &Value) -> String {
     }
 
     format!("Pending approvals:\n{}\nUse /approve <id> or /deny <id>.\n> ", rows.join("\n"))
+}
+
+/// Indents TEXT and escapes control characters, so it cannot restyle the terminal or end the
+/// listing early with a prompt line.
+fn reviewable(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let line = line
+                .chars()
+                .map(|character| {
+                    // Bidirectional and zero-width marks could reorder or hide text.
+                    let hidden = matches!(
+                        character,
+                        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                    );
+
+                    if (character.is_control() && character != '\t') || hidden {
+                        character.escape_unicode().to_string()
+                    } else {
+                        character.to_string()
+                    }
+                })
+                .collect::<String>();
+
+            format!("    {line}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn approval_action<C, F>(home: &str, id: &str, approved: bool, host: C) -> String
@@ -6246,6 +6303,17 @@ mod tests {
             ),
             "Approval needed.\nTool: write\nArguments: {\"path\":\"foo\"}\nAction: write to foo\nApprove: /approve approval-2\nDeny: /deny approval-2"
         );
+
+        assert_eq!(
+            super::format_approval_notice(
+                "approval-4",
+                "file_write",
+                "{\"path\":\"a.html\"}",
+                None,
+                "Krabb requests approval to write to a.html.\nArguments: {\"path\":\"a.html\"}",
+            ),
+            "Approval needed.\nTool: file_write\nArguments: {\"path\":\"a.html\"}\nAction: write to a.html\nApprove: /approve approval-4\nDeny: /deny approval-4"
+        );
     }
 
     #[test]
@@ -6299,6 +6367,44 @@ mod tests {
         );
 
         assert_eq!(super::format_approvals(&json!({"items": []})), "Pending approvals: none.\n> ");
+
+        let page = "<!doctype html>\n<h1>Weather</h1>";
+
+        let value = json!({
+            "items": [{
+                "id": "0123456789abcdef01234567",
+                "target": {
+                    "session": "tui-default",
+                    "tool": "file_write",
+                    "args": {"path": "report.html", "text": page}
+                }
+            }]
+        });
+
+        assert!(super::format_approvals(&value).contains(&format!(
+            "file_write for tui-default — {{\"path\":\"report.html\"}}\n--- text of \
+             0123456789abcdef01234567: {} bytes, 2 lines ---\n    <!doctype html>\n    \
+             <h1>Weather</h1>\n--- end of \
+             0123456789abcdef01234567 ---\n",
+            page.len()
+        )));
+
+        let hostile = "\u{1b}[2J\rok\n> quoted\n0123: file_write for tui-default — {}\u{202e}";
+
+        let value = json!({
+            "items": [{
+                "id": "0123456789abcdef01234567",
+                "target": {"session": "tui-default", "tool": "file_write", "args": {"text": hostile}}
+            }]
+        });
+
+        let shown = super::format_approvals(&value);
+
+        assert!(!shown.contains('\u{1b}'));
+        assert!(!shown.contains('\r'));
+        assert!(!shown.contains('\u{202e}'));
+        assert!(shown.contains("    \\u{1b}[2J\\u{d}ok\n    > quoted\n    0123:"));
+        assert!(shown.contains("--- end of 0123456789abcdef01234567 ---"));
     }
 
     #[test]
@@ -8166,6 +8272,8 @@ mod tests {
             receiver.recv().await,
             Some(super::EngineEvent::AssistantText("I'll check that.".into()))
         );
+
+        assert_eq!(receiver.recv().await, Some(super::EngineEvent::DraftDiscarded));
 
         assert_eq!(
             receiver.recv().await,

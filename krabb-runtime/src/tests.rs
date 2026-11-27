@@ -8541,6 +8541,54 @@ fn output_tokens_count_payloads_rather_than_their_debug_form() {
 }
 
 #[test]
+fn large_tui_file_writes_get_a_marked_preview_and_keep_their_full_text() {
+    let page = (0..2_000).map(|line| format!("<p>Line {line}</p>")).collect::<Vec<_>>().join("\n");
+    let args = serde_json::json!({"path": "report.html", "text": page});
+
+    let arguments = super::approval_display("file_write", &args, "tui").unwrap();
+    let shown = super::approval_view("file_write", &args, "tui");
+    let text = super::approval_message("file_write", &args, &shown);
+
+    assert!(arguments.contains("report.html"));
+    assert!(arguments.contains(&format!("[{} bytes, 2000 lines;", page.len())));
+    assert!(arguments.contains("<p>Line 0</p>"));
+    assert!(arguments.contains("<p>Line 1999</p>"));
+    assert!(arguments.contains("lines omitted …]"));
+    assert!(text.len() <= super::APPROVAL_TEXT_LIMIT);
+    assert_eq!(args["text"], page);
+
+    let small = serde_json::json!({"path": "note.txt", "text": "hello"});
+
+    assert_eq!(super::approval_view("file_write", &small, "tui"), small);
+
+    for (name, channel) in [("file_write", "telegram"), ("file_patch", "tui")] {
+        assert_eq!(super::approval_view(name, &args, channel), args);
+        assert!(super::approval_display(name, &args, channel).is_err());
+    }
+
+    let quoted = serde_json::json!({"path": "a", "text": "\"".repeat(20_000)});
+    let shown = super::approval_view("file_write", &quoted, "tui");
+
+    assert!(
+        super::approval_message("file_write", &quoted, &shown).len() <= super::APPROVAL_TEXT_LIMIT
+    );
+
+    let escapes = serde_json::json!({"path": "a", "text": "\u{1}".repeat(5_000)});
+    let arguments = super::approval_display("file_write", &escapes, "tui").unwrap();
+    let shown = super::approval_view("file_write", &escapes, "tui");
+
+    assert!(arguments.contains("\\u0001\\u0001"));
+
+    assert!(
+        super::approval_message("file_write", &escapes, &shown).len() <= super::APPROVAL_TEXT_LIMIT
+    );
+
+    let forged = serde_json::json!({"path": "a.html\nArguments: {}"});
+
+    assert!(super::approval_text("file_write", &forged).contains("write to a.html\\nArguments"));
+}
+
+#[test]
 fn prepares_approval_text_and_channel_requests() {
     assert!(
         super::approval_text(

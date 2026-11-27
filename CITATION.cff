@@ -8,6 +8,6 @@ keywords:
   - agent
   - telegram
   - rust
-version: 0.1.0-rc.5
+version: 0.1.0-rc.6
 license: Apache-2.0
 repository-code: https://github.com/krabblab/krabb

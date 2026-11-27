@@ -185,6 +185,14 @@ const TOOL_CALLS: usize = 16;
 // Bound complete approval displays, including captured schedule context and channel text.
 const APPROVAL_ARGUMENT_LIMIT: usize = 512;
 const APPROVAL_SCHEDULE_LIMIT: usize = 1_024;
+// TUI file writes show a bounded preview; the full text stays in the pending approval.
+const APPROVAL_PREVIEW_LIMIT: usize = 1_200;
+// Room for the omission marker, one third of the lines budget for the end, and clipped lines.
+const PREVIEW_MARKER_BYTES: usize = 40;
+const PREVIEW_TAIL_SHARE: usize = 3;
+const PREVIEW_LINE_BYTES: usize = 240;
+// One character escapes to at most six JSON bytes, as in `\u001b`.
+const PREVIEW_ESCAPE_BYTES: usize = 6;
 const APPROVAL_TEXT_LIMIT: usize = 2_000;
 const TURN_LIMIT: std::time::Duration = krabb_core::plugin::TURN_LIMIT;
 const TOKEN_LIMIT: u64 = 128_000;

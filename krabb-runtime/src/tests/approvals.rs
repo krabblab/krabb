@@ -415,6 +415,8 @@ for line in sys.stdin:
         }
 
         for (name, args, oversized) in &channel_cases {
+            let oversized = &(*oversized && !(*name == "file_write" && channel == "tui"));
+
             for (mode, decision) in [
                 (ApprovalMode::Prompt, true),
                 (ApprovalMode::Prompt, false),
@@ -467,8 +469,10 @@ for line in sys.stdin:
                     let pending = gate.list().unwrap();
                     let target = &pending[0].target.args;
 
-                    assert_eq!(arguments, target.to_string());
-                    assert!(text.contains(&target.to_string()), "{name}: {text}");
+                    let shown = approval_view(name, target, channel).to_string();
+
+                    assert_eq!(arguments, shown);
+                    assert!(text.contains(&shown), "{name}: {text}");
                     assert!(text.len() <= 2_000);
 
                     if *name == "schedule_propose" {
