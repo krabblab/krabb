@@ -589,6 +589,11 @@ impl Guide {
 
         if flag.is_none() && !places.is_empty() && !self.named(Step::Channel) {
             self.done(&format!("Your Krabb talks with you through {}.", places.join(", ")));
+
+            for place in &places {
+                self.add_companions(place).await?;
+            }
+
             return Ok(Flow::Next);
         }
 
@@ -618,14 +623,21 @@ impl Guide {
             return Ok(flow);
         }
 
-        for companion in companions(offer.id) {
+        self.add_companions(offer.id).await?;
+        Ok(Flow::Next)
+    }
+
+    /// Installs the plugins that come with the place ID when they are missing, so an earlier
+    /// home that already talks through the TUI also gets its workspace tools.
+    async fn add_companions(&mut self, id: &str) -> Result<(), Error> {
+        for companion in companions(id) {
             if !crate::load_lock_at(&self.root)?.plugins.contains_key(companion.id) {
                 fetch(companion.id).await?;
                 self.done(&format!("Installed {} plugin.", companion.id));
             }
         }
 
-        Ok(Flow::Next)
+        Ok(())
     }
 
     fn service(&mut self) -> Result<Flow, Error> {
