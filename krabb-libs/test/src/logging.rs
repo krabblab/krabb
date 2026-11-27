@@ -130,8 +130,11 @@ where
                 );
                 let root = &home.0;
                 let mut command = crate::process::command(test);
+                // Dependency tracing is off by default, and this check needs it on to prove
+                // that even the most detailed logs keep secrets out.
                 command
                     .env("KRABB_HOME", root)
+                    .env("KRABB_LOG", "trace")
                     .env("KRABB_LOG_FORMAT", format)
                     .env("KRABB_LOG_FIXTURE_CHILD", case)
                     .env("KRABB_LOG_FIXTURE_MODE", mode);
