@@ -170,6 +170,8 @@ Set `approvals = true` at the top level of a channel plugin's manifest when it a
 `approval` by showing approve and deny buttons and reports each press as a `callback`
 event. Under the `prompt` approval mode, a channel without the flag runs no mutating tool
 and the model is told why.
+The official `telegram` and `discord` plugins can prompt without the flag, because their
+older versions showed approvals before it existed.
 
 Declare each external program the plugin runs, which Krabb cannot install for it, in a
 `[[requires]]` entry:

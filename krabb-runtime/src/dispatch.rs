@@ -1382,12 +1382,17 @@ fn host_arguments(
     }
 }
 
-/// Applies a model-issued task control for the conversation's current sender.
-/// Whether CHANNEL can ask a person to approve: a channel plugin must declare `approvals`.
-/// A turn from a client prompts through the host, but a channel without its plugin cannot.
+/// Whether CHANNEL can ask a person to approve a mutating tool call. A channel plugin must
+/// declare `approvals`, except `telegram` and `discord`, which showed approvals before the key
+/// existed. A turn from a client prompts through the host, but a channel without its plugin
+/// cannot.
 async fn prompts(plugins: &Plugins, channel: &str, source: Option<&sharing::Principal>) -> bool {
     match plugins.get(channel).await {
-        Some(plugin) => !plugin.supports(Capability::Channel) || plugin.approvals,
+        Some(plugin) => {
+            !plugin.supports(Capability::Channel)
+                || plugin.approvals
+                || matches!(channel, "telegram" | "discord")
+        }
 
         None => {
             matches!(source, Some(sharing::Principal::Client(_)))
@@ -1416,6 +1421,7 @@ fn refusal(
     format!("{text} Fix: `krabb config set {key}.{setting} --force`.")
 }
 
+/// Applies a model-issued task control for the conversation's current sender.
 pub(crate) fn control_task(
     sessions: &Arc<Mutex<state::Store>>,
     session: &str,
@@ -1925,5 +1931,34 @@ mod tests {
         assert!(!prompts(&plugins, "telegram", None).await);
         assert!(prompts(&plugins, "tui", None).await);
         assert!(prompts(&plugins, "desktop", Some(&desktop)).await);
+    }
+
+    #[tokio::test]
+    async fn official_channels_from_before_the_approvals_key_can_prompt() {
+        let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    result = {'protocol': {'major': 0, 'minor': 1}, 'id': sys.argv[1], 'version': '0.1.0',
+              'capabilities': ['channel']} if request['method'] == 'hello' else {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if request['method'] == 'shutdown':
+        break
+"#;
+
+        let plugins = Plugins::default();
+
+        for id in ["telegram", "discord", "slack"] {
+            let process =
+                crate::Process::start_with("python3", ["-u", "-c", script, id]).await.unwrap();
+
+            plugins.insert(crate::Live::new(process)).await;
+        }
+
+        assert!(prompts(&plugins, "telegram", None).await);
+        assert!(prompts(&plugins, "discord", None).await);
+        assert!(!prompts(&plugins, "slack", None).await);
     }
 }
