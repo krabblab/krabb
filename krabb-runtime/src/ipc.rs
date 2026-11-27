@@ -2295,7 +2295,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             json!({"id": id})
         }
 
-        "session.append" | "session.append_reserved" => {
+        "session.append" | "session.append_reserved" => 'append: {
             let reserved = request.method == "session.append_reserved";
             let id = request.params["id"]
                 .as_str()
@@ -2328,6 +2328,11 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let mut sessions = state.sessions.lock().map_err(lock)?;
             let session =
                 sessions.sessions.get(id).ok_or_else(|| not_found("Session was not found."))?;
+
+            if !reserved && let Some(saved) = session.messages.iter().find(|kept| kept.id == message.id)
+            {
+                break 'append json!({"id": id, "saved": true, "message": saved});
+            }
 
             if session.inflight.is_some() || reserved != (session.status == "working") {
                 return Err(invalid(krabb_core::types::SESSION_BUSY));
@@ -5316,6 +5321,37 @@ for line in sys.stdin:
         }
 
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[tokio::test]
+    async fn a_retried_append_saves_the_message_once() {
+        let state = state();
+
+        dispatch(&IpcRequest::call(1, "secret", "session.new", json!({"id": "one"})), &state)
+            .unwrap();
+
+        let message = Message {
+            id: "one-user-1".into(),
+            session: "one".into(),
+            role: Role::User,
+            sender: Some("tui".into()),
+            content: vec![Content::Text { text: "hello".into() }],
+        };
+
+        for id in [2, 3] {
+            let request = IpcRequest::call(
+                id,
+                "secret",
+                "session.append",
+                json!({"id": "one", "message": message}),
+            );
+
+            assert_eq!(dispatch(&request, &state).unwrap().result.unwrap()["saved"], true);
+        }
+
+        let saved = state.sessions.lock().unwrap().sessions["one"].messages.len();
+
+        assert_eq!(saved, 1);
     }
 
     #[tokio::test]
