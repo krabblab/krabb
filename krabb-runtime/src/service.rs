@@ -291,6 +291,34 @@ pub(crate) fn service_credentials_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.credentials.json"))
 }
 
+/// The copy `krabb service install` makes of secrets set in its environment, with its key, when
+/// the installed service at SERVICE runs this home and reads that copy.
+pub(crate) fn service_copy(root: &Path, service: &Path) -> Option<(PathBuf, PathBuf)> {
+    let copy = service_credentials_path(service);
+
+    if !copy.is_file() || copy == setup::path(root) {
+        return None;
+    }
+
+    let environment = definition::environment(service)?;
+
+    let value = |wanted: &str| {
+        environment.iter().find(|(name, _)| name == wanted).map(|(_, value)| PathBuf::from(value))
+    };
+
+    let same = |path: &Path| std::fs::canonicalize(path).ok() == std::fs::canonicalize(root).ok();
+
+    let referenced = value("KRABB_CREDENTIALS").is_some_and(|path| path == copy);
+
+    if !referenced || !value("KRABB_HOME").is_some_and(|home| same(&home)) {
+        return None;
+    }
+
+    let key = value("KRABB_CREDENTIALS_KEY").unwrap_or_else(|| credentials::key_path(root));
+
+    Some((copy, key))
+}
+
 /// Deletes the secrets copy `krabb service install` writes next to the service definition.
 pub(crate) fn remove_service_credentials(path: &Path) -> std::io::Result<()> {
     let copy = service_credentials_path(path);

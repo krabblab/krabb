@@ -746,7 +746,9 @@ browser and computer settings, including Playwright paths and native desktop
 opt-in. Windows installations register `krabb-daemon --service` with SCM, which
 receives lifecycle status and sends stop/shutdown controls through normal daemon
 cleanup. Running `krabb-daemon` without this flag stays in the foreground.
-Service installation persists `KRABB_CODEX_HOME`, defaulting to the installing user's
+Secrets set in the installing environment go to a copy next to the service definition,
+and `krabb plugin setup` saves its answers in that copy too, so the service sees rotated
+secrets after a restart. Service installation persists `KRABB_CODEX_HOME`, defaulting to the installing user's
 `HOME/.codex` or `USERPROFILE/.codex`, so the daemon can use the existing Codex sign-in.
 Windows services run as the dedicated `NT SERVICE\Krabb` account. Installation grants
 that account access to the executable and existing private state, including the Codex

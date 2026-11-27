@@ -242,14 +242,16 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     let backend = super::credentials::update(
         &destination,
         &key,
-        answers.values,
+        answers.values.clone(),
         &answers.cleared,
         preference,
     )?;
 
     let destination = destination.canonicalize()?;
+    let service = copy_answers(root, &super::service_path(), answers.values, &answers.cleared)?;
     let test = check::run(root, &options.id).await;
-    let mut result = finish(root, &options.id, &destination, options.no_activate).await;
+    let active = service.as_deref().unwrap_or(&destination);
+    let mut result = finish(root, &options.id, active, options.no_activate).await;
     result["check"] = test;
     result["storage"] = backend.into();
     result["changes"] =
@@ -288,6 +290,30 @@ pub(super) async fn run(options: Options, root: &Path, json: bool) -> Result<(),
     }
 
     Ok(())
+}
+
+/// Saves the answers in the service's credential copy too, when the installed service reads one,
+/// and returns the copy the running service activates from.
+fn copy_answers(
+    root: &Path,
+    service: &Path,
+    values: super::credentials::Secrets,
+    cleared: &[String],
+) -> Result<Option<PathBuf>, Error> {
+    let Some((copy, key)) = super::service_copy(root, service) else {
+        return Ok(None);
+    };
+
+    super::credentials::update(&copy, &key, values, cleared, None).map_err(|error| {
+        format!(
+            "The settings were saved, but the service's copy of them in {} could not be \
+             updated: {}\nReinstall the service with `krabb service install --force`.",
+            copy.display(),
+            crate::sentence(error.to_string())
+        )
+    })?;
+
+    Ok(Some(copy.canonicalize()?))
 }
 
 async fn finish(root: &Path, id: &str, destination: &Path, offline: bool) -> Value {
