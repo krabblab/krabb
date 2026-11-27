@@ -41,9 +41,15 @@ generating it again. Reopening a conversation checks up to eight recent TUI user
 messages for the latest accepted request, skipping control-only messages. Other
 retained tasks remain available through `/task`.
 
-Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit. Use
-Up/Down for input history, Page Up/Page Down to scroll, and Shift-drag to
-select text.
+Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit.
+Shift+Enter and Alt+Enter also add a line where the terminal reports them, so
+Ctrl+O is the key that works everywhere. Use Up/Down for input history,
+Page Up/Page Down to scroll, and Shift-drag to select text. Typed text, including
+capitals, shifted symbols, and Option or AltGr characters, arrives as the
+keyboard layout produces it.
+
+When the TUI closes for any reason other than quitting, such as lost terminal
+input or an error, it prints why and how to open it again.
 
 Attach images, PDFs, text or code files, and audio with `/attach <path>` or by
 pasting or dragging their absolute paths into the prompt, or attach a clipboard

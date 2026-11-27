@@ -23,7 +23,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Widget, Wrap},
+    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Widget},
 };
 
 use std::{
@@ -55,6 +55,11 @@ const INPUT_HISTORY_LIMIT: usize = super::data::HISTORY_LIMIT;
 /// Pause allowed between chunks of one paste, and the most events read as one paste.
 const PASTE_GAP: Duration = Duration::from_millis(5);
 const PASTE_EVENTS: usize = 64 * 1024;
+
+const INPUT_CLOSED: &str = concat!(
+    "The TUI closed because the terminal stopped sending input.\n",
+    "Run `krabb tui` to open it again."
+);
 
 const INPUT_MAX_ROWS: usize = 5;
 const COMPOSER_GAP_ROWS: u16 = 1;
@@ -400,6 +405,7 @@ pub(super) struct ModelOptions {
     pub(super) model_override: Option<String>,
 }
 
+/// Runs the TUI until the person quits, returning why it closed when they did not choose to.
 pub async fn run<C, F>(
     output: File,
     home: String,
@@ -407,7 +413,7 @@ pub async fn run<C, F>(
     session: String,
     name: String,
     host: C,
-) -> krabb_core::Result<()>
+) -> krabb_core::Result<Option<String>>
 where
     C: Fn(String, String, serde_json::Value) -> F + Copy + Send + Sync + 'static,
     F: std::future::Future<Output = krabb_core::Result<serde_json::Value>> + Send + 'static,
@@ -540,6 +546,7 @@ where
     let mut session_events_open = true;
     let mut engine_events_open = true;
     let mut quit = false;
+    let mut closed = None;
     let mut session_refresh = tokio::time::interval(SESSION_REFRESH_INTERVAL);
     let mut generation_refresh = tokio::time::interval(GENERATION_FRAME_INTERVAL);
     let mut statusline_refresh = tokio::time::interval(STATUSLINE_SCROLL_INTERVAL);
@@ -565,6 +572,11 @@ where
 
         tokio::select! {
             event = event_rx.recv() => {
+                if event.is_none() {
+                    closed = Some(INPUT_CLOSED.to_owned());
+                    quit = true;
+                }
+
                 let mut next = event;
                 let mut handled = 0;
                 let mut moved_only = true;
@@ -891,7 +903,7 @@ where
     let _ = tokio::task::spawn_blocking(move || event_thread.join()).await;
 
     drop(crate::attachments::Cleanup(&app.attachments));
-    Ok(())
+    Ok(closed)
 }
 
 async fn load_session<C, F>(home: &str, id: &str, host: C) -> Result<SessionView>
@@ -1566,14 +1578,16 @@ where
                     };
                 }
 
-                KeyCode::Char(character) => {
+                KeyCode::Char(character) if text_key(key.modifiers) => {
                     app.input.insert(app.cursor, character);
                     app.cursor += 1;
                     app.input_scroll.follow_latest();
                     app.history_index = None;
                 }
 
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                KeyCode::Enter
+                    if key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                {
                     if !app.session_working || app.input.first() == Some(&'/') {
                         app.input.insert(app.cursor, '\n');
                         app.cursor += 1;
@@ -1880,7 +1894,7 @@ where
                     }
                 }
 
-                KeyCode::Esc if app.input.is_empty() => {
+                KeyCode::Esc if app.input.is_empty() && key.modifiers.is_empty() => {
                     app.exiting = true;
                     return Ok(true);
                 }
@@ -2028,14 +2042,10 @@ fn forget(attachment: &crate::attachments::Attachment) {
 
 fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let input_text = app.input.iter().collect::<String>();
-    let padded_input = input_text
-        .split('\n')
-        .enumerate()
-        .map(|(index, line)| if index == 0 { format!("|> {line}") } else { line.to_owned() })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let input_width = frame.area().width;
+    let input_view = input_view(&app.input, app.cursor, input_width);
 
-    let input_content_rows = wrapped_rows(&padded_input, frame.area().width);
+    let input_content_rows = input_view.rows.len();
     let input_rows = input_content_rows.clamp(1, INPUT_MAX_ROWS);
     app.input_scroll.set_extent(input_content_rows, input_rows);
 
@@ -2059,8 +2069,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let picker_gap = if popup_rows > 0 { COMPOSER_GAP_ROWS } else { 0 };
 
     if app.input_cursor_needs_visibility {
-        let (_, cursor_row) = input_cursor_position(&app.input, app.cursor, frame.area().width);
-        app.input_scroll.ensure_visible(usize::from(cursor_row));
+        app.input_scroll.ensure_visible(usize::from(input_view.cursor.1));
         app.input_cursor_needs_visibility = false;
     }
 
@@ -2166,10 +2175,10 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
 
     let transcript = TranscriptViewport { rows: &visible_rows };
 
-    let input = Paragraph::new(padded_input)
-        .scroll((input_scroll, 0))
-        .wrap(Wrap { trim: false })
-        .block(
+    let (cursor_x, cursor_y) = input_view.cursor;
+    let input_lines = input_view.rows.into_iter().map(Line::from).collect::<Vec<_>>();
+
+    let input = Paragraph::new(input_lines).scroll((input_scroll, 0)).block(
         Block::default()
             .border_type(BorderType::Plain)
             .borders(Borders::TOP | Borders::BOTTOM)
@@ -2194,7 +2203,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
 
             format!("Attached {names}  |  Backspace remove  |  Enter send ")
         } else {
-            "Message  |  Enter send  |  Ctrl+V image  |  Esc quit ".into()
+            "Message  |  Enter send  |  Ctrl+O new line  |  Ctrl+V image  |  Esc quit ".into()
         }),
     );
 
@@ -2405,9 +2414,8 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     app.input_area = Some(input_area);
 
     if !is_working {
-        let (cursor_x, cursor_y) = input_cursor_position(&app.input, app.cursor, input_area.width);
         let cursor_position = (
-            input_area.x.saturating_add(3).saturating_add(cursor_x),
+            input_area.x.saturating_add(cursor_x),
             input_area.y.saturating_add(1).saturating_add(
                 cursor_y.saturating_sub(input_scroll).min(input_rows.saturating_sub(1) as u16),
             ),
@@ -2451,73 +2459,85 @@ fn generation_status_line(text: &str, elapsed: Duration) -> Line<'static> {
     Line::from(spans)
 }
 
-fn wrapped_rows(text: &str, width: u16) -> usize {
-    if width == 0 {
-        return 1;
-    }
+const PROMPT: &str = "|> ";
 
-    text.split('\n')
-        .map(|line| {
-            let mut rows = 1_usize;
+const PROMPT_WIDTH: u16 = 3;
 
-            let mut columns = 0_usize;
-            let mut last_width = 0_usize;
-
-            for character in line.chars() {
-                let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-                last_width = character_width;
-
-                if columns > 0 && columns + character_width > width as usize {
-                    rows += 1;
-                    columns = 0;
-                }
-
-                columns += character_width;
-
-                if columns >= width as usize {
-                    rows += 1;
-                    columns = 0;
-                }
-            }
-
-            if columns == 0 && last_width > 0 { rows.saturating_sub(1) } else { rows }
-        })
-        .sum()
+/// The input as drawn: rows that wrap by character and the cursor's column and row in them.
+#[derive(Debug, Eq, PartialEq)]
+struct InputView {
+    rows: Vec<String>,
+    cursor: (u16, u16),
 }
 
-fn input_cursor_position(input: &[char], cursor: usize, width: u16) -> (u16, u16) {
-    let width = width.saturating_sub(3).max(1) as usize;
+/// Lays INPUT out in WIDTH columns behind the prompt, indenting continuation rows under it.
+fn input_view(input: &[char], cursor: usize, width: u16) -> InputView {
+    let width = usize::from(width.saturating_sub(PROMPT_WIDTH).max(1));
 
-    let mut row = 0_usize;
+    let mut rows = vec![String::new()];
     let mut column = 0_usize;
+    let mut position = None;
 
-    for character in input.iter().take(cursor) {
-        if *character == '\n' {
-            row += 1;
+    for index in 0..=input.len() {
+        let character = input.get(index).copied();
+
+        let character_width = match character {
+            Some('\n') | None => 0,
+            Some(character) => UnicodeWidthChar::width(character).unwrap_or(0),
+        };
+
+        let overflows = column + character_width > width;
+
+        let cursor_at_full_row =
+            index == cursor && matches!(character, Some('\n') | None) && column >= width;
+
+        if column > 0 && (overflows || cursor_at_full_row) {
+            rows.push(String::new());
             column = 0;
-            continue;
         }
 
-        let character_width = UnicodeWidthChar::width(*character).unwrap_or(0);
-
-        if column > 0 && column + character_width > width {
-            row += 1;
-            column = 0;
+        if index == cursor {
+            position = Some((column, rows.len() - 1));
         }
 
-        column += character_width;
+        match character {
+            Some('\n') => {
+                rows.push(String::new());
+                column = 0;
+            }
 
-        if column >= width {
-            row += 1;
-            column = 0;
+            Some(character) => {
+                rows.last_mut().expect("rows start with one row").push(character);
+                column += character_width;
+            }
+
+            None => {}
         }
     }
 
-    (column.min(u16::MAX as usize) as u16, row.min(u16::MAX as usize) as u16)
+    let (column, row) = position.unwrap_or((column, rows.len() - 1));
+
+    let rows = rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let prompt = if index == 0 { PROMPT } else { "   " };
+
+            format!("{prompt}{row}")
+        })
+        .collect();
+
+    let column = column.saturating_add(usize::from(PROMPT_WIDTH));
+
+    InputView {
+        rows,
+        cursor: (column.min(u16::MAX as usize) as u16, row.min(u16::MAX as usize) as u16),
+    }
 }
 
 fn render_statusline(app: &App) -> String {
     let options = app.statusline;
+
     let mut values = Vec::new();
 
     if options.title {
@@ -2557,7 +2577,9 @@ fn marquee_statusline(text: &str, width: usize, offset: usize) -> String {
     }
 
     let mut cycle = text.to_owned();
+
     cycle.push_str("   ");
+
     let graphemes = cycle.graphemes(true).collect::<Vec<_>>();
     let mut result = String::new();
     let mut columns = 0;
@@ -2610,6 +2632,7 @@ fn workspace_label(path: &str) -> String {
     }
 
     let workspace_path = PathBuf::from(path);
+
     let name = workspace_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -2625,6 +2648,7 @@ fn save_preferences(
     typewriter: bool,
 ) -> krabb_core::Result<()> {
     let preferences = TuiPreferences { statusline, typewriter };
+
     let content = toml::to_string(&preferences)
         .map_err(|error| krabb_core::Error::Denied(error.to_string()))?;
 
@@ -2667,6 +2691,7 @@ fn wrap_transcript_layout(
 
         if let Some((title, is_user, is_system)) = message_title(line, name) {
             index += 1;
+
             let body_start = index;
             let mut open_fence = None;
 
@@ -2702,6 +2727,7 @@ fn wrap_transcript_layout(
             }
 
             let start = rows.len();
+
             rows.extend(wrap_rail_message(
                 title,
                 &lines[body_start..body_end],
@@ -2875,6 +2901,7 @@ fn wrap_rail_message(
 ) -> Vec<Line<'static>> {
     if width < 5 {
         let (actor, timestamp) = title.split_once(" | ").unwrap_or((title, ""));
+
         let heading = if show_timestamp && !timestamp.is_empty() {
             format!("{actor}, {timestamp}")
         } else {
@@ -2882,6 +2909,7 @@ fn wrap_rail_message(
         };
 
         let mut rows = wrap_transcript_line(&heading, name, width);
+
         rows.extend(wrap_message_body(body, name, width, !is_user && !is_system));
         return rows;
     }
@@ -2903,6 +2931,7 @@ fn wrap_rail_message(
     let mut rows = Vec::new();
 
     let mut message_rows = wrap_styled_segments(&heading, content_width);
+
     message_rows.extend(wrap_message_body(body, name, content_width, !is_user && !is_system));
 
     for line in message_rows {
@@ -2922,6 +2951,7 @@ fn wrap_message_body(body: &[&str], name: &str, width: usize, rich: bool) -> Vec
     while index < body.len() {
         if let Some((character, length, info)) = opening_code_fence(body[index]) {
             index += 1;
+
             let code_start = index;
 
             while index < body.len() && !is_closing_code_fence(body[index], character, length) {
@@ -2939,6 +2969,7 @@ fn wrap_message_body(body: &[&str], name: &str, width: usize, rich: bool) -> Vec
 
         if rich && !body[index].is_empty() {
             let start = index;
+
             index += 1;
 
             while index < body.len() && opening_code_fence(body[index]).is_none() {
@@ -2993,6 +3024,7 @@ fn opening_code_fence(line: &str) -> Option<(char, usize, String)> {
 
 fn code_language(info: &str) -> String {
     let language = info.split_whitespace().next().unwrap_or_default();
+
     let language = language
         .chars()
         .filter(|character| {
@@ -3022,6 +3054,7 @@ fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Vec<Line<'st
 
     if width < 8 {
         let mut rows = wrap_transcript_line(&format!("[{language}]"), "", width);
+
         rows.extend(lines.iter().flat_map(|line| wrap_transcript_line(line, "", width)));
 
         return rows;
@@ -3166,6 +3199,7 @@ impl TranscriptLineBuilder {
 
     fn finish_row(&mut self) {
         self.flush_fragment();
+
         self.rows.push(Line::from(std::mem::take(&mut self.spans)));
         self.columns = 0;
         self.just_wrapped = true;
@@ -3308,6 +3342,7 @@ fn is_help_heading(line: &str) -> bool {
 
 fn wrap_help_command(command: &str, description: &str, width: usize) -> Vec<Line<'static>> {
     let command_style = Style::default().add_modifier(Modifier::BOLD);
+
     let description_style = Style::default().fg(Color::DarkGray);
     let gap_width = description.chars().take_while(|character| character.is_whitespace()).count();
 
@@ -3321,6 +3356,7 @@ fn wrap_help_command(command: &str, description: &str, width: usize) -> Vec<Line
     }
 
     let description = description.trim_start();
+
     let mut rows = vec![Line::from(vec![
         Span::styled(command.to_owned(), command_style),
         Span::styled(" ".repeat(gap_width), description_style),
@@ -3384,6 +3420,8 @@ struct TerminalGuard {
 
 impl TerminalGuard {
     fn enter(mut output: File) -> std::io::Result<Self> {
+        let restore = output.try_clone()?;
+
         terminal::enable_raw_mode()?;
 
         #[cfg(not(windows))]
@@ -3392,10 +3430,7 @@ impl TerminalGuard {
             EnterAlternateScreen,
             event::EnableMouseCapture,
             event::EnableBracketedPaste,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-            )
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
 
         #[cfg(windows)]
@@ -3403,8 +3438,26 @@ impl TerminalGuard {
 
         if let Err(error) = enter {
             let _ = terminal::disable_raw_mode();
+
             return Err(error);
         }
+
+        let tui_thread = thread::current().id();
+        let previous = std::panic::take_hook();
+
+        std::panic::set_hook(Box::new(move |info| {
+            let tui = thread::current().id() == tui_thread;
+
+            if tui {
+                leave(&restore);
+            }
+
+            previous(info);
+
+            if tui {
+                eprintln!("{PANICKED}");
+            }
+        }));
 
         Ok(Self { output })
     }
@@ -3412,11 +3465,25 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        #[cfg(not(windows))]
-        let _ = execute!(self.output, PopKeyboardEnhancementFlags, event::DisableBracketedPaste);
-        let _ = execute!(self.output, LeaveAlternateScreen, event::DisableMouseCapture);
-        let _ = terminal::disable_raw_mode();
+        if thread::panicking() {
+            return;
+        }
+
+        let _ = std::panic::take_hook();
+
+        leave(&self.output);
     }
+}
+
+const PANICKED: &str =
+    concat!("The TUI closed because of an internal error.\n", "Run `krabb tui` to open it again.");
+
+/// Restores the terminal the TUI took over, so later output reaches the person's shell.
+fn leave(mut output: &File) {
+    #[cfg(not(windows))]
+    let _ = execute!(output, PopKeyboardEnhancementFlags, event::DisableBracketedPaste);
+    let _ = execute!(output, LeaveAlternateScreen, event::DisableMouseCapture);
+    let _ = terminal::disable_raw_mode();
 }
 
 /// Whether EVENT only moves the pointer, which changes the frame only by what it hovers.
@@ -4108,18 +4175,19 @@ fn normalize_output(value: String) -> String {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
     use unicode_width::UnicodeWidthStr;
 
     use super::{
         App, GENERATION_MESSAGES, INPUT_HISTORY_LIMIT, STATUSLINE_SCROLL_INTERVAL, ScrollState,
-        StatuslineOptions, TuiPreferences, draw, generation_status_line, handle_event,
-        input_cursor_position, interrupt_generation, marquee_statusline, render_statusline,
-        save_preferences, wrapped_rows,
+        StatuslineOptions, TuiPreferences, draw, generation_status_line, handle_event, input_view,
+        interrupt_generation, marquee_statusline, render_statusline, save_preferences,
     };
 
     #[test]
     fn failed_queued_input_is_restored_without_changing_the_active_interaction() {
         let mut app = App { generation_active: true, ..Default::default() };
+
         app.begin_interaction("prepare the report");
         app.queued_input("another question", "Storage is full.", true);
 
@@ -4179,6 +4247,7 @@ mod tests {
     #[tokio::test]
     async fn enter_accepts_another_question_during_generation_without_starting_a_second_stream() {
         let (mut commands, mut input) = tokio::io::duplex(1024);
+
         let mut app = App {
             generation_active: true,
             model_available: true,
@@ -4187,6 +4256,7 @@ mod tests {
         };
 
         app.begin_interaction("prepare the report");
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut app,
@@ -4208,6 +4278,7 @@ mod tests {
     #[test]
     fn saved_task_receipts_do_not_duplicate_history_or_enter_the_original_answer() {
         let mut app = App { generation_active: true, ..App::default() };
+
         app.begin_interaction("prepare the report");
         app.push_user("pause the report");
         app.push_control_notice("Pause requested.");
@@ -4238,6 +4309,7 @@ mod tests {
     #[test]
     fn streamed_completion_keeps_the_visible_reply_without_client_side_reappending() {
         let mut app = App { name: "Krabb".into(), reply_pending: true, ..App::default() };
+
         app.begin_interaction("Tell me about this project.");
         app.push_user("Tell me about this project.");
         app.push_assistant_output("It is a Rust workspace.".into());
@@ -4291,6 +4363,7 @@ mod tests {
     #[tokio::test]
     async fn failed_regular_prompt_is_saved_when_a_model_was_available() {
         let (mut command_tx, _command_rx) = tokio::io::duplex(1024);
+
         let mut app = App {
             name: "Krabb".into(),
             session: "default".into(),
@@ -4336,8 +4409,11 @@ mod tests {
 
         let nonce =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+
         let root = std::env::temp_dir().join(format!("krabb-tui-failed-prompt-{nonce}"));
+
         std::fs::create_dir_all(&root).unwrap();
+
         let home = root.to_string_lossy().into_owned();
 
         crate::local_aware(
@@ -4404,6 +4480,7 @@ mod tests {
         assert!(app.transcript.contains(error));
 
         let saved_interaction = &saved[0];
+
         let messages = vec![
             krabb_core::types::Message {
                 id: saved_interaction.user_message_id.clone(),
@@ -4481,6 +4558,7 @@ mod tests {
 
         assert!(!transcript.contains("System"));
         assert!(progress < transcript.find("Here is the report.").unwrap());
+
         assert!(transcript[..progress].ends_with(&format!(
             "Krabb | {}\n",
             super::message_timestamp(&messages[1].id).unwrap()
@@ -4590,6 +4668,7 @@ mod tests {
         app.push_system_output("space\n");
 
         assert_eq!(app.reveal_queue.iter().cloned().collect::<String>(), "/workspace\n");
+
         app.reveal_all();
 
         assert!(app.transcript.contains("System | "));
@@ -4604,6 +4683,7 @@ mod tests {
             Approval needed.\nApprove: /approve second\nDeny: /deny second\nApproval accepted.";
 
         assert_eq!(super::approval_prompts(transcript), Some(vec!["second".into()]));
+
         assert_eq!(
             super::approval_prompts("Approval needed.\nApprove: /approve id"),
             Some(vec!["id".into()])
@@ -4623,6 +4703,7 @@ mod tests {
     #[tokio::test]
     async fn command_picker_fills_composer_without_submitting() {
         let (mut command_tx, mut command_rx) = duplex(1024);
+
         let mut app = App {
             input: vec!['/'],
             cursor: 1,
@@ -4641,6 +4722,7 @@ mod tests {
 
         assert_eq!(app.input.iter().collect::<String>(), "/help");
         assert!(app.transcript.is_empty());
+
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(1),
@@ -4663,6 +4745,7 @@ mod tests {
 
         for (input, expected) in cases {
             let (mut command_tx, _command_rx) = duplex(1024);
+
             let mut app = App {
                 input: input.chars().collect(),
                 cursor: input.len(),
@@ -4696,6 +4779,7 @@ mod tests {
             std::env::temp_dir().join(format!("krabb-tui-history-{}-{nonce}", std::process::id()));
 
         let history_path = super::super::data::plugin_file(&root, "tui", "history.json");
+
         let mut app = App {
             history: vec!["first input".into(), "second\ninput".into()],
             history_path: Some(history_path.clone()),
@@ -4717,6 +4801,7 @@ mod tests {
     #[tokio::test]
     async fn compact_submission_shows_the_wait_state_before_engine_response() {
         let (mut command_tx, mut command_rx) = duplex(1024);
+
         let mut app = App {
             input: "/compact".chars().collect(),
             cursor: "/compact".len(),
@@ -4740,6 +4825,7 @@ mod tests {
         assert!(app.compaction_started.is_some());
 
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let rendered = terminal
@@ -4801,6 +4887,7 @@ mod tests {
         }
 
         let appended = appended.into_inner().unwrap();
+
         let texts = appended
             .iter()
             .map(|(_, params)| params["message"]["content"][0]["text"].as_str().unwrap())
@@ -4837,6 +4924,7 @@ mod tests {
         };
 
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let rendered = terminal
@@ -4900,6 +4988,7 @@ mod tests {
         }
 
         let commands = super::command_options(home.to_str().unwrap(), false);
+
         let names = commands.iter().map(|(command, _)| *command).collect::<Vec<_>>();
 
         for command in [
@@ -4925,6 +5014,7 @@ mod tests {
     #[tokio::test]
     async fn approval_picker_submits_the_selected_decision() {
         let (mut command_tx, mut command_rx) = duplex(1024);
+
         let mut app = App {
             generation_active: true,
             transcript: "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
@@ -4959,6 +5049,7 @@ mod tests {
         assert_eq!(&bytes[..count], b"\"/deny approval-1\"\n");
 
         app.approval_selection = 1;
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
             &mut app,
@@ -4988,6 +5079,7 @@ mod tests {
     fn draws_without_panicking_on_tiny_terminals() {
         for (width, height) in [(1, 1), (2, 2), (10, 3), (20, 5), (40, 8)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+
             let mut app = App {
                 transcript: "You | ".to_owned() + &"wide 漢字 text ".repeat(40),
                 input: "/".chars().chain("long input ".repeat(30).chars()).collect(),
@@ -5007,6 +5099,7 @@ mod tests {
     #[test]
     fn draws_full_width_command_and_approval_pickers_above_the_prompt() {
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
         let mut app = App {
             input: vec!['/'],
             cursor: 1,
@@ -5015,6 +5108,7 @@ mod tests {
         };
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
         let commands = terminal
             .backend()
             .buffer()
@@ -5028,6 +5122,7 @@ mod tests {
         assert!(commands.contains("|> /"));
         assert!(commands.contains("▌ "));
         assert!(!commands.contains("╭"));
+
         let rows = terminal
             .backend()
             .buffer()
@@ -5071,6 +5166,7 @@ mod tests {
 
         app.generation_active = false;
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
         let approval = terminal
             .backend()
             .buffer()
@@ -5086,6 +5182,7 @@ mod tests {
     #[test]
     fn command_picker_keeps_descriptions_clear_of_long_commands() {
         let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+
         let mut app = App {
             input: vec!['/'],
             cursor: 1,
@@ -5097,6 +5194,7 @@ mod tests {
         };
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
         let rendered = terminal
             .backend()
             .buffer()
@@ -5111,11 +5209,14 @@ mod tests {
     #[test]
     fn streamed_messages_keep_their_role_rail_fixed() {
         let mut app = App { name: "Krabb".into(), typewriter: true, ..App::default() };
+
         app.begin_interaction("!ls");
         app.push_bot("a long command output that should not resize while it is revealed".into());
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
         let first_rail = app.transcript_layout.as_ref().unwrap().rows[0].spans[0].content.clone();
 
         app.reveal_next();
@@ -5203,6 +5304,7 @@ mod tests {
 
         assert!(GENERATION_MESSAGES.contains(&super::random_generation_message()));
         assert_eq!(GENERATION_MESSAGES.len(), 25);
+
         assert!(
             GENERATION_MESSAGES
                 .iter()
@@ -5214,6 +5316,7 @@ mod tests {
         assert_eq!(interrupt_rx.try_recv(), Ok(()));
         assert!(interrupt_generation(&escape, &mut app, &interrupt_tx));
         assert!(interrupt_rx.try_recv().is_err());
+
         assert!(!interrupt_generation(
             &Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
             &mut app,
@@ -5224,6 +5327,7 @@ mod tests {
     #[test]
     fn compaction_status_uses_krabb_phrases_without_consecutive_repeats() {
         assert_eq!(super::COMPACTION_MESSAGES.len(), 5);
+
         assert!(
             super::COMPACTION_MESSAGES.iter().all(|message| {
                 message.starts_with("The Krabb is ") && message.ends_with("...")
@@ -5238,6 +5342,7 @@ mod tests {
     #[test]
     fn interrupted_generation_is_reported_by_system() {
         let mut app = App { generation_active: true, reply_pending: true, ..App::default() };
+
         app.begin_interaction("ping");
 
         app.finish_generation(true);
@@ -5252,9 +5357,11 @@ mod tests {
     #[test]
     fn live_system_and_krabb_headers_include_local_time() {
         let mut system = App { reply_pending: true, reply_system: true, ..App::default() };
+
         system.push_system_output("command output");
 
         let mut assistant = App { reply_pending: true, ..App::default() };
+
         assistant.push_assistant_output("Reply".into());
 
         for transcript in [&system.transcript, &assistant.transcript] {
@@ -5272,11 +5379,13 @@ mod tests {
         let scheduled = super::message_timestamp("schedule-notice-at-1700000000000-7-9");
         let scheduled_turn = super::message_timestamp("schedule-assistant-1700000000000000000");
         let system_command = super::message_timestamp("tui-system-command-1700000000000000000-1");
+
         let interaction =
             super::message_timestamp("tui-system-interaction-assistant-1700000000000-1");
 
         assert_eq!(nanoseconds, milliseconds);
         assert_eq!(scheduled, milliseconds);
+
         assert_eq!(
             super::message_timestamp("task-notice-at-1700000000000-task-7-event-2"),
             milliseconds
@@ -5306,8 +5415,10 @@ mod tests {
     #[test]
     fn scheduled_result_timestamp_uses_the_recorded_date_on_hover() {
         let timestamp = super::message_timestamp("schedule-notice-at-1700000000000-7-9").unwrap();
+
         let transcript =
             format!("Krabb | {timestamp}\nScheduled task completed (schedule 7):\nFinished.");
+
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
@@ -5316,6 +5427,7 @@ mod tests {
             .iter()
             .map(row_text)
             .collect::<String>();
+
         let hovered = hover_rows(&transcript, 80, 0).iter().map(row_text).collect::<String>();
 
         assert!(timestamp.starts_with("2023-"));
@@ -5326,6 +5438,7 @@ mod tests {
     #[test]
     fn drawing_generation_status_shows_the_phrase_and_interrupt_key() {
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+
         let mut app = App {
             generation_active: true,
             generation_message: "The Krabb is scuttling toward an answer...",
@@ -5364,6 +5477,7 @@ mod tests {
 
         assert!(row_text(status_row - 1).trim().is_empty());
         assert!(row_text(status_row + 1).contains("Approval commands only"));
+
         let input_area = app.input_area.unwrap();
 
         assert_eq!(terminal.backend().buffer()[(input_area.x, input_area.y)].symbol(), "A");
@@ -5387,11 +5501,12 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let input_area = app.input_area.unwrap();
-        let (cursor_x, cursor_y) = input_cursor_position(&app.input, app.cursor, input_area.width);
+        let (cursor_x, cursor_y) = input_view(&app.input, app.cursor, input_area.width).cursor;
 
         assert!(terminal.backend().cursor_visible());
+
         terminal.backend_mut().assert_cursor_position((
-            input_area.x.saturating_add(3).saturating_add(cursor_x),
+            input_area.x.saturating_add(cursor_x),
             input_area.y.saturating_add(1).saturating_add(cursor_y),
         ));
     }
@@ -5399,6 +5514,7 @@ mod tests {
     #[test]
     fn drawing_compaction_status_shows_a_dedicated_glowing_message() {
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+
         let mut app = App {
             compaction_active: true,
             compaction_started: Some(std::time::Instant::now()),
@@ -5433,6 +5549,7 @@ mod tests {
         let first = generation_status_line(text, Duration::from_secs(1));
         let later = generation_status_line(text, Duration::from_secs(3));
         let bright = Color::Rgb(255, 150, 90);
+
         let bright_positions = |line: &Line<'_>| {
             line.spans
                 .iter()
@@ -5442,6 +5559,7 @@ mod tests {
         };
 
         assert_ne!(bright_positions(&first), bright_positions(&later));
+
         assert!(first.spans.iter().all(|span| matches!(
             span.style.fg,
             Some(Color::Rgb(255, green, blue))
@@ -5456,6 +5574,7 @@ mod tests {
     #[test]
     fn completed_local_interactions_wait_for_the_session_reservation() {
         let mut app = App { generation_active: true, ..App::default() };
+
         app.begin_interaction("/statusline");
         app.complete_local_interaction("Statusline shown.".into());
 
@@ -5480,6 +5599,7 @@ mod tests {
     #[test]
     fn completed_local_interactions_wait_for_compaction_to_finish() {
         let mut app = App { compaction_active: true, ..App::default() };
+
         app.begin_interaction("/compact");
         app.complete_local_interaction("Compacted the conversation.".into());
 
@@ -5494,6 +5614,7 @@ mod tests {
     #[tokio::test]
     async fn typewriter_reveals_whole_graphemes_and_can_be_disabled_mid_reply() {
         let (mut command_tx, _) = duplex(1024);
+
         let mut app = App {
             input: "/animation off".chars().collect(),
             cursor: "/animation off".len(),
@@ -5506,6 +5627,7 @@ mod tests {
 
         assert!(app.transcript.is_empty());
         assert_eq!(app.reveal_queue.len(), 3);
+
         app.reveal_next();
 
         assert_eq!(app.transcript, "Ae\u{301}");
@@ -5558,6 +5680,7 @@ mod tests {
         assert!(rows.iter().any(|row| row_text(row).contains("Krabb")));
         assert!(rows.iter().any(|row| row_text(row).contains("No intelligence plugin")));
         assert!(rows.iter().any(|row| row.spans.is_empty()));
+
         assert!(!rows.iter().any(|row| {
             row.spans
                 .iter()
@@ -5579,7 +5702,9 @@ mod tests {
         assert!(user_top.starts_with("▌ "));
         assert!(assistant_header.spans[0].content.starts_with("▌"));
         assert!(rows.iter().any(|row| row_text(row).starts_with("▌ ")));
+
         let user_title = rows[0].spans.iter().find(|span| span.content == "You").unwrap();
+
         let assistant_title = rows
             .iter()
             .flat_map(|row| row.spans.iter())
@@ -5591,10 +5716,12 @@ mod tests {
         assert!(user_title.style.add_modifier.contains(super::Modifier::ITALIC));
         assert!(assistant_title.style.add_modifier.contains(super::Modifier::ITALIC));
         assert!(!row_text(assistant_header).contains("now"));
+
         let user_body_row = rows.iter().position(|row| row_text(row).contains("Hello")).unwrap();
         let assistant_row = rows.iter().position(|row| row_text(row).contains("Krabb")).unwrap();
 
         assert_eq!(assistant_row - user_body_row - 1, super::MESSAGE_GAP_ROWS);
+
         let system = super::wrap_transcript("System | now\nA status update.", "Krabb", 50);
         let system_text = system.iter().map(row_text).collect::<String>();
 
@@ -5615,6 +5742,7 @@ mod tests {
         );
 
         let (mut rows, ranges) = super::wrap_transcript_layout(transcript, "Krabb", 80);
+
         let rendered = |rows: &[Line<'_>]| {
             rows.iter()
                 .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
@@ -5644,6 +5772,7 @@ mod tests {
         let narrow = super::wrap_transcript("Krabb\n**Bold**", "Krabb", 4);
 
         assert!(narrow.iter().all(|row| row.width() <= 4));
+
         assert!(narrow.iter().flat_map(|row| &row.spans).any(|span| {
             span.content == "Bold" && span.style.add_modifier.contains(super::Modifier::BOLD)
         }));
@@ -5660,9 +5789,12 @@ mod tests {
             "const speaker = \"System\";\nSystem\n",
             "const answer = 42;\n```\nAfter the example."
         );
+
         let (rows, message_ranges) = super::wrap_transcript_layout(transcript, "Krabb", 60);
+
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+
         let rendered = rows.iter().map(row_text).collect::<Vec<_>>();
 
         assert_eq!(message_ranges.len(), 1);
@@ -5698,6 +5830,7 @@ mod tests {
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
         let rendered = rows.iter().map(row_text).collect::<Vec<_>>();
+
         let code = rows
             .iter()
             .flat_map(|row| &row.spans)
@@ -5745,6 +5878,7 @@ mod tests {
     #[test]
     fn message_timestamps_appear_only_on_the_hovered_message() {
         let transcript = "You | 2026-10-01 at 12:26\nping\n\nKrabb | 2026-10-01 at 12:27\npong";
+
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
@@ -5767,6 +5901,7 @@ mod tests {
             .unwrap();
 
         let actor = header.spans.iter().find(|span| span.content == "Krabb").unwrap();
+
         let timestamp =
             header.spans.iter().find(|span| span.content.starts_with(", 2026-10-01")).unwrap();
 
@@ -5792,6 +5927,7 @@ mod tests {
     #[tokio::test]
     async fn moving_the_mouse_over_and_away_from_a_message_toggles_its_timestamp() {
         let (mut command_tx, _) = duplex(1024);
+
         let mut app = App {
             transcript: "Krabb | 2026-10-01 at 12:27\npong".into(),
             name: "Krabb".into(),
@@ -5872,9 +6008,11 @@ mod tests {
     #[test]
     fn monochrome_frame_preserves_help_without_emitting_colors() {
         let mut app = App { theme_enabled: false, ..App::default() };
+
         app.push_bot("Commands:\n  /history help  Show this help.\n".into());
 
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -5882,6 +6020,7 @@ mod tests {
 
         assert!(rendered.contains("Commands:"));
         assert!(rendered.contains("/history help"));
+
         assert!(buffer.content().iter().all(|cell| {
             cell.fg == Color::Reset
                 && cell.bg == Color::Reset
@@ -5894,10 +6033,12 @@ mod tests {
         let line = "  /workspace [path|reset]  Show or change this session's filesystem root.";
         let (command, description) = super::help_command_segments(line).unwrap();
         let rows = super::wrap_help_command(command, description, 40);
+
         let indent = UnicodeWidthStr::width(command)
             + description.chars().take_while(|character| character.is_whitespace()).count();
 
         let continuation = rows.get(1).unwrap();
+
         let continuation_text =
             continuation.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
@@ -5910,6 +6051,7 @@ mod tests {
     #[test]
     fn transcript_wraps_at_word_boundaries_and_hides_soft_wrap_spaces() {
         let rows = super::wrap_transcript_line("alpha workspace beta", "Krabb", 9);
+
         let row_text =
             |row: &Line<'_>| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
 
@@ -6157,6 +6299,7 @@ mod tests {
         assert_eq!(render_statusline(&app), "Ada | model: unset | session: fresh");
 
         app.model_available = true;
+
         app.restore_session(super::SessionView {
             id: "configured".into(),
             model: "provider/model".into(),
@@ -6285,6 +6428,7 @@ mod tests {
 
         app.begin_interaction("/help");
         app.push_user("/help");
+
         let completed = app.push_assistant_output(format!("{reply}> "));
 
         assert_eq!(completed.len(), 1);
@@ -6292,6 +6436,7 @@ mod tests {
 
         for _ in 0..4 {
             app.reveal_next();
+
             let transcript = app.transcript.clone();
             let queued = app.reveal_queue.len();
 
@@ -6342,6 +6487,7 @@ mod tests {
 
         assert!(app.transcript.contains("Krabb\nPrevious reply"));
         assert!(app.transcript.ends_with("Using session work.\n"));
+
         assert!(
             super::wrap_transcript(&app.transcript, "Krabb", 80)
                 .iter()
@@ -6353,6 +6499,7 @@ mod tests {
     fn renders_an_unboxed_conversation_and_horizontal_prompt() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
+
         let mut app = App {
             transcript: "Welcome\nAnswer".into(),
             input: "next".chars().collect(),
@@ -6394,6 +6541,7 @@ mod tests {
         );
 
         assert_eq!(buffer[(input_area.x, input_area.y + input_area.height - 1)].symbol(), "─");
+
         assert!((input_area.y..input_area.y + input_area.height).all(|y| {
             buffer[(input_area.x, y)].symbol() != "│"
                 && buffer[(input_area.x + input_area.width - 1, y)].symbol() != "│"
@@ -6407,6 +6555,7 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         assert!(app.transcript.ends_with("Again"));
+
         assert!(
             terminal
                 .backend()
@@ -6454,14 +6603,18 @@ mod tests {
         .unwrap();
 
         let mut app = App { session: "tui-work".into(), model_available: false, ..App::default() };
+
         app.begin_interaction("/status");
 
         assert!(app.capture_interaction_output("Runtime: ").is_empty());
         assert!(app.capture_interaction_output("stopped.\n").is_empty());
+
         let saved = app.capture_interaction_output("> ").pop().unwrap();
+
         super::persist_interaction(&home, saved, crate::local_aware).await.unwrap();
 
         app.begin_interaction("hello without a model");
+
         let saved = app
             .capture_interaction_output(
                 "No intelligence plugin is installed. Install a model plugin to send messages; session and help commands remain available.\n> ",
@@ -6473,7 +6626,9 @@ mod tests {
 
         app.begin_interaction("/session missing");
         app.capture_interaction_output("\nSession was not found.");
+
         let saved = app.finish_interactions().pop().unwrap();
+
         super::persist_interaction(&home, saved, crate::local_aware).await.unwrap();
 
         let session = super::load_session(&home, "tui-work", crate::local_aware).await.unwrap();
@@ -6497,6 +6652,7 @@ mod tests {
         assert!(bounded.ends_with("[history entry truncated]"));
 
         app.begin_interaction("/session rename old-name");
+
         let saved = app
             .capture_interaction_output("Renamed session old-name to new-name.\n> ")
             .pop()
@@ -6506,6 +6662,7 @@ mod tests {
 
         app.begin_interaction("/first");
         app.begin_interaction("/second");
+
         let saved = app.capture_interaction_output("first reply\n> second reply\n> ");
 
         assert_eq!(saved.len(), 2);
@@ -6513,6 +6670,7 @@ mod tests {
         assert_eq!(saved[1].output, "second reply");
 
         app.begin_interaction("/large");
+
         let saved = app
             .capture_interaction_output(&format!(
                 "{}\n> ",
@@ -6522,6 +6680,7 @@ mod tests {
             .unwrap();
 
         assert!(saved.output.ends_with("[history entry truncated]"));
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -6529,6 +6688,7 @@ mod tests {
     async fn active_turn_accepts_chat_and_shows_command_reply_as_system() {
         let (mut command_tx, mut command_rx) = duplex(1024);
         let mut app = App { generation_active: true, ..App::default() };
+
         app.input = "please wait".chars().collect();
         app.cursor = app.input.len();
 
@@ -6543,6 +6703,7 @@ mod tests {
 
         assert!(app.input.is_empty());
         assert!(app.transcript.contains("please wait"));
+
         let mut queued = [0; 64];
         let count = command_rx.read(&mut queued).await.unwrap();
 
@@ -6588,6 +6749,7 @@ mod tests {
     async fn shared_working_session_submits_chat_for_durable_admission() {
         let (mut command_tx, mut command_rx) = duplex(1024);
         let mut app = App { session_working: true, ..App::default() };
+
         app.input = "hello from the second TUI".chars().collect();
         app.cursor = app.input.len();
 
@@ -6603,6 +6765,7 @@ mod tests {
         assert!(app.input.is_empty());
         assert!(app.transcript.contains("You | "));
         assert!(app.pending_interactions.is_empty());
+
         let mut queued = [0; 128];
         let count = command_rx.read(&mut queued).await.unwrap();
 
@@ -6656,6 +6819,7 @@ mod tests {
     #[test]
     fn coalesces_keys_that_arrive_together_into_a_paste() {
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+
         let release = Event::Key(KeyEvent::new_with_kind(
             KeyCode::Char('a'),
             KeyModifiers::NONE,
@@ -6677,6 +6841,7 @@ mod tests {
         assert_eq!(typed, vec![key(KeyCode::Char('a'))]);
 
         let control = Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+
         let mixed = super::coalesce(vec![
             key(KeyCode::Char('h')),
             key(KeyCode::Char('i')),
@@ -6687,6 +6852,7 @@ mod tests {
         assert_eq!(mixed, vec![Event::Paste("hi".into()), control, key(KeyCode::Enter)]);
 
         let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+
         let path = super::coalesce(vec![
             key(KeyCode::Char('C')),
             key(KeyCode::Char(':')),
@@ -6803,6 +6969,7 @@ mod tests {
     #[tokio::test]
     async fn edits_submits_scrolls_and_quits_from_terminal_events() {
         let (mut command_tx, mut command_rx) = duplex(1024);
+
         let mut app = App {
             input: "ac".chars().collect(),
             cursor: 1,
@@ -6891,6 +7058,7 @@ mod tests {
 
         assert_eq!(app.transcript_scroll.offset, 84);
         assert_eq!(app.input.iter().collect::<String>(), "a");
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
             &mut app,
@@ -6920,6 +7088,7 @@ mod tests {
 
         app.input = "/help".chars().collect();
         app.cursor = app.input.len();
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut app,
@@ -6939,7 +7108,9 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
+
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
         let rendered = terminal
             .backend()
             .buffer()
@@ -6954,6 +7125,7 @@ mod tests {
         app.model_available = false;
         app.input = "/clear".chars().collect();
         app.cursor = app.input.len();
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut app,
@@ -6966,13 +7138,16 @@ mod tests {
         assert!(app.pending_clear);
         assert!(app.pending_interactions.is_empty());
         assert!(app.capture_interaction_output("Conversation cleared.\n> ").is_empty());
+
         app.observe_context_output("Conversation cleared.\n> ");
 
         assert!(app.transcript.is_empty());
+
         app.model_available = true;
 
         app.input = "/again".chars().collect();
         app.cursor = app.input.len();
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut app,
@@ -6999,6 +7174,7 @@ mod tests {
     #[tokio::test]
     async fn mouse_wheel_scrolls_the_message_box_when_pointer_is_over_it() {
         let (mut command_tx, _) = duplex(1024);
+
         let mut app = App {
             input: "one\ntwo\nthree\nfour\nfive\nsix".chars().collect(),
             input_area: Some(Rect::new(10, 10, 30, 5)),
@@ -7044,6 +7220,7 @@ mod tests {
     #[test]
     fn scroll_state_pages_predictably_and_follows_only_from_the_end() {
         let mut scroll = ScrollState::default();
+
         scroll.set_extent(100, 10);
 
         assert_eq!(scroll.offset, 90);
@@ -7070,6 +7247,7 @@ mod tests {
     #[test]
     fn input_scroll_keeps_the_moving_cursor_visible() {
         let mut scroll = ScrollState::default();
+
         scroll.set_extent(20, 5);
         scroll.ensure_visible(2);
 
@@ -7085,6 +7263,7 @@ mod tests {
     #[test]
     fn bounds_transcript_and_removes_protocol_prompts() {
         let mut app = App::default();
+
         app.push_output("> hello\n> world\n> ".into());
 
         assert_eq!(app.transcript, "hello\nworld\n");
@@ -7097,6 +7276,7 @@ mod tests {
     #[tokio::test]
     async fn keeps_terminal_history_and_restores_the_draft() {
         let (mut command_tx, _) = duplex(1024);
+
         let mut app = App {
             input: "draft".chars().collect(),
             cursor: 5,
@@ -7120,12 +7300,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn types_the_text_the_layout_produces_and_ignores_modified_letters() {
+        let (mut command_tx, _command_rx) = duplex(1024);
+        let mut app = App::default();
+
+        for (code, modifiers) in [
+            (KeyCode::Char('A'), KeyModifiers::SHIFT),
+            (KeyCode::Char('@'), KeyModifiers::NONE),
+            (KeyCode::Char('x'), KeyModifiers::ALT),
+            (KeyCode::Enter, KeyModifiers::ALT),
+            (KeyCode::Char('['), KeyModifiers::CONTROL | KeyModifiers::ALT),
+            (KeyCode::Esc, KeyModifiers::ALT),
+        ] {
+            let quit = handle_event(
+                Event::Key(KeyEvent::new(code, modifiers)),
+                &mut app,
+                &mut command_tx,
+                false,
+            )
+            .await
+            .unwrap();
+
+            assert!(!quit);
+        }
+
+        assert_eq!(app.input.iter().collect::<String>(), "A@\n[");
+
+        app.input.clear();
+        app.cursor = 0;
+
+        let modified = handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::SHIFT)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let released = handle_event(
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                crossterm::event::KeyEventKind::Release,
+            )),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!modified && !released);
+
+        let pressed = handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(pressed);
+    }
+
+    #[tokio::test]
     async fn accepts_multiline_input_and_persists_statusline() {
         let (mut command_tx, mut command_rx) = duplex(1024);
+
         let root =
             std::env::temp_dir().join(format!("krabb-tui-preferences-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&root);
+
         std::fs::create_dir_all(&root).unwrap();
 
         let mut app = App {
@@ -7156,6 +7404,7 @@ mod tests {
 
         app.input.extend("second".chars());
         app.cursor = app.input.len();
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
             &mut app,
@@ -7167,6 +7416,7 @@ mod tests {
 
         app.input.extend("third".chars());
         app.cursor = app.input.len();
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut app,
@@ -7177,6 +7427,7 @@ mod tests {
         .unwrap();
 
         let mut submitted = Vec::new();
+
         command_rx.read_buf(&mut submitted).await.unwrap();
 
         assert_eq!(
@@ -7186,6 +7437,7 @@ mod tests {
 
         app.input = "/statusline".chars().collect();
         app.cursor = app.input.len();
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut app,
@@ -7196,6 +7448,7 @@ mod tests {
         .unwrap();
 
         assert!(app.statusline_picker);
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
             &mut app,
@@ -7225,21 +7478,26 @@ mod tests {
 
         assert!(!app.statusline_picker);
         assert!(!app.statusline.model);
+
         save_preferences(&app.preferences_path, app.statusline, app.typewriter).unwrap();
+
         let saved = krabb_file::load(&app.preferences_path, 16 * 1024).unwrap().unwrap();
+
         let preferences: TuiPreferences =
             toml::from_str(&String::from_utf8(saved).unwrap()).unwrap();
 
         assert_eq!(preferences.statusline, app.statusline);
+
         assert_eq!(
             render_statusline(&app),
             "Ada | context: unavailable | session: work | workspace: unset"
         );
 
-        assert_eq!(wrapped_rows("one\ntwo", 80), 2);
+        assert_eq!(input_view(&"one\ntwo".chars().collect::<Vec<_>>(), 0, 80).rows.len(), 2);
 
         app.input = "/statusline reset".chars().collect();
         app.cursor = app.input.len();
+
         handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut app,
@@ -7250,7 +7508,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(app.statusline, StatuslineOptions::default());
+
         save_preferences(&app.preferences_path, app.statusline, app.typewriter).unwrap();
+
         let saved = krabb_file::load(&app.preferences_path, 16 * 1024).unwrap().unwrap();
 
         let preferences: TuiPreferences =
@@ -7258,6 +7518,7 @@ mod tests {
 
         assert_eq!(preferences.statusline, StatuslineOptions::default());
         assert!(preferences.typewriter);
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -7283,6 +7544,7 @@ mod tests {
             let sender = if role == "user" { Some("tui") } else { None };
 
             let content = format!("saved history message {index}");
+
             crate::offline::control(
                 &home,
                 "session.append",
@@ -7302,15 +7564,18 @@ mod tests {
         }
 
         let (mut input_tx, input_rx) = duplex(4096);
+
         input_tx
             .write_all(b"/session switch missing\n/session switch work\n/quit\n")
             .await
             .unwrap();
 
         drop(input_tx);
+
         let (output_tx, mut output_rx) = duplex(16 * 1024);
         let (session_tx, mut session_rx) = tokio::sync::mpsc::unbounded_channel();
         let (interrupt_tx, interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+
         drop(interrupt_tx);
 
         let engine = tokio::spawn(crate::run_with(
@@ -7335,6 +7600,7 @@ mod tests {
         };
 
         let (result, output) = tokio::join!(engine, output);
+
         result.unwrap().unwrap();
 
         let mut app = App {
@@ -7359,6 +7625,7 @@ mod tests {
         assert_eq!(app.model, "model-work");
         assert!(app.transcript.contains("You\nsaved history message 0"));
         assert!(app.transcript.contains("saved history message 19"));
+
         assert!(super::wrap_transcript(&app.transcript, "Krabb", 60).iter().any(|row| {
             row.spans.iter().any(|span| span.content.contains("saved history message 19"))
         }));
@@ -7387,6 +7654,7 @@ mod tests {
         assert!(app.transcript.is_empty());
 
         app.model_available = false;
+
         app.restore_session(super::SessionView {
             id: "plain".into(),
             model: crate::DEFAULT_MODEL.into(),
@@ -7408,8 +7676,46 @@ mod tests {
         assert_eq!(marquee_statusline("abcdefghij", 4, 0), "abcd");
         assert_eq!(marquee_statusline("abcdefghij", 4, 1), "bcde");
         assert_eq!(marquee_statusline("a界bc", 4, 0), "a界b");
-        assert_eq!(input_cursor_position(&['a', 'b', 'c', 'd'], 4, 6), (1, 1));
-        assert_eq!(input_cursor_position(&['界'], 1, 8), (2, 0));
+    }
+
+    fn view(input: &str, cursor: usize, width: u16) -> (Vec<String>, (u16, u16)) {
+        let input = input.chars().collect::<Vec<_>>();
+        let view = input_view(&input, cursor, width);
+
+        (view.rows, view.cursor)
+    }
+
+    #[test]
+    fn input_view_wraps_by_character_under_the_prompt() {
+        assert_eq!(view("", 0, 20), (vec!["|> ".to_owned()], (3, 0)));
+        assert_eq!(view("abcdef", 3, 6), (vec!["|> abc".to_owned(), "   def".to_owned()], (3, 1)));
+
+        assert_eq!(
+            view("abcdef", 6, 6),
+            (vec!["|> abc".to_owned(), "   def".to_owned(), "   ".to_owned()], (3, 2))
+        );
+
+        assert_eq!(view("abcd", 4, 6), (vec!["|> abc".to_owned(), "   d".to_owned()], (4, 1)));
+    }
+
+    #[test]
+    fn input_view_aligns_explicit_lines_under_the_prompt() {
+        assert_eq!(view("ab\ncd", 5, 20), (vec!["|> ab".to_owned(), "   cd".to_owned()], (5, 1)));
+        assert_eq!(view("ab\ncd", 2, 20).1, (5, 0));
+        assert_eq!(view("ab\n", 3, 20), (vec!["|> ab".to_owned(), "   ".to_owned()], (3, 1)));
+
+        assert_eq!(
+            view("abc\nd", 3, 6),
+            (vec!["|> abc".to_owned(), "   ".to_owned(), "   d".to_owned()], (3, 1))
+        );
+    }
+
+    #[test]
+    fn input_view_measures_wide_characters_by_columns() {
+        assert_eq!(view("界", 1, 8), (vec!["|> 界".to_owned()], (5, 0)));
+        assert_eq!(view("a界b", 3, 6), (vec!["|> a界".to_owned(), "   b".to_owned()], (4, 1)));
+        assert_eq!(view("ab界", 2, 6), (vec!["|> ab".to_owned(), "   界".to_owned()], (3, 1)));
+        assert_eq!(view("ab😀", 3, 6).1, (5, 1));
     }
 
     #[test]
@@ -7417,6 +7723,7 @@ mod tests {
         assert_eq!(STATUSLINE_SCROLL_INTERVAL, Duration::from_millis(300));
 
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+
         let mut app = App {
             name: "Krabb".into(),
             model: "provider/model-with-a-long-name".into(),
@@ -7429,10 +7736,12 @@ mod tests {
         for offset in [0, 1, 2] {
             app.statusline_started =
                 Some(std::time::Instant::now() - STATUSLINE_SCROLL_INTERVAL * offset);
+
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
             let statusline_area = app.input_area.unwrap();
             let statusline_y = terminal.backend().buffer().area().bottom() - 1;
+
             let statusline = (0..terminal.backend().buffer().area().width)
                 .map(|x| terminal.backend().buffer()[(x, statusline_y)].symbol())
                 .collect::<String>();
@@ -7451,6 +7760,7 @@ mod tests {
     #[test]
     fn marquee_cursor_stays_inside_the_composer() {
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+
         let mut app = App {
             name: "Krabb".into(),
             model: "provider/model-with-a-long-name".into(),
@@ -7473,6 +7783,7 @@ mod tests {
     #[test]
     fn bounds_history_and_handles_empty_navigation() {
         let mut app = App::default();
+
         app.history_up();
         app.history_down();
 

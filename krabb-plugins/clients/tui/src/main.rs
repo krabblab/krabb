@@ -285,9 +285,7 @@ async fn run(args: &[String]) -> krabb_core::Result<Option<String>> {
         return run_one_shot(options, prompt).await.map(Some);
     }
 
-    run_interactive(options).await?;
-
-    Ok(None)
+    run_interactive(options).await
 }
 
 async fn run_cli(args: &[String]) -> krabb_core::Result<()> {
@@ -301,7 +299,11 @@ async fn run_cli(args: &[String]) -> krabb_core::Result<()> {
         return Ok(());
     }
 
-    run_interactive(options).await
+    if let Some(reason) = run_interactive(options).await? {
+        eprintln!("{reason}");
+    }
+
+    Ok(())
 }
 
 async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result<String> {
@@ -353,7 +355,7 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
     result
 }
 
-async fn run_interactive(options: TuiOptions) -> krabb_core::Result<()> {
+async fn run_interactive(options: TuiOptions) -> krabb_core::Result<Option<String>> {
     let model_override = options.model.clone();
 
     let plugin = options
@@ -457,7 +459,7 @@ async fn run_at(
     model: String,
     model_override: Option<String>,
     session: String,
-) -> krabb_core::Result<()> {
+) -> krabb_core::Result<Option<String>> {
     let name = std::env::var("KRABB_NAME").unwrap_or_else(|_| DEFAULT_NAME.into());
     ui::run(
         output,
@@ -468,6 +470,22 @@ async fn run_at(
         daemon_control,
     )
     .await
+    .map_err(closed_by)
+}
+
+/// States that the TUI closed because of ERROR, ending with a next action when it has none.
+fn closed_by(error: krabb_core::Error) -> krabb_core::Error {
+    let message = cli_error_message(&error);
+    let message = message.trim_end();
+
+    if message.contains('\n') {
+        return krabb_core::Error::Denied(format!("The TUI closed because of an error: {message}"));
+    }
+
+    krabb_core::Error::Denied(format!(
+        "The TUI closed because of an error: {}.\nRun `krabb tui` to open it again.",
+        message.trim_end_matches('.')
+    ))
 }
 
 async fn run_once<C, F>(
@@ -2214,7 +2232,8 @@ fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
     sections.push(
         "Plugin commands run in the CLI: krabb <command>.\nPage Up/Down scroll the conversation, \
         and the mouse wheel scrolls the pane under the pointer.\nHold Shift while dragging to \
-        select and copy text.\nCtrl+O adds a message line."
+        select and copy text.\nCtrl+O adds a message line, and so do Shift+Enter and Alt+Enter \
+        where the terminal reports them."
             .into(),
     );
 
@@ -5933,8 +5952,7 @@ mod tests {
         assert!(!basic.contains("/deliveries"));
         assert!(basic.contains("Plugin commands run in the CLI: krabb <command>."));
         assert!(basic.contains("Page Up/Down scroll the conversation"));
-        assert!(basic.contains("Ctrl+O adds a message line."));
-        assert!(!basic.contains("Shift+Enter"));
+        assert!(basic.contains("Ctrl+O adds a message line, and so do Shift+Enter and Alt+Enter"));
 
         let description_columns = basic
             .lines()
@@ -8790,6 +8808,26 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         assert_eq!(
             super::cli_error_message(&error),
             "The Krabb daemon is not running.\nStart it with `krabb service start`."
+        );
+    }
+
+    #[test]
+    fn says_why_the_tui_closed_after_an_error() {
+        let failed = super::closed_by(krabb_core::Error::Io(std::io::Error::other("lost")));
+
+        assert_eq!(
+            super::cli_error_message(&failed),
+            "The TUI closed because of an error: I/O error: lost.\nRun `krabb tui` to open it again."
+        );
+
+        let guided = super::closed_by(krabb_core::Error::Denied(
+            "The Krabb daemon is not running.\nStart it with `krabb service start`.".into(),
+        ));
+
+        assert_eq!(
+            super::cli_error_message(&guided),
+            "The TUI closed because of an error: The Krabb daemon is not running.\n\
+            Start it with `krabb service start`."
         );
     }
 
