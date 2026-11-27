@@ -30,6 +30,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: 0
+
 jobs:
   workspace:
     name: Workspace
@@ -50,6 +53,12 @@ jobs:
         run: |
           apt-get update
           apt-get install --no-install-recommends -y ripgrep python3
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install Rust Components
         run: rustup component add rustfmt clippy
@@ -85,6 +94,12 @@ jobs:
         if: inputs.local != 'true'
         uses: actions/checkout@v7
 
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+
       - name: Check Workspace
         run: CARGO_BUILD_JOBS=4 cargo check --workspace --all-targets --locked
 
@@ -115,6 +130,9 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Check Windows GNU Target
 

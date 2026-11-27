@@ -30,6 +30,10 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+
 jobs:
   browser:
     name: Browser
@@ -51,6 +55,9 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install Playwright and Chromium
         run: |
@@ -90,6 +97,9 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+
       - name: Install Isolated Desktop Dependencies
         run: |
           sudo apt-get update
@@ -125,6 +135,9 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Build Tools Plugin
         run: cargo build --locked -p krabb-plugin-tools

@@ -30,6 +30,12 @@ on:
 permissions:
   contents: read
 
+# Tests and coverage need no debug info, and CI never reuses incremental state.
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
 jobs:
   krabb:
     name: Krabb (${{ matrix.name }})
@@ -118,6 +124,10 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+        with:
+          shared-key: test-${{ matrix.target }}
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - if: matrix.coverage
         name: Install Coverage Tool
