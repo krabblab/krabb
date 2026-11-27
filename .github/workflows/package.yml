@@ -19,6 +19,11 @@ on:
         type: string
         default: ""
 
+    outputs:
+      targets:
+        description: "The release targets as a JSON array, for drill matrices."
+        value: ${{ jobs.targets.outputs.targets }}
+
   workflow_dispatch:
     inputs:
       names:
@@ -43,57 +48,39 @@ permissions:
   contents: read
 
 jobs:
+
+  # The six release targets are listed once, in krabb-scripts/targets.json.
+  targets:
+    name: Targets
+    runs-on: ubuntu-latest
+
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          persist-credentials: false
+          sparse-checkout: krabb-scripts/targets.json
+          sparse-checkout-cone-mode: false
+
+      - id: targets
+        name: Read The Targets
+        run: echo "targets=$(jq -c . krabb-scripts/targets.json)" >> "$GITHUB_OUTPUT"
+
   archive:
     name: Archive (${{ matrix.name }})
+    needs: targets
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
 
       matrix:
-        include:
-          - name: Linux x86_64
-            os: linux
-            arch: x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-
-          - name: Linux aarch64
-            os: linux
-            arch: aarch64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-
-          - name: macOS x86_64
-            os: macos
-            arch: x86_64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: tar.gz
-
-          - name: macOS aarch64
-            os: macos
-            arch: aarch64
-            runner: macos-15
-            target: aarch64-apple-darwin
-            archive: tar.gz
-
-          - name: Windows x86_64
-            os: windows
-            arch: x86_64
-            runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            archive: zip
-
-          - name: Windows aarch64
-            os: windows
-            arch: aarch64
-            runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            archive: zip
+        include: ${{ fromJSON(needs.targets.outputs.targets) }}
 
     steps:
       - name: Checkout
@@ -143,8 +130,10 @@ jobs:
           KRABB_NAMES: ${{ inputs.names }}
           KRABB_TARGET: ${{ matrix.target }}
 
-        # Word splitting turns the validated name list into arguments.
-        run: bash krabb-scripts/package.sh "$KRABB_TARGET" $KRABB_NAMES
+        run: |
+          set -euo pipefail
+          read -ra names <<< "$KRABB_NAMES"
+          bash krabb-scripts/package.sh "$KRABB_TARGET" "${names[@]}"
 
       - if: matrix.archive == 'zip'
         name: Build Windows Archives
@@ -207,6 +196,21 @@ jobs:
             Write-Output "Created $package.zip."
           }
 
+      # Each target's line of the release's SHA256SUMS, which the drills install from.
+      - if: contains(format(' {0} ', inputs.names), ' core ')
+        name: Write Checksums
+        shell: bash
+
+        env:
+          KRABB_ARCHIVE: ${{ matrix.archive }}
+          KRABB_TARGET: ${{ matrix.target }}
+
+        run: |
+          set -euo pipefail
+          archive="krabb-core-v$(bash krabb-scripts/version.sh)-$KRABB_TARGET.$KRABB_ARCHIVE"
+          sum=$(sha256sum "$archive" 2>/dev/null || shasum -a 256 "$archive")
+          printf '%s  %s\n' "${sum%% *}" "$archive" > SHA256SUMS
+
       - if: matrix.archive == 'tar.gz'
         name: Validate Unix Archives
         shell: bash
@@ -264,20 +268,9 @@ jobs:
         name: Validate Unix Installer
         shell: bash
 
-        env:
-          KRABB_TARGET: ${{ matrix.target }}
-
         run: |
           set -euo pipefail
           version=$(bash krabb-scripts/version.sh)
-          archive="krabb-core-v$version-$KRABB_TARGET.tar.gz"
-
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$archive" > SHA256SUMS
-          else
-            shasum -a 256 "$archive" > SHA256SUMS
-          fi
-
           prefix="$RUNNER_TEMP/krabb-prefix"
 
           KRABB_RELEASE_BASE="file://$PWD" \
@@ -328,18 +321,11 @@ jobs:
         name: Validate Windows Installer
         shell: pwsh
 
-        env:
-          KRABB_TARGET: ${{ matrix.target }}
-
         run: |
           $ErrorActionPreference = "Stop"
           $version = bash krabb-scripts/version.sh
           if ($LASTEXITCODE -ne 0 -or -not $version) { throw "Cargo.toml has no workspace version." }
 
-          $archive = Get-Item "krabb-core-v$version-$env:KRABB_TARGET.zip"
-          $hash = (Get-FileHash $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-
-          "$hash  $($archive.Name)" | Set-Content -Encoding ascii SHA256SUMS
           $env:KRABB_RELEASE_BASE = ([Uri]((Get-Location).Path)).AbsoluteUri.TrimEnd('/')
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "krabb-local"
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
@@ -394,5 +380,7 @@ jobs:
 
         with:
           name: ${{ inputs.artifact }}-${{ matrix.target }}
-          path: krabb-*-${{ matrix.target }}.${{ matrix.archive }}
+          path: |
+            krabb-*-${{ matrix.target }}.${{ matrix.archive }}
+            SHA256SUMS
           if-no-files-found: error

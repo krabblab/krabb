@@ -228,9 +228,19 @@ class Publication(unittest.TestCase):
                          'a2a-0.1.0': {'annotations': {plugins.TITLE: 'a2a'}, 'layers': []},
                          'echo-9.9.9': version_manifest('echo', '0.1.0')})
 
+        self.assertTrue(plugins.stale(registry))
+
         with mock.patch.object(plugins, 'oras', registry.oras), \
                 mock.patch('builtins.print') as output:
             digest = plugins.index(registry)
+
+        self.assertFalse(plugins.stale(registry))
+
+        with mock.patch.object(plugins, 'Registry', return_value=registry), \
+                mock.patch('builtins.print') as stale:
+            self.assertEqual(plugins.main(['stale', REGISTRY]), 0)
+
+        stale.assert_called_once_with('false')
 
         warnings = [call.args[0] for call in output.call_args_list
                     if call.kwargs.get('file') is plugins.sys.stderr]
@@ -521,6 +531,161 @@ class Publication(unittest.TestCase):
             self.assertEqual(registry.blob('sha256:' + 'd' * 64), {'plugins': {}})
 
         self.assertEqual(fetched.call_args.args[0], storage)
+
+
+class Local(unittest.TestCase):
+    TARGET = 'x86_64-unknown-linux-gnu'
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='krabb local ')
+
+        self.addCleanup(directory.cleanup)
+
+        self.root = Path(directory.name)
+        self.dist = self.root / 'dist'
+        self.out = self.root / 'index'
+
+        self.dist.mkdir()
+
+        for plugin, version in [('echo', '0.3.0'), ('tools', '0.2.0')]:
+            path = self.root / 'krabb-plugins' / plugin / 'krabb-plugin.toml'
+            text = MANIFEST.format(id=plugin, version=version)
+
+            if plugin == 'echo':
+                text = text.replace('[protocol]', 'krabb = "0.2.0"\n\n[protocol]')
+
+            path.parent.mkdir(parents=True)
+            path.write_text(text)
+            (path.parent / 'Cargo.toml').write_text(f'[package]\nversion = "{version}"\n')
+
+    def entry(self, version, content, **extra):
+        return {'version': version, 'protocol': {'major': 0, 'minor': 1},
+                'released': '2026-11-20', 'permissions': [], 'secrets': [],
+                'artifacts': {target: {'sha256': hashlib.sha256(content).hexdigest(),
+                                       'size': len(content)} for target in plugins.TARGETS},
+                **extra}
+
+    def registry(self, index, blobs):
+        registry = Fake()
+        digest = 'sha256:' + 'c' * 64
+        registry.manifests['index'] = {'layers': [{'digest': digest}]}
+        registry.blobs = {digest: index}
+
+        def archive(sha256, size, path):
+            content = blobs[sha256]
+
+            self.assertEqual(size, len(content))
+
+            path.write_bytes(content)
+
+        registry.archive = mock.Mock(side_effect=archive)
+
+        return registry
+
+    def test_built_versions_lead_and_published_ones_fill_in(self):
+        archive = self.dist / f'krabb-echo-v0.3.0-{self.TARGET}.tar.gz'
+
+        archive.write_bytes(b'new echo')
+        (self.dist / 'krabb-echo-v0.3.0-aarch64-apple-darwin.tar.gz').write_bytes(b'other')
+
+        contents = {version: f'{plugin} {version}'.encode()
+                    for plugin, version in [('echo', '0.2.0'), ('echo', '0.4.0-rc.1'),
+                                            ('memory', '0.1.0'), ('memory', '0.2.0-rc.1'),
+                                            ('memory', '0.0.9')]}
+
+        index = {'schema': 1, 'registry': REGISTRY, 'plugins': {
+            'echo': [self.entry('0.2.0', contents['0.2.0']),
+                     self.entry('0.4.0-rc.1', contents['0.4.0-rc.1'])],
+            'memory': [self.entry('0.0.9', contents['0.0.9']),
+                       self.entry('0.1.0', contents['0.1.0']),
+                       self.entry('0.2.0-rc.1', contents['0.2.0-rc.1'], yanked='Broken.')],
+        }}
+
+        blobs = {hashlib.sha256(content).hexdigest(): content for content in contents.values()}
+        registry = self.registry(index, blobs)
+
+        with mock.patch('sys.stderr'):
+            location = plugins.local(self.dist, self.TARGET, self.out, registry, root=self.root,
+                                     now=plugins.datetime.datetime(2026, 11, 27))
+
+        value = json.loads((self.out / 'index.json').read_text())
+        echo = value['plugins']['echo']
+        sha256 = hashlib.sha256(b'new echo').hexdigest()
+
+        self.assertEqual(location, f"file://{(self.out / 'index.json').resolve().as_posix()}")
+        self.assertEqual(value['registry'], f'file://{self.out.resolve().as_posix()}')
+        self.assertEqual([entry['version'] for entry in echo], ['0.3.0', '0.2.0'])
+        self.assertEqual(echo[0]['krabb'], '0.2.0')
+        self.assertEqual(echo[0]['released'], '2026-11-27')
+        self.assertEqual(echo[0]['artifacts'], {self.TARGET: {'sha256': sha256, 'size': 8}})
+
+        self.assertEqual(echo[1]['artifacts'], {self.TARGET: index['plugins']['echo'][0]
+                                                ['artifacts'][self.TARGET]})
+
+        self.assertEqual([entry['version'] for entry in value['plugins']['memory']], ['0.1.0'])
+        self.assertNotIn('tools', value['plugins'])
+
+        for entries in value['plugins'].values():
+            for entry in entries:
+                stored = self.out / 'blobs/sha256' / entry['artifacts'][self.TARGET]['sha256']
+
+                self.assertEqual(hashlib.sha256(stored.read_bytes()).hexdigest(),
+                                 entry['artifacts'][self.TARGET]['sha256'])
+
+        self.assertEqual(registry.archive.call_count, 2)
+
+        with mock.patch('builtins.print') as output:
+            self.assertEqual(plugins.main(['ids', location]), 0)
+
+        self.assertEqual(output.call_args.args[0], '["echo","memory"]')
+
+    def test_choices_keep_what_each_host_can_pick(self):
+        entries = [self.entry('0.1.0', b'a'), self.entry('0.2.0', b'b', krabb='0.3.0'),
+                   self.entry('0.3.0-rc.2', b'c', krabb='0.3.0'),
+                   self.entry('0.3.0-rc.10', b'd'), self.entry('0.4.0', b'e', yanked='No.')]
+
+        chosen = plugins.choices(entries, self.TARGET)
+
+        self.assertEqual([entry['version'] for entry in chosen],
+                         ['0.1.0', '0.2.0', '0.3.0-rc.10'])
+
+        self.assertEqual(plugins.choices(entries, 'riscv64gc-unknown-linux-gnu'), [])
+
+    def test_local_indexes_refuse_bad_inputs(self):
+        registry = self.registry({'plugins': {}}, {})
+
+        with self.assertRaisesRegex(plugins.Failure, 'not a published target'):
+            plugins.local(self.dist, 'riscv64gc-unknown-linux-gnu', self.out, registry)
+
+        with self.assertRaisesRegex(plugins.Failure, 'unreadable'):
+            plugins.listed(f'file://{self.root}/missing.json')
+
+        (self.root / 'empty.json').write_text('[]')
+
+        with self.assertRaisesRegex(plugins.Failure, 'lists no plugins'):
+            plugins.listed(f'file://{self.root}/empty.json')
+
+    def test_archives_are_checked_before_they_are_saved(self):
+        registry = plugins.Registry(REGISTRY)
+        content = b'archive'
+        sha256 = hashlib.sha256(content).hexdigest()
+        path = self.root / 'blob'
+
+        with mock.patch.object(registry, 'get', return_value=(content, {})) as get:
+            registry.archive(sha256, len(content), path)
+
+        self.assertEqual(path.read_bytes(), content)
+        self.assertEqual(get.call_args.kwargs['limit'], len(content) + 1)
+
+        for answer in [None, b'archive!', b'damaged']:
+            with mock.patch.object(registry, 'get', return_value=(answer, {})), \
+                    self.assertRaisesRegex(plugins.Failure, 'damaged blob'):
+                registry.archive(sha256, len(content), self.root / 'other')
+
+        response = mock.Mock(read=mock.Mock(return_value=b'raw'))
+
+        self.assertEqual(plugins.body(response, 3), b'raw')
+        response.read.assert_called_with(3)
 
 
 if __name__ == '__main__':
