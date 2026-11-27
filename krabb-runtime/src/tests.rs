@@ -1918,7 +1918,8 @@ fn default_is_safe() {
 
     assert_eq!(config.name, "Krabb");
     assert_eq!(config.update, "prompt");
-    assert_eq!(config.approval, "off");
+    assert_eq!(config.approval, "prompt");
+    assert_eq!(config.approval_mode(), super::ApprovalMode::Prompt);
     assert!(config.validate().is_ok());
     assert!(Config { name: "\n".into(), ..Config::default() }.validate().is_err());
     assert!(Config { update: "unsafe".into(), ..Config::default() }.validate().is_err());
@@ -2136,8 +2137,9 @@ fn config_deserializes_with_defaults() {
     .unwrap();
 
     assert_eq!(config.update, "prompt");
-    assert_eq!(config.approval, "off");
+    assert_eq!(config.approval, "prompt");
     assert_eq!(config.channels["telegram"].allow, vec!["123"]);
+    assert!(!config.channels["telegram"].tools);
     assert!(!config.channels["telegram"].shell);
     assert!(!config.channels["telegram"].worktree);
     assert!(!super::ChannelConfig::default().worktree);
@@ -2145,7 +2147,7 @@ fn config_deserializes_with_defaults() {
     let explicit: Config = toml::from_str("[channels.discord]\nworktree = true\n").unwrap();
 
     assert!(explicit.channels["discord"].worktree);
-    assert!(config.clients["tui"].tools);
+    assert!(config.client_tools("tui"));
     assert_eq!(config.clients["tui"].shell, Some(true));
     assert!(config.clients["tui"].theme);
     assert!(super::ClientConfig::default().theme);
@@ -2185,7 +2187,17 @@ fn config_deserializes_with_defaults() {
     let monochrome: Config = toml::from_str("[clients.tui]\ntheme = false\n").unwrap();
 
     assert!(!monochrome.clients["tui"].theme);
-    assert!(!Config::default().clients.get("tui").is_some_and(|client| client.tools));
+    assert!(Config::default().client_tools(krabb_core::client::TUI));
+    assert!(monochrome.client_tools(krabb_core::client::TUI));
+    assert!(!Config::default().client_tools("desktop"));
+    assert!(!Config::default().tui_shell());
+
+    let declined: Config =
+        toml::from_str("approval = \"off\"\n[clients.tui]\ntools = false\n").unwrap();
+
+    assert_eq!(declined.approval_mode(), super::ApprovalMode::Off);
+    assert!(!declined.client_tools(krabb_core::client::TUI));
+    assert!(!toml::to_string(&Config::default()).unwrap().contains("tools = true"));
     assert_eq!(super::ClientConfig::default().shell, None);
     assert!(toml::from_str::<Config>("unknown = true\n").is_err());
 }
@@ -4284,7 +4296,7 @@ async fn config_set_preserves_comments_validates_and_saves_the_tui_alias() {
     let config: super::Config = toml::from_str(&saved).unwrap();
 
     assert!(saved.contains("# keep this note"));
-    assert!(config.clients["tui"].tools);
+    assert_eq!(config.clients["tui"].tools, Some(true));
 
     assert!(
         super::config_command(

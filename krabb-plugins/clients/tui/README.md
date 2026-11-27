@@ -93,11 +93,12 @@ operations and plugin guides for detailed schedule and memory behavior.
 Live approvals and `/approvals` display complete tool arguments. The host rejects
 prompt-mode requests that exceed its review limits before issuing a challenge.
 
-TUI model tools are disabled by default. Enable them in `config.toml`:
+TUI model tools are enabled by default, and `krabb init` installs the `tools` plugin with
+the TUI. Turn them off in `config.toml`:
 
 ```toml
 [clients.tui]
-tools = true
+tools = false
 ```
 
 The global approval mode still controls mutating tools. To enable direct shell

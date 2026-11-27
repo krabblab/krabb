@@ -65,6 +65,9 @@ const PLACES: [Offer; 6] = [
     offer("Signal", "signal"),
 ];
 
+/// Plugins a place installs with it, without a question, so its first chat can already act.
+const TERMINAL: [Offer; 1] = [offer("Tools", "tools")];
+
 const YES_LATER: [&str; 2] = ["Yes", "Not now"];
 
 /// How many listed models a choice shows, so a long catalog stays readable.
@@ -609,7 +612,20 @@ impl Guide {
 
         let kind = if offer.id == "tui" { "client" } else { "channel" };
 
-        self.install(offer, kind).await
+        let flow = self.install(offer, kind).await?;
+
+        if !matches!(flow, Flow::Next) {
+            return Ok(flow);
+        }
+
+        for companion in companions(offer.id) {
+            if !crate::load_lock_at(&self.root)?.plugins.contains_key(companion.id) {
+                fetch(companion.id).await?;
+                self.done(&format!("Installed {} plugin.", companion.id));
+            }
+        }
+
+        Ok(Flow::Next)
     }
 
     fn service(&mut self) -> Result<Flow, Error> {
@@ -664,17 +680,7 @@ impl Guide {
         if crate::load_lock_at(&self.root)?.plugins.contains_key(offer.id) {
             self.done(&format!("The {} {kind} is already installed.", offer.id));
         } else {
-            let install = PluginInstall {
-                ids: vec![offer.id.into()],
-                source: None,
-                revision: None,
-                link: false,
-                unstable: false,
-                yes: true,
-                quiet: true,
-            };
-
-            crate::plugins::plugin(PluginCommand::Install(install), false).await?;
+            fetch(offer.id).await?;
             self.done(&format!("Installed {} {kind}.", offer.id));
         }
 
@@ -806,6 +812,27 @@ impl Guide {
 }
 
 /// How the guide ends: whether the Krabb can answer, then the one command to run next.
+/// The plugins installed with the place ID, beyond the place itself.
+fn companions(id: &str) -> &'static [Offer] {
+    if id == "tui" { &TERMINAL } else { &[] }
+}
+
+/// Installs the official plugin ID quietly, through the same path as `krabb plugin install`.
+async fn fetch(id: &str) -> Result<(), Error> {
+    let install = PluginInstall {
+        ids: vec![id.into()],
+        source: None,
+        revision: None,
+        link: false,
+        unstable: false,
+        yes: true,
+        quiet: true,
+    };
+
+    crate::plugins::plugin(PluginCommand::Install(install), false).await?;
+    Ok(())
+}
+
 fn closing(ready: bool, terminal: bool) -> &'static str {
     match (ready, terminal) {
         (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.",

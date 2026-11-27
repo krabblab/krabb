@@ -162,8 +162,8 @@ The TUI is a terminal client, not a second agent runtime. It submits turns over
 authenticated local IPC; the daemon selects the model plugin, applies tool and
 approval policy, executes tools, and persists every interaction. Terminal
 rendering, typewriter reveal, and scroll state remain inside the TUI plugin.
-TUI tool use is explicitly opt-in with `[clients.tui] tools = true` and remains
-subject to the global approval mode.
+TUI tool use is on by default, turned off with `[clients.tui] tools = false`, and
+remains subject to the global approval mode, which defaults to `prompt`.
 
 Session data is stored under `KRABB_HOME/data/sessions/`: `index.json` is the
 global catalog, `records/` contains opaque-keyed session records,

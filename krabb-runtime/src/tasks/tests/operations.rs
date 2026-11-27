@@ -8,7 +8,7 @@ use krabb_core::{
 fn fixture() -> Fixture {
     let mut fixture = Fixture::new(Principal::Client("desktop".into()));
 
-    fixture.context.config.clients.get_mut("desktop").unwrap().tools = true;
+    fixture.context.config.clients.get_mut("desktop").unwrap().tools = Some(true);
     fixture.context.plugins.config = Arc::new(fixture.context.config.clone());
 
     {

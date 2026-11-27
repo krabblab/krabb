@@ -59,7 +59,7 @@ async fn generate_controlled(
         &context.sessions,
         Some(&context.home),
         &context.home,
-        context.config.clients.get("desktop").is_some_and(|policy| policy.tools),
+        context.config.client_tools("desktop"),
         false,
         false,
         ApprovalMode::Auto,
@@ -649,7 +649,7 @@ for line in sys.stdin:
     let mut fixture = fixture();
     let mut config = fixture.context.config.clone();
 
-    config.clients.get_mut("desktop").unwrap().tools = true;
+    config.clients.get_mut("desktop").unwrap().tools = Some(true);
     fixture.context.config = config.clone();
     fixture.context.plugins.config = Arc::new(config);
 

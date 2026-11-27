@@ -1107,7 +1107,7 @@ impl Default for Config {
             name: "Krabb".into(),
             update: "prompt".into(),
             shell: false,
-            approval: "off".into(),
+            approval: "prompt".into(),
             tools: false,
             scheduler: SchedulerConfig::default(),
             inference: inference::Config::default(),
@@ -1143,8 +1143,8 @@ fn skip_missed() -> String {
 struct ClientConfig {
     provider: Option<String>,
     model: Option<String>,
-    #[serde(default)]
-    tools: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tools: Option<bool>,
     shell: Option<bool>,
     #[serde(default = "default_tui_theme")]
     theme: bool,
@@ -1161,7 +1161,7 @@ impl Default for ClientConfig {
         Self {
             provider: None,
             model: None,
-            tools: false,
+            tools: None,
             shell: None,
             theme: true,
             worktree: false,
@@ -1178,6 +1178,10 @@ fn default_tui_theme() -> bool {
 impl Config {
     fn tui_shell(&self) -> bool {
         self.client_shell(client::TUI)
+    }
+
+    fn client_tools(&self, id: &str) -> bool {
+        self.clients.get(id).and_then(|client| client.tools).unwrap_or(id == client::TUI)
     }
 
     fn client_shell(&self, id: &str) -> bool {
@@ -2374,7 +2378,7 @@ async fn config_command(
                     "config.client.set",
                     serde_json::json!({
                         "client": "tui",
-                        "tools": config.clients.get("tui").is_some_and(|client| client.tools),
+                        "tools": config.client_tools(client::TUI),
                     }),
                     root,
                 )

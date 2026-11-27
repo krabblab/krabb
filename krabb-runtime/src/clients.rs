@@ -15,9 +15,10 @@ mod tests {
     #[test]
     fn configured_clients_share_live_policy_without_sharing_each_others_permissions() {
         let mut config = Config::default();
-        config
-            .clients
-            .insert("desktop".into(), ClientConfig { tools: true, ..ClientConfig::default() });
+        config.clients.insert(
+            "desktop".into(),
+            ClientConfig { tools: Some(true), ..ClientConfig::default() },
+        );
         let registry = Registry::default();
         let desktop = registry.get("desktop", &config).unwrap();
         let other = registry.get("mobile", &config).unwrap();
@@ -52,9 +53,7 @@ impl Registry {
         Ok(items
             .entry(id.into())
             .or_insert_with(|| Policy {
-                tools: Arc::new(AtomicBool::new(
-                    config.clients.get(id).is_some_and(|client| client.tools),
-                )),
+                tools: Arc::new(AtomicBool::new(config.client_tools(id))),
                 shell: Arc::new(AtomicBool::new(config.client_shell(id))),
             })
             .clone())

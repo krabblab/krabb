@@ -5906,34 +5906,29 @@ for line in sys.stdin:
     fn applies_tui_tools_configuration_live() {
         let state = state_at("config-client-set");
 
-        assert!(
-            !state
+        let tools = || {
+            state
                 .client(krabb_core::client::TUI)
                 .unwrap()
                 .tools
                 .load(std::sync::atomic::Ordering::Acquire)
-        );
+        };
+
+        assert!(tools());
 
         let response = dispatch(
             &IpcRequest::call(
                 1,
                 "secret",
                 "config.client.set",
-                json!({"client": "tui", "tools": true}),
+                json!({"client": "tui", "tools": false}),
             ),
             &state,
         )
         .unwrap();
 
-        assert_eq!(response.result.unwrap()["tools"], true);
-
-        assert!(
-            state
-                .client(krabb_core::client::TUI)
-                .unwrap()
-                .tools
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert_eq!(response.result.unwrap()["tools"], false);
+        assert!(!tools());
     }
 
     #[test]

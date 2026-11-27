@@ -271,7 +271,7 @@ fn permissions(
 
                 sharing::Principal::Client(id) => {
                     let policy = config.clients.get(id)?;
-                    (policy.tools, policy.shell.unwrap_or(config.shell), policy.approval.as_deref())
+                    (config.client_tools(id), config.client_shell(id), policy.approval.as_deref())
                 }
 
                 sharing::Principal::Agent(_) => return None,

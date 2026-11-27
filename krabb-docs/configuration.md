@@ -12,9 +12,9 @@ history is stored under `KRABB_HOME/logs/schedules/`. See [Storage](storage.md)
 for the complete layout and upgrade behavior.
 
 Read or change settings without opening the TOML file with `krabb config get`
-and `krabb config set KEY=VALUE`. For example, enable TUI workspace tools with
-`krabb config set clients.tui=true` (the long form is
-`krabb config set clients.tui.tools=true`). TOML values use normal TOML syntax,
+and `krabb config set KEY=VALUE`. For example, turn off TUI workspace tools with
+`krabb config set clients.tui=false` (the long form is
+`krabb config set clients.tui.tools=false`). TOML values use normal TOML syntax,
 such as `krabb config set 'approval="prompt"'` or
 `krabb config set 'channels.telegram.allow=["123"]'`. The command
 validates the complete config before saving and preserves existing comments.
@@ -47,7 +47,7 @@ attachments are retained in the selected conversation storage. See
 ```toml
 name = "Krabb"
 update = "prompt"
-approval = "off"
+approval = "prompt"
 provider = "openrouter"
 model = "default"
 
@@ -163,7 +163,7 @@ foreground/background palettes. The theme is enabled by default; change it with
 Unknown update and approval modes fail validation before the daemon starts.
 `name` sets the globally displayed name for Krabb (1–64 visible characters).
 The default is `Krabb`.
-The default update mode is `prompt`, approval is `off`, shell execution is
+The default update mode is `prompt`, approval is `prompt`, shell execution is
 disabled, and visibility exports nothing by default. Conversations use the plain
 workspace with ownership filtering; Git worktrees are an explicit opt-in.
 
@@ -310,8 +310,11 @@ to `KRABB_ROOT` when no session workspace is selected. A root by itself does
 not enable tools: channel `tools = true` and daemon approvals are still
 required, and shell remains separately disabled by default.
 
-The TUI is a local daemon client. Its `tools` and `shell` settings default to
-`false`; enable them under `[clients.tui]` for TUI turns. Global approval still
+The TUI is a local daemon client. Its `tools` setting defaults to `true` and its
+`shell` setting to `false`. Set either under `[clients.tui]` to change them for TUI
+turns, and the global approval mode still applies to mutating tools. Other clients and
+every channel default to `tools = false`.
+
 The host resolves declared secrets and settings from nonempty environment overrides
 first, then from the encrypted file named by `KRABB_CREDENTIALS`, defaulting to
 `credentials.json` in Krabb's home. Unset settings use their manifest defaults. `krabb plugin setup <id>` securely prompts

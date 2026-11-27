@@ -92,6 +92,19 @@ fn choices_cover_every_official_provider_channel_and_client() {
 }
 
 #[test]
+fn the_terminal_brings_the_tools_plugin_and_channels_bring_nothing() {
+    let plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krabb-plugins");
+    let terminal = companions("tui").iter().map(|offer| offer.id).collect::<Vec<_>>();
+
+    assert_eq!(terminal, ["tools"]);
+    assert!(plugins.join("tools/krabb-plugin.toml").is_file());
+
+    for place in PLACES.iter().filter(|offer| offer.id != "tui") {
+        assert!(companions(place.id).is_empty(), "{}", place.id);
+    }
+}
+
+#[test]
 fn the_home_step_creates_or_keeps_the_home() {
     let root = crate::tests::test_root("onboard-home");
     let mut guide = guide(root.clone());

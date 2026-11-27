@@ -32,7 +32,7 @@ async fn prompted() -> Fixture {
     let mut config = fixture.context.config.clone();
 
     config.approval = "prompt".into();
-    config.clients.get_mut("desktop").unwrap().tools = true;
+    config.clients.get_mut("desktop").unwrap().tools = Some(true);
     fixture.context.config = config.clone();
     fixture.context.plugins.config = Arc::new(config);
 

@@ -663,7 +663,8 @@ In a terminal, `krabb init` guides you through five steps, always in this order:
 creates the home directory, starter configuration, and workspace instructions;
 `provider` installs, sets up, and selects an intelligence provider; `hatch` gives your
 Krabb a personality; `channel` installs the terminal client or a chat channel and sets
-it up; and `service` installs and starts the background service. Choices use a list
+it up, and choosing the terminal also installs the `tools` plugin when it is missing, so
+your Krabb can read and save workspace files after you approve each change; and `service` installs and starts the background service. Choices use a list
 moved with the arrow keys, and Esc stops the guide, so `krabb init` continues later.
 Name steps to run only those, such as `krabb init home provider`. A finished step is
 skipped when you run every step, and offers a change when you name it. Without a
