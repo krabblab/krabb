@@ -337,7 +337,7 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
         model_override,
         session.clone(),
         prompt,
-        daemon_control,
+        daemon_unattended_control,
     )
     .await;
 
@@ -2545,6 +2545,32 @@ async fn daemon_control(home: String, method: String, params: Value) -> krabb_co
     control(&home, &method, params).await.map_err(ControlError::into_core)
 }
 
+/// Controls the daemon for a one-shot run, where nobody can answer an approval, so each one is
+/// denied at once instead of waiting for its timeout.
+async fn daemon_unattended_control(
+    home: String,
+    method: String,
+    params: Value,
+) -> krabb_core::Result<Value> {
+    control_as(&home, &method, params, None, true).await.map_err(ControlError::into_core)
+}
+
+/// REPLY with a note when a one-shot run denied DENIED approvals, naming where to approve.
+fn unattended_reply(reply: &str, denied: usize) -> String {
+    let actions = match denied {
+        0 => return reply.to_owned(),
+        1 => "a tool action".to_owned(),
+        count => format!("{count} tool actions"),
+    };
+
+    let note = format!(
+        "Krabb denied {actions}, because `krabb tui --once` cannot ask for approval.\nApprove \
+         actions in the interactive terminal with `krabb tui`."
+    );
+
+    if reply.is_empty() { note } else { format!("{reply}\n\n{note}") }
+}
+
 enum ControlError {
     Unavailable(krabb_core::Error),
     Failed(krabb_core::Error),
@@ -4638,8 +4664,20 @@ async fn control(
 async fn control_with_stream(
     home: &str,
     method: &str,
+    params: Value,
+    events: Option<mpsc::UnboundedSender<EngineEvent>>,
+) -> std::result::Result<Value, ControlError> {
+    control_as(home, method, params, events, false).await
+}
+
+/// Sends one control request, streaming a turn's events to EVENTS. An UNATTENDED turn denies
+/// each approval it is asked for, because no person sees it.
+async fn control_as(
+    home: &str,
+    method: &str,
     mut params: Value,
     events: Option<mpsc::UnboundedSender<EngineEvent>>,
+    unattended: bool,
 ) -> std::result::Result<Value, ControlError> {
     let token = tokio::fs::read_to_string(krabb_file::location(
         std::path::Path::new(home),
@@ -4696,6 +4734,7 @@ async fn control_with_stream(
 
         let system_output = method == "session.command";
         let mut streamed = String::new();
+        let mut denied = 0;
 
         loop {
             deadline.check().map_err(ControlError::Failed)?;
@@ -4741,6 +4780,14 @@ async fn control_with_stream(
                     let tool = value["tool"].as_str().unwrap_or("tool");
                     let arguments = value["arguments"].as_str().unwrap_or("{}");
                     let command = value["command"].as_str();
+
+                    if unattended {
+                        let params = serde_json::json!({"id": id, "approved": false});
+
+                        let _ = Box::pin(control(home, "approval.resolve", params)).await;
+                        denied += 1;
+                        continue;
+                    }
 
                     if let Some(events) = &events {
                         let _ = events.send(EngineEvent::SystemNotice(format_approval_notice(
@@ -4813,7 +4860,7 @@ async fn control_with_stream(
                         return Ok(serde_json::json!({"text": ""}));
                     }
 
-                    return Ok(serde_json::json!({"text": final_text}));
+                    return Ok(serde_json::json!({"text": unattended_reply(final_text, denied)}));
                 }
 
                 continue;
@@ -8059,6 +8106,83 @@ mod tests {
         );
 
         assert!(receiver.try_recv().is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_shot_turns_deny_approvals_at_once_and_say_where_to_approve() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let root = std::env::temp_dir().join(format!(
+            "krabb-tui-unattended-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        std::fs::write(root.join("run/ipc.token"), "fixture-token").unwrap();
+
+        std::fs::write(
+            root.join("run/ipc.port"),
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .unwrap();
+
+        let server = tokio::spawn(async move {
+            let (turn, _) = listener.accept().await.unwrap();
+            let mut turn = BufReader::new(turn);
+            let mut request = String::new();
+
+            turn.read_line(&mut request).await.unwrap();
+
+            let approval = json!({"event":"approval", "id":"approval-1", "tool":"file_write"});
+            let frame = json!({"jsonrpc":"2.0", "id":1, "result":approval});
+
+            turn.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+
+            let (resolve, _) = listener.accept().await.unwrap();
+            let mut resolve = BufReader::new(resolve);
+            let mut request = String::new();
+
+            resolve.read_line(&mut request).await.unwrap();
+
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+            let frame = json!({"jsonrpc":"2.0", "id":1, "result":{"resolved":true}});
+
+            resolve.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+
+            let done = json!({"done":true, "text":"I could not write the file."});
+            let frame = json!({"jsonrpc":"2.0", "id":1, "result":done});
+
+            turn.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+            request
+        });
+
+        let reply = super::daemon_unattended_control(
+            root.to_str().unwrap().to_owned(),
+            "session.answer".into(),
+            json!({"id":"main"}),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("unattended control failed"));
+
+        let request = server.await.unwrap();
+
+        assert_eq!(request["method"], "approval.resolve");
+        assert_eq!(request["params"], json!({"id":"approval-1", "approved":false}));
+
+        assert_eq!(
+            reply["text"],
+            "I could not write the file.\n\nKrabb denied a tool action, because `krabb tui \
+             --once` cannot ask for approval.\nApprove actions in the interactive terminal with \
+             `krabb tui`."
+        );
+
+        assert_eq!(super::unattended_reply("Done.", 0), "Done.");
+        assert!(super::unattended_reply("", 2).starts_with("Krabb denied 2 tool actions, "));
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -102,6 +102,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         spaced: true,
         named: args.steps.clone(),
         interactive,
+        started: false,
     };
 
     if interactive {
@@ -129,9 +130,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
 
             Flow::Blocked { why, next } => {
                 guide.gap();
-                println!("Setup stopped, because {why}.");
-                println!("{next}");
-                return Ok(());
+                return Err(blocked(why, next).into());
             }
         }
     }
@@ -197,8 +196,8 @@ fn find<'a>(offers: &'a [Offer], key: &str) -> Result<&'a Offer, String> {
     })
 }
 
-/// Whether the guide goes on, the person stopped it, or a step cannot finish yet, which each end
-/// it without an error.
+/// Whether the guide goes on, the person stopped it, or a step cannot finish yet. Only a blocked
+/// step ends it with an error, so scripts see that setup is incomplete.
 enum Flow {
     Next,
     Stop,
@@ -251,12 +250,23 @@ fn hatch_wait(need: Codex) -> Option<&'static str> {
     }
 }
 
+/// The error a blocked step ends the guide with: why it stopped, then the one next action.
+fn blocked(why: &str, next: &str) -> String {
+    format!("Setup stopped, because {why}.\n{next}")
+}
+
+/// The Codex CLI this shell runs, from `KRABB_CODEX_BINARY` or the search path.
+fn codex_binary() -> Option<PathBuf> {
+    if let Some(binary) = std::env::var_os("KRABB_CODEX_BINARY") {
+        return Some(binary.into());
+    }
+
+    crate::service::codex_binary_from_path(&std::env::var("PATH").unwrap_or_default())
+}
+
 /// Whether the Codex CLI is installed and signed in, without asking anything.
 fn codex_state() -> (bool, bool) {
-    let path = std::env::var("PATH").unwrap_or_default();
-
-    let cli = std::env::var_os("KRABB_CODEX_BINARY").is_some()
-        || crate::service::codex_binary_from_path(&path).is_some();
+    let cli = codex_binary().is_some();
 
     (cli, cli && crate::codex_auth())
 }
@@ -268,6 +278,8 @@ struct Guide {
     spaced: bool,
     named: Vec<Step>,
     interactive: bool,
+    /// Whether the service step started the service, which may not report running at once.
+    started: bool,
 }
 
 impl Guide {
@@ -628,12 +640,17 @@ impl Guide {
     }
 
     /// Installs the plugins that come with the place ID when they are missing, so an earlier
-    /// home that already talks through the TUI also gets its workspace tools.
+    /// home that already talks through the TUI also gets its workspace tools. A failed install,
+    /// such as offline, leaves a note with its fix instead of stopping the guide.
     async fn add_companions(&mut self, id: &str) -> Result<(), Error> {
         for companion in companions(id) {
-            if !crate::load_lock_at(&self.root)?.plugins.contains_key(companion.id) {
-                fetch(companion.id).await?;
-                self.done(&format!("Installed {} plugin.", companion.id));
+            if crate::load_lock_at(&self.root)?.plugins.contains_key(companion.id) {
+                continue;
+            }
+
+            match fetch(companion.id).await {
+                Ok(()) => self.done(&format!("Installed {} plugin.", companion.id)),
+                Err(error) => self.note(&companion_failed(companion.id, &error.to_string())),
             }
         }
 
@@ -644,12 +661,8 @@ impl Guide {
         self.require_home()?;
         self.section("Service");
 
-        let installed = crate::service::service_path().is_file();
-
-        if installed && !self.named(Step::Service) {
-            self.done("Your Krabb runs as a background service.");
-            return Ok(Flow::Next);
-        }
+        let path = crate::service::service_path();
+        let installed = path.is_file();
 
         let (question, options) = if installed {
             ("Replace the background service that is already installed?", ["Keep it", "Replace it"])
@@ -657,13 +670,15 @@ impl Guide {
             ("Keep your Krabb running in the background?", YES_LATER)
         };
 
-        let write = if self.interactive {
+        let write = if installed && !self.named(Step::Service) {
+            false
+        } else if self.interactive {
             match self.ask(question, &options)? {
                 None => return Ok(Flow::Stop),
                 Some(0) => !installed,
 
                 Some(_) if !installed => {
-                    self.note("Start it later with `krabb init service`.");
+                    self.note("The background service stays off.");
                     return Ok(Flow::Next);
                 }
 
@@ -673,7 +688,7 @@ impl Guide {
             !installed
         };
 
-        let path = crate::service::service_path();
+        let patched = installed && !write && self.find_codex(&path)?;
 
         if write {
             crate::service::install_at(&path, installed)?;
@@ -681,9 +696,40 @@ impl Guide {
 
         let silent = crate::service::ServiceReport::Silent;
 
-        crate::service::service_action_with(&path, ServiceAction::Start, silent)?;
+        for action in actions(installed && (write || patched)) {
+            crate::service::service_action_with(&path, *action, silent)?;
+        }
+
+        self.started = true;
+
+        if patched {
+            self.done("Updated the background service so it finds Codex.");
+        }
+
         self.done("Your Krabb runs as a background service.");
         Ok(Flow::Next)
+    }
+
+    /// Adds the Codex CLI this shell runs to the service at PATH when Codex is the provider and
+    /// the service, installed before Codex, could not find it. Returns whether it did.
+    fn find_codex(&self, path: &Path) -> Result<bool, Error> {
+        if ready_provider(&self.root)?.as_deref() != Some("codex") {
+            return Ok(false);
+        }
+
+        let Some(binary) = codex_binary() else {
+            return Ok(false);
+        };
+
+        let Some(environment) = crate::definition::environment(path) else {
+            return Ok(false);
+        };
+
+        let Some(environment) = crate::definition::with_codex(&environment, &binary) else {
+            return Ok(false);
+        };
+
+        crate::definition::rewrite(path, &environment)
     }
 
     /// Installs OFFER unless it already is, then asks for its secrets and settings. Cancelling
@@ -774,31 +820,57 @@ impl Guide {
     async fn finish(&mut self) -> Result<(), Error> {
         self.gap();
 
-        let provider = ready_provider(&self.root)?;
-        let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
+        let Some(provider) = ready_provider(&self.root)? else {
+            println!("{}", closing(Ending::Provider));
+            return Ok(());
+        };
 
-        if let Some(provider) = &provider
+        let credentials = crate::setup::path(&self.root);
+        let key = crate::credentials::key_path(&self.root);
+
+        if !crate::ready_at(&provider, Some(&credentials), &key) {
+            println!("{}", closing(Ending::Setup(&provider)));
+            return Ok(());
+        }
+
+        let running = self.started
+            || (crate::service_path().is_file()
+                && matches!(crate::service_manager_state(), Ok(crate::ServiceState::Active)));
+
+        let status = serde_json::json!({});
+
+        if !running
+            && !crate::control_at("status", status, &self.root)
+                .await
+                .is_ok_and(|answer| answer.is_some())
+        {
+            println!("{}", closing(Ending::Service));
+
+            return Ok(());
+        }
+
+        if running
             && self.interactive
-            && crate::service_path().is_file()
-            && let Some(problem) = self.blocker(provider).await
+            && let Some(problem) = self.blocker(&provider).await
         {
             println!("{problem}");
             return Ok(());
         }
 
-        println!("{}", closing(provider.is_some(), terminal));
+        let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
+
+        println!("{}", closing(Ending::Ready { terminal }));
 
         Ok(())
     }
 
     /// Why the running Krabb cannot answer with PROVIDER yet, with the one next step, or none
     /// when the service answers and the provider loaded. Init writes and starts the service just
-    /// before this, so a slow start gets the same wait `krabb tui` gives it.
+    /// before this, so a slow start gets the same wait `krabb tui` gives it, even while the
+    /// service manager does not report it running yet.
     async fn blocker(&self, provider: &str) -> Option<String> {
-        let running = matches!(crate::service_manager_state(), Ok(crate::ServiceState::Active));
-
         if let Err(error) =
-            crate::require_tui_daemon(&self.root, running, crate::DAEMON_STARTUP_CHECKS).await
+            crate::require_tui_daemon(&self.root, true, crate::DAEMON_STARTUP_CHECKS).await
         {
             return Some(format!("Your Krabb is set up, but it does not answer yet.\n{error}"));
         }
@@ -823,10 +895,29 @@ impl Guide {
     }
 }
 
-/// How the guide ends: whether the Krabb can answer, then the one command to run next.
 /// The plugins installed with the place ID, beyond the place itself.
 fn companions(id: &str) -> &'static [Offer] {
     if id == "tui" { &TERMINAL } else { &[] }
+}
+
+/// Why the companion plugin ID was not installed, from ERROR's first line, and its fix.
+fn companion_failed(id: &str, error: &str) -> String {
+    let reason = error.lines().next().unwrap_or_default().trim().trim_end_matches('.');
+
+    let fix = format!("Install it later with `krabb plugin install {id}`.");
+
+    if reason.is_empty() {
+        format!("Could not install the {id} plugin.\n{fix}")
+    } else {
+        format!("Could not install the {id} plugin: {reason}.\n{fix}")
+    }
+}
+
+/// The service actions that apply the service step: a stop first when the definition of an
+/// installed service changed, because only a fresh start reads it, then a start, which does
+/// nothing to a service that already runs.
+fn actions(changed: bool) -> &'static [ServiceAction] {
+    if changed { &[ServiceAction::Stop, ServiceAction::Start] } else { &[ServiceAction::Start] }
 }
 
 /// Installs the official plugin ID quietly, through the same path as `krabb plugin install`.
@@ -845,15 +936,42 @@ async fn fetch(id: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn closing(ready: bool, terminal: bool) -> &'static str {
-    match (ready, terminal) {
-        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.",
-        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`.",
+/// What still keeps the Krabb from answering when the guide ends, checked in this order.
+#[derive(Clone, Copy, Debug)]
+enum Ending<'a> {
+    Provider,
+    Setup(&'a str),
+    Service,
+    Ready { terminal: bool },
+}
 
-        (false, _) => {
-            "Your Krabb is set up, and it needs a provider to answer.\n\
-                       Add one with `krabb init provider`."
+/// How the guide ends: whether the Krabb can answer, then the one command to run next.
+fn closing(ending: Ending<'_>) -> String {
+    match ending {
+        Ending::Ready { terminal: true } => {
+            "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.".into()
         }
+
+        Ending::Ready { terminal: false } => {
+            "Your Krabb is ready.\nCheck every part with `krabb status`.".into()
+        }
+
+        Ending::Provider => "Your Krabb is set up, and it needs a provider to answer.\nAdd one \
+                             with `krabb init provider`."
+            .into(),
+
+        Ending::Setup("codex") => "Your Krabb is set up, and Codex needs a sign-in to answer.\n\
+                                   Sign in with `krabb codex login`."
+            .into(),
+
+        Ending::Setup(id) => format!(
+            "Your Krabb is set up, and the {id} provider needs setup to answer.\nSet it up with \
+             `krabb plugin setup {id}`."
+        ),
+
+        Ending::Service => "Your Krabb is set up, and it needs the background service to \
+                            answer.\nStart it with `krabb init service`."
+            .into(),
     }
 }
 

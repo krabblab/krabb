@@ -270,8 +270,8 @@ fn permissions(
                 }
 
                 sharing::Principal::Client(id) => {
-                    let policy = config.clients.get(id)?;
-                    (config.client_tools(id), config.client_shell(id), policy.approval.as_deref())
+                    let approval = config.clients.get(id).and_then(|policy| policy.approval.as_deref());
+                    (config.client_tools(id), config.client_shell(id), approval)
                 }
 
                 sharing::Principal::Agent(_) => return None,
@@ -516,5 +516,25 @@ mod tests {
 
         assert!(text.contains(&format!("plugin{} (tool); 3 more.", PLUGIN_LIMIT - 1)));
         assert!(!text.contains(&format!("plugin{} ", PLUGIN_LIMIT)));
+    }
+
+    #[test]
+    fn shows_the_tui_policy_without_its_own_table() {
+        let config: Config = toml::from_str(
+            "approval = \"prompt\"\n[[visibility]]\ndata = [\"permissions\"]\nresources = \
+             [\"global\"]\n",
+        )
+        .unwrap();
+
+        let telegram = sharing::Principal::Channel("telegram".into());
+        let mut messages = Vec::new();
+
+        permissions(&mut messages, "telegram-chat", &telegram, &config);
+
+        let text = messages[0].content[0].render();
+
+        assert!(text.contains("tui"), "{text}");
+        assert!(text.contains(r#""tools":true"#), "{text}");
+        assert!(text.contains(r#""approval":"prompt""#), "{text}");
     }
 }

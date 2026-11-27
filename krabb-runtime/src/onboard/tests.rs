@@ -13,7 +13,14 @@ fn args(flags: &[&str]) -> InitArgs {
 }
 
 fn guide(root: PathBuf) -> Guide {
-    Guide { root, color: false, spaced: true, named: Vec::new(), interactive: false }
+    Guide {
+        root,
+        color: false,
+        spaced: true,
+        named: Vec::new(),
+        interactive: false,
+        started: false,
+    }
 }
 
 #[test]
@@ -167,13 +174,62 @@ async fn choosing_no_channel_installs_nothing() {
 #[test]
 fn the_guide_ends_with_one_next_action() {
     assert_eq!(
-        closing(true, true),
+        closing(Ending::Ready { terminal: true }),
         "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`."
     );
 
-    assert_eq!(closing(true, false), "Your Krabb is ready.\nCheck every part with `krabb status`.");
+    assert_eq!(
+        closing(Ending::Ready { terminal: false }),
+        "Your Krabb is ready.\nCheck every part with `krabb status`."
+    );
 
-    assert!(closing(false, true).ends_with("Add one with `krabb init provider`."));
+    assert!(closing(Ending::Provider).ends_with("Add one with `krabb init provider`."));
+
+    assert_eq!(
+        closing(Ending::Setup("openai")),
+        "Your Krabb is set up, and the openai provider needs setup to answer.\nSet it up with \
+         `krabb plugin setup openai`."
+    );
+
+    assert!(closing(Ending::Setup("codex")).ends_with("Sign in with `krabb codex login`."));
+
+    assert_eq!(
+        closing(Ending::Service),
+        "Your Krabb is set up, and it needs the background service to answer.\nStart it with \
+         `krabb init service`."
+    );
+
+    for ending in [Ending::Provider, Ending::Setup("gemini"), Ending::Service] {
+        assert!(!closing(ending).contains("ready"), "{ending:?}");
+    }
+}
+
+#[test]
+fn a_blocked_step_fails_with_its_reason_and_fix() {
+    let Flow::Blocked { why, next } = INSTALL_CODEX else { panic!("the guide goes on") };
+
+    assert_eq!(
+        blocked(why, next),
+        "Setup stopped, because the Codex CLI is not installed.\nInstall it from \
+         https://developers.openai.com/codex/cli, then run `krabb init` again."
+    );
+}
+
+#[test]
+fn a_changed_service_restarts_and_a_kept_one_only_starts() {
+    assert_eq!(actions(false), [ServiceAction::Start]);
+    assert_eq!(actions(true), [ServiceAction::Stop, ServiceAction::Start]);
+}
+
+#[test]
+fn a_failed_companion_install_leaves_its_fix() {
+    assert_eq!(
+        companion_failed("tools", "Could not reach the plugin index.\nCheck your network."),
+        "Could not install the tools plugin: Could not reach the plugin index.\nInstall it later \
+         with `krabb plugin install tools`."
+    );
+
+    assert!(companion_failed("tools", "").starts_with("Could not install the tools plugin.\n"));
 }
 
 #[test]

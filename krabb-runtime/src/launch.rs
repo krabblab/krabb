@@ -945,6 +945,9 @@ pub(crate) fn credential(path: impl AsRef<Path>, key: &Path, names: &[&str]) -> 
     names.iter().any(|name| values.get(*name).is_some_and(|value| !value.trim().is_empty()))
 }
 
+/// How long `codex login status` may take, since a cold Codex start can take several seconds.
+const CODEX_STATUS: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(crate) fn codex_auth() -> bool {
     let binary = std::env::var_os("KRABB_CODEX_BINARY").unwrap_or_else(|| "codex".into());
     let mut command = std::process::Command::new(binary);
@@ -962,7 +965,7 @@ pub(crate) fn codex_auth() -> bool {
         return false;
     };
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + CODEX_STATUS;
 
     loop {
         match child.try_wait() {

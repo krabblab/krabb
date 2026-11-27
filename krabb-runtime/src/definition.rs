@@ -67,6 +67,69 @@ pub(crate) fn refresh(path: &Path) -> Result<bool, PluginError> {
     Ok(true)
 }
 
+/// ENVIRONMENT with BINARY as the Codex CLI, when the service it belongs to finds no Codex
+/// through `KRABB_CODEX_BINARY` or its PATH. The PATH gains BINARY's folder, because a Codex
+/// installed with a package manager runs a program from that folder.
+pub(crate) fn with_codex(
+    environment: &[(String, String)],
+    binary: &Path,
+) -> Option<Vec<(String, String)>> {
+    let value = |wanted: &str| {
+        environment.iter().find(|(name, _)| name == wanted).map(|(_, value)| value.as_str())
+    };
+
+    if value("KRABB_CODEX_BINARY").is_some()
+        || codex_binary_from_path(value("PATH").unwrap_or_default()).is_some()
+    {
+        return None;
+    }
+
+    let mut patched = environment.to_vec();
+    let folder = binary.parent().filter(|folder| folder.is_absolute());
+
+    if let Some(folder) = folder.and_then(Path::to_str)
+        && let Some((_, path)) = patched.iter_mut().find(|(name, _)| name == "PATH")
+        && !path.split(':').any(|known| known == folder)
+    {
+        *path = appended(path, folder);
+    }
+
+    patched.push(("KRABB_CODEX_BINARY".into(), binary.display().to_string()));
+    Some(patched)
+}
+
+/// PATH with FOLDER added at the end.
+fn appended(path: &str, folder: &str) -> String {
+    if path.is_empty() { folder.to_owned() } else { format!("{path}:{folder}") }
+}
+
+/// Rewrites the definition at PATH with ENVIRONMENT, keeping its executable, and makes the
+/// service manager read it. Returns false for a definition Krabb did not write.
+pub(crate) fn rewrite(path: &Path, environment: &[(String, String)]) -> Result<bool, PluginError> {
+    let Some(definition) = rewritten(path, environment) else {
+        return Ok(false);
+    };
+
+    #[cfg(target_os = "windows")]
+    install(path, &definition)?;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        secure(path, definition.as_bytes())?;
+        reload(path)?;
+    }
+
+    Ok(true)
+}
+
+/// The definition at PATH with ENVIRONMENT, when Krabb wrote it in the current layout.
+fn rewritten(path: &Path, environment: &[(String, String)]) -> Option<String> {
+    let installed = parse(&std::fs::read_to_string(path).ok()?)?;
+    let layout = parse(&service_text(Path::new(""), &[]))?.layout;
+
+    (installed.layout == layout).then(|| service_text(&installed.executable, environment))
+}
+
 /// Makes the service manager read the definition file again, such as after a rollback.
 pub(crate) fn reload(path: &Path) -> Result<(), PluginError> {
     #[cfg(target_os = "linux")]
@@ -392,6 +455,42 @@ mod tests {
         assert_eq!(stale_among(&path, &[retired.as_str()]), None);
         assert_eq!(stale(&root.join("missing.service")), None);
 
+        let added = vec![("KRABB_CODEX_BINARY".to_owned(), "/opt/codex/bin/codex".to_owned())];
+        let wanted = service_text(Path::new("/usr/local/bin/krabb-daemon"), &added);
+
+        assert_eq!(rewritten(&path, &added), None);
+
+        std::fs::write(&path, &current).unwrap();
+
+        assert_eq!(rewritten(&path, &added), Some(wanted));
+        assert_eq!(rewritten(&root.join("missing.service"), &added), None);
+
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_service_without_codex_gains_the_shells_codex() {
+        let binary = Path::new("/opt/codex/bin/codex");
+        let path = |value: &str| vec![("PATH".to_owned(), value.to_owned())];
+
+        let patched = with_codex(&path("/nowhere/krabb-bin"), binary).unwrap();
+
+        assert_eq!(
+            patched,
+            [
+                ("PATH".to_owned(), "/nowhere/krabb-bin:/opt/codex/bin".to_owned()),
+                ("KRABB_CODEX_BINARY".to_owned(), "/opt/codex/bin/codex".to_owned()),
+            ]
+        );
+
+        let kept = with_codex(&path("/opt/codex/bin"), binary).unwrap();
+
+        assert_eq!(kept[0].1, "/opt/codex/bin");
+        assert_eq!(with_codex(&[], binary).unwrap().len(), 1);
+
+        let known = vec![("KRABB_CODEX_BINARY".to_owned(), "/usr/bin/codex".to_owned())];
+
+        assert_eq!(with_codex(&known, binary), None);
     }
 }

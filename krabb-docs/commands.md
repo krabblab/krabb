@@ -281,9 +281,11 @@ has been renamed to `channels`; update scripts that read it.
 ## Terminal User Interface
 
 `krabb tui` requires the daemon. Use `krabb service start` or run
-`krabb-daemon` in the foreground. `krabb tui --once "prompt"` sends one prompt
+`krabb-daemon` in the foreground. A service that runs but still starts its plugins
+gets up to 30 seconds to answer. `krabb tui --once "prompt"` sends one prompt
 without opening the full-screen client; pass `--session` to continue an
-existing session.
+existing session. Nobody can approve a tool action during `--once`, so it denies
+each one at once and the reply says to approve actions in the interactive `krabb tui`.
 
 Interactive assistant replies render emphasis, inline code, headings, and code
 panels using terminal styles. Links retain visible URLs. Formatting also applies
@@ -664,7 +666,9 @@ creates the home directory, starter configuration, and workspace instructions;
 `provider` installs, sets up, and selects an intelligence provider; `hatch` gives your
 Krabb a personality; `channel` installs the terminal client or a chat channel and sets
 it up, and choosing the terminal also installs the `tools` plugin when it is missing, so
-your Krabb can read and save workspace files after you approve each change; and `service` installs and starts the background service. Choices use a list
+your Krabb can read and save workspace files after you approve each change; and
+`service` installs and starts the background service. If installing `tools` fails, such
+as offline, the guide notes `krabb plugin install tools` and goes on. Choices use a list
 moved with the arrow keys, and Esc stops the guide, so `krabb init` continues later.
 Name steps to run only those, such as `krabb init home provider`. A finished step is
 skipped when you run every step, and offers a change when you name it. Without a
@@ -684,13 +688,21 @@ length, which stays `auto` until `krabb plugin setup codex` changes it. Before C
 chosen or kept, the step checks the Codex CLI: when it is missing, the guide stops with
 where to install it, and when it is not signed in, the guide runs the ChatGPT sign-in in
 a terminal. If sign-in fails, is cancelled, or there is no terminal, the guide stops and
-says to run `krabb codex login`, then `krabb init` again. The `hatch` step runs only when
-the provider can answer, and otherwise names the fix and moves on. The `service` step
-shows only its own outcome, not the service commands' messages.
+says to run `krabb codex login`, then `krabb init` again. A guide stopped this way exits
+with an error, so scripts see that setup is incomplete, while Esc stops it without one.
+The `hatch` step runs only when the provider can answer, and otherwise names the fix and
+moves on. The `service` step shows only its own outcome, not the service commands'
+messages. It starts an installed service that is stopped, and replacing a service
+restarts it so the daemon uses the new definition. When Codex is the provider and the
+service was installed before Codex, the step adds the Codex CLI this shell finds to the
+service and restarts it.
 
-When the background service is installed, the guide ends by waiting for it to answer
-and checking that the provider loaded. If either fails, it says so with the one next
-step instead of saying your Krabb is ready.
+The guide ends with the one next action. It says your Krabb is ready only when the
+provider has its key or sign-in and a service or daemon runs. Otherwise it names the fix,
+such as `krabb plugin setup openai`, or `krabb init service` when nothing runs. In a
+terminal, when the service runs, the guide waits up to 30 seconds for it to answer and
+checks that the provider loaded. If either fails, it says so with the one next step
+instead.
 
 `krabb doctor` is read-only; `krabb doctor --fix` creates missing safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.

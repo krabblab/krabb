@@ -26,8 +26,10 @@ krabb tui --once "prompt"
 
 `--once` prints one reply without opening the full-screen UI. It uses and
 deletes an idle temporary session unless you pass `--session <id>`. Saved work
-or pending results retain it. Unconfirmed cleanup is reported with a reopen command. Interactive
-sessions resume the last session or start `default`.
+or pending results retain it. Unconfirmed cleanup is reported with a reopen command. Nobody
+can approve a tool action during `--once`, so it denies each one at once and its reply says
+to approve actions in the interactive `krabb tui`. Interactive sessions resume the last
+session or start `default`.
 
 Ask the model in any language to pause, resume, cancel, delay, or extend a saved
 task. While inference is busy, use exact commands: `/task` lists tasks, and
