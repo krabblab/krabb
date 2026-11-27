@@ -202,6 +202,7 @@ class Bump(unittest.TestCase):
 
         self.assertIn('[workspace.package]\nversion = "0.2.0"\n', cargo)
         self.assertIn('version: 0.2.0\n', (self.root / 'CITATION.cff').read_text())
+
         readme = (self.root / 'README.md').read_text()
 
         self.assertEqual(readme, README.replace('0.1.0-rc.1', '0.2.0'))
