@@ -384,7 +384,8 @@ krabb update --rollback [-y|--yes]
 ```
 
 `krabb update` moves the CLI and daemon to one release, the latest stable one
-unless a version is given. Releases contain only the host; plugins keep their
+unless a version is given. A pre-release of Krabb takes the newest release or
+pre-release from the GitHub release list instead. Releases contain only the host; plugins keep their
 own versions. Krabb downloads and verifies the release and runs the new host
 once before changing anything. Every official plugin moves to the newest version
 the new host supports, in the same transaction, unless it still loads and is

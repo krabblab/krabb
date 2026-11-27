@@ -29,7 +29,11 @@ const DETACHED_LIMIT: u64 = 64 * 1024;
 
 #[derive(Debug, Args)]
 pub(super) struct Options {
-    #[arg(value_name = "VERSION", help = "Release to install, by default the latest stable one.")]
+    #[arg(
+        value_name = "VERSION",
+        help = "Release to install, by default the latest one, or the latest pre-release on a \
+                pre-release."
+    )]
     version: Option<String>,
     #[arg(long, conflicts_with = "version", help = "Restore the retained recovery point.")]
     rollback: bool,
