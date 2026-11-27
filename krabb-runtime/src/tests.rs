@@ -13850,3 +13850,26 @@ fn list_items_take_the_runtime_state_unless_the_binary_is_gone() {
     assert!(gone.get("reason").is_none());
     assert_eq!(super::status::listed(item("stray"), &states, true)["health"], "installed");
 }
+
+#[test]
+fn restarts_go_through_the_service_only_for_the_home_it_runs() {
+    let root = test_root("service-serves");
+    let other = root.join("other");
+    let service = root.join("units/krabb.service");
+
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(service.parent().unwrap()).unwrap();
+
+    assert!(!super::serves(&service, &root));
+
+    let environment = [("KRABB_HOME".to_owned(), root.display().to_string())];
+
+    std::fs::write(&service, super::service_text(Path::new("/usr/local/bin/krabb"), &environment))
+        .unwrap();
+
+    assert!(super::serves(&service, &root));
+
+    assert!(!super::serves(&service, &other));
+
+    let _ = std::fs::remove_dir_all(root);
+}

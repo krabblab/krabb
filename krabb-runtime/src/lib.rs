@@ -2444,14 +2444,28 @@ async fn config_command(
     Ok(())
 }
 
-fn service_managed() -> Result<bool, PluginError> {
-    Ok(service_path().is_file() && service_manager_state()? == ServiceState::Active)
+/// Whether the active installed service runs the daemon of ROOT rather than another home.
+fn service_managed(root: &Path) -> Result<bool, PluginError> {
+    let service = service_path();
+
+    Ok(service.is_file()
+        && serves(&service, root)
+        && service_manager_state()? == ServiceState::Active)
+}
+
+/// Whether the service definition at SERVICE sets `KRABB_HOME` to ROOT.
+fn serves(service: &Path, root: &Path) -> bool {
+    let same = |home: &str| std::fs::canonicalize(home).ok() == std::fs::canonicalize(root).ok();
+
+    definition::environment(service).is_some_and(|environment| {
+        environment.iter().any(|(name, value)| name == "KRABB_HOME" && same(value))
+    })
 }
 
 /// Restarts the daemon through its service manager, which starts the new process even when
 /// the caller is the daemon itself. Returns false when no active service manages it.
-fn restart_service() -> Result<bool, PluginError> {
-    if !service_managed()? {
+fn restart_service(root: &Path) -> Result<bool, PluginError> {
+    if !service_managed(root)? {
         return Ok(false);
     }
 
@@ -2483,7 +2497,7 @@ fn restart_service() -> Result<bool, PluginError> {
 }
 
 async fn restart_daemon(root: &Path) -> Result<bool, PluginError> {
-    if restart_service()? {
+    if restart_service(root)? {
         return Ok(true);
     }
 
