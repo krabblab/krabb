@@ -49,6 +49,10 @@ pub struct Emitter {
     streams: Arc<SyncMutex<BTreeMap<u64, mpsc::UnboundedSender<Value>>>>,
 }
 
+/// How long a plugin waits for the host to answer one call. A tool call can wait for a person
+/// to approve it, and the host keeps an approval open for five minutes.
+pub const HOST_CALL_LIMIT: Duration = Duration::from_secs(330);
+
 impl Emitter {
     pub fn new(output: mpsc::Sender<Value>) -> Self {
         Self {
@@ -127,7 +131,7 @@ impl Emitter {
 
         registration.sent = true;
 
-        let result = timeout(Duration::from_secs(120), async {
+        let result = timeout(HOST_CALL_LIMIT, async {
             loop {
                 tokio::select! {
                     response = &mut receiver => {
