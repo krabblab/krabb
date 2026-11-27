@@ -2290,6 +2290,21 @@ async fn control_at(
 
 /// Saves one configuration value without disturbing the rest of the file, and rejects a
 /// result the host could not load.
+/// Reads a `config set` value as TOML, and a plain word such as `prompt` as text, so the
+/// command reads as naturally as the configuration file without shell quoting.
+fn setting_value(raw: &str) -> Result<toml_edit::Value, toml_edit::TomlError> {
+    let raw = raw.trim();
+    let word = !raw.is_empty()
+        && raw
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character));
+
+    match raw.parse::<toml_edit::Value>() {
+        Err(_) if word => Ok(toml_edit::Value::from(raw)),
+        parsed => parsed,
+    }
+}
+
 fn save_setting(root: &Path, key: &str, value: toml_edit::Value) -> Result<Config, PluginError> {
     let path = root.join("config.toml");
     let text = load_config_text(root)?.ok_or("Configuration was not found.")?;
@@ -2371,8 +2386,7 @@ async fn config_command(
                 key => key,
             };
 
-            let raw_value = raw_value.trim();
-            let value = raw_value.parse::<toml_edit::Value>()?;
+            let value = setting_value(raw_value)?;
             let config = save_setting(root, key, value)?;
 
             let selection = selection::reloadable(key);

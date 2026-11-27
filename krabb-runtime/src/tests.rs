@@ -13880,3 +13880,12 @@ fn restarts_go_through_the_service_only_for_the_home_it_runs() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn config_values_accept_plain_words_as_text() {
+    assert_eq!(super::setting_value("prompt").unwrap().as_str(), Some("prompt"));
+    assert_eq!(super::setting_value("\"auto\"").unwrap().as_str(), Some("auto"));
+    assert_eq!(super::setting_value("true").unwrap().as_bool(), Some(true));
+    assert_eq!(super::setting_value("42").unwrap().as_integer(), Some(42));
+    assert!(super::setting_value("two words").is_err());
+}

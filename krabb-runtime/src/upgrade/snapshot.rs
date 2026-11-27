@@ -247,8 +247,9 @@ pub(super) async fn rollback(
         eprintln!("Restoring Krabb {}...", point.from);
     }
 
-    // The service comes back as it runs now, which may differ from when the update ran.
-    point.service = service.is_file() && running()?;
+    // A rollback often follows a new daemon that cannot start, so the service may look stopped
+    // now although it ran before the update; it comes back if it ran then or runs now.
+    point.service = point.service || (service.is_file() && running()?);
     restore(root, &point, service, json).await?;
 
     if json {

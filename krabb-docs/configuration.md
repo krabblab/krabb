@@ -15,8 +15,8 @@ Read or change settings without opening the TOML file with `krabb config get`
 and `krabb config set KEY=VALUE`. For example, turn off TUI workspace tools with
 `krabb config set clients.tui=false` (the long form is
 `krabb config set clients.tui.tools=false`). TOML values use normal TOML syntax,
-such as `krabb config set 'approval="prompt"'` or
-`krabb config set 'channels.telegram.allow=["123"]'`. The command
+such as `krabb config set 'channels.telegram.allow=["123"]'`, and a plain word is
+saved as text, so `krabb config set approval=prompt` works without quotes. The command
 validates the complete config before saving and preserves existing comments.
 Global/channel `provider` and `model` settings apply to new channel turns without
 restarting the daemon. The TUI tools switch applies immediately to new TUI turns;
