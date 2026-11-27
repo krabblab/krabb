@@ -1265,6 +1265,8 @@ async fn run_terminal_command(
 ) -> io::Result<String> {
     let mut process = terminal_shell(command)?;
 
+    strip_secrets(&mut process, std::env::vars_os().map(|(name, _)| name));
+
     #[cfg(windows)]
     let process_job = krabb_process::TerminalJob::new()?;
 
@@ -1414,6 +1416,27 @@ impl Drop for TerminalContainment {
             let _ = rustix::process::kill_process_group(process_id, rustix::process::Signal::KILL);
         }
     }
+}
+
+fn strip_secrets(
+    process: &mut tokio::process::Command,
+    names: impl IntoIterator<Item = std::ffi::OsString>,
+) {
+    for name in names {
+        if name.to_str().is_some_and(secret_variable) {
+            process.env_remove(name);
+        }
+    }
+}
+
+fn secret_variable(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+
+    let suffix = ["_TOKEN", "_KEY", "_SECRET"].iter().any(|suffix| name.ends_with(suffix));
+
+    super::service::SERVICE_SECRETS.contains(&name.as_str())
+        || name == "KRABB_CREDENTIALS_KEY"
+        || (name.starts_with("KRABB_") && suffix)
 }
 
 async fn terminate_terminal_process(
@@ -3075,6 +3098,47 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
 
         assert!(!continued, "background descendant continued after successful command");
+    }
+
+    #[test]
+    fn terminal_commands_drop_credential_variables() {
+        for name in [
+            "KRABB_TELEGRAM_TOKEN",
+            "KRABB_WHATSAPP_VERIFY",
+            "KRABB_SIGNAL_ACCOUNT",
+            "KRABB_CREDENTIALS_KEY",
+            "KRABB_EXAMPLE_TOKEN",
+            "krabb_example_key",
+            "KRABB_EXAMPLE_SECRET",
+        ] {
+            assert!(super::secret_variable(name), "{name} should be removed");
+        }
+
+        for name in ["PATH", "HOME", "KRABB_HOME", "KRABB_MODEL", "GITHUB_TOKEN"] {
+            assert!(!super::secret_variable(name), "{name} should be kept");
+        }
+
+        let mut process = tokio::process::Command::new("sh");
+
+        process.env("KRABB_EXAMPLE_TOKEN", "secret").env("KRABB_MODEL", "default");
+
+        super::strip_secrets(
+            &mut process,
+            ["KRABB_EXAMPLE_TOKEN", "KRABB_MODEL", "KRABB_SLACK_BOT_TOKEN"].map(Into::into),
+        );
+
+        let environment = process
+            .as_std()
+            .get_envs()
+            .map(|(name, value)| (name.to_owned(), value.map(ToOwned::to_owned)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(environment[std::ffi::OsStr::new("KRABB_EXAMPLE_TOKEN")], None);
+        assert_eq!(environment[std::ffi::OsStr::new("KRABB_SLACK_BOT_TOKEN")], None);
+        assert_eq!(
+            environment[std::ffi::OsStr::new("KRABB_MODEL")],
+            Some(std::ffi::OsString::from("default"))
+        );
     }
 
     #[cfg(unix)]
