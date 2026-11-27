@@ -301,6 +301,7 @@ fn staging_verifies_the_host_and_moves_plugins_it_cannot_load() {
     let error = stage::readable(&home, &mut staged, &migrating).unwrap_err().to_string();
 
     assert!(error.contains("older than the installed schema 3"), "{error}");
+    assert!(error.ends_with("Uninstall it with `krabb plugin uninstall echo` before updating."));
 
     drop(staged);
 

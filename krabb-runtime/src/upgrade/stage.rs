@@ -249,7 +249,15 @@ pub(super) fn readable(root: &Path, staged: &mut Staged, lock: &Lock) -> Result<
     for (id, manifest) in &staged.manifests {
         let entry = lock.plugins.get(id);
 
-        if let Some(migration) = crate::updates::state::check(root, entry, manifest)? {
+        let migration = crate::updates::state::check(root, entry, manifest).map_err(|error| {
+            if error.lines().last().is_some_and(crate::acts) {
+                return error;
+            }
+
+            format!("{error}\nUninstall it with `krabb plugin uninstall {id}` before updating.")
+        })?;
+
+        if let Some(migration) = migration {
             staged.migrations.insert(id.clone(), migration);
         }
     }
