@@ -13,8 +13,15 @@ publish DIST REGISTRY SOURCE
     Push each of those versions from DIST, rebuild the index, and confirm that anonymous
     clients can pull it. Published versions are never changed.
 
-ids REGISTRY
-    Print the IDs of the plugins in the published index of REGISTRY, as a JSON array.
+ids REGISTRY|file://INDEX
+    Print the IDs of the plugins in the published index of REGISTRY, or in a local index
+    file, as a JSON array.
+
+local DIST TARGET OUT REGISTRY
+    Write OUT/index.json and its OUT/blobs for TARGET: the plugin versions DIST holds
+    archives for, plus the published versions of REGISTRY a host can choose instead, so
+    KRABB_PLUGIN_INDEX can install this build's plugins before they are published. Prints
+    the KRABB_PLUGIN_INDEX location.
 
 index REGISTRY
     Rebuild the index from the tags in REGISTRY, and push it when it changed.
@@ -34,6 +41,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -63,14 +71,8 @@ SECRETS = 'io.github.krabblab.plugin.secrets'
 WITHDRAWN = 'io.github.krabblab.plugin.withdrawn'
 KRABB = 'io.github.krabblab.plugin.krabb'
 
-TARGETS = {
-    'x86_64-unknown-linux-gnu': 'tar.gz',
-    'aarch64-unknown-linux-gnu': 'tar.gz',
-    'x86_64-apple-darwin': 'tar.gz',
-    'aarch64-apple-darwin': 'tar.gz',
-    'x86_64-pc-windows-msvc': 'zip',
-    'aarch64-pc-windows-msvc': 'zip',
-}
+TARGETS = {item['target']: item['archive']
+           for item in json.loads((ROOT / 'krabb-scripts/targets.json').read_text())}
 
 MEDIA = {'tar.gz': 'application/gzip', 'zip': 'application/zip'}
 ID = re.compile(r'^[a-z0-9-]+$')
@@ -129,14 +131,15 @@ class Registry:
 
         return token
 
-    def get(self, path, accept=None):
-        """The JSON document at `path`, its headers, or None when it does not exist."""
+    def get(self, path, accept=None, limit=None):
+        """The JSON document at `path`, or its bytes up to `limit`, with its headers; None
+        when it does not exist."""
 
         if self.bearer is None:
             self.bearer = self.authorize()
 
         try:
-            return self.request(path, accept)
+            return self.request(path, accept, limit)
         except urllib.error.HTTPError as error:
             if error.code != 401:
                 raise Failure(f'The registry {self.reference} answered {error.code} for {path}.')
@@ -144,11 +147,11 @@ class Registry:
         self.bearer = self.authorize()
 
         try:
-            return self.request(path, accept)
+            return self.request(path, accept, limit)
         except urllib.error.HTTPError as error:
             raise Failure(f'The registry {self.reference} answered {error.code} for {path}.')
 
-    def request(self, path, accept):
+    def request(self, path, accept, limit=None):
         """One request with the current token; a missing document is (None, None)."""
 
         headers = {'Authorization': f'Bearer {self.bearer}'}
@@ -162,7 +165,7 @@ class Registry:
 
         try:
             with opener.open(request, timeout=30) as response:
-                return json.loads(response.read(DOCUMENT_LIMIT)), response.headers
+                return body(response, limit), response.headers
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return None, None
@@ -174,14 +177,14 @@ class Registry:
         except (OSError, ValueError) as error:
             raise Failure(f'The registry {self.reference} is unreachable: {error}.') from error
 
-        return self.stored(urllib.parse.urljoin(url, location))
+        return self.stored(urllib.parse.urljoin(url, location), limit)
 
-    def stored(self, url):
+    def stored(self, url, limit=None):
         """A blob from the storage host a registry redirected to, fetched without the token."""
 
         try:
             with urllib.request.urlopen(url, timeout=30) as response:
-                return json.loads(response.read(DOCUMENT_LIMIT)), response.headers
+                return body(response, limit), response.headers
         except (OSError, ValueError) as error:
             raise Failure(f'The registry {self.reference} is unreachable: {error}.') from error
 
@@ -212,6 +215,26 @@ class Registry:
             return None
 
         return self.get(f'/v2/{self.repository}/blobs/{digest}')[0]
+
+    def archive(self, digest, size, path):
+        """Saves the archive blob with DIGEST to PATH after checking its size and digest."""
+
+        content = self.get(f'/v2/{self.repository}/blobs/sha256:{digest}', limit=size + 1)[0]
+
+        if content is None or len(content) != size or \
+                hashlib.sha256(content).hexdigest() != digest:
+            raise Failure(f'The registry {self.reference} served a damaged blob {digest}.')
+
+        path.write_bytes(content)
+
+
+def body(response, limit):
+    """A response's JSON document, or its raw bytes up to LIMIT when one is given."""
+
+    if limit is None:
+        return json.loads(response.read(DOCUMENT_LIMIT))
+
+    return response.read(limit)
 
 
 def manifests(root=ROOT):
@@ -403,8 +426,8 @@ def document(registry):
     return content, hashlib.sha256(content).hexdigest(), count, foreign
 
 
-def ids(registry):
-    """The IDs of the plugins the published index lists, sorted."""
+def published(registry):
+    """The published index document of REGISTRY."""
 
     manifest = registry.manifest(INDEX_TAG)
     layers = (manifest or {}).get('layers') or [{}]
@@ -412,6 +435,153 @@ def ids(registry):
 
     if not isinstance(value, dict) or not isinstance(value.get('plugins'), dict):
         raise Failure(f'The registry {registry.reference} has no readable plugin index.')
+
+    return value
+
+
+def ids(registry):
+    """The IDs of the plugins the published index lists, sorted."""
+
+    return sorted(published(registry)['plugins'])
+
+
+def stable(version):
+    return '-' not in version
+
+
+def order(version):
+    """A sort key that puts a pre-release before its release, as Krabb compares them."""
+
+    core, _, suffix = version.partition('-')
+    parts = [int(part) for part in re.split(r'[.+]', core)[:3]]
+
+    tail = [(0, int(part), '') if part.isdigit() else (1, 0, part)
+            for part in suffix.split('.')] if suffix else []
+
+    return parts, not suffix, tail
+
+
+def choices(entries, target):
+    """The versions a host may choose for TARGET: the newest one and the newest stable one,
+    each with and without a minimum Krabb version."""
+
+    usable = [entry for entry in entries
+              if not entry.get('yanked') and target in entry.get('artifacts', {})]
+
+    chosen = []
+
+    for pool in [usable, [entry for entry in usable if 'krabb' not in entry]]:
+        for candidates in [pool, [entry for entry in pool if stable(entry['version'])]]:
+            if candidates:
+                newest = max(candidates, key=lambda entry: order(entry['version']))
+
+                if newest not in chosen:
+                    chosen.append(newest)
+
+    return sorted(chosen, key=lambda entry: order(entry['version']))
+
+
+def built(dist, manifest, target, blobs, released):
+    """The index entry for the archive DIST holds for MANIFEST and TARGET, stored in BLOBS,
+    or None when DIST has none."""
+
+    plugin = manifest['id']
+    version = manifest['version']
+    path = dist / f'krabb-{plugin}-v{version}-{target}.{TARGETS[target]}'
+
+    if not path.is_file():
+        return None
+
+    if path.stat().st_size > ARCHIVE_LIMIT:
+        raise Failure(f'Plugin {plugin} {version} has a {target} archive over 64 MiB.')
+
+    sha256 = digest(path)
+    protocol = manifest['protocol']
+
+    shutil.copyfile(path, blobs / sha256)
+
+    entry = {
+        'version': version,
+        'protocol': {'major': int(protocol['major']), 'minor': int(protocol['minor'])},
+        'released': released,
+        'permissions': list(manifest.get('permissions', [])),
+        'secrets': list(manifest.get('secrets', [])),
+        'artifacts': {target: {'sha256': sha256, 'size': path.stat().st_size}},
+    }
+
+    if 'krabb' in manifest:
+        entry['krabb'] = str(manifest['krabb'])
+
+    return entry
+
+
+def local(dist, target, out, registry, root=ROOT, now=None):
+    """Writes a local index for TARGET with DIST's plugin versions and the published ones
+    a host may choose instead, and returns its KRABB_PLUGIN_INDEX location."""
+
+    if target not in TARGETS:
+        raise Failure(f'Target {target} is not a published target.')
+
+    out = out.resolve()
+    blobs = out / 'blobs' / 'sha256'
+    released = (now or datetime.datetime.now(datetime.timezone.utc)).strftime('%Y-%m-%d')
+    plugins = published(registry)['plugins']
+    found = {}
+    fetched = []
+
+    blobs.mkdir(parents=True, exist_ok=True)
+
+    for plugin, manifest in manifests(root).items():
+        entry = built(dist, manifest, target, blobs, released)
+
+        if entry is None:
+            continue
+
+        found[plugin] = [entry]
+
+        print(f"[INFO] Indexed {plugin} {entry['version']} from {dist}.", file=sys.stderr)
+
+    for plugin, entries in plugins.items():
+        own = found.setdefault(plugin, [])
+        newest = order(own[0]['version']) if own else None
+
+        # Older published versions stay choosable for hosts the new build does not fit.
+        for entry in choices(entries, target):
+            if newest is not None and order(entry['version']) >= newest:
+                continue
+
+            artifact = entry['artifacts'][target]
+
+            own.append({**entry, 'artifacts': {target: artifact}})
+            fetched.append(artifact)
+
+    def save(artifact):
+        path = blobs / artifact['sha256']
+
+        if not (path.is_file() and digest(path) == artifact['sha256']):
+            registry.archive(artifact['sha256'], artifact['size'], path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(save, fetched))
+
+    value = {'schema': SCHEMA, 'registry': f'file://{out.as_posix()}',
+             'plugins': {plugin: found[plugin] for plugin in sorted(found)}}
+
+    (out / 'index.json').write_text(json.dumps(value, indent=2) + '\n')
+
+    return f"file://{(out / 'index.json').as_posix()}"
+
+
+def listed(location):
+    """The IDs of the plugins a local index file lists, sorted."""
+
+    try:
+        value = json.loads(Path(location.removeprefix('file://')).read_text())
+    except (OSError, ValueError) as error:
+        raise Failure(f'The plugin index {location} is unreadable: {error}.') from error
+
+    if not isinstance(value, dict) or not isinstance(value.get('plugins'), dict):
+        raise Failure(f'The plugin index {location} lists no plugins.')
 
     return sorted(value['plugins'])
 
@@ -556,8 +726,12 @@ def main(arguments):
                 print(' '.join(unpublished(Registry(registry), manifests())))
             case ['publish', dist, registry, source]:
                 publish(Path(dist), registry, source)
+            case ['ids', location] if location.startswith('file://'):
+                print(json.dumps(listed(location), separators=(',', ':')))
             case ['ids', registry]:
                 print(json.dumps(ids(Registry(registry)), separators=(',', ':')))
+            case ['local', dist, target, out, registry]:
+                print(local(Path(dist), target, Path(out), Registry(registry)))
             case ['index', registry]:
                 index(Registry(registry))
             case ['withdraw', registry, plugin, version, reason]:
