@@ -325,7 +325,11 @@ async fn generate_on(
                 "approvalPolicy": "on-request",
                 "sandbox": "read-only",
                 "dynamicTools": tools,
-                "developerInstructions": developer_instructions(&tool_guidance, &instructions),
+                "developerInstructions": developer_instructions(
+                    &tool_guidance,
+                    &instructions,
+                    summarized(&input.messages)
+                ),
                 "config": {
                     "web_search": if input.generation.is_none_or(|value| value.search && !value.summary) { "live" } else { "disabled" },
                     "features": {
@@ -391,22 +395,32 @@ async fn generate_on(
 }
 
 const AUTHORITY: &str = "Codex's own sandbox and shell settings do not limit Krabb's tools; \
-                         Krabb's permission summary in these instructions is authoritative for \
-                         what this conversation may do.";
+                         Krabb's permission summary in these instructions is authoritative \
+                         about which Krabb tools are available.";
 
-fn developer_instructions(tool_guidance: &str, instructions: &str) -> String {
-    format!("{AUTHORITY}\n\n{tool_guidance}\n\n{instructions}")
+fn summarized(messages: &[Message]) -> bool {
+    messages.iter().any(|message| {
+        message.role == Role::System && message.id == krabb_core::context::PERMISSIONS
+    })
+}
+
+fn developer_instructions(tool_guidance: &str, instructions: &str, summary: bool) -> String {
+    if summary {
+        format!("{AUTHORITY}\n\n{tool_guidance}\n\n{instructions}")
+    } else {
+        format!("{tool_guidance}\n\n{instructions}")
+    }
 }
 
 fn tool_guidance(tools: &[ToolSpec]) -> String {
     if tools.is_empty() {
-        return "Workspace tools are unavailable. Say so for workspace tasks; don't claim access or tool failures, and don't suggest shell instead.".into();
+        return "Workspace tools are unavailable. Say so for workspace tasks; don't claim access or tool failures, and don't suggest Codex's shell instead.".into();
     }
 
     let names = tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>().join(", ");
 
     format!(
-        "Available Krabb tools: {names}. Use workspace-relative paths inside the active workspace. Use relevant tools for workspace tasks; say a tool is unavailable only after an error. Make one mutating call at a time and wait for its result. Report failures; don't retry unchanged. Never claim success without confirmation or repeat confirmed work through another tool. Don't suggest shell as a substitute."
+        "Available Krabb tools: {names}. Use workspace-relative paths inside the active workspace. Use relevant tools for workspace tasks; say a tool is unavailable only after an error. Make one mutating call at a time and wait for its result. Report failures; don't retry unchanged. Never claim success without confirmation or repeat confirmed work through another tool. Don't suggest Codex's shell as a substitute."
     )
 }
 
@@ -1264,14 +1278,33 @@ mod tests {
 
     #[test]
     fn defers_to_krabb_permissions_over_the_codex_sandbox() {
-        let text = super::developer_instructions("Available Krabb tools: read.", "Be brief.");
+        let summary = Message {
+            id: krabb_core::context::PERMISSIONS.into(),
+            session: "chat".into(),
+            role: Role::System,
+            sender: None,
+            content: vec![Content::Text { text: "What this conversation may do.".into() }],
+        };
+
+        let user = Message { id: "user".into(), role: Role::User, ..summary.clone() };
+
+        assert!(super::summarized(&[user.clone(), summary]));
+        assert!(!super::summarized(&[user]));
+
+        let text = super::developer_instructions("Available Krabb tools: read.", "Be brief.", true);
 
         assert!(text.starts_with(
             "Codex's own sandbox and shell settings do not limit Krabb's tools; Krabb's \
-             permission summary in these instructions is authoritative"
+             permission summary in these instructions is authoritative about which Krabb tools \
+             are available."
         ));
 
         assert!(text.ends_with("\n\nAvailable Krabb tools: read.\n\nBe brief."));
+
+        let text =
+            super::developer_instructions("Available Krabb tools: read.", "Be brief.", false);
+
+        assert_eq!(text, "Available Krabb tools: read.\n\nBe brief.");
     }
 
     #[test]
@@ -1286,7 +1319,7 @@ mod tests {
         assert!(guidance.contains("wait for its result"));
         assert!(guidance.contains("don't retry unchanged"));
         assert!(guidance.contains("repeat confirmed work through another tool"));
-        assert!(guidance.contains("shell as a substitute"));
+        assert!(guidance.contains("Codex's shell as a substitute"));
 
         let no_tools = tool_guidance(&[]);
 
