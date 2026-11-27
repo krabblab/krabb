@@ -37,10 +37,10 @@ impl Approval {
         Ok(())
     }
 
-    fn notice(&self) -> String {
+    fn notice(&self, task: &str) -> String {
         format!(
-            "Approval needed before running {}: {}\nReply \"approve\" or \"deny\" in this \
-                conversation. Nothing runs until you decide.",
+            "Approval needed before running {}: {}\nNothing runs until you decide.\n\
+                Reply `/task approve {task}` or `/task deny {task}` in this conversation.",
             self.tool, self.text
         )
     }
@@ -233,7 +233,7 @@ impl Store {
         {
             task.notice = Some(Notice {
                 id: format!("{}-{}", approval.id, task.revision),
-                text: approval.notice(),
+                text: approval.notice(&task.id),
                 model: false,
             });
         }

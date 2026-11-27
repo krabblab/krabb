@@ -192,13 +192,15 @@ Approval modes are:
   and includes the host-selected workspace. The proposed action is also saved
   with its task. If the button expires, the turn is interrupted, or the daemon
   restarts, the task waits for a decision instead of running again. Reply
-  `approve` or `deny` in the original conversation; the decision has no expiry,
+  `/task approve <id>` or `/task deny <id>` with the task id from the notice in
+  the original conversation; the decision has no expiry,
   survives restart, and runs the saved action at most once.
 - `auto`: Permit mutating tool calls without an interactive confirmation.
 
-Use `prompt` for interactive Telegram and Discord channels. Use `auto` only
-when the configured channel policy is trusted to run workspace mutations
-without a person confirming each request.
+Use `prompt` for interactive Telegram and Discord channels. Slack, Signal, and
+WhatsApp cannot show approval prompts, so under `prompt` they run no mutating tool.
+Use `auto` only when the configured channel policy is trusted to run workspace
+mutations without a person confirming each request.
 
 ## Provider And Model Precedence
 
