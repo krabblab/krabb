@@ -413,3 +413,28 @@ async fn codex_skips_setup_and_other_providers_need_no_sign_in() {
     assert!(matches!(guide.sign_in("openai").await.unwrap(), Flow::Next));
     assert!(guide.spaced);
 }
+
+#[test]
+fn a_saved_approval_off_blocks_only_a_tui_without_its_own_mode() {
+    let parse = |text: &str| toml::from_str::<crate::Config>(text).unwrap();
+
+    assert!(approval_blocks_tui(&parse("approval = 'off'\n")));
+    assert!(!approval_blocks_tui(&parse("approval = 'prompt'\n")));
+    assert!(!approval_blocks_tui(&parse("approval = 'off'\n[clients.tui]\napproval = 'off'\n")));
+    assert!(!approval_blocks_tui(&parse("approval = 'off'\n[clients.tui]\ntools = false\n")));
+}
+
+#[test]
+fn without_a_terminal_a_blocked_tui_keeps_its_saved_approval() {
+    let root = crate::tests::test_root("onboard-tui-approval");
+
+    let mut guide = guide(root.clone());
+
+    guide.home().unwrap();
+    crate::save_setting(&root, "approval", "off".into()).unwrap();
+
+    assert!(matches!(guide.tui_approval().unwrap(), Flow::Next));
+    assert!(approval_blocks_tui(&crate::load_config_at(&root).unwrap()));
+
+    let _ = std::fs::remove_dir_all(root);
+}

@@ -676,6 +676,12 @@ skipped when you run every step, and offers a change when you name it. Without a
 terminal, `krabb init` creates only the home, and `--provider` and `--channel` answer
 their steps, as in `krabb init --provider ollama --channel none service`.
 
+When the terminal is a place to talk but a home made before 0.1.0-rc.5 saved
+`approval = "off"`, which refuses every change the terminal's tools try, the `channel`
+step asks whether your Krabb should ask before it makes changes from the terminal and
+saves the answer as `clients.tui.approval`. Without a terminal, it prints the command
+that turns approvals on. A `clients.tui.approval` you set stays as it is.
+
 The `provider` step then asks for a model. A provider that lists its models, such as
 Codex, offers its first 20 as choices, plus one to type another name; otherwise type a
 model name. Enter keeps the model you chose before for the same provider, or the

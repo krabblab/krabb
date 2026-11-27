@@ -66,6 +66,9 @@ const PLACES: [Offer; 6] = [
 ];
 
 /// Plugins a place installs with it, without a question, so its first chat can already act.
+const TUI_APPROVAL_FIX: &str = "The terminal makes no changes, so let it ask first with \
+     `krabb config set 'clients.tui.approval=\"prompt\"' --force`.";
+
 const TERMINAL: [Offer; 1] = [offer("Tools", "tools")];
 
 const YES_LATER: [&str; 2] = ["Yes", "Not now"];
@@ -606,6 +609,10 @@ impl Guide {
                 self.add_companions(place).await?;
             }
 
+            if places.iter().any(|place| place == crate::client::TUI) {
+                return self.tui_approval();
+            }
+
             return Ok(Flow::Next);
         }
 
@@ -636,6 +643,44 @@ impl Guide {
         }
 
         self.add_companions(offer.id).await?;
+
+        if offer.id == crate::client::TUI {
+            return self.tui_approval();
+        }
+
+        Ok(Flow::Next)
+    }
+
+    /// Asks whether the TUI asks before changes when a home from before rc.5 saved
+    /// `approval = "off"`, which refuses every change the TUI's tools try. Without a terminal it
+    /// prints the fix instead. A TUI approval mode of its own is the owner's choice and stays.
+    fn tui_approval(&mut self) -> Result<Flow, Error> {
+        if !approval_blocks_tui(&crate::load_config_at(&self.root)?) {
+            return Ok(Flow::Next);
+        }
+
+        if !self.interactive {
+            self.note(TUI_APPROVAL_FIX);
+            return Ok(Flow::Next);
+        }
+
+        let mode = match self.ask(
+            "Should your Krabb ask before it makes changes from the terminal?",
+            &["Ask first", "Make no changes"],
+        )? {
+            None => return Ok(Flow::Stop),
+            Some(0) => "prompt",
+            Some(_) => "off",
+        };
+
+        crate::save_setting(&self.root, "clients.tui.approval", mode.into())?;
+
+        if mode == "prompt" {
+            self.done("Your Krabb asks before it makes changes from the terminal.");
+        } else {
+            self.note(TUI_APPROVAL_FIX);
+        }
+
         Ok(Flow::Next)
     }
 
@@ -1092,6 +1137,13 @@ fn installed(root: &Path, capability: &str) -> Result<Vec<String>, Error> {
         .filter(|(_, entry)| entry.capabilities.iter().any(|item| item == capability))
         .map(|(id, _)| id.clone())
         .collect())
+}
+
+/// Whether the TUI has tools but the home's saved approval mode refuses every change they try.
+fn approval_blocks_tui(config: &crate::Config) -> bool {
+    let own = config.clients.get(crate::client::TUI).and_then(|client| client.approval.as_deref());
+
+    config.client_tools(crate::client::TUI) && own.is_none() && config.approval == "off"
 }
 
 #[cfg(test)]
