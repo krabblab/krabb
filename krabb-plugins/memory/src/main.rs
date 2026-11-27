@@ -163,15 +163,7 @@ fn call(items: &Arc<Mutex<State>>, request: Request) -> krabb_core::Result<Optio
         )?;
         let location = directory.join("index.json");
 
-        if !location.exists() {
-            let scope = params["params"]["scope"].as_str().ok_or_else(|| {
-                krabb_core::Error::Denied("Scoped memory requires a conversation scope.".into())
-            })?;
-            let mut inherited = load_at(path()?.as_deref())?.lock().unwrap().clone();
-            inherited.items.retain(|_, entry| entry.scope == scope);
-            inherited.audit.retain(|entry| entry.scope == scope);
-            persist_at(Some(&location), &inherited)?;
-        }
+        seed(&location, &params["params"])?;
 
         return call_at(
             &Arc::new(Mutex::new(State::default())),
@@ -181,6 +173,25 @@ fn call(items: &Arc<Mutex<State>>, request: Request) -> krabb_core::Result<Optio
     }
 
     call_at(items, request, path()?.as_deref())
+}
+
+/// Copies the conversation's global memories into a new scoped index, under its lock.
+fn seed(location: &Path, params: &serde_json::Value) -> krabb_core::Result<()> {
+    let _lock = lock(location)?;
+
+    if location.exists() {
+        return Ok(());
+    }
+
+    let scope = params["scope"].as_str().ok_or_else(|| {
+        krabb_core::Error::Denied("Scoped memory requires a conversation scope.".into())
+    })?;
+
+    let mut inherited = load_at(path()?.as_deref())?.lock().unwrap().clone();
+
+    inherited.items.retain(|_, entry| entry.scope == scope);
+    inherited.audit.retain(|entry| entry.scope == scope);
+    persist_at(Some(location), &inherited)
 }
 
 fn call_at(
@@ -1587,6 +1598,30 @@ mod tests {
     use krabb_core::types::Request;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn scoped_seeding_waits_for_the_index_lock() {
+        let root = std::env::temp_dir().join(format!("krabb-memory-seed-{}", std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let index = root.join("index.json");
+        let guard = super::lock(&index).unwrap();
+        let path = index.clone();
+
+        let seeding = std::thread::spawn(move || super::seed(&path, &json!({"scope": "s"})));
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        assert!(!seeding.is_finished());
+        assert!(!index.exists());
+
+        drop(guard);
+        seeding.join().unwrap().unwrap();
+
+        assert!(index.is_file());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn independent_clients_reload_reads_writes_and_deletions() {

@@ -1,5 +1,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod program;
+pub use program::program;
+
 #[cfg(unix)]
 mod session;
 #[cfg(unix)]

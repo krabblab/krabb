@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 krabb-log.workspace = true
 krabb-core = { path = "../../krabb-core" }
+krabb-process = { path = "../../krabb-libs/process" }
 futures-util.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

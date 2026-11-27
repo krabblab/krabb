@@ -400,6 +400,7 @@ fn tool_specs(shell_enabled: bool) -> Vec<ToolSpec> {
 
 fn command_output(output: &std::process::Output) -> serde_json::Value {
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
     let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let mut truncated = false;
 
@@ -2269,6 +2270,7 @@ mod tests {
 
         let sandbox = Sandbox { runtime: "docker".into(), image: "local/tool:latest".into() };
         let process = sandbox.process("true", &root, &root.join("id")).unwrap();
+
         let args = process
             .as_std()
             .get_args()
@@ -2973,6 +2975,7 @@ mod tests {
         assert!(!marker.exists());
 
         let outside = test_root("krabb-tools-outside").join("elsewhere");
+
         let added = git(&["worktree".into(), "add".into(), outside.display().to_string()], &root)
             .await
             .unwrap();
