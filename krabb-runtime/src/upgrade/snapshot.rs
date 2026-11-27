@@ -205,7 +205,7 @@ pub(super) async fn rollback(
     yes: bool,
     json: bool,
 ) -> Result<(), PluginError> {
-    let Some(point) = load(root)? else {
+    let Some(mut point) = load(root)? else {
         return Err(
             "No update recovery point is retained, so there is nothing to roll back.\nCheck the \
              installed version with `krabb status`."
@@ -247,6 +247,8 @@ pub(super) async fn rollback(
         eprintln!("Restoring Krabb {}...", point.from);
     }
 
+    // The service comes back as it runs now, which may differ from when the update ran.
+    point.service = service.is_file() && running()?;
     restore(root, &point, service, json).await?;
 
     if json {
