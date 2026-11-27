@@ -241,7 +241,7 @@ fn ambiguous_times_and_uncertain_actions_cannot_create_an_automatic_resume() {
 async fn due_work_revalidates_revoked_permissions_before_any_provider_execution() {
     let mut fixture = Fixture::new(Principal::Client("desktop".into()));
 
-    fixture.context.config.clients.get_mut("desktop").unwrap().tools = true;
+    fixture.context.config.clients.get_mut("desktop").unwrap().tools = Some(true);
 
     let live = fixture.context.plugins.clients.get("desktop", &fixture.context.config).unwrap();
     let now = unix_seconds();

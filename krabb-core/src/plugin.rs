@@ -49,6 +49,13 @@ pub struct Emitter {
     streams: Arc<SyncMutex<BTreeMap<u64, mpsc::UnboundedSender<Value>>>>,
 }
 
+/// How long a plugin waits for the host to answer one call. A tool call can wait for a person
+/// to approve it, and the host keeps an approval open for five minutes.
+pub const HOST_CALL_LIMIT: Duration = Duration::from_secs(330);
+
+/// How long one agent turn may run, which also bounds a host request made while listening.
+pub const TURN_LIMIT: Duration = Duration::from_secs(300);
+
 impl Emitter {
     pub fn new(output: mpsc::Sender<Value>) -> Self {
         Self {
@@ -127,7 +134,7 @@ impl Emitter {
 
         registration.sent = true;
 
-        let result = timeout(Duration::from_secs(120), async {
+        let result = timeout(HOST_CALL_LIMIT, async {
             loop {
                 tokio::select! {
                     response = &mut receiver => {
@@ -773,6 +780,7 @@ async fn read_frame(input: &mut (impl AsyncBufRead + Unpin), frame: &mut Vec<u8>
     let count = input.take(remaining as u64).read_until(b'\n', frame).await?;
 
     if frame.len() > FRAME {
+        frame.clear();
         return Err(Error::Limit("plugin frame exceeds the size limit".into()));
     }
 
@@ -784,9 +792,10 @@ async fn read_frame(input: &mut (impl AsyncBufRead + Unpin), frame: &mut Vec<u8>
         .into());
     }
 
-    let value = serde_json::from_slice(frame)?;
+    let value = serde_json::from_slice(frame);
+
     frame.clear();
-    Ok(value)
+    Ok(value?)
 }
 
 pub struct Process {
@@ -1223,7 +1232,7 @@ impl Process {
                     }
 
                     if let Some(server_id) = request.id() {
-                        let deadline = received + limit.unwrap_or(Duration::from_secs(120));
+                        let deadline = received + limit.unwrap_or(TURN_LIMIT);
 
                         if tokio::time::Instant::now() >= deadline {
                             jsonl::write(
@@ -2293,6 +2302,36 @@ fn main() {
         ));
 
         assert!(matches!(received.recv().await, Some(super::Incoming::Error(_))));
+    }
+
+    #[tokio::test]
+    async fn recovers_after_malformed_and_oversized_frames() {
+        let (mut writer, reader) = duplex(64 * 1024);
+        let mut input = BufReader::new(reader);
+        let mut frame = Vec::new();
+
+        let writing = tokio::spawn(async move {
+            writer.write_all(b"not json\n").await.unwrap();
+            writer.write_all(&vec![b'x'; super::FRAME + 1]).await.unwrap();
+            writer.write_all(b"\n{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n").await.unwrap();
+        });
+
+        assert!(super::read_frame(&mut input, &mut frame).await.is_err());
+        assert!(frame.is_empty());
+
+        assert!(matches!(
+            super::read_frame(&mut input, &mut frame).await,
+            Err(super::Error::Limit(_))
+        ));
+
+        assert!(frame.is_empty());
+        assert!(super::read_frame(&mut input, &mut frame).await.is_err());
+
+        let value = super::read_frame(&mut input, &mut frame).await.unwrap();
+
+        assert_eq!(value["id"], 2);
+
+        writing.await.unwrap();
     }
 
     #[tokio::test]

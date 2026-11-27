@@ -239,6 +239,7 @@ impl Store {
                     task.notice = Some(Notice {
                         id: format!("{}-event-{}", task.id, task.revision),
                         text: reason.into(),
+                        model: false,
                     });
                 }
 

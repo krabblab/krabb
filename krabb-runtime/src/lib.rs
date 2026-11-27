@@ -186,7 +186,7 @@ const TOOL_CALLS: usize = 16;
 const APPROVAL_ARGUMENT_LIMIT: usize = 512;
 const APPROVAL_SCHEDULE_LIMIT: usize = 1_024;
 const APPROVAL_TEXT_LIMIT: usize = 2_000;
-const TURN_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+const TURN_LIMIT: std::time::Duration = krabb_core::plugin::TURN_LIMIT;
 const TOKEN_LIMIT: u64 = 128_000;
 const ARCHIVE_LIMIT: u64 = 64 * 1024 * 1024;
 const ARCHIVE_EXPANDED: u64 = 256 * 1024 * 1024;
@@ -207,6 +207,7 @@ const MANIFEST_LIMIT: u64 = 1024 * 1024;
 const LOCK_LIMIT: u64 = 8 * 1024 * 1024;
 const COMMAND_TIME: Duration = Duration::from_secs(120);
 const SCHEDULER_CALL_TIME: Duration = Duration::from_secs(10);
+const SCHEDULER_RESTART_FAILURES: u32 = 3;
 const SCHEDULE_CONCURRENCY: usize = 4;
 const SCHEDULE_CALL_RANGE: u64 = 1 << 20;
 type WorkspaceLocks = Arc<AsyncMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>;
@@ -350,6 +351,7 @@ impl Plugins {
 /// A plugin's advertised identity over a process slot that survives restarts and updates.
 pub(crate) struct Live {
     hello: Hello,
+    approvals: bool,
     process: Arc<AsyncMutex<Option<Process>>>,
     turns: Arc<turns::Turns>,
     restart_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -402,6 +404,7 @@ impl Live {
 
         Self {
             hello: process.hello.clone(),
+            approvals: process.approvals,
             process: Arc::new(AsyncMutex::new(Some(process))),
             turns: Arc::default(),
             restart_generation: Arc::default(),
@@ -409,9 +412,10 @@ impl Live {
     }
 
     /// The same slot under a new version, so callers holding this one reach the new process.
-    fn successor(&self, hello: Hello) -> Self {
+    fn successor(&self, hello: Hello, approvals: bool) -> Self {
         Self {
             hello,
+            approvals,
             process: Arc::clone(&self.process),
             turns: Arc::clone(&self.turns),
             restart_generation: Arc::clone(&self.restart_generation),
@@ -1107,7 +1111,7 @@ impl Default for Config {
             name: "Krabb".into(),
             update: "prompt".into(),
             shell: false,
-            approval: "off".into(),
+            approval: "prompt".into(),
             tools: false,
             scheduler: SchedulerConfig::default(),
             inference: inference::Config::default(),
@@ -1143,8 +1147,8 @@ fn skip_missed() -> String {
 struct ClientConfig {
     provider: Option<String>,
     model: Option<String>,
-    #[serde(default)]
-    tools: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tools: Option<bool>,
     shell: Option<bool>,
     #[serde(default = "default_tui_theme")]
     theme: bool,
@@ -1161,7 +1165,7 @@ impl Default for ClientConfig {
         Self {
             provider: None,
             model: None,
-            tools: false,
+            tools: None,
             shell: None,
             theme: true,
             worktree: false,
@@ -1178,6 +1182,10 @@ fn default_tui_theme() -> bool {
 impl Config {
     fn tui_shell(&self) -> bool {
         self.client_shell(client::TUI)
+    }
+
+    fn client_tools(&self, id: &str) -> bool {
+        self.clients.get(id).and_then(|client| client.tools).unwrap_or(id == client::TUI)
     }
 
     fn client_shell(&self, id: &str) -> bool {
@@ -1310,6 +1318,9 @@ struct Manifest {
     /// Whether the plugin answers `check` to test its saved credentials during setup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     check: bool,
+    /// Whether a channel plugin shows `approval` prompts and reports their `callback`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    approvals: bool,
     #[serde(default)]
     commands: Vec<CommandSpec>,
     /// The schema of the plugin's saved state and the older ones it migrates when it starts.
@@ -2279,6 +2290,21 @@ async fn control_at(
 
 /// Saves one configuration value without disturbing the rest of the file, and rejects a
 /// result the host could not load.
+/// Reads a `config set` value as TOML, and a plain word such as `prompt` as text, so the
+/// command reads as naturally as the configuration file without shell quoting.
+fn setting_value(raw: &str) -> Result<toml_edit::Value, toml_edit::TomlError> {
+    let raw = raw.trim();
+    let word = !raw.is_empty()
+        && raw
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character));
+
+    match raw.parse::<toml_edit::Value>() {
+        Err(_) if word => Ok(toml_edit::Value::from(raw)),
+        parsed => parsed,
+    }
+}
+
 fn save_setting(root: &Path, key: &str, value: toml_edit::Value) -> Result<Config, PluginError> {
     let path = root.join("config.toml");
     let text = load_config_text(root)?.ok_or("Configuration was not found.")?;
@@ -2360,8 +2386,7 @@ async fn config_command(
                 key => key,
             };
 
-            let raw_value = raw_value.trim();
-            let value = raw_value.parse::<toml_edit::Value>()?;
+            let value = setting_value(raw_value)?;
             let config = save_setting(root, key, value)?;
 
             let selection = selection::reloadable(key);
@@ -2374,7 +2399,7 @@ async fn config_command(
                     "config.client.set",
                     serde_json::json!({
                         "client": "tui",
-                        "tools": config.clients.get("tui").is_some_and(|client| client.tools),
+                        "tools": config.client_tools(client::TUI),
                     }),
                     root,
                 )
@@ -2434,14 +2459,28 @@ async fn config_command(
     Ok(())
 }
 
-fn service_managed() -> Result<bool, PluginError> {
-    Ok(service_path().is_file() && service_manager_state()? == ServiceState::Active)
+/// Whether the active installed service runs the daemon of ROOT rather than another home.
+fn service_managed(root: &Path) -> Result<bool, PluginError> {
+    let service = service_path();
+
+    Ok(service.is_file()
+        && serves(&service, root)
+        && service_manager_state()? == ServiceState::Active)
+}
+
+/// Whether the service definition at SERVICE sets `KRABB_HOME` to ROOT.
+fn serves(service: &Path, root: &Path) -> bool {
+    let same = |home: &str| std::fs::canonicalize(home).ok() == std::fs::canonicalize(root).ok();
+
+    definition::environment(service).is_some_and(|environment| {
+        environment.iter().any(|(name, value)| name == "KRABB_HOME" && same(value))
+    })
 }
 
 /// Restarts the daemon through its service manager, which starts the new process even when
 /// the caller is the daemon itself. Returns false when no active service manages it.
-fn restart_service() -> Result<bool, PluginError> {
-    if !service_managed()? {
+fn restart_service(root: &Path) -> Result<bool, PluginError> {
+    if !service_managed(root)? {
         return Ok(false);
     }
 
@@ -2473,7 +2512,7 @@ fn restart_service() -> Result<bool, PluginError> {
 }
 
 async fn restart_daemon(root: &Path) -> Result<bool, PluginError> {
-    if restart_service()? {
+    if restart_service(root)? {
         return Ok(true);
     }
 

@@ -255,7 +255,7 @@ pub(crate) fn search_path(environment: &BTreeMap<String, String>) -> String {
 }
 
 /// Whether FOLDER exists and only its owner and group can add programs to it.
-fn trusted(folder: &Path) -> bool {
+pub(crate) fn trusted(folder: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(folder) else {
         return false;
     };
@@ -289,6 +289,34 @@ pub(crate) fn service_credentials_path(path: &Path) -> PathBuf {
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("krabb.service");
 
     path.with_file_name(format!("{name}.credentials.json"))
+}
+
+/// The copy `krabb service install` makes of secrets set in its environment, with its key, when
+/// the installed service at SERVICE runs this home and reads that copy.
+pub(crate) fn service_copy(root: &Path, service: &Path) -> Option<(PathBuf, PathBuf)> {
+    let copy = service_credentials_path(service);
+
+    if !copy.is_file() || copy == setup::path(root) {
+        return None;
+    }
+
+    let environment = definition::environment(service)?;
+
+    let value = |wanted: &str| {
+        environment.iter().find(|(name, _)| name == wanted).map(|(_, value)| PathBuf::from(value))
+    };
+
+    let same = |path: &Path| std::fs::canonicalize(path).ok() == std::fs::canonicalize(root).ok();
+
+    let referenced = value("KRABB_CREDENTIALS").is_some_and(|path| path == copy);
+
+    if !referenced || !value("KRABB_HOME").is_some_and(|home| same(&home)) {
+        return None;
+    }
+
+    let key = value("KRABB_CREDENTIALS_KEY").unwrap_or_else(|| credentials::key_path(root));
+
+    Some((copy, key))
 }
 
 /// Deletes the secrets copy `krabb service install` writes next to the service definition.
@@ -372,51 +400,7 @@ pub(crate) fn service_at_with_status(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match command {
         ServiceCommand::Install(args) => {
-            match std::fs::symlink_metadata(path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err("Service definition cannot be a symbolic link.".into());
-                }
-
-                Ok(_) if !args.force => {
-                    return Err(format!(
-                        "A service definition already exists at {}.\nUse `--force` to replace it.",
-                        path.display()
-                    )
-                    .into());
-                }
-
-                Ok(_) => {}
-
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-
-            let executable = daemon_executable()?;
-            let environment = service_environment(path)?;
-
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            let definition = service_text(&executable, &environment);
-            #[cfg(target_os = "windows")]
-            {
-                windows_service_install(&executable, &environment, args.force, path, &definition)?;
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            secure(path, definition.as_bytes())?;
-
-            let copy = service_path_value(service_credentials_path(path))?;
-
-            if !environment
-                .iter()
-                .any(|(name, value)| name == "KRABB_CREDENTIALS" && *value == copy)
-            {
-                remove_service_credentials(path)?;
-            }
-
-            info!("Service installed.");
+            install_at(path, args.force)?;
 
             if json {
                 println!(
@@ -516,6 +500,57 @@ pub(crate) fn service_at_with_status(
         }
     }
 
+    Ok(())
+}
+
+/// Writes the service definition at PATH, replacing one only when FORCE is set, and prints
+/// nothing, so guided setup can report the outcome in its own words.
+pub(crate) fn install_at(
+    path: &Path,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("Service definition cannot be a symbolic link.".into());
+        }
+
+        Ok(_) if !force => {
+            return Err(format!(
+                "A service definition already exists at {}.\nUse `--force` to replace it.",
+                path.display()
+            )
+            .into());
+        }
+
+        Ok(_) => {}
+
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let executable = daemon_executable()?;
+    let environment = service_environment(path)?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let definition = service_text(&executable, &environment);
+    #[cfg(target_os = "windows")]
+    {
+        windows_service_install(&executable, &environment, force, path, &definition)?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    secure(path, definition.as_bytes())?;
+
+    let copy = service_path_value(service_credentials_path(path))?;
+
+    if !environment.iter().any(|(name, value)| name == "KRABB_CREDENTIALS" && *value == copy) {
+        remove_service_credentials(path)?;
+    }
+
+    info!("Service installed.");
     Ok(())
 }
 

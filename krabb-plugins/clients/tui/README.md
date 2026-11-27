@@ -26,8 +26,10 @@ krabb tui --once "prompt"
 
 `--once` prints one reply without opening the full-screen UI. It uses and
 deletes an idle temporary session unless you pass `--session <id>`. Saved work
-or pending results retain it. Unconfirmed cleanup is reported with a reopen command. Interactive
-sessions resume the last session or start `default`.
+or pending results retain it. Unconfirmed cleanup is reported with a reopen command. Nobody
+can approve a tool action during `--once`, so it denies each one at once and its reply says
+to approve actions in the interactive `krabb tui`. Interactive sessions resume the last
+session or start `default`.
 
 Ask the model in any language to pause, resume, cancel, delay, or extend a saved
 task. While inference is busy, use exact commands: `/task` lists tasks, and
@@ -41,9 +43,28 @@ generating it again. Reopening a conversation checks up to eight recent TUI user
 messages for the latest accepted request, skipping control-only messages. Other
 retained tasks remain available through `/task`.
 
-Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit. Use
-Up/Down for input history, Page Up/Page Down to scroll, and Shift-drag to
-select text.
+Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit.
+While Krabb is busy, Escape interrupts the turn or does nothing, so use Ctrl+C to quit.
+Shift+Enter and Alt+Enter also add a line where the terminal reports them, so
+Ctrl+O is the key that works everywhere. Use Up/Down for input history,
+Page Up/Page Down to scroll, and Shift-drag to select text. Typed text, including
+capitals, shifted symbols, and Option or AltGr characters, arrives as the
+keyboard layout produces it.
+
+When the TUI closes for any reason other than quitting, such as lost terminal
+input or an error, it prints why and how to open it again.
+When the daemon restarts, for example after `krabb config set`, the TUI reconnects
+on its own for about half a minute and clears approval prompts the restart dropped.
+If it cannot reconnect, it says so once and asks you to reopen it with `krabb tui`.
+Replies the daemon cannot save while it restarts or another turn runs are saved once the
+session is free, and the status says so if one still cannot be saved after about half a
+minute.
+A new message tries those saves first and waits until they succeed, so the
+conversation keeps its order.
+Approval prompts close when you answer them or after five minutes, when the daemon
+expires them.
+Notices Krabb writes itself, such as retries, failures, and approval results, appear
+as System rather than as your Krabb.
 
 Attach images, PDFs, text or code files, and audio with `/attach <path>` or by
 pasting or dragging their absolute paths into the prompt, or attach a clipboard
@@ -65,7 +86,7 @@ Use `/help` for commands available in the current session. Common commands:
 - `/status` shows the same status as `krabb status`, and `/plugin` lists plugins
   as `krabb plugin list` does.
 - `/approval`, `/approvals`, `/approve <id>`, and `/deny <id>` manage pending
-  approvals.
+  approvals, including while a turn waits for one.
 - `/session`, `/new`, `/model`, and `/workspace` manage conversation context.
 - `/deliveries`, `/retry`, and `/drop` inspect delivery state.
 - `/schedule`, `/memory`, and `/data` are available when their plugins are
@@ -82,11 +103,12 @@ operations and plugin guides for detailed schedule and memory behavior.
 Live approvals and `/approvals` display complete tool arguments. The host rejects
 prompt-mode requests that exceed its review limits before issuing a challenge.
 
-TUI model tools are disabled by default. Enable them in `config.toml`:
+TUI model tools are enabled by default, and `krabb init` installs the `tools` plugin with
+the TUI. Turn them off in `config.toml`:
 
 ```toml
 [clients.tui]
-tools = true
+tools = false
 ```
 
 The global approval mode still controls mutating tools. To enable direct shell

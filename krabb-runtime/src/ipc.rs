@@ -2112,7 +2112,16 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
 
         "session.list" => {
             let sessions = state.sessions.lock().map_err(lock)?;
-            json!({"items": sessions.sessions.values().map(summary).collect::<Vec<_>>()})
+
+            // Work sessions belong to tasks and schedules, which have their own commands.
+            let items = sessions
+                .sessions
+                .values()
+                .filter(|session| !session.is_work())
+                .map(summary)
+                .collect::<Vec<_>>();
+
+            json!({"items": items})
         }
 
         "delivery.list" => {
@@ -2286,7 +2295,7 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             json!({"id": id})
         }
 
-        "session.append" | "session.append_reserved" => {
+        "session.append" | "session.append_reserved" => 'append: {
             let reserved = request.method == "session.append_reserved";
             let id = request.params["id"]
                 .as_str()
@@ -2334,6 +2343,12 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                         not_found("The referenced message is unavailable in this session.")
                     })?;
                 message.content = super::quote(std::mem::take(&mut message.content), &reply);
+            }
+
+            if !reserved
+                && let Some(saved) = session.messages.iter().find(|kept| kept.id == message.id)
+            {
+                break 'append json!({"id": id, "saved": true, "message": saved});
             }
 
             let owner = if reserved {
@@ -5310,6 +5325,37 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
+    async fn a_retried_append_saves_the_message_once() {
+        let state = state();
+
+        dispatch(&IpcRequest::call(1, "secret", "session.new", json!({"id": "one"})), &state)
+            .unwrap();
+
+        let message = Message {
+            id: "one-user-1".into(),
+            session: "one".into(),
+            role: Role::User,
+            sender: Some("tui".into()),
+            content: vec![Content::Text { text: "hello".into() }],
+        };
+
+        for id in [2, 3] {
+            let request = IpcRequest::call(
+                id,
+                "secret",
+                "session.append",
+                json!({"id": "one", "message": message}),
+            );
+
+            assert_eq!(dispatch(&request, &state).unwrap().result.unwrap()["saved"], true);
+        }
+
+        let saved = state.sessions.lock().unwrap().sessions["one"].messages.len();
+
+        assert_eq!(saved, 1);
+    }
+
+    #[tokio::test]
     async fn dispatches_authenticated_session_calls() {
         let state = state();
         let status = dispatch(&IpcRequest::call(0, "secret", "status", json!({})), &state).unwrap();
@@ -5906,34 +5952,29 @@ for line in sys.stdin:
     fn applies_tui_tools_configuration_live() {
         let state = state_at("config-client-set");
 
-        assert!(
-            !state
+        let tools = || {
+            state
                 .client(krabb_core::client::TUI)
                 .unwrap()
                 .tools
                 .load(std::sync::atomic::Ordering::Acquire)
-        );
+        };
+
+        assert!(tools());
 
         let response = dispatch(
             &IpcRequest::call(
                 1,
                 "secret",
                 "config.client.set",
-                json!({"client": "tui", "tools": true}),
+                json!({"client": "tui", "tools": false}),
             ),
             &state,
         )
         .unwrap();
 
-        assert_eq!(response.result.unwrap()["tools"], true);
-
-        assert!(
-            state
-                .client(krabb_core::client::TUI)
-                .unwrap()
-                .tools
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert_eq!(response.result.unwrap()["tools"], false);
+        assert!(!tools());
     }
 
     #[test]
@@ -6368,6 +6409,34 @@ for line in sys.stdin:
         .await;
 
         assert_eq!(expired.error.unwrap().code, -32004);
+    }
+
+    #[test]
+    fn session_lists_show_conversations_but_not_work_sessions() {
+        let state = state_at("-work");
+
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+
+            sessions.create("chat", "model").unwrap();
+            sessions.create("background", "model").unwrap();
+            sessions.sessions.get_mut("background").unwrap().kind =
+                crate::state::SessionKind::Foreground;
+        }
+
+        let listed = dispatch(&IpcRequest::call(1, "secret", "session.list", json!({})), &state)
+            .unwrap()
+            .result
+            .unwrap();
+
+        let ids = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["chat"]);
     }
 
     #[test]

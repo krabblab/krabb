@@ -66,8 +66,7 @@ pub fn policy(config: &Config, context: &Value, workspace: &Path) -> Result<(), 
     }
 
     let (tools, shell) = if let sharing::Principal::Client(id) = &owner {
-        let local = config.clients.get(id).cloned().unwrap_or_default();
-        (local.tools, config.client_shell(id))
+        (config.client_tools(id), config.client_shell(id))
     } else {
         let sharing::Principal::Channel(id) = &owner else {
             return Err("PAUSED: The schedule has no user endpoint.".into());

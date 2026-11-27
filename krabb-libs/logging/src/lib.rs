@@ -110,8 +110,10 @@ struct Settings {
     invalid_format: bool,
 }
 
+/// Krabb's own diagnostics in detail, and only notable events from the libraries it uses,
+/// whose tracing would otherwise bury them. `KRABB_LOG=trace` restores everything.
 fn default_filter() -> &'static str {
-    "trace"
+    "info,krabb=debug"
 }
 
 fn terminal_filter(mode: Mode) -> Option<&'static str> {
@@ -491,8 +493,8 @@ mod tests {
     };
 
     #[test]
-    fn application_logs_default_to_all_levels() {
-        assert_eq!(default_filter(), "trace");
+    fn application_logs_default_to_krabb_details_and_library_events() {
+        assert_eq!(default_filter(), "info,krabb=debug");
     }
 
     #[test]
@@ -594,11 +596,11 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_all_level_logs_when_filters_are_invalid_or_absent() {
+    fn falls_back_to_the_default_filter_when_filters_are_invalid_or_absent() {
         assert_eq!(
             settings(Mode::Daemon, Some("krabb=notalevel"), None, None),
             Settings {
-                filter: "trace".into(),
+                filter: "info,krabb=debug".into(),
                 format: Format::Text,
                 invalid_filter: true,
                 invalid_format: false,

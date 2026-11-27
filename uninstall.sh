@@ -20,6 +20,14 @@ info() {
     printf '[INFO] %s\n' "$*"
 }
 
+# Starts a group of output lines, with one blank line before it once anything was printed.
+section() {
+    [ "$spaced" = false ] || printf '\n'
+    spaced=true
+}
+
+spaced=false
+
 purge=false
 yes=false
 
@@ -149,6 +157,8 @@ if [ "$purge" = true ] && [ "$yes" = false ]; then
         y | Y | yes | YES) ;;
         *) die 'Nothing was removed.' ;;
     esac
+
+    spaced=true
 fi
 
 remove() {
@@ -304,17 +314,24 @@ for variable in KRABB_ROOT KRABB_MEDIA KRABB_CODEX_HOME; do
     [ -z "$value" ] || [ ! -e "$value" ] || note kept "$value from $variable"
 done
 
+section
+
 if [ -n "$removed" ]; then
     info "Removed:$removed"
 else
     info 'Krabb was not found, so nothing was removed.'
 fi
 
-[ -z "$kept" ] || info "Kept:$kept"
+if [ -n "$kept" ]; then
+    section
+    info "Kept:$kept"
+fi
 
 if [ "$purge" = false ] && [ "$krabb_home" = true ]; then
+    section
     info "Kept $home with your plugins, settings, credentials, and conversations."
     info 'Remove them too with `uninstall.sh --purge`.'
 fi
 
+section
 info 'Remove KRABB_* secrets set in your shell profile, and revoke keys where they were issued.'

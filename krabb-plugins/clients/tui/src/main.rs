@@ -285,9 +285,7 @@ async fn run(args: &[String]) -> krabb_core::Result<Option<String>> {
         return run_one_shot(options, prompt).await.map(Some);
     }
 
-    run_interactive(options).await?;
-
-    Ok(None)
+    run_interactive(options).await
 }
 
 async fn run_cli(args: &[String]) -> krabb_core::Result<()> {
@@ -301,7 +299,11 @@ async fn run_cli(args: &[String]) -> krabb_core::Result<()> {
         return Ok(());
     }
 
-    run_interactive(options).await
+    if let Some(reason) = run_interactive(options).await? {
+        eprintln!("{reason}");
+    }
+
+    Ok(())
 }
 
 async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result<String> {
@@ -335,7 +337,7 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
         model_override,
         session.clone(),
         prompt,
-        daemon_control,
+        daemon_unattended_control,
     )
     .await;
 
@@ -353,7 +355,7 @@ async fn run_one_shot(options: TuiOptions, prompt: String) -> krabb_core::Result
     result
 }
 
-async fn run_interactive(options: TuiOptions) -> krabb_core::Result<()> {
+async fn run_interactive(options: TuiOptions) -> krabb_core::Result<Option<String>> {
     let model_override = options.model.clone();
 
     let plugin = options
@@ -457,7 +459,7 @@ async fn run_at(
     model: String,
     model_override: Option<String>,
     session: String,
-) -> krabb_core::Result<()> {
+) -> krabb_core::Result<Option<String>> {
     let name = std::env::var("KRABB_NAME").unwrap_or_else(|_| DEFAULT_NAME.into());
     ui::run(
         output,
@@ -468,6 +470,22 @@ async fn run_at(
         daemon_control,
     )
     .await
+    .map_err(closed_by)
+}
+
+/// States that the TUI closed because of ERROR, ending with a next action when it has none.
+fn closed_by(error: krabb_core::Error) -> krabb_core::Error {
+    let message = cli_error_message(&error);
+    let message = message.trim_end();
+
+    if message.contains('\n') {
+        return krabb_core::Error::Denied(format!("The TUI closed because of an error: {message}"));
+    }
+
+    krabb_core::Error::Denied(format!(
+        "The TUI closed because of an error: {}.\nRun `krabb tui` to open it again.",
+        message.trim_end_matches('.')
+    ))
 }
 
 async fn run_once<C, F>(
@@ -1462,6 +1480,8 @@ where
             let request_identity = user.id.clone();
             messages.push(user);
 
+            while interrupt_rx.try_recv().is_ok() {}
+
             if let Some(events) = &engine_events {
                 let _ = events.send(EngineEvent::UserSaved(submitted.into()));
                 let _ = events.send(EngineEvent::GenerationStarted);
@@ -1536,7 +1556,7 @@ where
                                 engine_events.as_ref(),
                                 host,
                             )
-                            .await?;
+                            .await;
 
                             let reported = engine_events
                                 .as_ref()
@@ -2214,7 +2234,8 @@ fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
     sections.push(
         "Plugin commands run in the CLI: krabb <command>.\nPage Up/Down scroll the conversation, \
         and the mouse wheel scrolls the pane under the pointer.\nHold Shift while dragging to \
-        select and copy text.\nCtrl+O adds a message line."
+        select and copy text.\nCtrl+O adds a message line, and so do Shift+Enter and Alt+Enter \
+        where the terminal reports them."
             .into(),
     );
 
@@ -2409,14 +2430,24 @@ async fn resolve_turn_approval<C, F>(
     sequence: &mut u64,
     events: Option<&mpsc::UnboundedSender<EngineEvent>>,
     host: C,
-) -> krabb_core::Result<String>
+) -> String
 where
     C: Fn(String, String, Value) -> F + Copy,
     F: Future<Output = krabb_core::Result<Value>>,
 {
+    let list = match host(home.to_owned(), "approval.list".into(), serde_json::json!({})).await {
+        Ok(list) => list,
+
+        Err(error) => {
+            return format!(
+                "Pending approvals unavailable: {}.\nTry /approvals again in a moment.\n",
+                sentence(error.to_string())
+            );
+        }
+    };
+
     if command == "/approvals" {
-        let value = host(home.to_owned(), "approval.list".into(), serde_json::json!({})).await?;
-        return Ok(format_approvals(&value));
+        return format_approvals(&list);
     }
 
     let (approved, supplied_id) = if command == "/approve" {
@@ -2428,12 +2459,11 @@ where
     } else if let Some(id) = command.strip_prefix("/deny ") {
         (false, id.trim())
     } else {
-        return Ok("Usage: /approve <id> or /deny <id>.\n".into());
+        return "Usage: /approve <id> or /deny <id>.\n".into();
     };
 
-    let list = host(home.to_owned(), "approval.list".into(), serde_json::json!({})).await?;
     let Some(items) = list["items"].as_array() else {
-        return Ok("Pending approvals: none.\n".into());
+        return "Pending approvals: none.\n".into();
     };
 
     let candidates = items
@@ -2448,13 +2478,13 @@ where
         .collect::<Vec<_>>();
 
     let Some(item) = (candidates.len() == 1).then(|| candidates[0]) else {
-        return Ok(if candidates.is_empty() {
+        return if candidates.is_empty() {
             "No matching pending approval.\nUse /approvals to see the current requests.\n".into()
         } else {
             "More than one approval is pending for this session, so use /approve <id> or /deny \
             <id>.\n"
                 .into()
-        });
+        };
     };
 
     let id = item["id"].as_str().unwrap_or_default();
@@ -2479,12 +2509,16 @@ where
         content: vec![Content::Text { text: command.into() }],
     };
 
-    host(
+    let saved = host(
         home.to_owned(),
         "session.append_reserved".into(),
         serde_json::json!({"id": session, "owner": owner, "message": user}),
     )
-    .await?;
+    .await;
+
+    if saved.is_err() {
+        return format!("{reply}\n");
+    }
 
     if let Some(events) = events {
         let _ = events.send(EngineEvent::UserSaved(command.into()));
@@ -2495,22 +2529,48 @@ where
         id: message_id("system-assistant", *sequence),
         session: session.into(),
         role: Role::Assistant,
-        sender: None,
+        sender: Some(krabb_core::types::SYSTEM.into()),
         content: vec![Content::Text { text: reply.clone() }],
     };
 
-    host(
+    let _ = host(
         home.to_owned(),
         "session.append_reserved".into(),
         serde_json::json!({"id": session, "owner": owner, "message": assistant}),
     )
-    .await?;
+    .await;
 
-    Ok(format!("{reply}\n"))
+    format!("{reply}\n")
 }
 
 async fn daemon_control(home: String, method: String, params: Value) -> krabb_core::Result<Value> {
     control(&home, &method, params).await.map_err(ControlError::into_core)
+}
+
+/// Controls the daemon for a one-shot run, where nobody can answer an approval, so each one is
+/// denied at once instead of waiting for its timeout.
+async fn daemon_unattended_control(
+    home: String,
+    method: String,
+    params: Value,
+) -> krabb_core::Result<Value> {
+    control_as(&home, &method, params, None, true).await.map_err(ControlError::into_core)
+}
+
+/// REPLY with a note when a one-shot run denied DENIED approvals, naming where to approve.
+fn unattended_reply(reply: &str, denied: usize) -> String {
+    let actions = match denied {
+        0 => return reply.to_owned(),
+        1 => "a tool action".to_owned(),
+        count => format!("{count} tool actions"),
+    };
+
+    let note = format!(
+        "Krabb denied {actions}, because `krabb tui --once` cannot ask for approval.\nApprove \
+         actions in the interactive terminal with `krabb tui`."
+    );
+
+    if reply.is_empty() { note } else { format!("{reply}\n\n{note}") }
 }
 
 enum ControlError {
@@ -4606,8 +4666,20 @@ async fn control(
 async fn control_with_stream(
     home: &str,
     method: &str,
+    params: Value,
+    events: Option<mpsc::UnboundedSender<EngineEvent>>,
+) -> std::result::Result<Value, ControlError> {
+    control_as(home, method, params, events, false).await
+}
+
+/// Sends one control request, streaming a turn's events to EVENTS. An UNATTENDED turn denies
+/// each approval it is asked for, because no person sees it.
+async fn control_as(
+    home: &str,
+    method: &str,
     mut params: Value,
     events: Option<mpsc::UnboundedSender<EngineEvent>>,
+    unattended: bool,
 ) -> std::result::Result<Value, ControlError> {
     let token = tokio::fs::read_to_string(krabb_file::location(
         std::path::Path::new(home),
@@ -4664,6 +4736,7 @@ async fn control_with_stream(
 
         let system_output = method == "session.command";
         let mut streamed = String::new();
+        let mut denied = 0;
 
         loop {
             deadline.check().map_err(ControlError::Failed)?;
@@ -4709,6 +4782,14 @@ async fn control_with_stream(
                     let tool = value["tool"].as_str().unwrap_or("tool");
                     let arguments = value["arguments"].as_str().unwrap_or("{}");
                     let command = value["command"].as_str();
+
+                    if unattended {
+                        let params = serde_json::json!({"id": id, "approved": false});
+
+                        let _ = Box::pin(control(home, "approval.resolve", params)).await;
+                        denied += 1;
+                        continue;
+                    }
 
                     if let Some(events) = &events {
                         let _ = events.send(EngineEvent::SystemNotice(format_approval_notice(
@@ -4781,7 +4862,7 @@ async fn control_with_stream(
                         return Ok(serde_json::json!({"text": ""}));
                     }
 
-                    return Ok(serde_json::json!({"text": final_text}));
+                    return Ok(serde_json::json!({"text": unattended_reply(final_text, denied)}));
                 }
 
                 continue;
@@ -5933,8 +6014,7 @@ mod tests {
         assert!(!basic.contains("/deliveries"));
         assert!(basic.contains("Plugin commands run in the CLI: krabb <command>."));
         assert!(basic.contains("Page Up/Down scroll the conversation"));
-        assert!(basic.contains("Ctrl+O adds a message line."));
-        assert!(!basic.contains("Shift+Enter"));
+        assert!(basic.contains("Ctrl+O adds a message line, and so do Shift+Enter and Alt+Enter"));
 
         let description_columns = basic
             .lines()
@@ -7066,8 +7146,7 @@ mod tests {
             Some(&events),
             mock_control,
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(response, "Approval accepted.\n");
         assert_eq!(sequence, 2);
@@ -7092,11 +7171,70 @@ mod tests {
             None,
             mock_control,
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(response, "Approval accepted.\n");
         assert_eq!(sequence, 2);
+    }
+
+    async fn busy_append_control(
+        home: String,
+        method: String,
+        params: serde_json::Value,
+    ) -> krabb_core::Result<serde_json::Value> {
+        if method == "session.append_reserved" {
+            return Err(krabb_core::Error::Denied(krabb_core::types::SESSION_BUSY.into()));
+        }
+
+        mock_control(home, method, params).await
+    }
+
+    async fn offline_control(
+        _home: String,
+        _method: String,
+        _params: serde_json::Value,
+    ) -> krabb_core::Result<serde_json::Value> {
+        Err(krabb_core::Error::Io(std::io::ErrorKind::ConnectionRefused.into()))
+    }
+
+    #[tokio::test]
+    async fn resolves_a_turn_approval_even_when_the_busy_session_refuses_its_transcript() {
+        let mut sequence = 0;
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+
+        let response = super::resolve_turn_approval(
+            "/tmp/krabb",
+            "telegram-7",
+            "reservation",
+            "/deny 0123456789abcdef01234567",
+            &mut sequence,
+            Some(&events),
+            busy_append_control,
+        )
+        .await;
+
+        assert_eq!(response, "Approval denied.\n");
+        assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn reports_unavailable_approvals_during_a_turn_without_failing() {
+        let mut sequence = 0;
+
+        let response = super::resolve_turn_approval(
+            "/tmp/krabb",
+            "telegram-7",
+            "reservation",
+            "/approvals",
+            &mut sequence,
+            None,
+            offline_control,
+        )
+        .await;
+
+        assert!(response.starts_with("Pending approvals unavailable: "), "{response}");
+        assert!(response.ends_with("Try /approvals again in a moment.\n"), "{response}");
+        assert_eq!(sequence, 0);
     }
 
     #[test]
@@ -7425,6 +7563,76 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_left_from_an_earlier_turn_does_not_cancel_the_next() {
+        async fn host(
+            home: String,
+            method: String,
+            params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            if method == "session.answer" {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+
+            mock_control(home, method, params).await
+        }
+
+        use tokio::io::duplex;
+
+        let root =
+            std::env::temp_dir().join(format!("krabb-tui-late-interrupt-{}", super::schedule_id()));
+
+        std::fs::create_dir_all(&root).unwrap();
+
+        let (mut input, receiver) = duplex(4096);
+        let (output, _rendered) = duplex(16 * 1024);
+        let (interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+
+        interrupt.send(()).unwrap();
+
+        let engine = tokio::spawn(super::run_with(
+            receiver,
+            output,
+            super::EngineConfig {
+                home: root.display().to_string(),
+                plugin: "codex".into(),
+                model: "base".into(),
+                model_override: None,
+                session: "default".into(),
+            },
+            host,
+            super::EngineEvents { engine: Some(events), ..Default::default() },
+            interrupts,
+        ));
+
+        input.write_all(b"hello\n").await.unwrap();
+
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(super::EngineEvent::GenerationFinished { interrupted }) =
+                    notifications.recv().await
+                {
+                    break interrupted;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(!finished);
+
+        input.write_all(b"/quit\n").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        drop(interrupt);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -7970,6 +8178,83 @@ mod tests {
         );
 
         assert!(receiver.try_recv().is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_shot_turns_deny_approvals_at_once_and_say_where_to_approve() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let root = std::env::temp_dir().join(format!(
+            "krabb-tui-unattended-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        std::fs::write(root.join("run/ipc.token"), "fixture-token").unwrap();
+
+        std::fs::write(
+            root.join("run/ipc.port"),
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .unwrap();
+
+        let server = tokio::spawn(async move {
+            let (turn, _) = listener.accept().await.unwrap();
+            let mut turn = BufReader::new(turn);
+            let mut request = String::new();
+
+            turn.read_line(&mut request).await.unwrap();
+
+            let approval = json!({"event":"approval", "id":"approval-1", "tool":"file_write"});
+            let frame = json!({"jsonrpc":"2.0", "id":1, "result":approval});
+
+            turn.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+
+            let (resolve, _) = listener.accept().await.unwrap();
+            let mut resolve = BufReader::new(resolve);
+            let mut request = String::new();
+
+            resolve.read_line(&mut request).await.unwrap();
+
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+            let frame = json!({"jsonrpc":"2.0", "id":1, "result":{"resolved":true}});
+
+            resolve.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+
+            let done = json!({"done":true, "text":"I could not write the file."});
+            let frame = json!({"jsonrpc":"2.0", "id":1, "result":done});
+
+            turn.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
+            request
+        });
+
+        let reply = super::daemon_unattended_control(
+            root.to_str().unwrap().to_owned(),
+            "session.answer".into(),
+            json!({"id":"main"}),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("unattended control failed"));
+
+        let request = server.await.unwrap();
+
+        assert_eq!(request["method"], "approval.resolve");
+        assert_eq!(request["params"], json!({"id":"approval-1", "approved":false}));
+
+        assert_eq!(
+            reply["text"],
+            "I could not write the file.\n\nKrabb denied a tool action, because `krabb tui \
+             --once` cannot ask for approval.\nApprove actions in the interactive terminal with \
+             `krabb tui`."
+        );
+
+        assert_eq!(super::unattended_reply("Done.", 0), "Done.");
+        assert!(super::unattended_reply("", 2).starts_with("Krabb denied 2 tool actions, "));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -8790,6 +9075,26 @@ while IFS= read -r line; do case "$line" in *generate*) printf '%s\n' '{"jsonrpc
         assert_eq!(
             super::cli_error_message(&error),
             "The Krabb daemon is not running.\nStart it with `krabb service start`."
+        );
+    }
+
+    #[test]
+    fn says_why_the_tui_closed_after_an_error() {
+        let failed = super::closed_by(krabb_core::Error::Io(std::io::Error::other("lost")));
+
+        assert_eq!(
+            super::cli_error_message(&failed),
+            "The TUI closed because of an error: I/O error: lost.\nRun `krabb tui` to open it again."
+        );
+
+        let guided = super::closed_by(krabb_core::Error::Denied(
+            "The Krabb daemon is not running.\nStart it with `krabb service start`.".into(),
+        ));
+
+        assert_eq!(
+            super::cli_error_message(&guided),
+            "The TUI closed because of an error: The Krabb daemon is not running.\n\
+            Start it with `krabb service start`."
         );
     }
 

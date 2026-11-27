@@ -23,6 +23,8 @@ pub(crate) async fn run_scheduler(
     let mut active_tasks = BTreeSet::new();
     let mut worker_tasks = HashMap::new();
     let workspace_locks = Arc::clone(&plugins.workspaces);
+    let mut recover_failures = 0_u32;
+    let mut restarts = 0_u32;
 
     loop {
         let lifecycle = Arc::new(Arc::clone(&plugins.lifecycle).read_owned().await);
@@ -81,6 +83,8 @@ pub(crate) async fn run_scheduler(
             match result {
                 Ok(response) if response.error.is_none() && response.result.is_some() => {
                     recovered_scheduler = Some((Arc::clone(&scheduler), generation));
+                    recover_failures = 0;
+                    restarts = 0;
                 }
 
                 Ok(response) => {
@@ -106,6 +110,27 @@ pub(crate) async fn run_scheduler(
                     warn!(plugin = scheduler_id, error = %diagnostic(sentence(error.to_string())), "Scheduler recovery check failed.");
 
                     scheduler_call_id = scheduler_call_id.saturating_add(1);
+                    recover_failures = recover_failures.saturating_add(1);
+
+                    if recover_failures >= SCHEDULER_RESTART_FAILURES {
+                        drop(lifecycle);
+                        recover_failures = 0;
+
+                        if !recovery::plugin(
+                            &plugins,
+                            &scheduler_id,
+                            &scheduler,
+                            &mut restarts,
+                            &stop,
+                        )
+                        .await
+                        {
+                            return;
+                        }
+
+                        continue;
+                    }
+
                     tokio::select! {
                         _ = stop.notified() => return,
 
@@ -182,6 +207,21 @@ pub(crate) async fn run_scheduler(
 
                     if stop.is_signaled() {
                         return;
+                    }
+
+                    let released = scheduler_call(
+                        &scheduler,
+                        scheduler_call_id,
+                        "release",
+                        serde_json::json!({"lease": lease}),
+                        &stop,
+                    )
+                    .await;
+
+                    scheduler_call_id = scheduler_call_id.saturating_add(1);
+
+                    if let Some(Err(error)) = released {
+                        warn!(plugin = scheduler_id, error = %diagnostic(sentence(error.to_string())), "Scheduler could not release a timed-out claim.");
                     }
 
                     None

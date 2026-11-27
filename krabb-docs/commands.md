@@ -161,8 +161,10 @@ krabb completion powershell >> $PROFILE
   internal diagnostics.
 - `--help` (`-h`, `-H`) shows command help; `--version` (`-v`, `-V`) prints
   the version.
-- Application logs are stored under `KRABB_HOME/logs/`. Set `KRABB_LOG` or
-  `RUST_LOG` to filter them; set `KRABB_LOG_FORMAT=json` for JSON logs.
+- Application logs are stored under `KRABB_HOME/logs/`. They hold Krabb's own messages
+  down to `debug` and other libraries' from `info`. Set `KRABB_LOG` or `RUST_LOG` to
+  filter them, such as `KRABB_LOG=trace` for everything; set `KRABB_LOG_FORMAT=json` for
+  JSON logs.
   WebSocket transport internals are always excluded from files and stderr because
   they can contain credentials and message payloads, including at debug level.
 
@@ -279,9 +281,11 @@ has been renamed to `channels`; update scripts that read it.
 ## Terminal User Interface
 
 `krabb tui` requires the daemon. Use `krabb service start` or run
-`krabb-daemon` in the foreground. `krabb tui --once "prompt"` sends one prompt
+`krabb-daemon` in the foreground. A service that runs but still starts its plugins
+gets up to 30 seconds to answer. `krabb tui --once "prompt"` sends one prompt
 without opening the full-screen client; pass `--session` to continue an
-existing session.
+existing session. Nobody can approve a tool action during `--once`, so it denies
+each one at once and the reply says to approve actions in the interactive `krabb tui`.
 
 Interactive assistant replies render emphasis, inline code, headings, and code
 panels using terminal styles. Links retain visible URLs. Formatting also applies
@@ -380,7 +384,8 @@ krabb update --rollback [-y|--yes]
 ```
 
 `krabb update` moves the CLI and daemon to one release, the latest stable one
-unless a version is given. Releases contain only the host; plugins keep their
+unless a version is given. A pre-release of Krabb takes the newest release or
+pre-release from the GitHub release list instead. Releases contain only the host; plugins keep their
 own versions. Krabb downloads and verifies the release and runs the new host
 once before changing anything. Every official plugin moves to the newest version
 the new host supports, in the same transaction, unless it still loads and is
@@ -661,12 +666,21 @@ In a terminal, `krabb init` guides you through five steps, always in this order:
 creates the home directory, starter configuration, and workspace instructions;
 `provider` installs, sets up, and selects an intelligence provider; `hatch` gives your
 Krabb a personality; `channel` installs the terminal client or a chat channel and sets
-it up; and `service` installs and starts the background service. Choices use a list
+it up, and choosing the terminal also installs the `tools` plugin when it is missing, so
+your Krabb can read and save workspace files after you approve each change; and
+`service` installs and starts the background service. If installing `tools` fails, such
+as offline, the guide notes `krabb plugin install tools` and goes on. Choices use a list
 moved with the arrow keys, and Esc stops the guide, so `krabb init` continues later.
 Name steps to run only those, such as `krabb init home provider`. A finished step is
 skipped when you run every step, and offers a change when you name it. Without a
 terminal, `krabb init` creates only the home, and `--provider` and `--channel` answer
 their steps, as in `krabb init --provider ollama --channel none service`.
+
+When the terminal is a place to talk but a home made before 0.1.0-rc.5 saved
+`approval = "off"`, which refuses every change the terminal's tools try, the `channel`
+step asks whether your Krabb should ask before it makes changes from the terminal and
+saves the answer as `clients.tui.approval`. Without a terminal, it prints the command
+that turns approvals on. A `clients.tui.approval` you set stays as it is.
 
 The `provider` step then asks for a model. A provider that lists its models, such as
 Codex, offers its first 20 as choices, plus one to type another name; otherwise type a
@@ -676,12 +690,28 @@ in the home holds them for every conversation without its own choice, names any
 `KRABB_MODEL_PLUGIN`, `KRABB_MODEL`, or `clients.cli` override, and says that no
 restart is needed and whether the running daemon already uses them. Without a
 terminal, the step keeps the earlier model or the default. Naming the step when a
-provider is set also offers to change only its model. After installing Codex, the step
-offers to sign in with your ChatGPT account, or says how to install the Codex CLI.
+provider is set also offers to change only its model. Codex skips its optional context
+length, which stays `auto` until `krabb plugin setup codex` changes it. Before Codex is
+chosen or kept, the step checks the Codex CLI: when it is missing, the guide stops with
+where to install it, and when it is not signed in, the guide runs the ChatGPT sign-in in
+a terminal. If sign-in fails, is cancelled, or there is no terminal, the guide stops and
+says to run `krabb codex login`, then `krabb init` again. A guide stopped this way exits
+with an error, so scripts see that setup is incomplete, while Esc stops it without one.
+The `hatch` step runs only when the provider can answer, and otherwise names the fix and
+moves on. The `service` step shows only its own outcome, not the service commands'
+messages. It starts an installed service that is stopped, and replacing a service
+restarts it so the daemon uses the new definition. When Codex is the provider and the
+service was installed before Codex, the step adds the Codex CLI this shell finds to the
+service and restarts it. A service that runs another home, such as when `KRABB_HOME`
+names a different one, stays as it is, and the step prints how to replace it with
+`krabb service install --force`.
 
-When the background service is installed, the guide ends by waiting for it to answer
-and checking that the provider loaded. If either fails, it says so with the one next
-step instead of saying your Krabb is ready.
+The guide ends with the one next action. It says your Krabb is ready only when the
+provider has its key or sign-in and a service or daemon runs. Otherwise it names the fix,
+such as `krabb plugin setup openai`, or `krabb init service` when nothing runs. In a
+terminal, when the service runs, the guide waits up to 30 seconds for it to answer and
+checks that the provider loaded. If either fails, it says so with the one next step
+instead.
 
 `krabb doctor` is read-only; `krabb doctor --fix` creates missing safe defaults. `krabb init --force` erases all data under `KRABB_HOME` and
 requires confirmation.
@@ -725,7 +755,9 @@ browser and computer settings, including Playwright paths and native desktop
 opt-in. Windows installations register `krabb-daemon --service` with SCM, which
 receives lifecycle status and sends stop/shutdown controls through normal daemon
 cleanup. Running `krabb-daemon` without this flag stays in the foreground.
-Service installation persists `KRABB_CODEX_HOME`, defaulting to the installing user's
+Secrets set in the installing environment go to a copy next to the service definition,
+and `krabb plugin setup` saves its answers in that copy too, so the service sees rotated
+secrets after a restart. Service installation persists `KRABB_CODEX_HOME`, defaulting to the installing user's
 `HOME/.codex` or `USERPROFILE/.codex`, so the daemon can use the existing Codex sign-in.
 Windows services run as the dedicated `NT SERVICE\Krabb` account. Installation grants
 that account access to the executable and existing private state, including the Codex

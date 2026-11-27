@@ -273,8 +273,11 @@ impl Store {
                 "The updated instruction is saved. Work will continue from its checkpoint."
             };
 
-            task.notice =
-                Some(Notice { id: format!("{id}-event-{}", task.revision), text: text.into() });
+            task.notice = Some(Notice {
+                id: format!("{id}-event-{}", task.revision),
+                text: text.into(),
+                model: false,
+            });
 
             if let Some(session) = store.sessions.get_mut(id) {
                 session.status =

@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use super::{Live, Plugins, Stop, retry_delay};
 
-pub(super) async fn channel(
+/// Restarts a failed channel or scheduler with backoff until it runs, is replaced, or stops.
+pub(super) async fn plugin(
     plugins: &Plugins,
     id: &str,
     previous: &Arc<Live>,
@@ -17,7 +18,7 @@ pub(super) async fn channel(
             plugin = id,
             attempt = *failures,
             delay_seconds = delay.as_secs(),
-            "Channel failed, retrying after backoff."
+            "Plugin failed, retrying after backoff."
         );
 
         tokio::select! {
@@ -49,13 +50,13 @@ pub(super) async fn channel(
 
         match result {
             Ok(()) => {
-                tracing::info!(plugin = id, "Channel restarted after a failure.");
+                tracing::info!(plugin = id, "Plugin restarted after a failure.");
                 return true;
             }
 
             Err(error) => {
                 tracing::warn!(plugin = id, error = %super::diagnostic(error.to_string()),
-                    "Channel restart failed, retrying.");
+                    "Plugin restart failed, retrying.");
             }
         }
     }
@@ -118,7 +119,7 @@ for line in sys.stdin:
 
             let mut failures = 0;
 
-            assert!(channel(&plugins, "telegram", &original, &mut failures, &Stop::new()).await);
+            assert!(plugin(&plugins, "telegram", &original, &mut failures, &Stop::new()).await);
             assert_eq!(failures, 1);
 
             assert_eq!(

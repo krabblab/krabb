@@ -99,7 +99,7 @@ pub(crate) fn apply(
         return Err("Only waiting checkpoints accept a delay.".into());
     }
 
-    store.checkpoint_task(
+    store.checkpoint_task_from_model(
         session,
         &checkpoint.summary,
         status,

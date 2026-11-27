@@ -267,8 +267,9 @@ async fn live_controls_wait_for_work_and_preserve_installation_and_deliveries() 
     server.await.unwrap().unwrap();
     std::fs::remove_file(state.home.join("ipc.port")).unwrap();
 
-    crate::lifecycle::run(&state.home, "tools", false, true).await.unwrap();
+    let detached = crate::lifecycle::run(&state.home, "tools", false, true).await.unwrap_err();
 
+    assert!(detached.to_string().contains("Start the daemon before detaching a plugin."));
     assert!(crate::lifecycle::change(&state.home, "tools", true).await.is_err());
     assert!(crate::lifecycle::change(&state.home, "missing", false).await.is_err());
     assert!(crate::lifecycle::change(&state.home, "../bad", false).await.is_err());

@@ -165,17 +165,17 @@ fn uninstall_also_forgets_the_service_credential_copy() {
 
     let names = ["KRABB_TELEGRAM_TOKEN".to_owned(), "KRABB_TELEGRAM_MODE".to_owned()];
 
-    assert!(service_copy(&root, &service, &names).unwrap().is_empty());
+    assert!(forget_copied(&root, &service, &names).unwrap().is_empty());
 
     std::fs::write(&service, unit(&root)).unwrap();
 
-    assert_eq!(service_copy(&root, &service, &names).unwrap(), ["KRABB_TELEGRAM_TOKEN"]);
+    assert_eq!(forget_copied(&root, &service, &names).unwrap(), ["KRABB_TELEGRAM_TOKEN"]);
 
     let left = credentials::read(&copy, &credentials::key_path(&root)).unwrap();
 
     assert_eq!(left.keys().collect::<Vec<_>>(), ["KRABB_DISCORD_TOKEN"]);
-    assert!(service_copy(&root, &service, &names).unwrap().is_empty());
-    assert!(service_copy(&root, &root.join("missing.service"), &names).unwrap().is_empty());
+    assert!(forget_copied(&root, &service, &names).unwrap().is_empty());
+    assert!(forget_copied(&root, &root.join("missing.service"), &names).unwrap().is_empty());
 
     let _ = std::fs::remove_dir_all(root);
 }

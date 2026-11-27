@@ -176,10 +176,12 @@ class Installers(unittest.TestCase):
         result = self.run_installer('core')
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('Set up Krabb with `krabb init`.', result.stdout)
+        self.assertIn('\n\n[INFO] Set up Krabb with `krabb init`.', result.stdout)
+        self.assertNotIn('\n\n\n', result.stdout)
 
         if not WINDOWS:
             self.assertIn(f'export PATH="{self.bin}:$PATH"', result.stdout)
+            self.assertIn('.\n\n[INFO] Add ', result.stdout)
 
             path = f"{self.bin}:{os.environ['PATH']}"
             result = self.run_installer('core', PATH=path)

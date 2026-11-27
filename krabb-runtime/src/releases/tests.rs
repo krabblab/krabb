@@ -148,6 +148,38 @@ fn latest_versions_come_from_the_host_archives() {
 }
 
 #[test]
+fn pre_release_hosts_take_the_newest_release_from_the_list() {
+    let root = super::super::temp("krabb-release-list").unwrap();
+    let asset = |version: &str| format!("krabb-core-v{version}-x86_64-unknown-linux-gnu.tar.gz");
+
+    let list = serde_json::json!([
+        {"tag_name": "v0.2.0-rc.1", "draft": true, "assets": [{"name": asset("0.2.0-rc.1")}]},
+        {"tag_name": "v0.1.0-rc.5", "prerelease": true, "assets": [{"name": asset("0.1.0-rc.5")}]},
+        {"tag_name": "v0.1.0-rc.4", "prerelease": true, "assets": [{"name": asset("0.1.0-rc.4")}]},
+        {"tag_name": "v0.1.0-rc.6", "prerelease": true, "assets": [{"name": "other.tar.gz"}]},
+        {"tag_name": "main", "assets": [{"name": asset("main")}]}
+    ]);
+
+    fs::write(root.join("releases.json"), list.to_string()).unwrap();
+
+    let location = format!("file://{}", root.join("releases.json").display());
+
+    assert_eq!(super::newest_from(&location, "linux", "x86_64").unwrap(), "0.1.0-rc.5");
+
+    let missing = super::newest_from(&location, "macos", "aarch64").unwrap_err().to_string();
+
+    assert!(missing.ends_with("with `krabb update <version>`."), "{missing}");
+
+    let unavailable = format!("file://{}", root.join("missing.json").display());
+    let error = super::newest_from(&unavailable, "linux", "x86_64").unwrap_err().to_string();
+
+    assert!(error.starts_with("The release list is unavailable:"), "{error}");
+    assert!(error.ends_with("with `krabb update <version>`."), "{error}");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn only_plain_versions_are_stable() {
     assert!(stable("0.3.0"));
     assert!(!stable("0.3.0-rc.1"));

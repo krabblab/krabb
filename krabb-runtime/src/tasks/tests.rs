@@ -484,6 +484,38 @@ fn blocked_client_tasks_follow_session_renames_and_accept_clarification() {
 }
 
 #[test]
+fn host_notices_post_as_system_and_model_notices_as_the_task() {
+    let fixture = Fixture::new(Principal::Client("desktop".into()));
+    let mut store = fixture.context.sessions.lock().unwrap();
+
+    store.claim_task(&fixture.id, unix_seconds()).unwrap();
+    store.retry_task(&fixture.id).unwrap();
+    store.publish_task_notice(&fixture.id).unwrap();
+
+    let retry = store.sessions[&fixture.origin].messages.last().unwrap().clone();
+
+    assert!(retry.content[0].render().starts_with("The request failed."));
+    assert_eq!(retry.sender.as_deref(), Some(krabb_core::types::SYSTEM));
+
+    store.tasks.get_mut(&fixture.id).unwrap().next = 0;
+    store.claim_task(&fixture.id, u64::MAX).unwrap();
+
+    apply(
+        &mut store,
+        &fixture.id,
+        json!({"state":"blocked", "summary":"Need a name.", "message":"Quale repository?"}),
+    )
+    .unwrap();
+
+    store.publish_task_notice(&fixture.id).unwrap();
+
+    let question = store.sessions[&fixture.origin].messages.last().unwrap();
+
+    assert_eq!(question.content[0].render(), "Quale repository?");
+    assert_eq!(question.sender.as_deref(), Some("task"));
+}
+
+#[test]
 fn checkpoints_are_bounded_and_optional_updates_are_deduplicated() {
     let fixture = Fixture::new(Principal::Channel("telegram".into()));
     let mut store = fixture.context.sessions.lock().unwrap();
@@ -575,7 +607,7 @@ async fn client_delivery_is_typed_and_supports_clients_other_than_tui() {
 fn live_client_permission_revocation_blocks_a_captured_task() {
     let mut fixture = Fixture::new(Principal::Client("desktop".into()));
 
-    fixture.context.config.clients.get_mut("desktop").unwrap().tools = true;
+    fixture.context.config.clients.get_mut("desktop").unwrap().tools = Some(true);
 
     let policy = fixture.context.plugins.clients.get("desktop", &fixture.context.config).unwrap();
     let mut task = fixture.context.sessions.lock().unwrap().tasks[&fixture.id].clone();

@@ -192,6 +192,7 @@ try {
             # changing a variable through .NET broadcasts that notice.
             [Environment]::SetEnvironmentVariable("KRABB_PATH_REFRESH", "1", "User")
             [Environment]::SetEnvironmentVariable("KRABB_PATH_REFRESH", $null, "User")
+            Write-Output ""
             Write-Install "Added $dest to your user PATH for new terminals."
         }
     } finally {
@@ -199,6 +200,7 @@ try {
     }
 
     if (($env:Path -split ";") -notcontains $dest) { $env:Path = "$env:Path;$dest" }
+    Write-Output ""
     Write-Install "Set up Krabb with ``krabb init``."
 } finally {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -Recurse -Force $tmp }

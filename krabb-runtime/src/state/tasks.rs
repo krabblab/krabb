@@ -28,6 +28,9 @@ pub(crate) use krabb_core::task::State as TaskStatus;
 pub(crate) struct Notice {
     id: String,
     text: String,
+    /// Whether the model wrote the text, so it posts as the assistant rather than the host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    model: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -266,6 +269,7 @@ impl Store {
                         text: "The operation's start receipt was lost. Review its effects \
                                before another start."
                             .into(),
+                        model: false,
                     });
 
                     changed = true;
@@ -328,6 +332,7 @@ impl Store {
                         "A task was interrupted during an action. Its effects need review before \
                         related work resumes."
                             .into(),
+                    model: false,
                 });
             }
 
@@ -535,6 +540,30 @@ impl Store {
         next: u64,
         message: Option<&str>,
     ) -> std::io::Result<()> {
+        self.checkpoint_task_by(id, checkpoint, status, next, message, false)
+    }
+
+    /// Saves a checkpoint whose message the model wrote, such as its progress or blocker.
+    pub fn checkpoint_task_from_model(
+        &mut self,
+        id: &str,
+        checkpoint: &str,
+        status: TaskStatus,
+        next: u64,
+        message: Option<&str>,
+    ) -> std::io::Result<()> {
+        self.checkpoint_task_by(id, checkpoint, status, next, message, true)
+    }
+
+    fn checkpoint_task_by(
+        &mut self,
+        id: &str,
+        checkpoint: &str,
+        status: TaskStatus,
+        next: u64,
+        message: Option<&str>,
+        model: bool,
+    ) -> std::io::Result<()> {
         if checkpoint.len() > CHECKPOINT_LIMIT
             || message.is_some_and(|text| text.is_empty() || text.len() > crate::TEXT_LIMIT)
         {
@@ -577,6 +606,7 @@ impl Store {
                 task.notice = Some(Notice {
                     id: format!("{id}-event-{}", task.revision),
                     text: message.into(),
+                    model: model || status == TaskStatus::Reporting,
                 });
             }
 
@@ -685,7 +715,9 @@ impl Store {
                     id: format!("task-notice-at-{}-{}", now().saturating_mul(1_000), notice.id),
                     session: origin.clone(),
                     role: Role::Assistant,
-                    sender: Some("task".into()),
+                    sender: Some(
+                        if notice.model { "task" } else { krabb_core::types::SYSTEM }.into(),
+                    ),
                     content: vec![krabb_core::types::Content::Text { text: notice.text.clone() }],
                 });
 

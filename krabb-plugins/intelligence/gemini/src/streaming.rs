@@ -248,6 +248,13 @@ where
     }
 
     // An SSE event is complete only after its blank-line delimiter.
+    if reply.finish.is_none() {
+        return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(
+            emitted,
+        ))
+        .error("Gemini stream ended before its completion marker."));
+    }
+
     response(id, reply.finish(true)?)
 }
 

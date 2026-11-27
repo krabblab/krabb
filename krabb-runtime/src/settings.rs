@@ -135,7 +135,7 @@ pub(crate) fn apply(
         return Ok((text, false));
     }
 
-    if !service_managed()? {
+    if !service_managed(root)? {
         let text =
             format!("{saved} No service manages the daemon, so restart it to apply the change.");
 
@@ -148,7 +148,7 @@ pub(crate) fn apply(
 /// Restarts the daemon through its service manager without blocking the delivered reply.
 pub(crate) fn restart() {
     tokio::task::spawn_blocking(|| {
-        if let Err(error) = restart_service() {
+        if let Err(error) = restart_service(&home()) {
             warn!(error = %error, "Could not restart the daemon after a settings change.");
         }
     });

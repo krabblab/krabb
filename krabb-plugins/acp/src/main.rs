@@ -174,7 +174,7 @@ async fn run_command(
         return Err(krabb_core::Error::Denied("The ACP workspace is not a directory.".into()));
     }
 
-    let mut child = Command::new(command)
+    let mut child = Command::new(krabb_process::program(command))
         .args(args)
         .current_dir(&workspace)
         .stdin(Stdio::piped())

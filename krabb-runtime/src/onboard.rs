@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::style::{accent, dim};
 
-use crate::cli::{
-    HatchArgs, InitArgs, PluginCommand, PluginInstall, ServiceCommand, ServiceInstall,
-};
+use crate::cli::{HatchArgs, InitArgs, PluginCommand, PluginInstall, ServiceAction};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -67,6 +65,15 @@ const PLACES: [Offer; 6] = [
     offer("Signal", "signal"),
 ];
 
+/// Plugins a place installs with it, without a question, so its first chat can already act.
+const TUI_APPROVAL_FIX: &str = "The terminal makes no changes, so let it ask first with \
+     `krabb config set 'clients.tui.approval=\"prompt\"' --force`.";
+
+const OTHER_HOME_SERVICE: &str = "The background service runs another Krabb home, so replace \
+     it with one for this home with `krabb service install --force`.";
+
+const TERMINAL: [Offer; 1] = [offer("Tools", "tools")];
+
 const YES_LATER: [&str; 2] = ["Yes", "Not now"];
 
 /// How many listed models a choice shows, so a long catalog stays readable.
@@ -101,6 +108,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         spaced: true,
         named: args.steps.clone(),
         interactive,
+        started: false,
     };
 
     if interactive {
@@ -116,11 +124,20 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
             Step::Service => guide.service()?,
         };
 
-        if let Flow::Stop = flow {
-            guide.gap();
-            println!("Setup stopped.");
-            println!("Continue any time with `krabb init`.");
-            return Ok(());
+        match flow {
+            Flow::Next => {}
+
+            Flow::Stop => {
+                guide.gap();
+                println!("Setup stopped.");
+                println!("Continue any time with `krabb init`.");
+                return Ok(());
+            }
+
+            Flow::Blocked { why, next } => {
+                guide.gap();
+                return Err(blocked(why, next).into());
+            }
         }
     }
 
@@ -185,10 +202,79 @@ fn find<'a>(offers: &'a [Offer], key: &str) -> Result<&'a Offer, String> {
     })
 }
 
-/// Whether the person stopped the guide, which ends it without an error.
+/// Whether the guide goes on, the person stopped it, or a step cannot finish yet. Only a blocked
+/// step ends it with an error, so scripts see that setup is incomplete.
 enum Flow {
     Next,
     Stop,
+    Blocked { why: &'static str, next: &'static str },
+}
+
+/// What Codex needs before it can answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Codex {
+    Ready,
+    Install,
+    SignIn,
+    Unsigned,
+}
+
+const INSTALL_CODEX: Flow = Flow::Blocked {
+    why: "the Codex CLI is not installed",
+    next: "Install it from https://developers.openai.com/codex/cli, then run `krabb init` again.",
+};
+
+const SIGN_IN_CODEX: Flow = Flow::Blocked {
+    why: "Codex is not signed in",
+    next: "Sign in with `krabb codex login`, then run `krabb init` again.",
+};
+
+/// What Codex needs given whether its CLI is installed, whether it is signed in, and whether a
+/// person can sign in here.
+fn codex_need(cli: bool, signed_in: bool, interactive: bool) -> Codex {
+    match (cli, signed_in, interactive) {
+        (false, _, _) => Codex::Install,
+        (true, true, _) => Codex::Ready,
+        (true, false, true) => Codex::SignIn,
+        (true, false, false) => Codex::Unsigned,
+    }
+}
+
+/// Why hatching must wait for Codex, with the fix, or none when Codex can answer.
+fn hatch_wait(need: Codex) -> Option<&'static str> {
+    match need {
+        Codex::Ready => None,
+
+        Codex::Install => Some(
+            "Hatching needs the Codex CLI, so install it from \
+             https://developers.openai.com/codex/cli, then run `krabb init hatch`.",
+        ),
+
+        Codex::SignIn | Codex::Unsigned => Some(
+            "Hatching needs Codex signed in, so run `krabb codex login`, then `krabb init hatch`.",
+        ),
+    }
+}
+
+/// The error a blocked step ends the guide with: why it stopped, then the one next action.
+fn blocked(why: &str, next: &str) -> String {
+    format!("Setup stopped, because {why}.\n{next}")
+}
+
+/// The Codex CLI this shell runs, from `KRABB_CODEX_BINARY` or the search path.
+fn codex_binary() -> Option<PathBuf> {
+    if let Some(binary) = std::env::var_os("KRABB_CODEX_BINARY") {
+        return Some(binary.into());
+    }
+
+    crate::service::codex_binary_from_path(&std::env::var("PATH").unwrap_or_default())
+}
+
+/// Whether the Codex CLI is installed and signed in, without asking anything.
+fn codex_state() -> (bool, bool) {
+    let cli = codex_binary().is_some();
+
+    (cli, cli && crate::codex_auth())
 }
 
 struct Guide {
@@ -198,6 +284,8 @@ struct Guide {
     spaced: bool,
     named: Vec<Step>,
     interactive: bool,
+    /// Whether the service step started the service, which may not report running at once.
+    started: bool,
 }
 
 impl Guide {
@@ -281,15 +369,21 @@ impl Guide {
             if !self.named(Step::Provider) {
                 self.done(&summary(&current, &model));
                 self.overridden(&current, &model)?;
-                return Ok(Flow::Next);
+                return self.sign_in(&current).await;
             }
 
             let question = format!("Change the {current} provider your Krabb thinks with?");
 
             match self.ask(&question, &["Keep it", "Change its model", "Choose another"])? {
                 None => return Ok(Flow::Stop),
-                Some(0) => return Ok(Flow::Next),
-                Some(1) => return self.select(&current).await,
+                Some(0) => return self.sign_in(&current).await,
+
+                Some(1) => {
+                    return match self.sign_in(&current).await? {
+                        Flow::Next => self.select(&current).await,
+                        flow => Ok(flow),
+                    };
+                }
 
                 Some(_) => {}
             }
@@ -316,11 +410,15 @@ impl Guide {
             }
         };
 
-        if let Flow::Stop = self.install(offer, "provider").await? {
-            return Ok(Flow::Stop);
+        match self.install(offer, "provider").await? {
+            Flow::Next => {}
+            flow => return Ok(flow),
         }
 
-        self.select(offer.id).await
+        match self.sign_in(offer.id).await? {
+            Flow::Next => self.select(offer.id).await,
+            flow => Ok(flow),
+        }
     }
 
     /// Asks for PROVIDER's model, saves both, and says where they apply and when.
@@ -342,6 +440,7 @@ impl Guide {
                 .is_some();
 
         self.done(&summary(provider, &model));
+
         self.note(&format!(
             "Saved in {} for every conversation without a choice of its own.",
             self.root.join("config.toml").display()
@@ -457,11 +556,21 @@ impl Guide {
 
     async fn hatch(&mut self) -> Result<Flow, Error> {
         self.require_home()?;
+
         self.section("Personality");
 
-        if ready_provider(&self.root)?.is_none() {
+        let Some(provider) = ready_provider(&self.root)? else {
             self.note("Hatching needs a provider, so add one with `krabb init provider`.");
             return Ok(Flow::Next);
+        };
+
+        if provider == "codex" {
+            let (cli, signed_in) = codex_state();
+
+            if let Some(wait) = hatch_wait(codex_need(cli, signed_in, false)) {
+                self.note(wait);
+                return Ok(Flow::Next);
+            }
         }
 
         if crate::hatch::hatched(&crate::hatch::read(&self.root.join("data/system"))?)
@@ -489,6 +598,7 @@ impl Guide {
 
     async fn channel(&mut self, flag: Option<&str>) -> Result<Flow, Error> {
         self.require_home()?;
+
         self.section("Conversations");
 
         let mut places = installed(&self.root, "channel")?;
@@ -497,6 +607,15 @@ impl Guide {
 
         if flag.is_none() && !places.is_empty() && !self.named(Step::Channel) {
             self.done(&format!("Your Krabb talks with you through {}.", places.join(", ")));
+
+            for place in &places {
+                self.add_companions(place).await?;
+            }
+
+            if places.iter().any(|place| place == crate::client::TUI) {
+                return self.tui_approval();
+            }
+
             return Ok(Flow::Next);
         }
 
@@ -520,17 +639,84 @@ impl Guide {
 
         let kind = if offer.id == "tui" { "client" } else { "channel" };
 
-        self.install(offer, kind).await
+        let flow = self.install(offer, kind).await?;
+
+        if !matches!(flow, Flow::Next) {
+            return Ok(flow);
+        }
+
+        self.add_companions(offer.id).await?;
+
+        if offer.id == crate::client::TUI {
+            return self.tui_approval();
+        }
+
+        Ok(Flow::Next)
+    }
+
+    /// Asks whether the TUI asks before changes when a home from before rc.5 saved
+    /// `approval = "off"`, which refuses every change the TUI's tools try. Without a terminal it
+    /// prints the fix instead. A TUI approval mode of its own is the owner's choice and stays.
+    fn tui_approval(&mut self) -> Result<Flow, Error> {
+        if !approval_blocks_tui(&crate::load_config_at(&self.root)?) {
+            return Ok(Flow::Next);
+        }
+
+        if !self.interactive {
+            self.note(TUI_APPROVAL_FIX);
+            return Ok(Flow::Next);
+        }
+
+        let mode = match self.ask(
+            "Should your Krabb ask before it makes changes from the terminal?",
+            &["Ask first", "Make no changes"],
+        )? {
+            None => return Ok(Flow::Stop),
+            Some(0) => "prompt",
+            Some(_) => "off",
+        };
+
+        crate::save_setting(&self.root, "clients.tui.approval", mode.into())?;
+
+        if mode == "prompt" {
+            self.done("Your Krabb asks before it makes changes from the terminal.");
+        } else {
+            self.note(TUI_APPROVAL_FIX);
+        }
+
+        Ok(Flow::Next)
+    }
+
+    /// Installs the plugins that come with the place ID when they are missing, so an earlier
+    /// home that already talks through the TUI also gets its workspace tools. A failed install,
+    /// such as offline, leaves a note with its fix instead of stopping the guide.
+    async fn add_companions(&mut self, id: &str) -> Result<(), Error> {
+        for companion in companions(id) {
+            if crate::load_lock_at(&self.root)?.plugins.contains_key(companion.id) {
+                continue;
+            }
+
+            match fetch(companion.id).await {
+                Ok(()) => self.done(&format!("Installed {} plugin.", companion.id)),
+                Err(error) => self.note(&companion_failed(companion.id, &error.to_string())),
+            }
+        }
+
+        Ok(())
     }
 
     fn service(&mut self) -> Result<Flow, Error> {
         self.require_home()?;
         self.section("Service");
+        self.service_at(&crate::service::service_path())
+    }
 
-        let installed = crate::service::service_path().is_file();
+    /// Installs or starts the service at PATH, and leaves one that runs another home alone.
+    fn service_at(&mut self, path: &Path) -> Result<Flow, Error> {
+        let installed = path.is_file();
 
-        if installed && !self.named(Step::Service) {
-            self.done("Your Krabb runs as a background service.");
+        if installed && !crate::serves(path, &self.root) {
+            self.note(OTHER_HOME_SERVICE);
             return Ok(Flow::Next);
         }
 
@@ -540,13 +726,15 @@ impl Guide {
             ("Keep your Krabb running in the background?", YES_LATER)
         };
 
-        let write = if self.interactive {
+        let write = if installed && !self.named(Step::Service) {
+            false
+        } else if self.interactive {
             match self.ask(question, &options)? {
                 None => return Ok(Flow::Stop),
                 Some(0) => !installed,
 
                 Some(_) if !installed => {
-                    self.note("Start it later with `krabb init service`.");
+                    self.note("The background service stays off.");
                     return Ok(Flow::Next);
                 }
 
@@ -556,15 +744,50 @@ impl Guide {
             !installed
         };
 
-        if write {
-            let install = ServiceInstall { force: installed };
+        let patched = installed && !write && self.find_codex(path)?;
 
-            crate::service::service(ServiceCommand::Install(install), false)?;
+        if write {
+            crate::service::install_at(path, installed)?;
         }
 
-        crate::service::service(ServiceCommand::Start, false)?;
+        let silent = crate::service::ServiceReport::Silent;
+
+        for action in actions(installed && (write || patched)) {
+            crate::service::service_action_with(path, *action, silent)?;
+        }
+
+        self.started = true;
+
+        if patched {
+            self.done("Updated the background service so it finds Codex.");
+        }
+
         self.done("Your Krabb runs as a background service.");
         Ok(Flow::Next)
+    }
+
+    /// Adds the Codex CLI this shell runs to the service at PATH when Codex is the provider and
+    /// the service, installed before Codex, could not find it. Returns whether it did.
+    fn find_codex(&self, path: &Path) -> Result<bool, Error> {
+        if ready_provider(&self.root)?.as_deref() != Some("codex") {
+            return Ok(false);
+        }
+
+        let Some(binary) = codex_binary() else {
+            return Ok(false);
+        };
+
+        let Some(environment) = crate::definition::environment(path) else {
+            return Ok(false);
+        };
+
+        let shell = std::env::vars().collect();
+
+        let Some(environment) = crate::definition::with_codex(&environment, &binary, &shell) else {
+            return Ok(false);
+        };
+
+        crate::definition::rewrite(path, &environment)
     }
 
     /// Installs OFFER unless it already is, then asks for its secrets and settings. Cancelling
@@ -573,77 +796,51 @@ impl Guide {
         if crate::load_lock_at(&self.root)?.plugins.contains_key(offer.id) {
             self.done(&format!("The {} {kind} is already installed.", offer.id));
         } else {
-            let install = PluginInstall {
-                ids: vec![offer.id.into()],
-                source: None,
-                revision: None,
-                link: false,
-                unstable: false,
-                yes: true,
-                quiet: true,
-            };
-
-            crate::plugins::plugin(PluginCommand::Install(install), false).await?;
+            fetch(offer.id).await?;
             self.done(&format!("Installed {} {kind}.", offer.id));
         }
 
-        let flow = self.configure(offer).await?;
-
-        if matches!(flow, Flow::Next) && offer.id == "codex" {
-            return self.sign_in_to_codex().await;
-        }
-
-        Ok(flow)
+        self.configure(offer).await
     }
 
-    /// Codex signs in with the person's ChatGPT account through its own CLI, not a key.
-    async fn sign_in_to_codex(&mut self) -> Result<Flow, Error> {
-        let path = std::env::var("PATH").unwrap_or_default();
-        let binary = std::env::var_os("KRABB_CODEX_BINARY").map(PathBuf::from);
-
-        if binary.is_none() && crate::service::codex_binary_from_path(&path).is_none() {
-            self.note(
-                "Install the Codex CLI from https://developers.openai.com/codex/cli, then sign \
-                 in with `krabb codex login`.",
-            );
-
+    /// Makes sure PROVIDER can answer before the guide goes on. Only Codex needs more than its
+    /// plugin: its CLI, signed in with the person's ChatGPT account.
+    async fn sign_in(&mut self, provider: &str) -> Result<Flow, Error> {
+        if provider != "codex" {
             return Ok(Flow::Next);
         }
 
-        if crate::codex_auth() {
-            self.done("Codex is signed in.");
-            return Ok(Flow::Next);
+        let (cli, signed_in) = codex_state();
+
+        match codex_need(cli, signed_in, self.interactive) {
+            Codex::Ready => return Ok(Flow::Next),
+            Codex::Install => return Ok(INSTALL_CODEX),
+            Codex::Unsigned => return Ok(SIGN_IN_CODEX),
+
+            Codex::SignIn => {}
         }
 
-        if !self.interactive {
-            self.note("Sign in to Codex with `krabb codex login`.");
-            return Ok(Flow::Next);
+        self.gap();
+        self.note("Sign in to Codex with your ChatGPT account.");
+
+        let login = vec!["codex".to_owned(), "login".to_owned()];
+        let finished = crate::external_command_at(login, false, self.root.clone()).await.is_ok();
+
+        self.spaced = false;
+        self.gap();
+
+        if !finished || !crate::codex_auth() {
+            return Ok(SIGN_IN_CODEX);
         }
 
-        match self.ask("Sign in to Codex with your ChatGPT account now?", &YES_LATER)? {
-            None => Ok(Flow::Stop),
-
-            Some(0) => {
-                let login = vec!["codex".to_owned(), "login".to_owned()];
-
-                if crate::external_command_at(login, false, self.root.clone()).await.is_err() {
-                    self.note("Codex is not signed in, so sign in later with `krabb codex login`.");
-                }
-
-                self.spaced = false;
-                Ok(Flow::Next)
-            }
-
-            Some(_) => {
-                self.note("Sign in later with `krabb codex login`.");
-                Ok(Flow::Next)
-            }
-        }
+        self.done("Codex is signed in.");
+        Ok(Flow::Next)
     }
 
     /// Asks for OFFER's secrets and settings when it has any left to set.
+    /// Codex has only optional settings, which `krabb plugin setup codex` changes later.
     async fn configure(&mut self, offer: &Offer) -> Result<Flow, Error> {
-        if !crate::setup::needed(&self.root, offer.id)? {
+        if offer.id == "codex" || !crate::setup::needed(&self.root, offer.id)? {
             return Ok(Flow::Next);
         }
 
@@ -662,6 +859,8 @@ impl Guide {
 
         let options = crate::setup::Options::new(offer.id, defaults, true);
 
+        self.gap();
+
         match crate::setup::run(options, &self.root, false).await {
             Ok(()) => self.spaced = false,
 
@@ -679,35 +878,63 @@ impl Guide {
     async fn finish(&mut self) -> Result<(), Error> {
         self.gap();
 
-        let provider = ready_provider(&self.root)?;
-        let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
+        let Some(provider) = ready_provider(&self.root)? else {
+            println!("{}", closing(Ending::Provider));
+            return Ok(());
+        };
 
-        if let Some(provider) = &provider
+        let credentials = crate::setup::path(&self.root);
+        let key = crate::credentials::key_path(&self.root);
+
+        if !crate::ready_at(&provider, Some(&credentials), &key) {
+            println!("{}", closing(Ending::Setup(&provider)));
+            return Ok(());
+        }
+
+        let running = self.started
+            || (crate::service_path().is_file()
+                && matches!(crate::service_manager_state(), Ok(crate::ServiceState::Active)));
+
+        let status = serde_json::json!({});
+
+        if !running
+            && !crate::control_at("status", status, &self.root)
+                .await
+                .is_ok_and(|answer| answer.is_some())
+        {
+            println!("{}", closing(Ending::Service));
+
+            return Ok(());
+        }
+
+        if running
             && self.interactive
-            && crate::service_path().is_file()
-            && let Some(problem) = self.blocker(provider).await
+            && let Some(problem) = self.blocker(&provider).await
         {
             println!("{problem}");
             return Ok(());
         }
 
-        println!("{}", closing(provider.is_some(), terminal));
+        let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
+
+        println!("{}", closing(Ending::Ready { terminal }));
+
         Ok(())
     }
 
     /// Why the running Krabb cannot answer with PROVIDER yet, with the one next step, or none
     /// when the service answers and the provider loaded. Init writes and starts the service just
-    /// before this, so a slow start gets the same wait `krabb tui` gives it.
+    /// before this, so a slow start gets the same wait `krabb tui` gives it, even while the
+    /// service manager does not report it running yet.
     async fn blocker(&self, provider: &str) -> Option<String> {
-        let running = matches!(crate::service_manager_state(), Ok(crate::ServiceState::Active));
-
         if let Err(error) =
-            crate::require_tui_daemon(&self.root, running, crate::DAEMON_STARTUP_CHECKS).await
+            crate::require_tui_daemon(&self.root, true, crate::DAEMON_STARTUP_CHECKS).await
         {
             return Some(format!("Your Krabb is set up, but it does not answer yet.\n{error}"));
         }
 
         let status = crate::status::status_at(&self.root).await.ok();
+
         let states = status.as_ref().and_then(|status| status["plugin_states"].as_array());
         let state = states.and_then(|states| states.iter().find(|state| state["id"] == provider));
 
@@ -726,16 +953,83 @@ impl Guide {
     }
 }
 
-/// How the guide ends: whether the Krabb can answer, then the one command to run next.
-fn closing(ready: bool, terminal: bool) -> &'static str {
-    match (ready, terminal) {
-        (true, true) => "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.",
-        (true, false) => "Your Krabb is ready.\nCheck every part with `krabb status`.",
+/// The plugins installed with the place ID, beyond the place itself.
+fn companions(id: &str) -> &'static [Offer] {
+    if id == "tui" { &TERMINAL } else { &[] }
+}
 
-        (false, _) => {
-            "Your Krabb is set up, and it needs a provider to answer.\n\
-                       Add one with `krabb init provider`."
+/// Why the companion plugin ID was not installed, from ERROR's first line, and its fix.
+fn companion_failed(id: &str, error: &str) -> String {
+    let reason = error.lines().next().unwrap_or_default().trim().trim_end_matches('.');
+
+    let fix = format!("Install it later with `krabb plugin install {id}`.");
+
+    if reason.is_empty() {
+        format!("Could not install the {id} plugin.\n{fix}")
+    } else {
+        format!("Could not install the {id} plugin: {reason}.\n{fix}")
+    }
+}
+
+/// The service actions that apply the service step: a stop first when the definition of an
+/// installed service changed, because only a fresh start reads it, then a start, which does
+/// nothing to a service that already runs.
+fn actions(changed: bool) -> &'static [ServiceAction] {
+    if changed { &[ServiceAction::Stop, ServiceAction::Start] } else { &[ServiceAction::Start] }
+}
+
+/// Installs the official plugin ID quietly, through the same path as `krabb plugin install`.
+async fn fetch(id: &str) -> Result<(), Error> {
+    let install = PluginInstall {
+        ids: vec![id.into()],
+        source: None,
+        revision: None,
+        link: false,
+        unstable: false,
+        yes: true,
+        quiet: true,
+    };
+
+    crate::plugins::plugin(PluginCommand::Install(install), false).await?;
+    Ok(())
+}
+
+/// What still keeps the Krabb from answering when the guide ends, checked in this order.
+#[derive(Clone, Copy, Debug)]
+enum Ending<'a> {
+    Provider,
+    Setup(&'a str),
+    Service,
+    Ready { terminal: bool },
+}
+
+/// How the guide ends: whether the Krabb can answer, then the one command to run next.
+fn closing(ending: Ending<'_>) -> String {
+    match ending {
+        Ending::Ready { terminal: true } => {
+            "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`.".into()
         }
+
+        Ending::Ready { terminal: false } => {
+            "Your Krabb is ready.\nCheck every part with `krabb status`.".into()
+        }
+
+        Ending::Provider => "Your Krabb is set up, and it needs a provider to answer.\nAdd one \
+                             with `krabb init provider`."
+            .into(),
+
+        Ending::Setup("codex") => "Your Krabb is set up, and Codex needs a sign-in to answer.\n\
+                                   Sign in with `krabb codex login`."
+            .into(),
+
+        Ending::Setup(id) => format!(
+            "Your Krabb is set up, and the {id} provider needs setup to answer.\nSet it up with \
+             `krabb plugin setup {id}`."
+        ),
+
+        Ending::Service => "Your Krabb is set up, and it needs the background service to \
+                            answer.\nStart it with `krabb init service`."
+            .into(),
     }
 }
 
@@ -830,6 +1124,7 @@ fn global(config: &crate::Config) -> (String, String) {
 /// The provider and model saved in the configuration, when that provider is installed.
 fn configured(root: &Path) -> Result<Option<(String, String)>, Error> {
     let config = crate::load_config_at(root)?;
+
     let (provider, model) = global(&config);
 
     Ok(crate::model_plugin_at(root, &provider).is_ok().then_some((provider, model)))
@@ -853,6 +1148,13 @@ fn installed(root: &Path, capability: &str) -> Result<Vec<String>, Error> {
         .filter(|(_, entry)| entry.capabilities.iter().any(|item| item == capability))
         .map(|(id, _)| id.clone())
         .collect())
+}
+
+/// Whether the TUI has tools but the home's saved approval mode refuses every change they try.
+fn approval_blocks_tui(config: &crate::Config) -> bool {
+    let own = config.clients.get(crate::client::TUI).and_then(|client| client.approval.as_deref());
+
+    config.client_tools(crate::client::TUI) && own.is_none() && config.approval == "off"
 }
 
 #[cfg(test)]

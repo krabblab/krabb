@@ -43,6 +43,7 @@ use tokio::{
 const FRAME_HEADROOM: usize = 64 * 1024;
 const FILE_LIMIT: usize = (krabb_core::jsonl::MAX - FRAME_HEADROOM) / 2;
 const OUTPUT_LIMIT: usize = (krabb_core::jsonl::MAX - FRAME_HEADROOM) / 4;
+const RESULT_LIMIT: usize = krabb_core::jsonl::MAX - FRAME_HEADROOM;
 const ENTRY_LIMIT: usize = 10_000;
 const HIT_LIMIT: usize = 10_000;
 const SEARCH_NODES: usize = 20_000;
@@ -287,7 +288,7 @@ async fn call_with_sandbox(
                 return Err(denied("Git execution approval is required"));
             }
 
-            let args = params["args"]
+            let mut args = params["args"]
                 .as_array()
                 .ok_or_else(|| denied("git.args is required"))?
                 .iter()
@@ -303,9 +304,12 @@ async fn call_with_sandbox(
                     return Err(denied("Worktree approval is required"));
                 }
 
-                if let Some(path) = args.get(2) {
-                    file_at(policy, path, workspace.as_deref())?;
-                }
+                let path = file_at(policy, &args[2], workspace.as_deref())?;
+
+                args[2] = path
+                    .to_str()
+                    .ok_or_else(|| denied("Worktree path must be valid UTF-8"))?
+                    .to_owned();
             } else if !matches!(args.as_slice(), [command] if command == "status" || command == "diff")
                 && !matches!(args.as_slice(), [command, list] if command == "worktree" && list == "list")
             {
@@ -315,11 +319,7 @@ async fn call_with_sandbox(
             let root = file_at(policy, ".", workspace.as_deref())?;
             let output =
                 git(&args, &root).await.map_err(|error| denied(format!("Git failed: {error}")))?;
-            json!({
-                "status": output.status.code(),
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr)
-            })
+            command_output(&output)
         }
 
         "shell_run" => {
@@ -331,11 +331,7 @@ async fn call_with_sandbox(
             let output = shell_with(command, &root, sandbox)
                 .await
                 .map_err(|error| denied(format!("Shell failed: {error}")))?;
-            json!({
-                "status": output.status.code(),
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr)
-            })
+            command_output(&output)
         }
 
         _ => return Ok(None),
@@ -400,6 +396,40 @@ fn tool_specs(shell_enabled: bool) -> Vec<ToolSpec> {
             }
         })
         .collect()
+}
+
+fn command_output(output: &std::process::Output) -> serde_json::Value {
+    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let mut truncated = false;
+
+    loop {
+        let value = json!({
+            "status": output.status.code(),
+            "stdout": stdout,
+            "stderr": stderr,
+            "truncated": truncated
+        });
+
+        if serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len()) <= RESULT_LIMIT {
+            return value;
+        }
+
+        truncated = true;
+        halve(&mut stdout);
+        halve(&mut stderr);
+    }
+}
+
+fn halve(text: &mut String) {
+    let mut end = text.len() / 2;
+
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    text.truncate(end);
 }
 
 fn response(id: u64, result: serde_json::Value) -> krabb_core::Result<Option<Response>> {
@@ -503,7 +533,20 @@ impl Sandbox {
                 "--entrypoint=sh",
                 "--mount",
             ])
-            .arg(format!("type=bind,source={root},target=/workspace"))
+            .arg(format!("type=bind,source={root},target=/workspace"));
+
+        for name in [".git", ".krabb"] {
+            let protected = Path::new(root).join(name);
+
+            if std::fs::symlink_metadata(&protected).is_ok_and(|metadata| !metadata.is_symlink()) {
+                process.arg("--mount").arg(format!(
+                    "type=bind,source={},target=/workspace/{name},readonly",
+                    protected.display()
+                ));
+            }
+        }
+
+        process
             .arg("--cidfile")
             .arg(cidfile)
             .args(["--workdir", "/workspace"])
@@ -1351,7 +1394,24 @@ fn file_at(policy: &Policy, path: &str, workspace: Option<&Path>) -> krabb_core:
 
     protect(&clean, &root)?;
 
+    if state(&clean, &root, state_home()) {
+        return Err(denied("Krabb state is not a workspace file"));
+    }
+
     if clean.starts_with(&root) { Ok(clean) } else { Err(denied("Path leaves the workspace")) }
+}
+
+fn state_home() -> Option<&'static Path> {
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+    HOME.get_or_init(|| {
+        std::env::var_os("KRABB_HOME").and_then(|home| std::fs::canonicalize(home).ok())
+    })
+    .as_deref()
+}
+
+fn state(path: &Path, root: &Path, home: Option<&Path>) -> bool {
+    home.is_some_and(|home| path.starts_with(home) && !root.starts_with(home))
 }
 
 fn reserved(name: &str) -> bool {
@@ -1535,14 +1595,16 @@ impl Confined {
 
 fn read_confined(path: &Confined) -> std::io::Result<String> {
     #[cfg(unix)]
-    {
-        read_text(std::fs::File::from(path.open(OFlags::RDONLY)?))
-    }
+    let file = std::fs::File::from(path.open(OFlags::RDONLY | OFlags::NONBLOCK)?);
 
     #[cfg(not(unix))]
-    {
-        read_text(open_confined(&path.path, false)?)
+    let file = open_confined(&path.path, false)?;
+
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(ErrorKind::InvalidInput, "Path is not a regular file."));
     }
+
+    read_text(file)
 }
 
 fn write_confined(path: &Confined, value: &str) -> std::io::Result<()> {
@@ -1795,6 +1857,10 @@ fn patch_paths_at(policy: &Policy, text: &str, workspace: Option<&Path>) -> krab
             continue;
         }
 
+        if path.starts_with('"') {
+            return Err(denied("Patch file names must be plain, unquoted paths"));
+        }
+
         let path = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).unwrap_or(path);
 
         file_at(policy, path, workspace)?;
@@ -1950,6 +2016,11 @@ fn search_confined(
                 }
 
                 let name = OsString::from(entry_name.as_ref());
+
+                if state_home().is_some_and(|home| path.display.join(&name) == home) {
+                    continue;
+                }
+
                 let child =
                     path.child(name).map_err(|error| denied(format!("Search failed: {error}")))?;
 
@@ -2001,7 +2072,9 @@ fn search_confined(
                     continue;
                 }
 
-                if reserved(&entry.file_name().to_string_lossy()) {
+                if reserved(&entry.file_name().to_string_lossy())
+                    || state_home().is_some_and(|home| path.display.join(entry.file_name()) == home)
+                {
                     continue;
                 }
 
@@ -2131,6 +2204,87 @@ mod tests {
             Sandbox::parse(Some("docker"), Some("local/tool:latest")).unwrap(),
             Some(Sandbox { runtime: "docker".into(), image: "local/tool:latest".into() })
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_output_fits_the_frame_after_escaping() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: vec![0; super::OUTPUT_LIMIT],
+            stderr: vec![0xff; super::OUTPUT_LIMIT],
+        };
+
+        let value = super::command_output(&output);
+
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["status"], 0);
+        assert!(serde_json::to_vec(&value).unwrap().len() <= super::RESULT_LIMIT);
+        assert!(!value["stdout"].as_str().unwrap().is_empty());
+
+        let small = std::process::Output { stdout: b"ok".to_vec(), stderr: vec![], ..output };
+
+        assert_eq!(super::command_output(&small)["truncated"], false);
+    }
+
+    #[test]
+    fn rejects_krabb_state_inside_a_wider_workspace() {
+        let home = Path::new("/home/user/.config/krabb");
+
+        assert!(super::state(&home.join("credentials.key"), Path::new("/home/user"), Some(home)));
+        assert!(!super::state(&home.join("workspace/a"), &home.join("workspace"), Some(home)));
+        assert!(!super::state(Path::new("/home/user/a"), Path::new("/home/user"), Some(home)));
+        assert!(!super::state(&home.join("credentials.key"), Path::new("/home/user"), None));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_read_refuses_special_files_without_blocking() {
+        let root = test_root("tools-read-fifo");
+
+        fs::create_dir_all(&root).unwrap();
+
+        let made = std::process::Command::new("mkfifo").arg(root.join("pipe")).status().unwrap();
+
+        assert!(made.success());
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            call(&policy(&root), Request::call(1, "file_read", json!({"path": "pipe"}))),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.unwrap_err().to_string().contains("not a regular file"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sandbox_mounts_repository_state_read_only() {
+        let root = test_root("tools-sandbox-mounts");
+
+        fs::create_dir_all(root.join(".git")).unwrap();
+
+        let sandbox = Sandbox { runtime: "docker".into(), image: "local/tool:latest".into() };
+        let process = sandbox.process("true", &root, &root.join("id")).unwrap();
+
+        let args = process
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(args.contains(&format!(
+            "type=bind,source={},target=/workspace/.git,readonly",
+            root.join(".git").display()
+        )));
+
+        assert!(!args.iter().any(|argument| argument.contains("/workspace/.krabb")));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
@@ -2820,6 +2974,32 @@ mod tests {
         assert!(target.join("README").is_file());
         assert!(!marker.exists());
 
+        let outside = test_root("krabb-tools-outside").join("elsewhere");
+
+        let added = git(&["worktree".into(), "add".into(), outside.display().to_string()], &root)
+            .await
+            .unwrap();
+
+        assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
+
+        let removed = call(
+            &Arc::new(Policy { shell: Shell::On, ..policy(&root) }),
+            Request::call(
+                2,
+                "git_run",
+                json!({"args": ["worktree", "remove", "elsewhere"], "approve": true}),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .result
+        .unwrap();
+
+        assert_ne!(removed["status"], 0);
+        assert!(outside.join("README").is_file());
+
+        let _ = fs::remove_dir_all(outside.parent().unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3076,6 +3256,19 @@ mod tests {
                 "diff --git a/note.txt b/../../outside\n--- a/note.txt\n+++ b/../../outside\n"
             )
             .is_err()
+        );
+
+        assert!(
+            patch_paths(
+                &policy,
+                concat!(
+                    "diff --git \"a/\\056krabb/x\" \"b/\\056krabb/x\"\n",
+                    "--- /dev/null\n+++ \"b/\\056krabb/x\"\n"
+                )
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unquoted")
         );
 
         let result =

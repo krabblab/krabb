@@ -403,9 +403,14 @@ pub(crate) fn local_session_json(
         SessionCommand::List(output) => {
             validate_page(output.page)?;
 
-            let value = serde_json::json!({
-                "items": store.sessions.values().map(ipc::summary).collect::<Vec<_>>()
-            });
+            let items = store
+                .sessions
+                .values()
+                .filter(|session| !session.is_work())
+                .map(ipc::summary)
+                .collect::<Vec<_>>();
+
+            let value = serde_json::json!({"items": items});
 
             if output.json || json {
                 println!("{}", serde_json::to_string_pretty(&value)?);

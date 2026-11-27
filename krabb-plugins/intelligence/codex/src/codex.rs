@@ -17,6 +17,7 @@ use tokio::{
 const BODY: usize = jsonl::MAX / 2;
 const TOOL_CALLS: usize = 16;
 const STREAM_EVENTS: usize = 200;
+const TURN_EVENTS: usize = 4096;
 
 // App-server startup and control requests may take up to one minute.
 const RPC_TIMEOUT: Duration = Duration::from_secs(60);
@@ -367,9 +368,7 @@ async fn generate_on(
         .or_else(|| started["turnId"].as_str())
         .ok_or_else(|| denied("Codex did not return a turn identifier."))?;
 
-    let text = timeout(TURN_TIMEOUT, server.turn(thread_id, turn_id, &allowed, &mut emitter))
-        .await
-        .map_err(|_| denied("Codex exceeded the turn time limit."))??;
+    let text = server.turn(thread_id, turn_id, &allowed, &mut emitter).await?;
 
     let context_usage = server.context_usage;
 
@@ -721,9 +720,13 @@ impl Server {
         allowed: &BTreeSet<String>,
         emitter: &mut Emitter,
     ) -> krabb_core::Result<String> {
-        self.turn_with_interval(thread, turn, allowed, emitter, Duration::from_millis(500)).await
+        let interval = Duration::from_millis(500);
+
+        self.turn_with_interval(thread, turn, allowed, emitter, interval, TURN_TIMEOUT).await
     }
 
+    /// Runs one turn within LIMIT, not counting the time host tool calls wait, since those
+    /// often wait for a person's approval and the host bounds each of them.
     async fn turn_with_interval(
         &mut self,
         thread: &str,
@@ -731,12 +734,13 @@ impl Server {
         allowed: &BTreeSet<String>,
         emitter: &mut Emitter,
         interval: Duration,
+        limit: Duration,
     ) -> krabb_core::Result<String> {
         self.failed_tool_calls.clear();
 
         self.context_usage = None;
 
-        let deadline = Instant::now() + TURN_TIMEOUT;
+        let mut deadline = Instant::now() + limit;
 
         let mut text = String::new();
         let mut pending = String::new();
@@ -773,9 +777,11 @@ impl Server {
                 return Err(denied("Codex app-server returned an invalid JSON-RPC message."));
             }
 
-            notices = notices.saturating_add(1);
+            if !streamed_text(&value, thread, turn) {
+                notices = notices.saturating_add(1);
+            }
 
-            if notices > 4096 {
+            if notices > TURN_EVENTS {
                 return Err(denied("Codex sent too many turn events."));
             }
 
@@ -833,7 +839,10 @@ impl Server {
                     return Err(denied("Codex exceeded the tool-call limit."));
                 }
 
+                let started = Instant::now();
+
                 self.tool(&value, thread, turn, allowed, emitter).await?;
+                deadline += started.elapsed();
             } else if value["method"] == "error" {
                 return Err(denied(&app_server_error(&value)));
             }
@@ -976,6 +985,16 @@ fn tool_denial(
     }
 
     None
+}
+
+/// Whether VALUE adds text to the active turn, which the response size limit already bounds.
+fn streamed_text(value: &Value, thread: &str, turn: &str) -> bool {
+    let params = &value["params"];
+
+    value["method"] == "item/agentMessage/delta"
+        && params["threadId"] == thread
+        && params["turnId"] == turn
+        && params["delta"].as_str().is_some_and(|delta| !delta.is_empty())
 }
 
 fn append(part: &str, text: &mut String, pending: &mut String) -> krabb_core::Result<()> {
@@ -1709,6 +1728,7 @@ done
                 &std::collections::BTreeSet::new(),
                 &mut emitter,
                 Duration::from_millis(1),
+                super::TURN_TIMEOUT,
             )
             .await
             .unwrap();
@@ -1731,6 +1751,200 @@ done
         assert!(expected.starts_with(&streamed));
 
         drop(server);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn streams_more_text_deltas_than_the_turn_event_limit() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
+        let path =
+            std::env::temp_dir().join(format!("krabb-codex-deltas-{}-{nonce}", std::process::id()));
+
+        let script = r#"#!/bin/sh
+
+if [ "$1" = "--version" ]; then
+    printf '%s\n' 'codex-cli 99.0.0'
+    exit 0
+fi
+
+while IFS= read -r line; do
+    case "$line" in
+        *initialize*) printf '%s\n' '{"id":1,"result":{}}' ;;
+        *thread/start*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}' ;;
+        *turn/start*)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+            i=0
+
+            while [ "$i" -lt 5000 ]; do
+                printf '%s\n' '{"method":"item/agentMessage/delta","params":{"delta":"x","itemId":"item-1","threadId":"thread-1","turnId":"turn-1"}}'
+                i=$((i + 1))
+            done
+
+            printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}'
+            ;;
+    esac
+done
+"#;
+
+        write_binary(&path, script).unwrap();
+
+        let mut server = Server::start_with(path.as_os_str().to_owned(), None).await.unwrap();
+
+        server.initialize().await.unwrap();
+
+        let thread =
+            server.call("thread/start", json!({"cwd": ".", "ephemeral": true})).await.unwrap();
+
+        let turn =
+            server.call("turn/start", json!({"threadId": thread["thread"]["id"]})).await.unwrap();
+
+        let (output, _events) = mpsc::channel(256);
+        let mut emitter = crate::Emitter::new(output);
+
+        let text = server
+            .turn_with_interval(
+                thread["thread"]["id"].as_str().unwrap(),
+                turn["turn"]["id"].as_str().unwrap(),
+                &std::collections::BTreeSet::new(),
+                &mut emitter,
+                Duration::from_millis(500),
+                super::TURN_TIMEOUT,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "x".repeat(5000));
+
+        drop(server);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn waiting_for_a_host_tool_does_not_count_against_the_turn_limit() {
+        use krabb_core::{
+            jsonl,
+            types::{Hello, Protocol, Request, Response},
+        };
+
+        use serde_json::Value;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::io::{AsyncBufReadExt, BufReader, duplex};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+
+        let path =
+            std::env::temp_dir().join(format!("krabb-codex-wait-{}-{nonce}", std::process::id()));
+
+        let script = r#"#!/bin/sh
+
+if [ "$1" = "--version" ]; then
+    printf '%s\n' 'codex-cli 99.0.0'
+    exit 0
+fi
+
+while IFS= read -r line; do
+    case "$line" in
+        *initialize*) printf '%s\n' '{"id":1,"result":{}}' ;;
+        *thread/start*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}' ;;
+        *turn/start*)
+            printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1"}}}'
+            printf '%s\n' '{"id":50,"method":"item/tool/call","params":{"threadId":"thread-1","turnId":"turn-1","tool":"read","arguments":{}}}'
+            ;;
+        *'"id":50'*)
+            printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"id":"item-1","type":"agentMessage","text":"Approved."}]}}}'
+            ;;
+    esac
+done
+"#;
+
+        write_binary(&path, script).unwrap();
+
+        let binary = path.as_os_str().to_owned();
+        let (server_read, mut client_write) = duplex(64 * 1024);
+        let (client_read, server_write) = duplex(64 * 1024);
+
+        let hello = Hello {
+            formats: vec![],
+            protocol: Protocol::CURRENT,
+            id: "codex".into(),
+            version: "0.1.0".into(),
+            capabilities: vec![],
+            commands: vec![],
+        };
+
+        let plugin = tokio::spawn(krabb_core::plugin::serve_io_events_concurrent(
+            hello,
+            BufReader::new(server_read),
+            server_write,
+            move |request, mut emitter| {
+                let binary = binary.clone();
+
+                async move {
+                    let Request::Call { id, method, .. } = request else {
+                        return Ok(None);
+                    };
+
+                    if method != "generate" {
+                        return Ok(None);
+                    }
+
+                    let mut server = Server::start_with(binary, None).await?;
+
+                    server.initialize().await?;
+
+                    let thread = server.call("thread/start", json!({"cwd": "."})).await?;
+                    let turn = server.call("turn/start", json!({})).await?;
+                    let allowed = std::collections::BTreeSet::from(["read".to_owned()]);
+
+                    let text = server
+                        .turn_with_interval(
+                            thread["thread"]["id"].as_str().unwrap_or_default(),
+                            turn["turn"]["id"].as_str().unwrap_or_default(),
+                            &allowed,
+                            &mut emitter,
+                            Duration::from_millis(500),
+                            Duration::from_millis(300),
+                        )
+                        .await?;
+
+                    Ok(Some(Response::ok(id, json!({"text": text}))))
+                }
+            },
+        ));
+
+        jsonl::write(&mut client_write, &Request::call(1, "generate", json!({}))).await.unwrap();
+
+        let mut input = BufReader::new(client_read);
+        let mut line = String::new();
+
+        input.read_line(&mut line).await.unwrap();
+
+        let call: Value = serde_json::from_str(&line).unwrap();
+
+        assert_eq!(call["method"], "host/tool");
+
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        let reply = json!({"jsonrpc": "2.0", "id": call["id"], "result": {"text": "Done."}});
+
+        jsonl::write(&mut client_write, &reply).await.unwrap();
+        line.clear();
+        input.read_line(&mut line).await.unwrap();
+
+        let response: Response = serde_json::from_str(&line).unwrap();
+
+        assert_eq!(response.id, 1);
+        assert_eq!(response.result.unwrap()["text"], "Approved.");
+
+        drop(client_write);
+        plugin.abort();
 
         let _ = std::fs::remove_file(path);
     }

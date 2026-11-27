@@ -335,7 +335,9 @@ where
         while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
             let line = buffer.drain(..=end).collect::<Vec<_>>();
 
-            if stream_reasoning(&line, &mut text, &mut pending, &mut calls, &mut reasoning)? {
+            if stream_reasoning(&line, &mut text, &mut pending, &mut calls, &mut reasoning)
+                .map_err(|error| interrupted(error, emitted))?
+            {
                 complete = true;
                 buffer.clear();
                 break 'stream;
@@ -348,13 +350,15 @@ where
     }
 
     if !buffer.is_empty() {
-        complete = stream_reasoning(&buffer, &mut text, &mut pending, &mut calls, &mut reasoning)?;
+        complete = stream_reasoning(&buffer, &mut text, &mut pending, &mut calls, &mut reasoning)
+            .map_err(|error| interrupted(error, emitted))?;
     }
 
     if !complete {
-        return Err(krabb_core::Error::Denied(
-            "OpenRouter stream ended before its completion marker.".into(),
-        ));
+        return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(
+            emitted,
+        ))
+        .error("OpenRouter stream ended before its completion marker."));
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;
@@ -400,6 +404,33 @@ where
     )
 }
 
+/// Whether a stream error event reports a busy upstream rather than a refused request.
+fn overloaded(error: &Value) -> bool {
+    let busy = |kind: &Value| match kind {
+        Value::String(kind) => {
+            kind.contains("overloaded") || kind == "server_error" || kind == "service_unavailable"
+        }
+
+        kind => matches!(kind.as_u64(), Some(502 | 503 | 529)),
+    };
+
+    busy(&error["type"]) || busy(&error["code"])
+}
+
+/// A transient failure after text reached the person is uncertain, since a replay repeats it.
+fn interrupted(error: krabb_core::Error, emitted: usize) -> krabb_core::Error {
+    match error {
+        krabb_core::Error::Failed { message, failure }
+            if failure.kind == krabb_core::failure::Kind::Transient =>
+        {
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                .error(message)
+        }
+
+        error => error,
+    }
+}
+
 fn stream_reasoning(
     line: &[u8],
     text: &mut String,
@@ -419,6 +450,11 @@ fn stream_reasoning(
     }
 
     let value: Value = serde_json::from_str(data)?;
+
+    if overloaded(&value["error"]) {
+        return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
+            .error("OpenRouter is overloaded."));
+    }
 
     if value.get("error").is_some() {
         return Err(krabb_core::Error::Denied("OpenRouter stream returned an error event.".into()));

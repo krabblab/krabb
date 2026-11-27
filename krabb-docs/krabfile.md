@@ -17,10 +17,10 @@ version = "0.1"
 
 [config]
 update = "prompt"          # off, check, prompt, or auto
-approval = "off"            # off, prompt, or auto
+approval = "prompt"         # off, prompt (default), or auto
 
 [config.clients.tui]
-tools = false
+tools = true               # on by default for the terminal client
 shell = false
 
 [config.channels.telegram]
@@ -88,4 +88,5 @@ parser provides one.
 
 Import validates first, then resolves plugin sources and verifies their
 metadata. It prompts before changing state; use `--yes` to skip the prompt and
-`--force` to replace existing configuration.
+`--force` to replace existing configuration. A failed import puts back the previous
+configuration, plugin lock, and installed plugins.

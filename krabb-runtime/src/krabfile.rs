@@ -197,6 +197,21 @@ pub(crate) fn import_krabfile_at_mode(
     }
 
     init_at(root)?;
+
+    let backup = super::temp("krabb-import")?;
+    let saved = ["plugins.lock".to_owned(), "plugins".to_owned()];
+    let entries = krabb_migrations::recovery::save(root, &backup.join("home"), &saved);
+
+    let entries = match entries {
+        Ok(entries) => entries,
+
+        Err(error) => {
+            let _ = krabb_migrations::recovery::remove(&backup);
+
+            return Err(error.into());
+        }
+    };
+
     secure(&destination, toml::to_string_pretty(&file.config)?.as_bytes())?;
 
     let spinner = if !json && !file.plugins.is_empty() {
@@ -249,6 +264,18 @@ pub(crate) fn import_krabfile_at_mode(
 
     drop(spinner);
 
+    let restored = match &result {
+        Ok(()) => Ok(()),
+
+        Err(_) => {
+            let _lock = metadata_lock(root)?;
+
+            krabb_migrations::recovery::restore(root, &backup.join("home"), &entries)
+        }
+    };
+
+    let _ = krabb_migrations::recovery::remove(&backup);
+
     if let Err(error) = result {
         match previous_config {
             Some(text) => secure(&destination, text.as_bytes())?,
@@ -257,6 +284,16 @@ pub(crate) fn import_krabfile_at_mode(
                 let _lock = metadata_lock(root)?;
                 let _ = std::fs::remove_file(&destination);
             }
+        }
+
+        if let Err(failure) = restored {
+            return Err(format!(
+                "{}\nThe plugins installed before the failure could not be removed: {}\nRemove \
+                 them with `krabb plugin uninstall <id>`.",
+                sentence(error.to_string()),
+                sentence(failure.to_string())
+            )
+            .into());
         }
 
         return Err(error);

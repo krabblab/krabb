@@ -33,6 +33,7 @@ impl Store {
                     text: "The saved retry needs review after upgrading. Its goal, prior use, and \
                         earliest retry time are preserved."
                         .into(),
+                    model: false,
                 });
             }
 
@@ -88,6 +89,7 @@ impl Store {
                         goal and partial work are saved. Review its provider or limits before \
                         resuming."
                     ),
+                    model: false,
                 });
             } else if task.failures == 1 {
                 task.notice = Some(Notice {
@@ -97,6 +99,7 @@ impl Store {
                         {}.",
                         krabb_date::format_datetime(deadline)
                     ),
+                    model: false,
                 });
             }
         })

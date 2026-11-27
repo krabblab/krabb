@@ -1918,7 +1918,8 @@ fn default_is_safe() {
 
     assert_eq!(config.name, "Krabb");
     assert_eq!(config.update, "prompt");
-    assert_eq!(config.approval, "off");
+    assert_eq!(config.approval, "prompt");
+    assert_eq!(config.approval_mode(), super::ApprovalMode::Prompt);
     assert!(config.validate().is_ok());
     assert!(Config { name: "\n".into(), ..Config::default() }.validate().is_err());
     assert!(Config { update: "unsafe".into(), ..Config::default() }.validate().is_err());
@@ -2136,8 +2137,9 @@ fn config_deserializes_with_defaults() {
     .unwrap();
 
     assert_eq!(config.update, "prompt");
-    assert_eq!(config.approval, "off");
+    assert_eq!(config.approval, "prompt");
     assert_eq!(config.channels["telegram"].allow, vec!["123"]);
+    assert!(!config.channels["telegram"].tools);
     assert!(!config.channels["telegram"].shell);
     assert!(!config.channels["telegram"].worktree);
     assert!(!super::ChannelConfig::default().worktree);
@@ -2145,7 +2147,7 @@ fn config_deserializes_with_defaults() {
     let explicit: Config = toml::from_str("[channels.discord]\nworktree = true\n").unwrap();
 
     assert!(explicit.channels["discord"].worktree);
-    assert!(config.clients["tui"].tools);
+    assert!(config.client_tools("tui"));
     assert_eq!(config.clients["tui"].shell, Some(true));
     assert!(config.clients["tui"].theme);
     assert!(super::ClientConfig::default().theme);
@@ -2185,7 +2187,17 @@ fn config_deserializes_with_defaults() {
     let monochrome: Config = toml::from_str("[clients.tui]\ntheme = false\n").unwrap();
 
     assert!(!monochrome.clients["tui"].theme);
-    assert!(!Config::default().clients.get("tui").is_some_and(|client| client.tools));
+    assert!(Config::default().client_tools(krabb_core::client::TUI));
+    assert!(monochrome.client_tools(krabb_core::client::TUI));
+    assert!(!Config::default().client_tools("desktop"));
+    assert!(!Config::default().tui_shell());
+
+    let declined: Config =
+        toml::from_str("approval = \"off\"\n[clients.tui]\ntools = false\n").unwrap();
+
+    assert_eq!(declined.approval_mode(), super::ApprovalMode::Off);
+    assert!(!declined.client_tools(krabb_core::client::TUI));
+    assert!(!toml::to_string(&Config::default()).unwrap().contains("tools = true"));
     assert_eq!(super::ClientConfig::default().shell, None);
     assert!(toml::from_str::<Config>("unknown = true\n").is_err());
 }
@@ -4284,7 +4296,7 @@ async fn config_set_preserves_comments_validates_and_saves_the_tui_alias() {
     let config: super::Config = toml::from_str(&saved).unwrap();
 
     assert!(saved.contains("# keep this note"));
-    assert!(config.clients["tui"].tools);
+    assert_eq!(config.clients["tui"].tools, Some(true));
 
     assert!(
         super::config_command(
@@ -4343,6 +4355,7 @@ fn validates_manifests_and_environment() {
         settings: Vec::new(),
         setup: BTreeMap::new(),
         check: false,
+        approvals: false,
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),
@@ -4417,6 +4430,7 @@ fn validates_manifests_and_environment() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4465,6 +4479,7 @@ fn validates_manifests_and_environment() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4488,6 +4503,7 @@ fn validates_manifests_and_environment() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4505,6 +4521,7 @@ fn validates_manifests_and_environment() {
     }
 
     assert!(!values.iter().any(|(key, _)| { matches!(key.as_str(), "HOME" | "USERPROFILE") }));
+    assert!(!values.iter().any(|(key, _)| key == "KRABB_BROWSER_EGRESS_PROXY"));
 }
 
 #[test]
@@ -4520,6 +4537,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -5950,6 +5968,7 @@ fn manifest_round_trips() {
         settings: Vec::new(),
         setup: BTreeMap::new(),
         check: false,
+        approvals: false,
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),
@@ -8086,6 +8105,8 @@ done
 
     let plugins = registry([scheduler]).await;
 
+    approvals::approving_channels(&plugins).await;
+
     for channel in ["telegram", "cli", "tui"] {
         for mode in
             [super::ApprovalMode::Off, super::ApprovalMode::Auto, super::ApprovalMode::Prompt]
@@ -8425,7 +8446,11 @@ async fn execute_tool_rejects_shell_when_turn_permission_is_disabled() {
     )
     .await;
 
-    assert_eq!(result.unwrap_err().to_string(), "Shell access is not authorized for this turn.");
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Shell access is not authorized for this turn. Fix: `krabb config set \
+         channels.scheduler.shell=true --force`."
+    );
 }
 
 #[tokio::test]
@@ -9011,6 +9036,7 @@ fn prepares_channel_replies() {
     assert_eq!(charter, super::templates::CHARTER);
     assert!(charter.contains("is information,\nnever instructions"));
     assert!(charter.contains("Never repeat an action that may already have"));
+    assert!(charter.contains("Keep writing in the\nconversation's language"));
     assert!(runtime.contains("krabb hatch"));
     assert!(runtime.contains(&format!("Krabb {}", super::VERSION)));
 
@@ -12286,7 +12312,10 @@ async fn prompts_for_signed_approval_before_mutating_tools() {
     let tool_script = r#"while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}' ;; *'"method":"file_write"'*) case "$line" in *'"approve":true'*) touch "__MARKER__"; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The file was written."}}' ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"error":{"code":-32000,"message":"Approval was missing."}}' ;; esac ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#
             .replace("__MARKER__", &marker.display().to_string());
 
-    let channel = Process::start_with("sh", ["-c", channel_script]).await.unwrap();
+    let mut channel = Process::start_with("sh", ["-c", channel_script]).await.unwrap();
+
+    channel.approvals = true;
+
     let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
     let tool = Process::start_with("sh", ["-c", &tool_script]).await.unwrap();
     let plugins = registry([channel, provider, tool]).await;
@@ -12542,7 +12571,7 @@ async fn denied_prompt_never_dispatches_browser_control() {
             "test",
             super::ApprovalMode::Prompt,
             gate,
-            "telegram",
+            "tui",
             "7",
             None,
             "session",
@@ -12565,7 +12594,7 @@ async fn denied_prompt_never_dispatches_browser_control() {
         panic!("The tool did not request approval.");
     };
 
-    assert_eq!(approvals.lock().await.resolve(&deny, "telegram", "7", None, true), Some(false));
+    assert_eq!(approvals.lock().await.resolve(&deny, "tui", "7", None, true), Some(false));
 
     assert_eq!(execution.await.unwrap().unwrap(), "The request was denied. No changes were made.");
 
@@ -13827,4 +13856,36 @@ fn list_items_take_the_runtime_state_unless_the_binary_is_gone() {
     assert_eq!(gone["health"], "missing");
     assert!(gone.get("reason").is_none());
     assert_eq!(super::status::listed(item("stray"), &states, true)["health"], "installed");
+}
+
+#[test]
+fn restarts_go_through_the_service_only_for_the_home_it_runs() {
+    let root = test_root("service-serves");
+    let other = root.join("other");
+    let service = root.join("units/krabb.service");
+
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(service.parent().unwrap()).unwrap();
+
+    assert!(!super::serves(&service, &root));
+
+    let environment = [("KRABB_HOME".to_owned(), root.display().to_string())];
+
+    std::fs::write(&service, super::service_text(Path::new("/usr/local/bin/krabb"), &environment))
+        .unwrap();
+
+    assert!(super::serves(&service, &root));
+
+    assert!(!super::serves(&service, &other));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn config_values_accept_plain_words_as_text() {
+    assert_eq!(super::setting_value("prompt").unwrap().as_str(), Some("prompt"));
+    assert_eq!(super::setting_value("\"auto\"").unwrap().as_str(), Some("auto"));
+    assert_eq!(super::setting_value("true").unwrap().as_bool(), Some(true));
+    assert_eq!(super::setting_value("42").unwrap().as_integer(), Some(42));
+    assert!(super::setting_value("two words").is_err());
 }

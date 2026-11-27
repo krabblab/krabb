@@ -20,6 +20,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         settings: Vec::new(),
         setup: BTreeMap::new(),
         check: false,
+        approvals: false,
         commands: commands.clone(),
         state: None,
         requires: Vec::new(),
@@ -1464,4 +1465,46 @@ async fn rerunning_a_connection_test_ends_a_failure_with_one_next_action() {
     for root in [passed, rejected, guided, clipped] {
         let _ = fs::remove_dir_all(root);
     }
+}
+
+#[test]
+fn setup_also_updates_the_service_credential_copy() {
+    let root = crate::tests::test_root("setup-service-copy");
+    let service = root.join("units/krabb.service");
+    let copy = crate::service_credentials_path(&service);
+    let key = crate::credentials::key_path(&root);
+
+    let environment = [
+        ("KRABB_HOME".to_owned(), root.display().to_string()),
+        ("KRABB_CREDENTIALS".to_owned(), copy.display().to_string()),
+        ("KRABB_CREDENTIALS_KEY".to_owned(), key.display().to_string()),
+    ];
+
+    let values =
+        |value: &str| [("KRABB_TELEGRAM_TOKEN".to_owned(), value.to_owned())].into_iter().collect();
+
+    fs::create_dir_all(service.parent().unwrap()).unwrap();
+
+    assert_eq!(copy_answers(&root, &service, values("rotated"), &[]).unwrap(), None);
+
+    fs::write(
+        &service,
+        crate::service_text(Path::new("/usr/local/bin/krabb-daemon"), &environment),
+    )
+    .unwrap();
+
+    crate::credentials::save(&copy, &key, values("synthetic"), Some(false)).unwrap();
+
+    let active = copy_answers(&root, &service, values("rotated"), &[]).unwrap();
+
+    assert_eq!(active, Some(copy.canonicalize().unwrap()));
+    assert_eq!(crate::credentials::read(&copy, &key).unwrap(), values("rotated"));
+
+    let cleared = ["KRABB_TELEGRAM_TOKEN".to_owned()];
+
+    copy_answers(&root, &service, BTreeMap::new(), &cleared).unwrap();
+
+    assert!(crate::credentials::read(&copy, &key).unwrap().is_empty());
+
+    let _ = fs::remove_dir_all(root);
 }

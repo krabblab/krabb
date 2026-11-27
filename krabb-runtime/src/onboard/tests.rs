@@ -13,7 +13,14 @@ fn args(flags: &[&str]) -> InitArgs {
 }
 
 fn guide(root: PathBuf) -> Guide {
-    Guide { root, color: false, spaced: true, named: Vec::new(), interactive: false }
+    Guide {
+        root,
+        color: false,
+        spaced: true,
+        named: Vec::new(),
+        interactive: false,
+        started: false,
+    }
 }
 
 #[test]
@@ -92,6 +99,19 @@ fn choices_cover_every_official_provider_channel_and_client() {
 }
 
 #[test]
+fn the_terminal_brings_the_tools_plugin_and_channels_bring_nothing() {
+    let plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krabb-plugins");
+    let terminal = companions("tui").iter().map(|offer| offer.id).collect::<Vec<_>>();
+
+    assert_eq!(terminal, ["tools"]);
+    assert!(plugins.join("tools/krabb-plugin.toml").is_file());
+
+    for place in PLACES.iter().filter(|offer| offer.id != "tui") {
+        assert!(companions(place.id).is_empty(), "{}", place.id);
+    }
+}
+
+#[test]
 fn the_home_step_creates_or_keeps_the_home() {
     let root = crate::tests::test_root("onboard-home");
     let mut guide = guide(root.clone());
@@ -154,13 +174,62 @@ async fn choosing_no_channel_installs_nothing() {
 #[test]
 fn the_guide_ends_with_one_next_action() {
     assert_eq!(
-        closing(true, true),
+        closing(Ending::Ready { terminal: true }),
         "Your Krabb is ready.\nChat with it in the terminal with `krabb tui`."
     );
 
-    assert_eq!(closing(true, false), "Your Krabb is ready.\nCheck every part with `krabb status`.");
+    assert_eq!(
+        closing(Ending::Ready { terminal: false }),
+        "Your Krabb is ready.\nCheck every part with `krabb status`."
+    );
 
-    assert!(closing(false, true).ends_with("Add one with `krabb init provider`."));
+    assert!(closing(Ending::Provider).ends_with("Add one with `krabb init provider`."));
+
+    assert_eq!(
+        closing(Ending::Setup("openai")),
+        "Your Krabb is set up, and the openai provider needs setup to answer.\nSet it up with \
+         `krabb plugin setup openai`."
+    );
+
+    assert!(closing(Ending::Setup("codex")).ends_with("Sign in with `krabb codex login`."));
+
+    assert_eq!(
+        closing(Ending::Service),
+        "Your Krabb is set up, and it needs the background service to answer.\nStart it with \
+         `krabb init service`."
+    );
+
+    for ending in [Ending::Provider, Ending::Setup("gemini"), Ending::Service] {
+        assert!(!closing(ending).contains("ready"), "{ending:?}");
+    }
+}
+
+#[test]
+fn a_blocked_step_fails_with_its_reason_and_fix() {
+    let Flow::Blocked { why, next } = INSTALL_CODEX else { panic!("the guide goes on") };
+
+    assert_eq!(
+        blocked(why, next),
+        "Setup stopped, because the Codex CLI is not installed.\nInstall it from \
+         https://developers.openai.com/codex/cli, then run `krabb init` again."
+    );
+}
+
+#[test]
+fn a_changed_service_restarts_and_a_kept_one_only_starts() {
+    assert_eq!(actions(false), [ServiceAction::Start]);
+    assert_eq!(actions(true), [ServiceAction::Stop, ServiceAction::Start]);
+}
+
+#[test]
+fn a_failed_companion_install_leaves_its_fix() {
+    assert_eq!(
+        companion_failed("tools", "Could not reach the plugin index.\nCheck your network."),
+        "Could not install the tools plugin: Could not reach the plugin index.\nInstall it later \
+         with `krabb plugin install tools`."
+    );
+
+    assert!(companion_failed("tools", "").starts_with("Could not install the tools plugin.\n"));
 }
 
 #[test]
@@ -307,4 +376,88 @@ fn questions_follow_a_title_directly_and_a_finished_step_after_a_gap() {
     guide.gap();
 
     assert!(guide.spaced);
+}
+
+#[test]
+fn codex_needs_its_cli_and_a_sign_in_before_the_guide_goes_on() {
+    assert_eq!(codex_need(false, false, true), Codex::Install);
+    assert_eq!(codex_need(false, true, false), Codex::Install);
+    assert_eq!(codex_need(true, true, false), Codex::Ready);
+    assert_eq!(codex_need(true, false, true), Codex::SignIn);
+    assert_eq!(codex_need(true, false, false), Codex::Unsigned);
+
+    for flow in [INSTALL_CODEX, SIGN_IN_CODEX] {
+        let Flow::Blocked { why, next } = flow else { panic!("the guide goes on") };
+
+        assert!(!why.ends_with('.'));
+        assert!(next.ends_with("then run `krabb init` again."));
+    }
+}
+
+#[test]
+fn hatching_waits_for_codex_to_answer() {
+    assert_eq!(hatch_wait(Codex::Ready), None);
+    assert!(hatch_wait(Codex::Install).unwrap().contains("developers.openai.com/codex/cli"));
+
+    for need in [Codex::SignIn, Codex::Unsigned] {
+        assert!(hatch_wait(need).unwrap().contains("`krabb codex login`"));
+    }
+}
+
+#[tokio::test]
+async fn codex_skips_setup_and_other_providers_need_no_sign_in() {
+    let mut guide = guide(PathBuf::from("unused"));
+    let codex = find(&PROVIDERS, "codex").unwrap();
+
+    assert!(matches!(guide.configure(codex).await.unwrap(), Flow::Next));
+    assert!(matches!(guide.sign_in("openai").await.unwrap(), Flow::Next));
+    assert!(guide.spaced);
+}
+
+#[test]
+fn a_saved_approval_off_blocks_only_a_tui_without_its_own_mode() {
+    let parse = |text: &str| toml::from_str::<crate::Config>(text).unwrap();
+
+    assert!(approval_blocks_tui(&parse("approval = 'off'\n")));
+    assert!(!approval_blocks_tui(&parse("approval = 'prompt'\n")));
+    assert!(!approval_blocks_tui(&parse("approval = 'off'\n[clients.tui]\napproval = 'off'\n")));
+    assert!(!approval_blocks_tui(&parse("approval = 'off'\n[clients.tui]\ntools = false\n")));
+}
+
+#[test]
+fn without_a_terminal_a_blocked_tui_keeps_its_saved_approval() {
+    let root = crate::tests::test_root("onboard-tui-approval");
+
+    let mut guide = guide(root.clone());
+
+    guide.home().unwrap();
+    crate::save_setting(&root, "approval", "off".into()).unwrap();
+
+    assert!(matches!(guide.tui_approval().unwrap(), Flow::Next));
+    assert!(approval_blocks_tui(&crate::load_config_at(&root).unwrap()));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_service_of_another_home_stays_as_it_is() {
+    let root = crate::tests::test_root("onboard-other-service");
+    let other = root.join("other");
+    let service = root.join("units/krabb.service");
+
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(service.parent().unwrap()).unwrap();
+
+    let environment = [("KRABB_HOME".to_owned(), other.display().to_string())];
+    let text = crate::service_text(Path::new("/usr/local/bin/krabb"), &environment);
+
+    std::fs::write(&service, &text).unwrap();
+
+    let mut guide = guide(root.clone());
+
+    assert!(matches!(guide.service_at(&service).unwrap(), Flow::Next));
+    assert!(!guide.started);
+    assert_eq!(std::fs::read_to_string(&service).unwrap(), text);
+
+    let _ = std::fs::remove_dir_all(root);
 }

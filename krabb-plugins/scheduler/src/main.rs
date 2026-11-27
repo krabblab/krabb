@@ -84,6 +84,19 @@ struct Task {
     report_pending: bool,
     #[serde(default)]
     imported_timer_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claim: Option<Claim>,
+}
+
+/// What a claim changed, so `release` can undo a claim the host never received.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+struct Claim {
+    manual_run: bool,
+    manual_retry: bool,
+    manual_origin: bool,
+    retry_at: Option<u64>,
+    attempts: u8,
+    replay_count: u8,
 }
 
 type Tasks = BTreeMap<u64, Arc<Task>>;
@@ -452,6 +465,7 @@ async fn call_at(
                         finish_result: None,
                         report_pending: false,
                         imported_timer_id: None,
+                        claim: None,
                     }),
                 );
 
@@ -743,6 +757,15 @@ async fn call_at(
 
             if let Some(current) = next_tasks.get_mut(&task_id) {
                 let current = Arc::make_mut(current);
+                current.claim = Some(Claim {
+                    manual_run: current.manual_run,
+                    manual_retry: current.manual_retry,
+                    manual_origin: current.manual_origin,
+                    retry_at: current.retry_at,
+                    attempts: current.attempts,
+                    replay_count: current.replay_count,
+                });
+
                 current.status = "running".into();
                 current.run_id = Some(run_id);
                 current.manual_origin |= current.manual_run && !current.manual_retry;
@@ -1120,6 +1143,45 @@ async fn call_at(
                 .lock()
                 .map_err(|_| krabb_core::Error::Denied("Scheduler lock is poisoned.".into()))?;
             json!({"items": tasks.iter().filter(|(_, task)| task.status == "active" && task.due <= at).map(|(id, task)| json!({"id": id, "text": task.text, "due": task.due})).collect::<Vec<_>>()})
+        }
+
+        "release" => {
+            let lease = params["lease"]
+                .as_u64()
+                .ok_or_else(|| krabb_core::Error::Denied("release.lease is required.".into()))?;
+            let mut tasks = tasks
+                .lock()
+                .map_err(|_| krabb_core::Error::Denied("Scheduler lock is poisoned.".into()))?;
+            let mut next_tasks = tasks.clone();
+            let mut released = false;
+
+            for task in next_tasks.values_mut() {
+                if task.status != "running" || task.run_id != Some(lease) {
+                    continue;
+                }
+
+                let task = Arc::make_mut(task);
+                let Some(claim) = task.claim.take() else {
+                    continue;
+                };
+
+                task.status = "active".into();
+                task.run_id = None;
+                task.manual_run = claim.manual_run;
+                task.manual_retry = claim.manual_retry;
+                task.manual_origin = claim.manual_origin;
+                task.retry_at = claim.retry_at;
+                task.attempts = claim.attempts;
+                task.replay_count = claim.replay_count;
+                released = true;
+            }
+
+            if released {
+                persist_locked_at(location, &next_tasks)?;
+                *tasks = next_tasks;
+            }
+
+            json!({"released": released})
         }
 
         "remove" => {
@@ -1658,6 +1720,30 @@ mod tests {
         assert!(claim["item"]["scheduled_for"].as_u64().is_some());
         assert_eq!(claim["item"]["attempt"], 1);
 
+        let release =
+            |id, lease| call(&tasks, Request::call(id, "release", json!({"lease": lease})));
+
+        let other = release(20, 1).await.unwrap().unwrap().result.unwrap();
+
+        assert_eq!(other["released"], false);
+        assert_eq!(tasks.lock().unwrap()[&30].status, "running");
+
+        let released = release(21, 9001).await.unwrap().unwrap().result.unwrap();
+
+        assert_eq!(released["released"], true);
+        assert_eq!(tasks.lock().unwrap()[&30].status, "active");
+        assert_eq!(tasks.lock().unwrap()[&30].attempts, 0);
+
+        let claim =
+            call(&tasks, Request::call(22, "claim", json!({"at": u64::MAX, "lease": 9001})))
+                .await
+                .unwrap()
+                .unwrap()
+                .result
+                .unwrap();
+
+        assert_eq!(claim["item"]["attempt"], 1);
+
         let first = call(
             &tasks,
             Request::call(
@@ -1766,6 +1852,7 @@ mod tests {
             finish_result: Some(json!({"success": true, "result": "done"})),
             report_pending: true,
             imported_timer_id: None,
+            claim: None,
         };
 
         for id in 1..=45 {
@@ -2036,6 +2123,7 @@ mod tests {
                     finish_result: None,
                     report_pending: false,
                     imported_timer_id: None,
+                    claim: None,
                 }),
             );
         }
@@ -3059,6 +3147,7 @@ mod tests {
                 finish_result: None,
                 report_pending: false,
                 imported_timer_id: None,
+                claim: None,
             }),
         );
 
@@ -3536,6 +3625,7 @@ mod tests {
                         finish_result: None,
                         report_pending: false,
                         imported_timer_id: None,
+                        claim: None,
                     }),
                 );
             }

@@ -12,11 +12,11 @@ history is stored under `KRABB_HOME/logs/schedules/`. See [Storage](storage.md)
 for the complete layout and upgrade behavior.
 
 Read or change settings without opening the TOML file with `krabb config get`
-and `krabb config set KEY=VALUE`. For example, enable TUI workspace tools with
-`krabb config set clients.tui=true` (the long form is
-`krabb config set clients.tui.tools=true`). TOML values use normal TOML syntax,
-such as `krabb config set 'approval="prompt"'` or
-`krabb config set 'channels.telegram.allow=["123"]'`. The command
+and `krabb config set KEY=VALUE`. For example, turn off TUI workspace tools with
+`krabb config set clients.tui=false` (the long form is
+`krabb config set clients.tui.tools=false`). TOML values use normal TOML syntax,
+such as `krabb config set 'channels.telegram.allow=["123"]'`, and a plain word is
+saved as text, so `krabb config set approval=prompt` works without quotes. The command
 validates the complete config before saving and preserves existing comments.
 Global/channel `provider` and `model` settings apply to new channel turns without
 restarting the daemon. The TUI tools switch applies immediately to new TUI turns;
@@ -47,7 +47,7 @@ attachments are retained in the selected conversation storage. See
 ```toml
 name = "Krabb"
 update = "prompt"
-approval = "off"
+approval = "prompt"
 provider = "openrouter"
 model = "default"
 
@@ -163,7 +163,7 @@ foreground/background palettes. The theme is enabled by default; change it with
 Unknown update and approval modes fail validation before the daemon starts.
 `name` sets the globally displayed name for Krabb (1–64 visible characters).
 The default is `Krabb`.
-The default update mode is `prompt`, approval is `off`, shell execution is
+The default update mode is `prompt`, approval is `prompt`, shell execution is
 disabled, and visibility exports nothing by default. Conversations use the plain
 workspace with ownership filtering; Git worktrees are an explicit opt-in.
 
@@ -192,13 +192,16 @@ Approval modes are:
   and includes the host-selected workspace. The proposed action is also saved
   with its task. If the button expires, the turn is interrupted, or the daemon
   restarts, the task waits for a decision instead of running again. Reply
-  `approve` or `deny` in the original conversation; the decision has no expiry,
+  `/task approve <id>` or `/task deny <id>` with the task id from the notice in
+  the original conversation; the decision has no expiry,
   survives restart, and runs the saved action at most once.
 - `auto`: Permit mutating tool calls without an interactive confirmation.
 
-Use `prompt` for interactive Telegram and Discord channels. Use `auto` only
-when the configured channel policy is trusted to run workspace mutations
-without a person confirming each request.
+Use `prompt` for interactive Telegram and Discord channels. Slack, Signal, and
+WhatsApp cannot show approval prompts, so under `prompt` they run no mutating tool.
+Neither does a channel whose plugin is not loaded.
+Use `auto` only when the configured channel policy is trusted to run workspace
+mutations without a person confirming each request.
 
 ## Provider And Model Precedence
 
@@ -310,8 +313,11 @@ to `KRABB_ROOT` when no session workspace is selected. A root by itself does
 not enable tools: channel `tools = true` and daemon approvals are still
 required, and shell remains separately disabled by default.
 
-The TUI is a local daemon client. Its `tools` and `shell` settings default to
-`false`; enable them under `[clients.tui]` for TUI turns. Global approval still
+The TUI is a local daemon client. Its `tools` setting defaults to `true` and its
+`shell` setting to `false`. Set either under `[clients.tui]` to change them for TUI
+turns, and the global approval mode still applies to mutating tools. Other clients and
+every channel default to `tools = false`.
+
 The host resolves declared secrets and settings from nonempty environment overrides
 first, then from the encrypted file named by `KRABB_CREDENTIALS`, defaulting to
 `credentials.json` in Krabb's home. Unset settings use their manifest defaults. `krabb plugin setup <id>` securely prompts
@@ -333,7 +339,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | Variable | Purpose |
 | --- | --- |
 | `KRABB_HOME` | Krabb state, plugins, and global agent workspace |
-| `KRABB_ROOT` | Override the default `KRABB_HOME/workspace` tool root |
+| `KRABB_ROOT` | Override the default `KRABB_HOME/workspace` tool root; file tools never read `KRABB_HOME` through it |
 | `KRABB_CREDENTIALS` | Encrypted credential file; defaults to `credentials.json` in Krabb's home |
 | `KRABB_CHANNEL` | Default channel plugin ID for diagnostics; all loaded channels receive messages |
 | `KRABB_MODEL_PLUGIN` | Default intelligence plugin ID |
@@ -348,7 +354,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_PLAYWRIGHT_BROWSERS_PATH` | Optional Chromium cache directory when it differs from Playwright's default |
 | `KRABB_NODE` | Optional Node.js executable path for the browser worker |
 | `KRABB_BROWSER_ALLOWED_HOSTS` | Comma-separated exact host allowlist for browser requests |
-| `KRABB_BROWSER_EGRESS_PROXY` | Required controlled HTTP proxy for browser network access |
+| `KRABB_BROWSER_EGRESS_PROXY` | Required controlled HTTP proxy for browser network access; only the browser plugin receives it |
 | `KRABB_COMPUTER_MODE` | `isolated` for Linux Xvfb, or `interactive` for native macOS and Windows desktop control |
 | `KRABB_COMPUTER_ALLOW_HOST_CONTROL` | Must be `1` to enable interactive macOS or Windows desktop control |
 | `KRABB_COMPUTER_DISPLAY` | Dedicated Xvfb display number, above `:0`, for Linux computer control |

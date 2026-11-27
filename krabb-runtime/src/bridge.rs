@@ -263,7 +263,7 @@ pub(crate) async fn bridge_with_media(
 
                     drop(lifecycle);
 
-                    if !recovery::channel(
+                    if !recovery::plugin(
                         plugins,
                         channel_id,
                         &channel,
@@ -289,7 +289,7 @@ pub(crate) async fn bridge_with_media(
 
             drop(lifecycle);
 
-            if !recovery::channel(plugins, channel_id, &channel, &mut channel_failures, &stop).await
+            if !recovery::plugin(plugins, channel_id, &channel, &mut channel_failures, &stop).await
             {
                 return Ok(());
             }

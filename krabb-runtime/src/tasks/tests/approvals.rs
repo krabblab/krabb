@@ -32,7 +32,7 @@ async fn prompted() -> Fixture {
     let mut config = fixture.context.config.clone();
 
     config.approval = "prompt".into();
-    config.clients.get_mut("desktop").unwrap().tools = true;
+    config.clients.get_mut("desktop").unwrap().tools = Some(true);
     fixture.context.config = config.clone();
     fixture.context.plugins.config = Arc::new(config);
 
@@ -216,6 +216,7 @@ async fn a_pending_approval_survives_restart_and_runs_the_exact_action_once() {
 
     assert_eq!(generated(&fixture), 2);
     assert_eq!(notices_matching(&fixture, "Approval needed before running write"), 1);
+    assert_eq!(notices_matching(&fixture, &format!("Reply `/task approve {id}`")), 1);
 
     let path = fixture.context.home.join("data/sessions/index.json");
     let restored = state::Store::load(path).unwrap();

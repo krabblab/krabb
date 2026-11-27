@@ -345,7 +345,9 @@ where
                 while let Some(end) = buffered.iter().position(|byte| *byte == b'\n') {
                     let line = buffered.drain(..=end).collect::<Vec<_>>();
 
-                    if anthropic_line(&line, &mut text, &mut pending, &mut tools, &mut stop)? {
+                    if anthropic_line(&line, &mut text, &mut pending, &mut tools, &mut stop)
+                        .map_err(|error| interrupted(error, emitted))?
+                    {
                         complete = true;
                         buffered.clear();
                         break 'stream;
@@ -364,13 +366,15 @@ where
     }
 
     if !buffered.is_empty() {
-        complete = anthropic_line(&buffered, &mut text, &mut pending, &mut tools, &mut stop)?;
+        complete = anthropic_line(&buffered, &mut text, &mut pending, &mut tools, &mut stop)
+            .map_err(|error| interrupted(error, emitted))?;
     }
 
     if !complete {
-        return Err(krabb_core::Error::Denied(
-            "Anthropic stream ended before its completion marker.".into(),
-        ));
+        return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(
+            emitted,
+        ))
+        .error("Anthropic stream ended before its completion marker."));
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;
@@ -412,6 +416,20 @@ where
     )
 }
 
+/// A transient failure after text reached the person is uncertain, since a replay repeats it.
+fn interrupted(error: krabb_core::Error, emitted: usize) -> krabb_core::Error {
+    match error {
+        krabb_core::Error::Failed { message, failure }
+            if failure.kind == krabb_core::failure::Kind::Transient =>
+        {
+            krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
+                .error(message)
+        }
+
+        error => error,
+    }
+}
+
 fn anthropic_line(
     line: &[u8],
     text: &mut String,
@@ -431,6 +449,11 @@ fn anthropic_line(
 
     match value["type"].as_str().unwrap_or_default() {
         "message_stop" => return Ok(true),
+
+        "error" if value["error"]["type"] == "overloaded_error" => {
+            return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
+                .error("Anthropic is overloaded."));
+        }
 
         "error" => {
             return Err(krabb_core::Error::Denied(

@@ -6,6 +6,9 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 const BASE: &str = "https://github.com/krabblab/krabb/releases/download";
 const LATEST: &str = "https://github.com/krabblab/krabb/releases/latest/download";
+const LIST: &str = "https://api.github.com/repos/krabblab/krabb/releases?per_page=20";
+const LIST_LIMIT: u64 = 8 * 1024 * 1024;
+const PAGE: &str = "https://github.com/krabblab/krabb/releases";
 const SUMS: &str = "SHA256SUMS";
 const SUMS_LIMIT: u64 = 1024 * 1024;
 
@@ -24,9 +27,64 @@ pub(super) fn parts(source: &str) -> Option<(&str, &str)> {
     source.split_once("#sha256=")
 }
 
-/// The newest stable release that publishes the host for this target.
+/// The newest release that publishes the host for this target. A stable host takes the newest
+/// stable release, and a pre-release host also takes pre-releases, which `releases/latest`
+/// skips. A configured release base names the one release to use.
 pub(super) fn latest() -> Result<String, Error> {
-    latest_from(base().as_deref(), std::env::consts::OS, std::env::consts::ARCH)
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    let base = base();
+
+    if base.is_none() && !stable(super::VERSION) {
+        let list = std::env::var("KRABB_RELEASE_LIST").ok().filter(|list| !list.is_empty());
+
+        return newest_from(list.as_deref().unwrap_or(LIST), os, arch);
+    }
+
+    latest_from(base.as_deref(), os, arch)
+}
+
+/// The newest release or pre-release in the GitHub release list at LIST that publishes the host
+/// for this target.
+fn newest_from(list: &str, os: &str, arch: &str) -> Result<String, Error> {
+    let (target, extension) = target(os, arch).ok_or_else(|| unsupported(os, arch))?;
+
+    let text = match local(list) {
+        Some(path) => super::read_bounded(&path, LIST_LIMIT).map_err(Error::from),
+        None => super::download_bounded(list, LIST_LIMIT),
+    }
+    .and_then(|bytes| Ok(serde_json::from_slice::<Vec<serde_json::Value>>(&bytes)?))
+    .map_err(|error| {
+        format!(
+            "The release list is unavailable: {}\nName a version from {PAGE} with `krabb update \
+             <version>`.",
+            super::sentence(error.to_string())
+        )
+    })?;
+
+    let published = |release: &serde_json::Value, version: &str| {
+        let archive = archive("core", version, target, extension);
+
+        release["assets"]
+            .as_array()
+            .is_some_and(|assets| assets.iter().any(|asset| asset["name"] == archive.as_str()))
+    };
+
+    text.iter()
+        .filter(|release| release["draft"] != true)
+        .filter_map(|release| {
+            let version = release["tag_name"].as_str()?.strip_prefix('v')?;
+
+            (valid_version(version) && published(release, version)).then_some(version)
+        })
+        .max_by(|left, right| compare(left, right))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!(
+                "No recent release has a Krabb build for {target}.\nName a version from {PAGE} \
+                 with `krabb update <version>`."
+            )
+            .into()
+        })
 }
 
 /// Orders release versions; a pre-release sorts before its release.

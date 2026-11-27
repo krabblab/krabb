@@ -101,7 +101,7 @@ async fn stdio(params: &Value) -> krabb_core::Result<Value> {
     let payload =
         params.get("request").cloned().ok_or_else(|| denied("stdio.request is required"))?;
 
-    let mut child = Command::new(command)
+    let mut child = Command::new(krabb_process::program(command))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

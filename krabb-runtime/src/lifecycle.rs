@@ -38,10 +38,7 @@ pub(super) async fn change(root: &Path, id: &str, attach: bool) -> Result<Value,
     }
 
     let _offline = offline_lock(root)?;
+    let action = if attach { "attaching" } else { "detaching" };
 
-    if attach {
-        return Err("The daemon is not running.\nStart it before attaching a plugin.".into());
-    }
-
-    Ok(serde_json::json!({"id": id, "unloaded": false}))
+    Err(format!("The daemon is not running.\nStart the daemon before {action} a plugin.").into())
 }

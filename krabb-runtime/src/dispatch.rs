@@ -390,14 +390,7 @@ pub(crate) async fn tool_with_registry(
     if id_plugin == "tools"
         && let serde_json::Value::Object(values) = &mut args
     {
-        values.insert("approve".into(), serde_json::Value::Bool(approve));
-
-        if let Some(workspace) = workspace {
-            values.insert(
-                "workspace".into(),
-                serde_json::Value::String(workspace.display().to_string()),
-            );
-        }
+        host_arguments(values, approve, workspace);
     } else if !args.is_object() {
         return Err("Tool arguments must be an object.".into());
     }
@@ -831,7 +824,13 @@ pub(crate) async fn execute_tool_with_registry(
     }
 
     if matches!(name, "shell_run" | "git_run" | "file_patch") && !shell_enabled {
-        return Err("Shell access is not authorized for this turn.".into());
+        return Err(refusal(
+            "Shell access is not authorized for this turn.",
+            registry.source.as_ref(),
+            channel,
+            "shell=true",
+        )
+        .into());
     }
 
     if name.starts_with("schedule_") && !schedule_enabled {
@@ -985,10 +984,34 @@ pub(crate) async fn execute_tool_with_registry(
         (false, _) => false,
 
         (true, ApprovalMode::Off) => {
-            return Err("Approval policy blocks mutating tools.".into());
+            return Err(refusal(
+                "Approval policy blocks mutating tools.",
+                registry.source.as_ref(),
+                channel,
+                "approval=prompt",
+            )
+            .into());
         }
 
         (true, ApprovalMode::Auto) => true,
+
+        (true, ApprovalMode::Prompt)
+            if !prompts(plugins, channel, registry.source.as_ref()).await =>
+        {
+            let text = if name == settings::TOOL {
+                "This channel cannot show approval prompts, so settings cannot change here. The \
+                 owner can change them with `krabb config set`."
+                    .into()
+            } else {
+                format!(
+                    "This channel cannot show approval prompts, so nothing ran. The owner can \
+                     allow such actions without a prompt with `krabb config set \
+                     channels.{channel}.approval=auto --force`."
+                )
+            };
+
+            return Ok(ToolResult::text(text));
+        }
 
         (true, ApprovalMode::Prompt) => {
             let arguments = approval_arguments(name, &args)?;
@@ -1125,7 +1148,9 @@ pub(crate) async fn execute_tool_with_registry(
                     }
 
                     (None, None) => {
-                        return Err("The approval request is no longer available.".into());
+                        return Ok(ToolResult::text(
+                            "The approval expired, so nothing ran. Ask again to retry.",
+                        ));
                     }
                 }
             }
@@ -1340,6 +1365,60 @@ pub(crate) struct ScheduledMessage {
     pub(crate) private: bool,
     pub(crate) thread: Option<String>,
     pub(crate) text: String,
+}
+
+/// Replaces the host-owned `approve` and `workspace` keys, whatever the model supplied.
+fn host_arguments(
+    values: &mut serde_json::Map<String, serde_json::Value>,
+    approve: bool,
+    workspace: Option<&Path>,
+) {
+    values.insert("approve".into(), serde_json::Value::Bool(approve));
+    values.remove("workspace");
+
+    if let Some(workspace) = workspace {
+        values
+            .insert("workspace".into(), serde_json::Value::String(workspace.display().to_string()));
+    }
+}
+
+/// Whether CHANNEL can ask a person to approve a mutating tool call. A channel plugin must
+/// declare `approvals`, except `telegram` and `discord`, which showed approvals before the key
+/// existed. A turn from a client prompts through the host, but a channel without its plugin
+/// cannot.
+async fn prompts(plugins: &Plugins, channel: &str, source: Option<&sharing::Principal>) -> bool {
+    match plugins.get(channel).await {
+        Some(plugin) => {
+            !plugin.supports(Capability::Channel)
+                || plugin.approvals
+                || matches!(channel, "telegram" | "discord")
+        }
+
+        None => {
+            matches!(source, Some(sharing::Principal::Client(_)))
+                || client::known(channel)
+                || plugins.config.clients.contains_key(channel)
+        }
+    }
+}
+
+/// Ends a refusal with the one setting that lifts it, in the turn's own section.
+fn refusal(
+    text: &str,
+    source: Option<&sharing::Principal>,
+    channel: &str,
+    setting: &str,
+) -> String {
+    let key = match source.cloned().unwrap_or_else(|| sharing::principal(channel)) {
+        sharing::Principal::Channel(id) => format!("channels.{id}"),
+        sharing::Principal::Client(id) => format!("clients.{id}"),
+
+        sharing::Principal::Agent(_) => {
+            return format!("{text} Ask the owner to allow it for this conversation.");
+        }
+    };
+
+    format!("{text} Fix: `krabb config set {key}.{setting} --force`.")
 }
 
 /// Applies a model-issued task control for the conversation's current sender.
@@ -1807,5 +1886,80 @@ pub(crate) async fn restart_tool(plugins: &Plugins, id: &str) {
             error = %diagnostic(sentence(restart.to_string())),
             "Plugin could not restart after a tool transport failure."
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_arguments_replace_a_model_supplied_workspace() {
+        let mut values = serde_json::json!({"path": "a", "workspace": "/", "approve": true})
+            .as_object()
+            .cloned()
+            .unwrap();
+
+        host_arguments(&mut values, false, None);
+
+        assert_eq!(values.get("approve"), Some(&serde_json::Value::Bool(false)));
+        assert!(!values.contains_key("workspace"));
+
+        host_arguments(&mut values, true, Some(Path::new("/work")));
+
+        assert_eq!(values["workspace"], "/work");
+    }
+
+    #[test]
+    fn refusals_name_the_setting_that_lifts_them() {
+        assert_eq!(
+            refusal("Blocked.", None, "telegram", "shell=true"),
+            "Blocked. Fix: `krabb config set channels.telegram.shell=true --force`."
+        );
+
+        let tui = sharing::Principal::Client("tui".into());
+
+        assert!(refusal("Blocked.", Some(&tui), "tui", "approval=prompt").contains("clients.tui"));
+    }
+
+    #[tokio::test]
+    async fn channels_without_a_loaded_plugin_cannot_prompt() {
+        let plugins = Plugins::default();
+
+        let desktop = sharing::Principal::Client("desktop".into());
+
+        assert!(!prompts(&plugins, "telegram", None).await);
+        assert!(prompts(&plugins, "tui", None).await);
+        assert!(prompts(&plugins, "desktop", Some(&desktop)).await);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn official_channels_from_before_the_approvals_key_can_prompt() {
+        let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    result = {'protocol': {'major': 0, 'minor': 1}, 'id': sys.argv[1], 'version': '0.1.0',
+              'capabilities': ['channel']} if request['method'] == 'hello' else {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if request['method'] == 'shutdown':
+        break
+"#;
+
+        let plugins = Plugins::default();
+
+        for id in ["telegram", "discord", "slack"] {
+            let process =
+                crate::Process::start_with("python3", ["-u", "-c", script, id]).await.unwrap();
+
+            plugins.insert(crate::Live::new(process)).await;
+        }
+
+        assert!(prompts(&plugins, "telegram", None).await);
+        assert!(prompts(&plugins, "discord", None).await);
+        assert!(!prompts(&plugins, "slack", None).await);
     }
 }

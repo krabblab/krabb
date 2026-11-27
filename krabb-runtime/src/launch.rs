@@ -230,10 +230,13 @@ impl Verified {
                 .await?;
 
         process.image = Some(image);
+        process.approvals = manifest.approvals;
 
         if let Some(stderr) = process.take_stderr() {
             capture_plugin_stderr(expected.clone(), stderr);
         }
+
+        process.diagnostics = Some(expected.clone());
 
         let mut actual_capabilities = process
             .hello
@@ -630,7 +633,6 @@ pub(crate) fn env_for(
         "KRABB_PLAYWRIGHT_BROWSERS_PATH",
         "KRABB_NODE",
         "KRABB_BROWSER_ALLOWED_HOSTS",
-        "KRABB_BROWSER_EGRESS_PROXY",
         "KRABB_COMPUTER_MODE",
         "KRABB_COMPUTER_ALLOW_HOST_CONTROL",
         "KRABB_COMPUTER_DISPLAY",
@@ -661,6 +663,15 @@ pub(crate) fn env_for(
 
         if let Some(timezone) = &config.scheduler.timezone {
             values.push(("KRABB_TIMEZONE".into(), timezone.clone()));
+        }
+    }
+
+    if manifest.id == "browser" {
+        for name in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "KRABB_BROWSER_EGRESS_PROXY"]
+        {
+            if let Ok(value) = std::env::var(name) {
+                values.push((name.into(), value));
+            }
         }
     }
 
@@ -945,6 +956,9 @@ pub(crate) fn credential(path: impl AsRef<Path>, key: &Path, names: &[&str]) -> 
     names.iter().any(|name| values.get(*name).is_some_and(|value| !value.trim().is_empty()))
 }
 
+/// How long `codex login status` may take, since a cold Codex start can take several seconds.
+const CODEX_STATUS: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(crate) fn codex_auth() -> bool {
     let binary = std::env::var_os("KRABB_CODEX_BINARY").unwrap_or_else(|| "codex".into());
     let mut command = std::process::Command::new(binary);
@@ -962,7 +976,7 @@ pub(crate) fn codex_auth() -> bool {
         return false;
     };
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + CODEX_STATUS;
 
     loop {
         match child.try_wait() {

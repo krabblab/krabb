@@ -166,6 +166,13 @@ error when it is rejected. Setup does not show other result fields. Error text i
 redacted and clipped before setup shows it. Setup reports the result but never fails
 because of it, and skips plugins without the flag or that answer method-not-found.
 
+Set `approvals = true` at the top level of a channel plugin's manifest when it answers
+`approval` by showing approve and deny buttons and reports each press as a `callback`
+event. Under the `prompt` approval mode, a channel without the flag runs no mutating tool
+and the model is told why.
+The official `telegram` and `discord` plugins can prompt without the flag, because their
+older versions showed approvals before it existed.
+
 Declare each external program the plugin runs, which Krabb cannot install for it, in a
 `[[requires]]` entry:
 
@@ -819,6 +826,8 @@ Authenticated IPC `session.append` and `session.append_reserved` accept an optio
 `reply_to` message ID or `last`. Targets are resolved from that session's own history
 and saved with the user message, preserving context across client restarts. The
 response returns the saved `message`, so clients show the same reference the model reads.
+An idle session that already holds a `session.append` message ID saves nothing and returns
+the saved message, so a client can retry a save whose reply was lost.
 
 ## Runner
 
