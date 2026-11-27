@@ -200,11 +200,10 @@ their model is explicitly pinned; their history is preserved.
   worktrees, and optional shell. Shell is disabled by default and each
   command requires approval. Display complete arguments and reject requests exceeding
   the [approval limits](configuration.md).
-  Docker/Podman isolation is optional on Linux and Windows
-  and required on other Unix hosts for shell containment. Containers are local-only,
+  Docker/Podman isolation is optional and takes precedence over the host shell on every
+  platform. Containers are local-only,
   networkless, read-only-root, and limited to a writable active workspace.
-  Direct Git and Git-backed patches share host shell descendant containment on Linux
-  and Windows; other platforms require Git execution through the sandboxed shell.
+  Direct Git and Git-backed patches share host shell descendant containment.
   All conversations default to isolated scopes in ordinary folders. Worktrees are opt-in
   through guided Git setup, including owner DMs and TUI sessions.
 - Codex signs in with a personal ChatGPT account through its

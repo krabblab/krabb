@@ -592,35 +592,48 @@ impl Sandbox {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum Placement<'a> {
+    Container(&'a Sandbox),
+    Host,
+}
+
+fn placement(sandbox: Option<&Sandbox>) -> Placement<'_> {
+    if let Some(sandbox) = sandbox {
+        return Placement::Container(sandbox);
+    }
+
+    Placement::Host
+}
+
 async fn shell_with(
     command: &str,
     root: &Path,
     sandbox: Option<&Sandbox>,
 ) -> std::io::Result<std::process::Output> {
-    if let Some(sandbox) = sandbox {
-        return sandbox_shell(command, root, sandbox).await;
+    match placement(sandbox) {
+        Placement::Container(sandbox) => sandbox_shell(command, root, sandbox).await,
+        Placement::Host => host_shell(command, root).await,
     }
+}
 
+async fn host_shell(command: &str, root: &Path) -> std::io::Result<std::process::Output> {
     #[cfg(windows)]
-    {
+    let mut process = {
         let mut process = Command::new("cmd");
-        process.args(["/C", command]).current_dir(root);
-        Box::pin(contained(process, None)).await
-    }
+        process.args(["/C", command]);
+        process
+    };
 
-    #[cfg(target_os = "linux")]
-    {
+    #[cfg(not(windows))]
+    let mut process = {
         let mut process = Command::new("sh");
         process.args(["-c", command]);
-        process.current_dir(root);
-        contained(process, None).await
-    }
+        process
+    };
 
-    #[cfg(not(any(target_os = "linux", windows)))]
-    Err(std::io::Error::new(
-        ErrorKind::Unsupported,
-        "Shell containment requires KRABB_SANDBOX_RUNTIME and KRABB_SANDBOX_IMAGE on this platform.",
-    ))
+    process.current_dir(root);
+    Box::pin(contained(process, None)).await
 }
 
 async fn sandbox_shell(
@@ -789,26 +802,29 @@ async fn contained(
     command: Command,
     input: Option<&[u8]>,
 ) -> std::io::Result<std::process::Output> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let command = {
         let mut command = command;
         command.process_group(0);
+
+        #[cfg(target_os = "linux")]
         krabb_process::restrict_process_group(command.as_std_mut());
+
         command
     };
 
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(unix, windows))]
     {
         capture(command, input, true).await
     }
 
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (command, input);
 
         Err(std::io::Error::new(
             ErrorKind::Unsupported,
-            "Host command containment is unavailable; use the sandboxed shell tool.",
+            "Host command containment is unavailable on this platform.",
         ))
     }
 }
@@ -2142,7 +2158,6 @@ fn read_text(file: std::fs::File) -> std::io::Result<String> {
 // Some fixtures here serve only Unix tests.
 #[cfg_attr(not(unix), allow(unused_imports, dead_code))]
 mod tests {
-    #[cfg(all(test, any(target_os = "linux", windows)))]
     mod git;
 
     use super::{
@@ -2760,13 +2775,7 @@ mod tests {
         )
         .await;
 
-        #[cfg(any(target_os = "linux", windows))]
-
         assert_eq!(output.unwrap().unwrap().result.unwrap()["status"], 0);
-
-        #[cfg(not(any(target_os = "linux", windows)))]
-
-        assert!(output.unwrap_err().to_string().contains("Shell containment requires"));
 
         assert!(call(&approved, Request::call(2, "file_read", json!({}))).await.is_err());
 
@@ -2806,13 +2815,7 @@ mod tests {
             )
             .await;
 
-            #[cfg(any(target_os = "linux", windows))]
-
             assert!(git.unwrap().unwrap().result.unwrap()["status"].is_number());
-
-            #[cfg(not(any(target_os = "linux", windows)))]
-
-            assert!(git.unwrap_err().to_string().contains("Host command containment"));
         }
 
         assert!(
@@ -3010,33 +3013,8 @@ mod tests {
 
         fs::create_dir_all(&root).unwrap();
 
-        #[cfg(any(target_os = "linux", windows))]
-
         assert!(shell("printf hello", &root).await.unwrap().status.success());
-
-        #[cfg(not(any(target_os = "linux", windows)))]
-        {
-            let error = shell("touch marker", &root).await.unwrap_err();
-
-            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-            assert!(!root.join("marker").exists());
-        }
-
-        #[cfg(any(target_os = "linux", windows))]
-
         assert!(git(&["status".into()], &root).await.is_ok());
-
-        #[cfg(not(any(target_os = "linux", windows)))]
-        {
-            let error = git(&["init".into()], &root).await.unwrap_err();
-
-            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-            assert!(!root.join(".git").exists());
-
-            let error = apply(&root, "", true).await.unwrap_err();
-
-            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        }
 
         assert!(denied("Already denied.").to_string().ends_with("Already denied."));
 
@@ -3097,7 +3075,6 @@ mod tests {
         let _ = fs::remove_file(outside_file);
     }
 
-    #[cfg(any(target_os = "linux", windows))]
     #[tokio::test]
     async fn shell_stops_background_processes_after_completion() {
         let root = test_root("krabb-tools-group");
@@ -3134,6 +3111,85 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn shell_placement_prefers_a_configured_container() {
+        let sandbox = Sandbox::parse(Some("docker"), Some("local/tool:latest")).unwrap().unwrap();
+
+        assert_eq!(super::placement(Some(&sandbox)), super::Placement::Container(&sandbox));
+        assert_eq!(super::placement(None), super::Placement::Host);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn host_shell_runs_as_the_user_in_its_own_process_group() {
+        let root = test_root("krabb-tools-host-shell");
+        let _ = fs::remove_dir_all(&root);
+
+        fs::create_dir_all(&root).unwrap();
+
+        let output = shell("echo $$; ps -o pgid= -p $$; id -u; pwd -P", &root).await.unwrap();
+
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines = stdout.lines().map(str::trim).collect::<Vec<_>>();
+
+        let own = rustix::process::getpgrp().as_raw_pid().to_string();
+        let user = rustix::process::getuid().as_raw().to_string();
+        let workspace = fs::canonicalize(&root).unwrap();
+
+        assert_eq!(lines[0], lines[1]);
+        assert_ne!(lines[1], own);
+        assert_eq!(lines[2], user);
+        assert_eq!(Path::new(lines[3]), workspace);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn host_shell_timeout_stops_its_process_group() {
+        let root = test_root("krabb-tools-host-timeout");
+        let _ = fs::remove_dir_all(&root);
+
+        fs::create_dir_all(&root).unwrap();
+
+        let command = "(sleep 2; echo leaked > leaked) & echo ready > ready; wait";
+        let call = shell(command, &root);
+
+        tokio::pin!(call);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = &mut call => panic!("shell ended before timeout: {result:?}"),
+
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if root.join("ready").is_file() {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        tokio::time::pause();
+        tokio::time::advance(super::COMMAND_LIMIT + Duration::from_secs(1)).await;
+        tokio::time::resume();
+
+        let error = call.await.unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+
+        assert!(!root.join("leaked").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn process_cleanup_rejects_its_own_group() {
@@ -3161,7 +3217,7 @@ mod tests {
         assert!(super::response(1, json!({"stdout": "x"})).unwrap().is_some());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn git_filters_require_shell_authorization_and_approval() {
         let root = test_root("git-filter-authorization");
@@ -3228,7 +3284,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(any(target_os = "linux", windows))]
     #[tokio::test]
     async fn applies_approved_patches() {
         let root = test_root("krabb-tools-patch");

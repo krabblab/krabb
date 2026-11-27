@@ -27,9 +27,7 @@ and patch tools reject execution on the host.
 Git runs in the active workspace, but repository-configured programs have
 shell permissions and may access paths outside that workspace.
 Direct Git operations and Git-backed patches use the same descendant containment as host
-shell commands: Linux blocks process-group and session changes, and Windows uses Job
-Objects. Descendants are stopped on completion, timeout, or plugin restart. Other platforms
-reject direct execution; use the sandboxed shell tool for Git and patches there.
+shell commands. Descendants are stopped on completion, timeout, or plugin restart.
 
 The read-only `web_fetch` tool retrieves bounded text from public HTTPS URLs. It
 blocks local and private network addresses, pins requests to validated DNS
@@ -38,10 +36,13 @@ addresses, rechecks redirects, caps redirects at three and response bodies at
 deadline and a four-request concurrency limit. The plugin declares its network
 permission in the manifest.
 
-On Linux and Windows, approved shell commands run on the host when no container sandbox is
-configured. Linux shells reject process-group and session changes so descendants cannot
-escape cancellation. On macOS and other Unix hosts, shell execution requires the container
-sandbox; host execution fails before running the command.
+Approved shell commands use the container sandbox when one is configured and otherwise run
+on the host as the daemon's user. Host commands start in their own process group on Unix
+and in a Job Object on Windows. Linux also sets no-new-privileges and rejects process-group
+and session changes, so descendants cannot escape cancellation. macOS and other Unix hosts
+have no equivalent restriction: a descendant that starts its own session survives
+cancellation, and setuid programs keep their privileges. The host shell has the daemon
+user's file access; only the container keeps commands inside the workspace.
 To configure the sandbox, set `KRABB_SANDBOX_RUNTIME` to `docker` or
 `podman` and `KRABB_SANDBOX_IMAGE` to an image already available locally.
 The tools plugin never pulls images. The container has no network, a read-only
