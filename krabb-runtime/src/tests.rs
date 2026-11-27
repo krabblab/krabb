@@ -4521,6 +4521,7 @@ fn validates_manifests_and_environment() {
     }
 
     assert!(!values.iter().any(|(key, _)| { matches!(key.as_str(), "HOME" | "USERPROFILE") }));
+    assert!(!values.iter().any(|(key, _)| key == "KRABB_BROWSER_EGRESS_PROXY"));
 }
 
 #[test]
@@ -8104,6 +8105,8 @@ done
 
     let plugins = registry([scheduler]).await;
 
+    approvals::approving_channels(&plugins).await;
+
     for channel in ["telegram", "cli", "tui"] {
         for mode in
             [super::ApprovalMode::Off, super::ApprovalMode::Auto, super::ApprovalMode::Prompt]
@@ -8443,7 +8446,11 @@ async fn execute_tool_rejects_shell_when_turn_permission_is_disabled() {
     )
     .await;
 
-    assert_eq!(result.unwrap_err().to_string(), "Shell access is not authorized for this turn.");
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Shell access is not authorized for this turn. Fix: `krabb config set \
+         channels.scheduler.shell=true --force`."
+    );
 }
 
 #[tokio::test]
@@ -12564,7 +12571,7 @@ async fn denied_prompt_never_dispatches_browser_control() {
             "test",
             super::ApprovalMode::Prompt,
             gate,
-            "telegram",
+            "tui",
             "7",
             None,
             "session",
@@ -12587,7 +12594,7 @@ async fn denied_prompt_never_dispatches_browser_control() {
         panic!("The tool did not request approval.");
     };
 
-    assert_eq!(approvals.lock().await.resolve(&deny, "telegram", "7", None, true), Some(false));
+    assert_eq!(approvals.lock().await.resolve(&deny, "tui", "7", None, true), Some(false));
 
     assert_eq!(execution.await.unwrap().unwrap(), "The request was denied. No changes were made.");
 

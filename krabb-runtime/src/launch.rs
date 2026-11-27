@@ -236,6 +236,8 @@ impl Verified {
             capture_plugin_stderr(expected.clone(), stderr);
         }
 
+        process.diagnostics = Some(expected.clone());
+
         let mut actual_capabilities = process
             .hello
             .capabilities
@@ -631,7 +633,6 @@ pub(crate) fn env_for(
         "KRABB_PLAYWRIGHT_BROWSERS_PATH",
         "KRABB_NODE",
         "KRABB_BROWSER_ALLOWED_HOSTS",
-        "KRABB_BROWSER_EGRESS_PROXY",
         "KRABB_COMPUTER_MODE",
         "KRABB_COMPUTER_ALLOW_HOST_CONTROL",
         "KRABB_COMPUTER_DISPLAY",
@@ -662,6 +663,15 @@ pub(crate) fn env_for(
 
         if let Some(timezone) = &config.scheduler.timezone {
             values.push(("KRABB_TIMEZONE".into(), timezone.clone()));
+        }
+    }
+
+    if manifest.id == "browser" {
+        for name in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "KRABB_BROWSER_EGRESS_PROXY"]
+        {
+            if let Ok(value) = std::env::var(name) {
+                values.push((name.into(), value));
+            }
         }
     }
 

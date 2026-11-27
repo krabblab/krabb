@@ -1,6 +1,29 @@
 use crate::*;
 use std::fs;
 
+/// Loads Telegram and Discord fixtures that declare approval prompts.
+pub(super) async fn approving_channels(plugins: &Plugins) {
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    result = {'protocol': {'major': 0, 'minor': 1}, 'id': sys.argv[1], 'version': '0.1.0',
+              'capabilities': ['channel']} if request['method'] == 'hello' else {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if request['method'] == 'shutdown':
+        break
+"#;
+
+    for id in ["telegram", "discord"] {
+        let mut process = Process::start_with("python3", ["-u", "-c", script, id]).await.unwrap();
+
+        process.approvals = true;
+        plugins.insert(Live::new(process)).await;
+    }
+}
+
 #[tokio::test]
 async fn command_approvals_require_complete_arguments() {
     let root = std::env::temp_dir().join(format!(
@@ -44,6 +67,7 @@ for line in sys.stdin:
     let plugins = Plugins::default();
 
     plugins.insert(Live::new(process)).await;
+    approving_channels(&plugins).await;
 
     let sessions = Arc::new(Mutex::new(state::Store::default()));
 
@@ -282,6 +306,8 @@ for line in sys.stdin:
 
         plugins.insert(Live::new(process)).await;
     }
+
+    approving_channels(&plugins).await;
 
     let sessions = Arc::new(Mutex::new(state::Store::default()));
 
@@ -680,6 +706,9 @@ for line in sys.stdin:
 #[tokio::test]
 async fn settings_changes_always_ask_and_show_the_exact_change() {
     let plugins = Plugins::default();
+
+    approving_channels(&plugins).await;
+
     let sessions = Arc::new(Mutex::new(state::Store::default()));
 
     sessions.lock().unwrap().ensure("session", "test").unwrap();
@@ -830,6 +859,9 @@ for line in sys.stdin:
 #[tokio::test]
 async fn an_unanswered_approval_tells_the_model_nothing_ran() {
     let plugins = Plugins::default();
+
+    approving_channels(&plugins).await;
+
     let approvals = Arc::new(AsyncMutex::new(approval::Gate::new().unwrap()));
     let (notices, mut events) = tokio::sync::mpsc::channel(1);
 

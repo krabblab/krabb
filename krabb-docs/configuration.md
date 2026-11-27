@@ -199,6 +199,7 @@ Approval modes are:
 
 Use `prompt` for interactive Telegram and Discord channels. Slack, Signal, and
 WhatsApp cannot show approval prompts, so under `prompt` they run no mutating tool.
+Neither does a channel whose plugin is not loaded.
 Use `auto` only when the configured channel policy is trusted to run workspace
 mutations without a person confirming each request.
 
@@ -338,7 +339,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | Variable | Purpose |
 | --- | --- |
 | `KRABB_HOME` | Krabb state, plugins, and global agent workspace |
-| `KRABB_ROOT` | Override the default `KRABB_HOME/workspace` tool root |
+| `KRABB_ROOT` | Override the default `KRABB_HOME/workspace` tool root; file tools never read `KRABB_HOME` through it |
 | `KRABB_CREDENTIALS` | Encrypted credential file; defaults to `credentials.json` in Krabb's home |
 | `KRABB_CHANNEL` | Default channel plugin ID for diagnostics; all loaded channels receive messages |
 | `KRABB_MODEL_PLUGIN` | Default intelligence plugin ID |
@@ -353,7 +354,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_PLAYWRIGHT_BROWSERS_PATH` | Optional Chromium cache directory when it differs from Playwright's default |
 | `KRABB_NODE` | Optional Node.js executable path for the browser worker |
 | `KRABB_BROWSER_ALLOWED_HOSTS` | Comma-separated exact host allowlist for browser requests |
-| `KRABB_BROWSER_EGRESS_PROXY` | Required controlled HTTP proxy for browser network access |
+| `KRABB_BROWSER_EGRESS_PROXY` | Required controlled HTTP proxy for browser network access; only the browser plugin receives it |
 | `KRABB_COMPUTER_MODE` | `isolated` for Linux Xvfb, or `interactive` for native macOS and Windows desktop control |
 | `KRABB_COMPUTER_ALLOW_HOST_CONTROL` | Must be `1` to enable interactive macOS or Windows desktop control |
 | `KRABB_COMPUTER_DISPLAY` | Dedicated Xvfb display number, above `:0`, for Linux computer control |

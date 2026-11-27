@@ -282,6 +282,8 @@ pub(crate) struct Process {
     pub image: Option<super::updates::Image>,
     /// Whether the manifest declares that this channel shows approval prompts.
     pub approvals: bool,
+    /// The plugin whose stderr is logged, again after every restart.
+    pub diagnostics: Option<String>,
 }
 
 struct Containers {
@@ -297,6 +299,7 @@ impl From<CoreProcess> for Process {
             context: super::compaction::Context::default(),
             image: None,
             approvals: false,
+            diagnostics: None,
         }
     }
 }
@@ -505,12 +508,19 @@ impl Process {
             context: super::compaction::Context::default(),
             image: None,
             approvals: false,
+            diagnostics: None,
         })
     }
 
     pub async fn restart(&mut self) -> Result<()> {
         self.context.invalidate();
         let result = self.inner.restart().await;
+
+        if let Some(plugin) = &self.diagnostics
+            && let Some(stderr) = self.inner.take_stderr()
+        {
+            super::launch::capture_plugin_stderr(plugin.clone(), stderr);
+        }
 
         if let Some(containers) = &self.containers {
             containers.clear().await?;
@@ -639,6 +649,22 @@ for line in sys.stdin:
     else: result = {}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
 "#;
+
+    #[tokio::test]
+    async fn restarted_plugins_keep_their_stderr_captured() {
+        let mut process = Process::start_with("python3", ["-u", "-c", EXECUTION]).await.unwrap();
+
+        process.restart().await.unwrap();
+
+        assert!(process.take_stderr().is_some());
+
+        process.diagnostics = Some("fixture".into());
+        process.restart().await.unwrap();
+
+        assert!(process.take_stderr().is_none());
+
+        process.stop().await.unwrap();
+    }
 
     #[tokio::test]
     async fn renewable_calls_receive_the_same_context_preparation_as_plain_calls() {

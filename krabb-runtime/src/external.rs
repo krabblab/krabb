@@ -103,6 +103,8 @@ pub(crate) async fn external_command_at(
     let mut process = launch(&root, path, &plugin, None, false, &config).await?;
     let timeout = if name == "codex" && args.get(1).is_some_and(|argument| argument == "login") {
         std::time::Duration::from_secs(960)
+    } else if matches!(name.as_str(), "code" | "acp") {
+        TURN_LIMIT
     } else {
         std::time::Duration::from_secs(120)
     };
@@ -259,7 +261,7 @@ pub(crate) async fn external_command_at(
     };
 
     let stopped = process.stop().await;
-    let response = result?;
+    let response = result.map_err(|error| command_failure(name, timeout, error))?;
     stopped?;
 
     if let Some(error) = response.error {
@@ -286,6 +288,23 @@ pub(crate) async fn external_command_at(
     }
 
     Ok(())
+}
+
+/// Names the limit a timed-out plugin command reached and how to try again.
+fn command_failure(
+    name: &str,
+    limit: std::time::Duration,
+    error: krabb_core::Error,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    match error {
+        krabb_core::Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut => format!(
+            "`krabb {name}` stopped after its {}-second limit.\nRun it again with a smaller task.",
+            limit.as_secs()
+        )
+        .into(),
+
+        error => error.into(),
+    }
 }
 
 /// Display variables a terminal client needs to read the clipboard; they carry no secrets.
@@ -829,4 +848,22 @@ pub(crate) fn external_command_output(
     }
 
     Ok(serde_json::to_string_pretty(value)?)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn timed_out_commands_name_their_limit_and_next_action() {
+        let error = krabb_core::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "plugin response timed out",
+        ));
+
+        let text = super::command_failure("code", super::TURN_LIMIT, error).to_string();
+
+        assert_eq!(
+            text,
+            "`krabb code` stopped after its 300-second limit.\nRun it again with a smaller task."
+        );
+    }
 }
