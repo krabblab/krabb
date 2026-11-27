@@ -2,7 +2,12 @@ name: Release
 
 # Publishes what the head of main declares once CI passes for it: Krabb at its workspace
 # version, and each plugin at the version in its manifest. Versions that are already
-# published are skipped with a notice.
+# published are skipped with a notice, and a run with nothing new ends after Plan.
+#
+# Plan decides what to build, Build packages it once per target, the Install and Update
+# drills test exactly those archives, and Publish pushes the plugins and then the Krabb
+# release only when both drills pass. A dry run, with the publish option cleared, runs the
+# same stages from any branch and publishes nothing.
 
 on:
   workflow_run:
@@ -22,15 +27,26 @@ on:
         type: boolean
         default: true
 
+      publish:
+        description: "Publish; clear it for a dry run from any branch that publishes nothing"
+        type: boolean
+        default: true
+
+      rebuild:
+        description: "Dry runs only: space-separated plugin IDs to build although published"
+        type: string
+        default: ""
+
 permissions:
   contents: read
 
 # Release runs take turns. Manual runs from main and passing CI runs for the head join the
 # queue; each releases the whole head of main, so a newer run replacing a waiting one loses
-# nothing.
+# nothing. Dry runs never join it.
 concurrency:
   group: >-
-    ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+    ${{ ((github.event_name == 'workflow_dispatch' && inputs.publish &&
+          github.ref == 'refs/heads/main') ||
          (github.event.workflow_run.conclusion == 'success' &&
           github.event.workflow_run.event != 'pull_request' &&
           github.event.workflow_run.head_sha == github.sha)) &&
@@ -39,10 +55,8 @@ concurrency:
 
 jobs:
 
-  # Releases only the current head of main, once CI has passed for it. Each release covers
-  # every earlier commit, so CI for a commit that is no longer the head releases nothing.
-  gate:
-    name: Gate
+  plan:
+    name: Plan
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -52,80 +66,16 @@ jobs:
     permissions:
       actions: read
       contents: read
-
-    outputs:
-      release: ${{ steps.gate.outputs.release }}
-
-    steps:
-      - id: gate
-        name: Confirm CI Passed For The Head Of Main
-
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          KRABB_CI_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
-          KRABB_COMMIT: ${{ github.sha }}
-          KRABB_EVENT: ${{ github.event_name }}
-          KRABB_REF: ${{ github.ref }}
-
-        run: |
-          set -euo pipefail
-          refuse() { echo "::error title=Release refused::$*"; exit 1; }
-          skip() {
-            echo "::notice title=Release skipped::$*"
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-          if [[ "$KRABB_EVENT" == workflow_dispatch && "$KRABB_REF" != refs/heads/main ]]; then
-            refuse "Run the Release workflow from main."
-          fi
-
-          head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
-          short=${KRABB_CI_COMMIT:0:7}
-
-          if [[ "$KRABB_EVENT" == workflow_dispatch && "$KRABB_COMMIT" != "$head" ]]; then
-            refuse "Main moved past $short while this run was queued; run it again."
-          fi
-
-          if [[ "$KRABB_CI_COMMIT" != "$head" || "$KRABB_COMMIT" != "$head" ]]; then
-            skip "Main has moved past $short, so this run releases nothing;" \
-              "CI for the newer commit releases it."
-          fi
-
-          if [[ "$KRABB_EVENT" == workflow_dispatch ]]; then
-            passed=$(gh run list --workflow main.yml --branch main --commit "$head" \
-              --status success --limit 100 --json event \
-              --jq '[.[] | select(.event != "pull_request")] | length')
-
-            [[ "$passed" != 0 ]] ||
-              refuse "The latest CI run for $short, the head of main, has not passed."
-          fi
-
-          echo "release=true" >> "$GITHUB_OUTPUT"
-
-  prepare:
-    name: Prepare
-    needs: gate
-    if: >-
-      needs.gate.outputs.release == 'true' &&
-      (github.event_name == 'workflow_run' || inputs.krabb)
-    uses: ./.github/workflows/prepare.yml
-
-  plan:
-    name: Plan Plugins
-    needs: gate
-    if: >-
-      needs.gate.outputs.release == 'true' &&
-      (github.event_name == 'workflow_run' || inputs.plugins)
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
       packages: read
 
     outputs:
-      names: ${{ steps.plan.outputs.names }}
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      release: ${{ steps.plan.outputs.release }}
+      plugins: ${{ steps.plan.outputs.plugins }}
+      index: ${{ steps.plan.outputs.index }}
 
     steps:
       - name: Checkout
@@ -135,80 +85,212 @@ jobs:
           persist-credentials: false
 
       - id: plan
-        name: Find Unpublished Versions
+        name: Plan The Release
 
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          KRABB_CI_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+          KRABB_COMMIT: ${{ github.sha }}
+          KRABB_EVENT: ${{ github.event_name }}
+          KRABB_KRABB: ${{ github.event_name == 'workflow_run' || inputs.krabb }}
+          KRABB_PLUGINS: ${{ github.event_name == 'workflow_run' || inputs.plugins }}
+          KRABB_PUBLISH: ${{ github.event_name == 'workflow_run' || inputs.publish }}
+          KRABB_REBUILD: ${{ inputs.rebuild }}
+          KRABB_REF: ${{ github.ref }}
+          KRABB_REGISTRY_TOKEN: ${{ github.token }}
+          KRABB_REGISTRY_USER: ${{ github.actor }}
+
+        run: bash krabb-scripts/plan.sh
+
+      - if: steps.plan.outputs.release == 'true'
+        name: Upload Release Notes
+        uses: actions/upload-artifact@v7
+
+        with:
+          name: krabb-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  # Krabb is built even when only plugins are new, because the drills install it.
+  build:
+    name: Build
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.github/workflows/package.yml
+
+    with:
+      names: core ${{ needs.plan.outputs.plugins }}
+      artifact: krabb-release
+
+  previous:
+    name: Build Previous
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.github/workflows/package.yml
+
+    with:
+      names: core
+      artifact: krabb-previous
+      version: 0.0.0-previous
+
+  # A release whose archives do not install and run on every target is never published.
+  install:
+    name: Install
+    needs: build
+    uses: ./.github/workflows/install.yml
+
+    with:
+      artifact: krabb-release
+      targets: ${{ needs.build.outputs.targets }}
+
+  # A release that cannot update an earlier build or roll back to it is never published.
+  update:
+    name: Update
+    needs: [build, previous]
+    uses: ./.github/workflows/update.yml
+
+    with:
+      artifact: krabb-release
+      previous: krabb-previous
+      targets: ${{ needs.build.outputs.targets }}
+
+  # The index is rebuilt after each publication, and on its own when Plan found it stale.
+  plugins:
+    name: Publish Plugins
+    needs: [plan, install, update]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' &&
+          needs.plan.outputs.publish == 'true' &&
+          (needs.plan.outputs.plugins != '' || needs.plan.outputs.index == 'true') &&
+          (needs.plan.outputs.build != 'true' ||
+           (needs.install.result == 'success' && needs.update.result == 'success')) }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          persist-credentials: false
+
+      - if: needs.plan.outputs.plugins != ''
+        name: Download Archives
+        uses: actions/download-artifact@v8
+
+        with:
+          pattern: krabb-release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v2
+
+      - name: Sign In To The Registry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+        run: printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish Plugins And The Index
         env:
           KRABB_REGISTRY_TOKEN: ${{ github.token }}
           KRABB_REGISTRY_USER: ${{ github.actor }}
 
         run: |
           set -euo pipefail
-          names=$(python3 krabb-scripts/plugins.py plan "ghcr.io/${GITHUB_REPOSITORY,,}/plugins")
-          echo "names=$names" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          python3 krabb-scripts/plugins.py publish dist \
+            "ghcr.io/${GITHUB_REPOSITORY,,}/plugins" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
 
-          if [[ -z "$names" ]]; then
-            echo "::notice title=Plugin release skipped::Every plugin version is already" \
-              "published, so this run releases no plugin."
-          else
-            echo "Unpublished plugins: $names."
-          fi
-
-  package:
-    name: Package
-    needs: prepare
-    if: needs.prepare.outputs.release == 'true'
-    uses: ./.github/workflows/package.yml
-
-    with:
-      names: core
-      artifact: krabb-v${{ needs.prepare.outputs.version }}
-
-  # A release whose archives do not install and run on every target is never published. The
-  # drills install plugins from the index, so they wait for this run's plugins to publish.
-  install:
-    name: Install
-    needs: [prepare, package, plan, plugins]
+  krabb:
+    name: Publish Krabb
+    needs: [plan, install, update, plugins]
     if: >-
-      ${{ !cancelled() && needs.package.result == 'success' && needs.plan.result != 'failure' &&
-          needs.plugins.result != 'failure' }}
-    uses: ./.github/workflows/install.yml
-
-    with:
-      artifact: krabb-v${{ needs.prepare.outputs.version }}
-
-  # A release that cannot update an earlier build or roll back to it is never published.
-  update:
-    name: Update
-    needs: [prepare, package, plan, plugins]
-    if: >-
-      ${{ !cancelled() && needs.package.result == 'success' && needs.plan.result != 'failure' &&
-          needs.plugins.result != 'failure' }}
-    uses: ./.github/workflows/update.yml
-
-    with:
-      artifact: krabb-v${{ needs.prepare.outputs.version }}
-
-  publish:
-    name: Publish
-    needs: [prepare, install, update]
-    if: ${{ !cancelled() && needs.install.result == 'success' && needs.update.result == 'success' }}
-    uses: ./.github/workflows/publish.yml
+      ${{ !cancelled() && needs.plan.outputs.publish == 'true' &&
+          needs.plan.outputs.release == 'true' && needs.install.result == 'success' &&
+          needs.update.result == 'success' &&
+          (needs.plugins.result == 'success' || needs.plugins.result == 'skipped') }}
+    runs-on: ubuntu-latest
 
     permissions:
       contents: write
 
-    with:
-      version: ${{ needs.prepare.outputs.version }}
-      prerelease: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - name: Download Release Notes
+        uses: actions/download-artifact@v8
 
-  plugins:
-    name: Plugins
-    needs: plan
-    uses: ./.github/workflows/plugins.yml
+        with:
+          name: krabb-notes
+          path: notes
 
-    permissions:
-      contents: read
-      packages: write
+      - name: Download Archives
+        uses: actions/download-artifact@v8
 
-    with:
-      names: ${{ needs.plan.outputs.names }}
+        with:
+          pattern: krabb-release-*
+          path: dist
+
+      # Each target's build wrote its line of SHA256SUMS, which the drills installed against.
+      - name: Collect The Release
+        env:
+          KRABB_VERSION: ${{ needs.plan.outputs.version }}
+
+        run: |
+          set -euo pipefail
+          mkdir release
+          cp dist/*/krabb-core-v"$KRABB_VERSION"-* release/
+          cat dist/*/SHA256SUMS | sort -k 2 > release/SHA256SUMS
+          test "$(find release -name 'krabb-core-*' | wc -l)" -eq 6
+          test "$(wc -l < release/SHA256SUMS)" -eq 6
+          (cd release && sha256sum --check --strict SHA256SUMS)
+
+      # The release stays a draft until every file is attached, so installers that read the
+      # latest release never see it half uploaded.
+      - name: Publish GitHub Release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          KRABB_PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+          KRABB_VERSION: ${{ needs.plan.outputs.version }}
+
+        run: |
+          set -euo pipefail
+          tag="v$KRABB_VERSION"
+          options=(--title "$tag" --notes-file notes/release-notes.md)
+          [[ "$KRABB_PRERELEASE" == true ]] && options+=(--prerelease)
+
+          if answer=$(gh api "repos/$GH_REPO/releases/tags/$tag" --silent 2>&1); then
+            echo "::notice title=Krabb release skipped::Krabb $KRABB_VERSION is already" \
+              "released, so this run publishes nothing."
+            exit 0
+          elif [[ "$answer" != *"HTTP 404"* ]]; then
+            echo "$answer" >&2
+            exit 1
+          fi
+
+          # A draft left by a failed run may point at an older commit, so it is replaced.
+          if [[ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" == true ]]; then
+            gh release delete "$tag" --yes
+          fi
+
+          # Installers download the latest release, so it stays on the newest stable version
+          # even when an older one is published afterwards.
+          latest=false
+
+          if [[ "$KRABB_PRERELEASE" != true ]]; then
+            published=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1000 \
+              --json tagName --jq '.[].tagName')
+
+            newest=$(printf '%s\n' "$published" "$tag" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+              sort -V | tail -n 1)
+
+            [[ "$newest" != "$tag" ]] || latest=true
+          fi
+
+          gh release create "$tag" release/* --draft --target "$GITHUB_SHA" "${options[@]}"
+          gh release edit "$tag" --draft=false --latest="$latest"
