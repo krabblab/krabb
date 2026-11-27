@@ -8567,15 +8567,21 @@ fn large_tui_file_writes_get_a_marked_preview_and_keep_their_full_text() {
     }
 
     let quoted = serde_json::json!({"path": "a", "text": "\"".repeat(20_000)});
-    let arguments = super::approval_display("file_write", &quoted, "tui").unwrap();
+    let shown = super::approval_view("file_write", &quoted, "tui");
 
-    assert!(arguments.len() <= 2 * super::APPROVAL_PREVIEW_LIMIT);
+    assert!(
+        super::approval_message("file_write", &quoted, &shown).len() <= super::APPROVAL_TEXT_LIMIT
+    );
 
     let escapes = serde_json::json!({"path": "a", "text": "\u{1}".repeat(5_000)});
     let arguments = super::approval_display("file_write", &escapes, "tui").unwrap();
+    let shown = super::approval_view("file_write", &escapes, "tui");
 
     assert!(arguments.contains("\\u0001\\u0001"));
-    assert!(arguments.len() <= 2 * super::APPROVAL_PREVIEW_LIMIT);
+
+    assert!(
+        super::approval_message("file_write", &escapes, &shown).len() <= super::APPROVAL_TEXT_LIMIT
+    );
 
     let forged = serde_json::json!({"path": "a.html\nArguments: {}"});
 

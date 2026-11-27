@@ -211,7 +211,7 @@ impl Default for TuiPreferences {
 /// Text streamed before a tool call, kept as transcript ranges that ignore front trimming.
 struct Draft {
     ranges: Vec<std::ops::Range<usize>>,
-    output: Option<usize>,
+    output: Option<(u64, usize)>,
     reply_pending: bool,
     reply_system: bool,
 }
@@ -4289,7 +4289,10 @@ impl App {
         if self.draft.is_none() {
             self.draft = Some(Draft {
                 ranges: Vec::new(),
-                output: self.pending_interactions.front().map(|item| item.output.len()),
+                output: self
+                    .pending_interactions
+                    .front()
+                    .map(|item| (self.interaction_sequence, item.output.len())),
                 reply_pending: self.reply_pending,
                 reply_system: self.reply_system,
             });
@@ -4352,15 +4355,17 @@ impl App {
             }
         }
 
-        if let (Some(output), Some(interaction)) =
+        if let (Some((sequence, output)), Some(interaction)) =
             (draft.output, self.pending_interactions.front_mut())
+            && sequence == self.interaction_sequence
             && output <= interaction.output.len()
             && interaction.output.is_char_boundary(output)
         {
             interaction.output.truncate(output);
         }
 
-        if latest {
+        // The next reply needs a label when the draft's own label is gone.
+        if latest || draft.reply_pending {
             self.reply_pending = draft.reply_pending;
             self.reply_system = draft.reply_system;
         }
@@ -4477,6 +4482,16 @@ impl App {
 
         while self.transcript.ends_with('\n') {
             self.transcript.pop();
+        }
+
+        // Draft ranges must not reach into the separator written below.
+        let end = self.transcript_end();
+
+        if let Some(draft) = &mut self.draft {
+            for range in &mut draft.ranges {
+                range.start = range.start.min(end);
+                range.end = range.end.min(end);
+            }
         }
 
         if !self.transcript.is_empty() {
@@ -5027,6 +5042,28 @@ mod tests {
         assert!(app.transcript.contains("Also Rome."));
         assert!(!app.transcript.contains("\n\n\n"));
         assert!(app.pending_interactions[0].output.is_empty());
+        assert!(app.reply_pending);
+
+        app.push_assistant_text("It is sunny.".into());
+        app.reveal_all();
+
+        assert!(app.transcript.contains("\n\nKrabb | "));
+        assert!(app.transcript.ends_with("It is sunny."));
+    }
+
+    #[test]
+    fn a_draft_ending_in_blank_lines_keeps_the_next_separator() {
+        let mut app = App { name: "Krabb".into(), session: "tui".into(), ..App::default() };
+
+        app.push_user("Check.");
+        app.reply_pending = true;
+        app.push_assistant_text("I'll check.\n\n\n".into());
+        app.push_user("Queued.");
+        app.discard_draft();
+
+        assert!(app.transcript.starts_with("You | "));
+        assert!(app.transcript.contains("Check.\n\nYou | "));
+        assert!(app.transcript.ends_with("Queued.\n"));
     }
 
     #[test]

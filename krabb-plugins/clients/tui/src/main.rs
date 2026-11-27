@@ -5016,6 +5016,7 @@ fn format_approvals(value: &Value) -> String {
             let text = args
                 .as_object_mut()
                 .filter(|_| matches!(tool, "file_write" | "file_patch"))
+                .filter(|values| values["text"].is_string())
                 .and_then(|values| values.remove("text"))
                 .and_then(|text| text.as_str().map(str::to_owned));
 
@@ -5048,7 +5049,13 @@ fn reviewable(text: &str) -> String {
             let line = line
                 .chars()
                 .map(|character| {
-                    if character.is_control() && character != '\t' {
+                    // Bidirectional and zero-width marks could reorder or hide text.
+                    let hidden = matches!(
+                        character,
+                        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                    );
+
+                    if (character.is_control() && character != '\t') || hidden {
                         character.escape_unicode().to_string()
                     } else {
                         character.to_string()
@@ -6382,7 +6389,7 @@ mod tests {
             page.len()
         )));
 
-        let hostile = "\u{1b}[2J\rok\n> quoted\n0123: file_write for tui-default — {}";
+        let hostile = "\u{1b}[2J\rok\n> quoted\n0123: file_write for tui-default — {}\u{202e}";
 
         let value = json!({
             "items": [{
@@ -6395,6 +6402,7 @@ mod tests {
 
         assert!(!shown.contains('\u{1b}'));
         assert!(!shown.contains('\r'));
+        assert!(!shown.contains('\u{202e}'));
         assert!(shown.contains("    \\u{1b}[2J\\u{d}ok\n    > quoted\n    0123:"));
         assert!(shown.contains("--- end of 0123456789abcdef01234567 ---"));
     }

@@ -190,9 +190,9 @@ Approval modes are:
   for schedules including captured context, within a 2,000-byte message. Oversized
   requests are rejected; shorten them to review in full. File writes in the TUI
   are the exception: longer text shows its size and its first and last lines, and
-  `/approvals` shows all of it. Chat channels, patches, and ACP keep the
-  complete-argument limits; ACP includes the host-selected workspace. The proposed action is also saved
-  with its task. If the button expires, the turn is interrupted, or the daemon
+  `/approvals` shows all of it. Chat channels, patches, task approvals, and ACP
+  keep the complete-argument limits; ACP includes the host-selected workspace.
+  The proposed action is also saved with its task. If the button expires, the turn is interrupted, or the daemon
   restarts, the task waits for a decision instead of running again. Reply
   `/task approve <id>` or `/task deny <id>` with the task id from the notice in
   the original conversation; the decision has no expiry,
