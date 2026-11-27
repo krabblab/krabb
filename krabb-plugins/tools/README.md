@@ -27,7 +27,8 @@ and patch tools reject execution on the host.
 Git runs in the active workspace, but repository-configured programs have
 shell permissions and may access paths outside that workspace.
 Direct Git operations and Git-backed patches use the same descendant containment as host
-shell commands. Descendants are stopped on completion, timeout, or plugin restart.
+shell commands. Descendants are stopped on completion, timeout, or plugin restart, with
+the macOS limits described for the shell above.
 
 The read-only `web_fetch` tool retrieves bounded text from public HTTPS URLs. It
 blocks local and private network addresses, pins requests to validated DNS
