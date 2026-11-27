@@ -117,10 +117,8 @@ fn assert_rollback_and_retry(existing: bool, failure: Failure) {
         }
 
         Failure::Version | Failure::Capabilities => {
-            let lock = load_lock_at(&root).unwrap();
-
-            assert_eq!(lock.plugins["memory"].version, "0.1.0");
-            assert_eq!(lock.plugins["memory"].capabilities, ["memory"]);
+            assert!(!load_lock_at(&root).unwrap().plugins.contains_key("memory"));
+            assert!(!root.join("plugins/memory").exists());
 
             file.plugins[0].version = "0.1.0".into();
             file.plugins[0].capabilities = vec!["memory".into()];

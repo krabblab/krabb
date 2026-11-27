@@ -88,4 +88,5 @@ parser provides one.
 
 Import validates first, then resolves plugin sources and verifies their
 metadata. It prompts before changing state; use `--yes` to skip the prompt and
-`--force` to replace existing configuration.
+`--force` to replace existing configuration. A failed import puts back the previous
+configuration, plugin lock, and installed plugins.
