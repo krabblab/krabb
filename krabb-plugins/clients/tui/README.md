@@ -50,6 +50,11 @@ keyboard layout produces it.
 
 When the TUI closes for any reason other than quitting, such as lost terminal
 input or an error, it prints why and how to open it again.
+When the daemon restarts, for example after `krabb config set`, the TUI reconnects
+on its own for about half a minute and clears approval prompts the restart dropped.
+If it cannot reconnect, it says so once and asks you to reopen it with `krabb tui`.
+Notices Krabb writes itself, such as retries, failures, and approval results, appear
+as System rather than as your Krabb.
 
 Attach images, PDFs, text or code files, and audio with `/attach <path>` or by
 pasting or dragging their absolute paths into the prompt, or attach a clipboard
@@ -71,7 +76,7 @@ Use `/help` for commands available in the current session. Common commands:
 - `/status` shows the same status as `krabb status`, and `/plugin` lists plugins
   as `krabb plugin list` does.
 - `/approval`, `/approvals`, `/approve <id>`, and `/deny <id>` manage pending
-  approvals.
+  approvals, including while a turn waits for one.
 - `/session`, `/new`, `/model`, and `/workspace` manage conversation context.
 - `/deliveries`, `/retry`, and `/drop` inspect delivery state.
 - `/schedule`, `/memory`, and `/data` are available when their plugins are

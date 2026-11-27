@@ -1,3 +1,4 @@
+mod reconnect;
 mod rich;
 
 use krabb_core::{
@@ -27,7 +28,7 @@ use ratatui::{
 };
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs::File,
     ops::Range,
     path::PathBuf,
@@ -40,7 +41,7 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, duplex},
+    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, duplex},
     sync::mpsc,
     time::timeout,
 };
@@ -262,6 +263,8 @@ struct App {
     pending_interactions: VecDeque<PendingInteraction>,
     completed_interactions: Vec<SavedInteraction>,
     interaction_sequence: u64,
+    reconnect: reconnect::Reconnect,
+    dismissed_approvals: HashSet<String>,
 }
 
 struct TranscriptLayout {
@@ -439,8 +442,6 @@ where
     let _guard = TerminalGuard::enter(output)?;
     execute!(terminal.backend_mut(), terminal::Clear(terminal::ClearType::All))?;
 
-    let (mut command_tx, command_rx) = duplex(16 * 1024);
-    let (mut output_rx, response_tx) = duplex(64 * 1024);
     let preferences_path = super::data::plugin_file(&home, "tui", "preferences.toml");
 
     let preferences = krabb_file::load(&preferences_path, 16 * 1024)
@@ -458,30 +459,14 @@ where
     let history_path = super::data::plugin_file(&home, "tui", "history.json");
     let history = super::data::load_history(&history_path);
 
-    let engine_model = model.clone();
-    let (session_tx, mut session_rx) = mpsc::unbounded_channel();
-    let (engine_event_tx, mut engine_event_rx) = mpsc::unbounded_channel();
-    let (interrupt_tx, interrupt_rx) = mpsc::unbounded_channel();
-
-    let mut engine = tokio::spawn(crate::run_with(
-        command_rx,
-        response_tx,
-        crate::EngineConfig {
-            home: home.clone(),
-            plugin,
-            model: engine_model,
-            model_override: None,
-            session,
-        },
-        host,
-        crate::EngineEvents {
-            session: Some(session_tx),
-            engine: Some(engine_event_tx),
-            streaming_host: Some(crate::daemon_streaming_control),
-            stop_after_generation: false,
-        },
-        interrupt_rx,
-    ));
+    let (
+        mut command_tx,
+        mut output_rx,
+        mut session_rx,
+        mut engine_event_rx,
+        mut interrupt_tx,
+        mut engine,
+    ) = spawn_engine(&home, &plugin, &model, &session, host);
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -541,12 +526,15 @@ where
         ..App::default()
     };
 
+    app.dismiss_approvals();
+
     let mut buffer = [0_u8; 4096];
     let mut engine_finished = false;
     let mut session_events_open = true;
     let mut engine_events_open = true;
     let mut quit = false;
     let mut closed = None;
+    let mut reconnect_at = None;
     let mut session_refresh = tokio::time::interval(SESSION_REFRESH_INTERVAL);
     let mut generation_refresh = tokio::time::interval(GENERATION_FRAME_INTERVAL);
     let mut statusline_refresh = tokio::time::interval(STATUSLINE_SCROLL_INTERVAL);
@@ -771,24 +759,21 @@ where
                         app.pending_clear = false;
                         app.context_output.clear();
 
-                        match (&mut engine).await {
-                            Ok(Ok(())) => app.status = "Session ended".into(),
+                        let failure = match (&mut engine).await {
+                            Ok(Ok(())) => None,
+                            Ok(Err(error)) => Some(error.to_string()),
+                            Err(error) => Some(error.to_string()),
+                        };
 
-                            Ok(Err(error)) => {
-                                app.status = "Session failed".into();
-                                let message = format!("\n{error}");
-                                app.capture_interaction_output(&message);
-                                app.push_output(message);
-                            }
+                        if let Some(error) = failure {
+                            reconnect_at = app
+                                .engine_failed(&error)
+                                .map(|delay| tokio::time::Instant::now() + delay);
 
-                            Err(error) => {
-                                app.status = "Session failed".into();
-                                let message = format!("\n{error}");
-                                app.capture_interaction_output(&message);
-                                app.push_output(message);
-                            }
+                            continue;
                         }
 
+                        app.status = "Session ended".into();
                         persist_pending(&home, &mut app, host).await?;
 
                         for interaction in app.finish_interactions() {
@@ -797,6 +782,8 @@ where
                     }
 
                     Ok(count) => {
+                        app.engine_ready();
+
                         let text = String::from_utf8_lossy(&buffer[..count]).into_owned();
                         let interactions = app.push_assistant_output(text);
 
@@ -824,6 +811,22 @@ where
                 }
             }
 
+            _ = sleep_until(reconnect_at), if engine_finished && reconnect_at.is_some() => {
+                reconnect_at = None;
+
+                (
+                    command_tx,
+                    output_rx,
+                    session_rx,
+                    engine_event_rx,
+                    interrupt_tx,
+                    engine,
+                ) = spawn_engine(&home, &plugin, &model, &app.session, host);
+
+                engine_finished = false;
+                session_events_open = true;
+                engine_events_open = true;
+            }
         }
     }
 
@@ -906,6 +909,56 @@ where
     Ok(closed)
 }
 
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(deadline).await;
+    }
+}
+
+type EngineLink = (
+    DuplexStream,
+    DuplexStream,
+    mpsc::UnboundedReceiver<SessionView>,
+    mpsc::UnboundedReceiver<crate::EngineEvent>,
+    mpsc::UnboundedSender<()>,
+    tokio::task::JoinHandle<Result<()>>,
+);
+
+/// Starts the session engine, returning its input, output, events, interrupt, and task.
+fn spawn_engine<C, F>(home: &str, plugin: &str, model: &str, session: &str, host: C) -> EngineLink
+where
+    C: Fn(String, String, serde_json::Value) -> F + Copy + Send + Sync + 'static,
+    F: std::future::Future<Output = Result<serde_json::Value>> + Send + 'static,
+{
+    let (command_tx, command_rx) = duplex(16 * 1024);
+    let (output_rx, response_tx) = duplex(64 * 1024);
+    let (session_tx, session_rx) = mpsc::unbounded_channel();
+    let (engine_event_tx, engine_event_rx) = mpsc::unbounded_channel();
+    let (interrupt_tx, interrupt_rx) = mpsc::unbounded_channel();
+
+    let engine = tokio::spawn(crate::run_with(
+        command_rx,
+        response_tx,
+        crate::EngineConfig {
+            home: home.to_owned(),
+            plugin: plugin.to_owned(),
+            model: model.to_owned(),
+            model_override: None,
+            session: session.to_owned(),
+        },
+        host,
+        crate::EngineEvents {
+            session: Some(session_tx),
+            engine: Some(engine_event_tx),
+            streaming_host: Some(crate::daemon_streaming_control),
+            stop_after_generation: false,
+        },
+        interrupt_rx,
+    ));
+
+    (command_tx, output_rx, session_rx, engine_event_rx, interrupt_tx, engine)
+}
+
 async fn load_session<C, F>(home: &str, id: &str, host: C) -> Result<SessionView>
 where
     C: Fn(String, String, serde_json::Value) -> F,
@@ -984,7 +1037,9 @@ where
         ));
     }
 
-    entries.push((interaction.assistant_message_id.as_str(), Role::Assistant, None, output));
+    let sender = interaction.output.is_empty().then(|| krabb_core::types::SYSTEM.to_owned());
+
+    entries.push((interaction.assistant_message_id.as_str(), Role::Assistant, sender, output));
 
     for (id, role, sender, text) in entries {
         let text = bounded_interaction_text(text);
@@ -1079,7 +1134,8 @@ fn render_messages(messages: &[Message], name: &str) -> String {
 
     for message in messages {
         let timestamp = message_timestamp(&message.id);
-        let terminal_system = message.id.starts_with("tui-system-");
+        let terminal_system = message.id.starts_with("tui-system-")
+            || message.sender.as_deref() == Some(krabb_core::types::SYSTEM);
         let label = match &message.role {
             Role::Assistant if terminal_system => format_role_label("System", timestamp.as_deref()),
             Role::User => format_role_label("You", timestamp.as_deref()),
@@ -1479,7 +1535,7 @@ where
                 return Ok(false);
             }
 
-            if let Some(approvals) = approval_prompts(&app.transcript) {
+            if let Some(approvals) = app.approval_prompts() {
                 match key.code {
                     KeyCode::Left => {
                         app.approval_selection = 0;
@@ -1649,6 +1705,12 @@ where
                     let line = app.input.iter().collect::<String>();
 
                     let command = line.trim();
+
+                    if engine_finished && !matches!(command, "/quit" | "/exit") {
+                        app.status = app.reconnect.status().into();
+                        return Ok(false);
+                    }
+
                     let busy = app.generation_active
                         || app.session_working
                         || !app.pending_interactions.is_empty();
@@ -1867,30 +1929,24 @@ where
                         return Ok(true);
                     }
 
-                    if !engine_finished {
-                        if command == "/compact" {
-                            app.begin_compaction();
-                        }
+                    if command == "/compact" {
+                        app.begin_compaction();
+                    }
 
-                        let attachments = if ordinary && !busy {
-                            std::mem::take(&mut app.attachments)
-                        } else {
-                            Vec::new()
-                        };
-
-                        let encoded = crate::attachments::encode(&line, &attachments);
-
-                        command_tx.write_all(encoded.as_bytes()).await?;
-                        command_tx.write_all(b"\n").await?;
-
-                        if !app.generation_active {
-                            app.reply_pending = true;
-                            app.reply_system = line.starts_with('/') || line.starts_with('!');
-                        }
+                    let attachments = if ordinary && !busy {
+                        std::mem::take(&mut app.attachments)
                     } else {
-                        let message = "The session engine is no longer running.";
-                        app.push_bot(format!("{message}\n"));
-                        app.complete_local_interaction(message.into());
+                        Vec::new()
+                    };
+
+                    let encoded = crate::attachments::encode(&line, &attachments);
+
+                    command_tx.write_all(encoded.as_bytes()).await?;
+                    command_tx.write_all(b"\n").await?;
+
+                    if !app.generation_active {
+                        app.reply_pending = true;
+                        app.reply_system = line.starts_with('/') || line.starts_with('!');
                     }
                 }
 
@@ -2049,7 +2105,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let input_rows = input_content_rows.clamp(1, INPUT_MAX_ROWS);
     app.input_scroll.set_extent(input_content_rows, input_rows);
 
-    let approvals = approval_prompts(&app.transcript).unwrap_or_default();
+    let approvals = app.approval_prompts().unwrap_or_default();
     let suggestions = command_suggestions(&input_text, &app.command_options);
     let popup_rows = if app.statusline_picker {
         STATUSLINE_ITEMS.len().min(u16::MAX as usize) as u16
@@ -3530,6 +3586,52 @@ impl App {
         hovered != layout.hovered_message
     }
 
+    /// Approvals the running turn still waits for, minus those of turns that already ended.
+    fn approval_prompts(&self) -> Option<Vec<String>> {
+        if !self.generation_active {
+            return None;
+        }
+
+        let requests = approval_prompts(&self.transcript)?
+            .into_iter()
+            .filter(|id| !self.dismissed_approvals.contains(id))
+            .collect::<Vec<_>>();
+
+        (!requests.is_empty()).then_some(requests)
+    }
+
+    /// Hides the live approval prompts of a turn that ended, since the daemon no longer
+    /// waits for them.
+    fn dismiss_approvals(&mut self) {
+        if let Some(requests) = approval_prompts(&self.transcript) {
+            self.dismissed_approvals.extend(requests);
+        }
+    }
+
+    /// Drops what the failed engine left in flight, and returns when to start another one.
+    fn engine_failed(&mut self, error: &str) -> Option<Duration> {
+        self.pending_interactions.clear();
+        self.dismiss_approvals();
+
+        let delay = self.reconnect.fail();
+
+        if delay.is_some() {
+            self.status = "Reconnecting to Krabb".into();
+        } else {
+            self.status = format!("Disconnected: {}", crate::sentence(error.to_owned()));
+            self.push_control_notice(reconnect::LOST);
+        }
+
+        delay
+    }
+
+    fn engine_ready(&mut self) {
+        if self.reconnect.ready() {
+            self.status = "Ready".into();
+            self.push_control_notice(reconnect::RESTORED);
+        }
+    }
+
     fn begin_compaction(&mut self) {
         self.compaction_active = true;
         self.compaction_started = Some(Instant::now());
@@ -3549,6 +3651,7 @@ impl App {
         self.reply_system = false;
         self.approval_reply_pending = false;
         self.status = if interrupted { "Generation interrupted" } else { "Ready" }.into();
+        self.dismiss_approvals();
 
         if interrupted {
             self.pending_interactions.clear();
@@ -3714,6 +3817,7 @@ impl App {
         self.context_usage = session.context_usage;
         self.session_working = session.working;
         self.transcript = render_messages(&session.messages, &self.name);
+        self.dismiss_approvals();
         self.invalidate_transcript_layout();
         self.transcript_scroll.follow_latest();
     }
@@ -4700,6 +4804,111 @@ mod tests {
         assert_eq!(super::approval_prompts("Approval accepted."), None);
     }
 
+    #[test]
+    fn a_failed_engine_clears_its_approvals_and_reports_once_when_it_cannot_reconnect() {
+        let mut app = App {
+            transcript: "System | now\nApproval needed.\nApprove: /approve first\n".into(),
+            generation_active: true,
+            ..App::default()
+        };
+
+        app.begin_interaction("/approve first");
+
+        assert_eq!(app.approval_prompts(), Some(vec!["first".into()]));
+
+        assert_eq!(app.engine_failed("connection refused."), Some(Duration::from_secs(1)));
+
+        app.generation_active = true;
+
+        assert_eq!(app.approval_prompts(), None);
+
+        app.generation_active = false;
+
+        assert!(app.pending_interactions.is_empty());
+        assert_eq!(app.status, "Reconnecting to Krabb");
+
+        while app.engine_failed("connection refused.").is_some() {}
+
+        assert_eq!(app.transcript.matches(super::reconnect::LOST).count(), 1);
+        assert_eq!(app.status, "Disconnected: Connection refused");
+        assert_eq!(app.approval_prompts(), None);
+    }
+
+    #[test]
+    fn a_finished_turn_drops_its_unanswered_approval_prompts() {
+        let mut app = App {
+            transcript: "System | now\nApproval needed.\nApprove: /approve old\n".into(),
+            generation_active: true,
+            ..App::default()
+        };
+
+        app.finish_generation(false);
+        app.generation_active = true;
+        app.transcript.push_str("Approval needed.\nApprove: /approve new\n");
+
+        assert_eq!(app.approval_prompts(), Some(vec!["new".into()]));
+    }
+
+    #[test]
+    fn a_reconnected_engine_says_so_once() {
+        let mut app = App::default();
+
+        app.engine_ready();
+
+        assert!(app.transcript.is_empty());
+
+        assert!(app.engine_failed("closed").is_some());
+
+        app.engine_ready();
+        app.engine_ready();
+
+        assert_eq!(app.transcript.matches(super::reconnect::RESTORED).count(), 1);
+        assert_eq!(app.status, "Ready");
+    }
+
+    #[tokio::test]
+    async fn keeps_input_while_the_engine_is_disconnected() {
+        let (mut command_tx, mut command_rx) = duplex(1024);
+
+        let mut app = App { input: "hello".chars().collect(), cursor: 5, ..App::default() };
+
+        app.engine_failed("closed");
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            true,
+        )
+        .await
+        .unwrap();
+
+        drop(command_tx);
+
+        let mut buffer = Vec::new();
+
+        command_rx.read_to_end(&mut buffer).await.unwrap();
+
+        assert!(buffer.is_empty());
+        assert_eq!(app.input.iter().collect::<String>(), "hello");
+        assert_eq!(app.status, super::reconnect::WAITING);
+    }
+
+    #[test]
+    fn labels_host_notices_as_system() {
+        let messages = [krabb_core::types::Message {
+            id: "task-notice-at-1709164860000-task-1-event-2".into(),
+            session: "work".into(),
+            role: krabb_core::types::Role::Assistant,
+            sender: Some(krabb_core::types::SYSTEM.into()),
+            content: vec![krabb_core::types::Content::Text { text: "The request failed.".into() }],
+        }];
+
+        let transcript = super::render_messages(&messages, "Krabb");
+
+        assert!(transcript.starts_with("System | "), "{transcript}");
+    }
+
     #[tokio::test]
     async fn command_picker_fills_composer_without_submitting() {
         let (mut command_tx, mut command_rx) = duplex(1024);
@@ -5175,8 +5384,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
 
-        assert!(approval.contains("Approval needed"));
-        assert!(approval.contains("[Approve]"));
+        assert!(!approval.contains("[Approve]"));
     }
 
     #[test]
@@ -7157,7 +7365,12 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(app.transcript.contains("no longer running"));
+        assert_eq!(app.status, super::reconnect::DISCONNECTED);
+        assert_eq!(app.input.iter().collect::<String>(), "/again");
+        assert!(app.transcript.is_empty());
+
+        app.input.clear();
+        app.cursor = 0;
 
         assert!(
             handle_event(

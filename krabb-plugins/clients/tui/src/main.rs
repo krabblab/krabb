@@ -1554,7 +1554,7 @@ where
                                 engine_events.as_ref(),
                                 host,
                             )
-                            .await?;
+                            .await;
 
                             let reported = engine_events
                                 .as_ref()
@@ -2428,14 +2428,24 @@ async fn resolve_turn_approval<C, F>(
     sequence: &mut u64,
     events: Option<&mpsc::UnboundedSender<EngineEvent>>,
     host: C,
-) -> krabb_core::Result<String>
+) -> String
 where
     C: Fn(String, String, Value) -> F + Copy,
     F: Future<Output = krabb_core::Result<Value>>,
 {
+    let list = match host(home.to_owned(), "approval.list".into(), serde_json::json!({})).await {
+        Ok(list) => list,
+
+        Err(error) => {
+            return format!(
+                "Pending approvals unavailable: {}.\nTry /approvals again in a moment.\n",
+                sentence(error.to_string())
+            );
+        }
+    };
+
     if command == "/approvals" {
-        let value = host(home.to_owned(), "approval.list".into(), serde_json::json!({})).await?;
-        return Ok(format_approvals(&value));
+        return format_approvals(&list);
     }
 
     let (approved, supplied_id) = if command == "/approve" {
@@ -2447,12 +2457,11 @@ where
     } else if let Some(id) = command.strip_prefix("/deny ") {
         (false, id.trim())
     } else {
-        return Ok("Usage: /approve <id> or /deny <id>.\n".into());
+        return "Usage: /approve <id> or /deny <id>.\n".into();
     };
 
-    let list = host(home.to_owned(), "approval.list".into(), serde_json::json!({})).await?;
     let Some(items) = list["items"].as_array() else {
-        return Ok("Pending approvals: none.\n".into());
+        return "Pending approvals: none.\n".into();
     };
 
     let candidates = items
@@ -2467,13 +2476,13 @@ where
         .collect::<Vec<_>>();
 
     let Some(item) = (candidates.len() == 1).then(|| candidates[0]) else {
-        return Ok(if candidates.is_empty() {
+        return if candidates.is_empty() {
             "No matching pending approval.\nUse /approvals to see the current requests.\n".into()
         } else {
             "More than one approval is pending for this session, so use /approve <id> or /deny \
             <id>.\n"
                 .into()
-        });
+        };
     };
 
     let id = item["id"].as_str().unwrap_or_default();
@@ -2498,12 +2507,16 @@ where
         content: vec![Content::Text { text: command.into() }],
     };
 
-    host(
+    let saved = host(
         home.to_owned(),
         "session.append_reserved".into(),
         serde_json::json!({"id": session, "owner": owner, "message": user}),
     )
-    .await?;
+    .await;
+
+    if saved.is_err() {
+        return format!("{reply}\n");
+    }
 
     if let Some(events) = events {
         let _ = events.send(EngineEvent::UserSaved(command.into()));
@@ -2514,18 +2527,18 @@ where
         id: message_id("system-assistant", *sequence),
         session: session.into(),
         role: Role::Assistant,
-        sender: None,
+        sender: Some(krabb_core::types::SYSTEM.into()),
         content: vec![Content::Text { text: reply.clone() }],
     };
 
-    host(
+    let _ = host(
         home.to_owned(),
         "session.append_reserved".into(),
         serde_json::json!({"id": session, "owner": owner, "message": assistant}),
     )
-    .await?;
+    .await;
 
-    Ok(format!("{reply}\n"))
+    format!("{reply}\n")
 }
 
 async fn daemon_control(home: String, method: String, params: Value) -> krabb_core::Result<Value> {
@@ -7084,8 +7097,7 @@ mod tests {
             Some(&events),
             mock_control,
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(response, "Approval accepted.\n");
         assert_eq!(sequence, 2);
@@ -7110,11 +7122,70 @@ mod tests {
             None,
             mock_control,
         )
-        .await
-        .unwrap();
+        .await;
 
         assert_eq!(response, "Approval accepted.\n");
         assert_eq!(sequence, 2);
+    }
+
+    async fn busy_append_control(
+        home: String,
+        method: String,
+        params: serde_json::Value,
+    ) -> krabb_core::Result<serde_json::Value> {
+        if method == "session.append_reserved" {
+            return Err(krabb_core::Error::Denied(krabb_core::types::SESSION_BUSY.into()));
+        }
+
+        mock_control(home, method, params).await
+    }
+
+    async fn offline_control(
+        _home: String,
+        _method: String,
+        _params: serde_json::Value,
+    ) -> krabb_core::Result<serde_json::Value> {
+        Err(krabb_core::Error::Io(std::io::ErrorKind::ConnectionRefused.into()))
+    }
+
+    #[tokio::test]
+    async fn resolves_a_turn_approval_even_when_the_busy_session_refuses_its_transcript() {
+        let mut sequence = 0;
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+
+        let response = super::resolve_turn_approval(
+            "/tmp/krabb",
+            "telegram-7",
+            "reservation",
+            "/deny 0123456789abcdef01234567",
+            &mut sequence,
+            Some(&events),
+            busy_append_control,
+        )
+        .await;
+
+        assert_eq!(response, "Approval denied.\n");
+        assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn reports_unavailable_approvals_during_a_turn_without_failing() {
+        let mut sequence = 0;
+
+        let response = super::resolve_turn_approval(
+            "/tmp/krabb",
+            "telegram-7",
+            "reservation",
+            "/approvals",
+            &mut sequence,
+            None,
+            offline_control,
+        )
+        .await;
+
+        assert!(response.starts_with("Pending approvals unavailable: "), "{response}");
+        assert!(response.ends_with("Try /approvals again in a moment.\n"), "{response}");
+        assert_eq!(sequence, 0);
     }
 
     #[test]
