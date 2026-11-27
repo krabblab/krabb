@@ -86,7 +86,13 @@ unmet requirement and the exact `krabb config set` or `krabb plugin install` com
 that fixes it, so Krabb can tell a misconfiguration from a bug. When you ask, it can
 also apply such a fix itself after the owner approves it; see [safety](safety.md). It
 sees only its own
-section and no secrets, never the settings of other channels or clients. Anyone in a
+section and no secrets, never the settings of other channels or clients.
+Each turn also carries a short permission summary built from the tools actually offered
+and the approval mode: whether the conversation may read and search files, write files,
+run shell commands (on the host, in a container, or not at all), and use web tools, and
+whether each change runs after approval, without asking, or not at all. The summary is
+authoritative over a provider's own sandbox settings, so a Codex session started
+read-only does not make Krabb refuse work its tools can do. Anyone in a
 group chat can ask it about these settings. Conversation history is a bounded
 transcript of up to 1,000 messages, counting tool calls and results. When the
 model's context fills up, older turns are summarized in what the model sees while the
