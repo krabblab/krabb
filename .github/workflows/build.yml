@@ -45,10 +45,11 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
 
+          # Apple Silicon cross-compiles the Intel target faster than the Intel runner builds it.
           - name: macOS x86_64
             os: macos
             arch: x86_64
-            runner: macos-15-intel
+            runner: macos-15
             target: x86_64-apple-darwin
 
           - name: macOS aarch64
@@ -95,6 +96,12 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          if [[ "${{ matrix.target }}" == x86_64-apple-darwin && "$(uname -m)" == arm64 ]] &&
+            ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            printf '%s\n' '::notice::Rosetta is unavailable, so the Intel CLI is built but not run.'
+            exit 0
+          fi
+
           ./target/${{ matrix.target }}/release/krabb version
           ./target/${{ matrix.target }}/release/krabb version
 
