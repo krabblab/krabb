@@ -207,7 +207,7 @@ their model is explicitly pinned; their history is preserved.
   and Windows; other platforms require Git execution through the sandboxed shell.
   All conversations default to isolated scopes in ordinary folders. Worktrees are opt-in
   through guided Git setup, including owner DMs and TUI sessions.
-- Codex supports Platform API keys and personal Codex OAuth through its
+- Codex signs in with a personal ChatGPT account through its
   installed runtime, owner-only by default. Anthropic uses API keys with no
   Claude OAuth or
   Claude Code delegation. Ollama supports local unauthenticated use and Cloud

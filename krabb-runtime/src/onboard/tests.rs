@@ -146,7 +146,7 @@ async fn choosing_no_channel_installs_nothing() {
     assert!(matches!(guide.hatch().await.unwrap(), Flow::Next));
     assert!(!root.join("plugins/tui").exists());
 
-    guide.finish().unwrap();
+    guide.finish().await.unwrap();
 
     let _ = std::fs::remove_dir_all(root);
 }

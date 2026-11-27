@@ -1,7 +1,7 @@
 # OpenAI Integration
 
-Shared OpenAI model metadata and stateless Responses transport for the OpenAI and
-Codex API-key plugins. Provider wire types stay inside this library; callers use
+Shared OpenAI model metadata and stateless Responses transport for the OpenAI
+plugin, and model profiles for the Codex plugin. Provider wire types stay inside this library; callers use
 normalized Krabb requests and replies.
 
 The Responses path supports native search, inline source links, streamed text,

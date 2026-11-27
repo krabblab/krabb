@@ -124,7 +124,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         }
     }
 
-    guide.finish()
+    guide.finish().await
 }
 
 /// Which steps to run: named ones, those a flag answers, or all of them in a terminal.
@@ -587,6 +587,62 @@ impl Guide {
             self.done(&format!("Installed {} {kind}.", offer.id));
         }
 
+        let flow = self.configure(offer).await?;
+
+        if matches!(flow, Flow::Next) && offer.id == "codex" {
+            return self.sign_in_to_codex().await;
+        }
+
+        Ok(flow)
+    }
+
+    /// Codex signs in with the person's ChatGPT account through its own CLI, not a key.
+    async fn sign_in_to_codex(&mut self) -> Result<Flow, Error> {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let binary = std::env::var_os("KRABB_CODEX_BINARY").map(PathBuf::from);
+
+        if binary.is_none() && crate::service::codex_binary_from_path(&path).is_none() {
+            self.note(
+                "Install the Codex CLI from https://developers.openai.com/codex/cli, then sign \
+                 in with `krabb codex login`.",
+            );
+
+            return Ok(Flow::Next);
+        }
+
+        if crate::codex_auth() {
+            self.done("Codex is signed in.");
+            return Ok(Flow::Next);
+        }
+
+        if !self.interactive {
+            self.note("Sign in to Codex with `krabb codex login`.");
+            return Ok(Flow::Next);
+        }
+
+        match self.ask("Sign in to Codex with your ChatGPT account now?", &YES_LATER)? {
+            None => Ok(Flow::Stop),
+
+            Some(0) => {
+                let login = vec!["codex".to_owned(), "login".to_owned()];
+
+                if crate::external_command_at(login, false, self.root.clone()).await.is_err() {
+                    self.note("Codex is not signed in, so sign in later with `krabb codex login`.");
+                }
+
+                self.spaced = false;
+                Ok(Flow::Next)
+            }
+
+            Some(_) => {
+                self.note("Sign in later with `krabb codex login`.");
+                Ok(Flow::Next)
+            }
+        }
+    }
+
+    /// Asks for OFFER's secrets and settings when it has any left to set.
+    async fn configure(&mut self, offer: &Offer) -> Result<Flow, Error> {
         if !crate::setup::needed(&self.root, offer.id)? {
             return Ok(Flow::Next);
         }
@@ -620,14 +676,53 @@ impl Guide {
         Ok(Flow::Next)
     }
 
-    fn finish(&mut self) -> Result<(), Error> {
+    async fn finish(&mut self) -> Result<(), Error> {
         self.gap();
 
-        let ready = ready_provider(&self.root)?.is_some();
+        let provider = ready_provider(&self.root)?;
         let terminal = crate::load_lock_at(&self.root)?.plugins.contains_key("tui");
 
-        println!("{}", closing(ready, terminal));
+        if let Some(provider) = &provider
+            && self.interactive
+            && crate::service_path().is_file()
+            && let Some(problem) = self.blocker(provider).await
+        {
+            println!("{problem}");
+            return Ok(());
+        }
+
+        println!("{}", closing(provider.is_some(), terminal));
         Ok(())
+    }
+
+    /// Why the running Krabb cannot answer with PROVIDER yet, with the one next step, or none
+    /// when the service answers and the provider loaded. Init writes and starts the service just
+    /// before this, so a slow start gets the same wait `krabb tui` gives it.
+    async fn blocker(&self, provider: &str) -> Option<String> {
+        let running = matches!(crate::service_manager_state(), Ok(crate::ServiceState::Active));
+
+        if let Err(error) =
+            crate::require_tui_daemon(&self.root, running, crate::DAEMON_STARTUP_CHECKS).await
+        {
+            return Some(format!("Your Krabb is set up, but it does not answer yet.\n{error}"));
+        }
+
+        let status = crate::status::status_at(&self.root).await.ok();
+        let states = status.as_ref().and_then(|status| status["plugin_states"].as_array());
+        let state = states.and_then(|states| states.iter().find(|state| state["id"] == provider));
+
+        if state.is_some_and(|state| state["state"] == "ready") {
+            return None;
+        }
+
+        // Only the provider's own state counts here, not the first problem anywhere.
+        let next = state
+            .and_then(|state| {
+                crate::status::next_action(&serde_json::json!({"plugin_states": [state]}))
+            })
+            .unwrap_or_else(|| "Check every part with `krabb status`.".into());
+
+        Some(format!("Your Krabb is set up, but the {provider} provider is not ready.\n{next}"))
     }
 }
 

@@ -365,7 +365,6 @@ fn encrypted_credentials_feed_readiness_and_only_declared_plugin_secrets() {
     let providers = [
         ("telegram", "KRABB_TELEGRAM_TOKEN"),
         ("discord", "KRABB_DISCORD_TOKEN"),
-        ("codex", "KRABB_CODEX_KEY"),
         ("anthropic", "KRABB_ANTHROPIC_KEY"),
         ("openai", "KRABB_OPENAI_KEY"),
         ("openrouter", "KRABB_OPENROUTER_KEY"),
@@ -444,7 +443,7 @@ fn service_capture_preserves_custom_credential_and_key_paths() {
     let environment = BTreeMap::from([
         ("KRABB_CREDENTIALS".into(), source.display().to_string()),
         ("KRABB_CREDENTIALS_KEY".into(), key.display().to_string()),
-        ("KRABB_CODEX_KEY".into(), "synthetic-service-override".into()),
+        ("KRABB_OPENAI_KEY".into(), "synthetic-service-override".into()),
     ]);
 
     let service = root.join("service");
@@ -455,7 +454,7 @@ fn service_capture_preserves_custom_credential_and_key_paths() {
     let path = crate::service_credentials_path(&service);
     let stored = read(&path, &key).unwrap();
 
-    assert_eq!(stored["KRABB_CODEX_KEY"], "synthetic-service-override");
+    assert_eq!(stored["KRABB_OPENAI_KEY"], "synthetic-service-override");
     assert_eq!(stored["KRABB_SETUP_TEST"], "synthetic-do-not-use");
     assert!(!fs::read_to_string(path).unwrap().contains("synthetic"));
     assert!(!root.join("credentials.key").exists());
@@ -568,4 +567,25 @@ fn forgetting_removes_only_named_values_and_keeps_the_backend() {
     assert!(!super::forget_entry("telegram").unwrap());
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_credential_key_is_read_from_the_keyring_once_per_process() {
+    let memory = std::sync::Mutex::new(BTreeMap::new());
+    let reads = Cell::new(0);
+
+    let fetch = || {
+        reads.set(reads.get() + 1);
+        Ok(vec![7; 32])
+    };
+
+    assert_eq!(remembered(&memory, "a", fetch).unwrap(), vec![7; 32]);
+    assert_eq!(remembered(&memory, "a", fetch).unwrap(), vec![7; 32]);
+    assert_eq!(reads.get(), 1);
+
+    let failed = remembered(&memory, "b", || Err("locked".into()));
+
+    assert!(failed.is_err());
+    assert_eq!(remembered(&memory, "b", fetch).unwrap(), vec![7; 32]);
+    assert_eq!(reads.get(), 2);
 }

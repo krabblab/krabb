@@ -162,6 +162,11 @@ pub(crate) struct Observed<'a> {
     pub missing: Option<&'a str>,
 }
 
+/// The command that sets up plugin ID; Codex has no settings to enter and signs in instead.
+fn setup_command(id: &str) -> String {
+    if id == "codex" { "krabb codex login".into() } else { format!("krabb plugin setup {id}") }
+}
+
 /// Places one installed plugin on the installed, configured, running, and ready path.
 ///
 /// Each state other than ready names the next step, as a command or, for a missing
@@ -185,7 +190,7 @@ pub(crate) fn plugin_state(
     } else if loaded || (client && configured) {
         ("ready", None)
     } else if !configured {
-        ("needs setup", Some(format!("krabb plugin setup {id}")))
+        ("needs setup", Some(setup_command(id)))
     } else if observed.active.is_none() {
         let start = if service { "krabb service start" } else { "krabb service install" };
 
@@ -386,7 +391,7 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
 }
 
 /// The one command that moves the installation forward, as a sentence.
-fn next_action(value: &serde_json::Value) -> Option<String> {
+pub(crate) fn next_action(value: &serde_json::Value) -> Option<String> {
     if value["recovery"]["from"].is_string() && value["recovery"]["accepted"] != true {
         return Some("Undo the unfinished update with `krabb update --rollback`.".into());
     }

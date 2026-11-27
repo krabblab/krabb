@@ -1557,7 +1557,7 @@ fn formats_status_health_details_only_when_present() {
 #[tokio::test]
 async fn tui_reports_a_human_readable_daemon_requirement() {
     let root = test_root("tui-daemon-required");
-    let error = super::require_tui_daemon(&root).await.unwrap_err();
+    let error = super::require_tui_daemon(&root, false, 0).await.unwrap_err();
 
     assert_eq!(
         error.to_string(),
@@ -1566,6 +1566,11 @@ async fn tui_reports_a_human_readable_daemon_requirement() {
             "Start it with `krabb service start` or run `krabb-daemon`."
         )
     );
+
+    let starting = super::require_tui_daemon(&root, true, 1).await.unwrap_err().to_string();
+
+    assert!(starting.starts_with("The Krabb service is running but not answering yet."));
+    assert!(starting.ends_with(&format!("see the log in {}.", root.join("logs").display())));
 }
 
 #[test]
@@ -5159,7 +5164,7 @@ fn service_environment_materializes_declared_credentials() {
     environment.insert("KRABB_SANDBOX_RUNTIME".into(), "docker".into());
     environment.insert("KRABB_SANDBOX_IMAGE".into(), "local/tool:latest".into());
     environment.insert("KRABB_CREDENTIALS".into(), configured.display().to_string());
-    environment.insert("KRABB_CODEX_KEY".into(), "secret".into());
+    environment.insert("KRABB_OPENAI_KEY".into(), "secret".into());
 
     let service = root.join("krabb.service");
     let values = service_environment_from(&service, root.clone(), &environment).unwrap();
@@ -5192,7 +5197,7 @@ fn service_environment_materializes_declared_credentials() {
     assert!(!fs::read_to_string(&credential_path).unwrap().contains("secret"));
 
     assert_eq!(credentials["KRABB_TELEGRAM_TOKEN"], "old");
-    assert_eq!(credentials["KRABB_CODEX_KEY"], "secret");
+    assert_eq!(credentials["KRABB_OPENAI_KEY"], "secret");
 
     assert!(
         values.iter().any(|(name, value)| name == "KRABB_SANDBOX_RUNTIME" && value == "docker")
@@ -5203,6 +5208,56 @@ fn service_environment_materializes_declared_credentials() {
             .iter()
             .any(|(name, value)| name == "KRABB_SANDBOX_IMAGE" && value == "local/tool:latest")
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn services_find_programs_on_the_installing_shell_path_and_the_usual_folders() {
+    let root = test_root("service-path");
+    let home = root.join("home");
+    let tools = root.join("tools");
+    let open = root.join("open");
+
+    fs::create_dir_all(home.join(".local/bin")).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::create_dir_all(&open).unwrap();
+
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    }
+
+    let shell = format!(
+        "{}:relative/bin:{}:{}:/usr/bin:{}",
+        tools.display(),
+        open.display(),
+        root.join("missing").display(),
+        tools.display()
+    );
+
+    let environment =
+        BTreeMap::from([("PATH".into(), shell), ("HOME".into(), home.display().to_string())]);
+
+    let path = super::search_path(&environment);
+    let folders = path.split(':').collect::<Vec<_>>();
+    let local = home.join(".local/bin").display().to_string();
+    let tools = tools.display().to_string();
+
+    let position = |wanted: &str| folders.iter().position(|folder| *folder == wanted);
+
+    assert!(position("/usr/bin") < position(&local));
+    assert!(position(&local) < position(&tools));
+    assert_eq!(folders.iter().filter(|folder| **folder == tools).count(), 1);
+    assert!(!path.contains("relative") && !path.contains("missing"));
+    assert!(!path.contains(&open.display().to_string()));
+
+    let values = service_environment_from(&root.join("krabb.service"), root.clone(), &environment);
+    let saved = values.unwrap().into_iter().find(|(name, _)| name == "PATH").map(|(_, path)| path);
+
+    assert_eq!(saved, Some(path));
 
     let _ = fs::remove_dir_all(root);
 }

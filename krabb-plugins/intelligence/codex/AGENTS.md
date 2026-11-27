@@ -13,7 +13,7 @@ and the Codex app-server integration for ChatGPT sign-in.
 
 ## Non-Negotiables
 
-- Keep API-key and Codex-managed authentication paths separate.
+- Authenticate only through Codex-managed sign-in; API keys belong to the OpenAI plugin.
 - Do not expose, persist, or log OAuth tokens in Krabb.
 - Preserve bounded app-server operations and fail closed on protocol changes.
 

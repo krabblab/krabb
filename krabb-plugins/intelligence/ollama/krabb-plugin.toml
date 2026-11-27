@@ -1,5 +1,5 @@
 id = "ollama"
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 capabilities = ["model", "vision", "context"]
 permissions = ["network"]
 secrets = ["KRABB_OLLAMA_API_KEY"]
@@ -19,13 +19,18 @@ default = "auto"
 
 # Advanced execution hints: KRABB_OLLAMA_DEPLOYMENT and KRABB_OLLAMA_REVISION.
 
+[[commands]]
+name = "ollama"
+description = "List the models this Ollama server offers."
+interactive = false
+
 [protocol]
 major = 0
 minor = 2
 
 [setup.KRABB_OLLAMA_API_KEY]
 label = "API key"
-help = "Needed for Ollama Cloud, so skip it for a local Ollama server."
+help = "Required for Ollama Cloud; press Enter to skip it for a local Ollama server."
 url = "https://ollama.com/settings/keys"
 
 [setup.KRABB_OLLAMA_HOST]

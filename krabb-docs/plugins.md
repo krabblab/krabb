@@ -24,7 +24,7 @@ id = "example"
 version = "0.1.0"
 capabilities = ["model"]
 permissions = ["network"]
-secrets = ["KRABB_CODEX_KEY"]
+secrets = ["KRABB_EXAMPLE_KEY"]
 krabb = "0.1.0"
 
 [protocol]

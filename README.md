@@ -47,13 +47,13 @@ irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 > the pipe so it reaches `sh`, or export it first:
 >
 > ```sh
-> curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | KRABB_VERSION=0.1.0-rc.3 sh
+> curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | KRABB_VERSION=0.1.0-rc.4 sh
 > ```
 >
 > In PowerShell, set it in the same window first:
 >
 > ```powershell
-> $env:KRABB_VERSION = '0.1.0-rc.3'; irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
+> $env:KRABB_VERSION = '0.1.0-rc.4'; irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 > ```
 
 The installer puts `krabb` and `krabb-daemon` in `~/.local/bin`, or
@@ -101,7 +101,7 @@ described in the
 | Provider | Inference | What setup asks for |
 | --- | --- | --- |
 | OpenAI, Anthropic, Gemini, OpenRouter | Remote | The provider's API key |
-| Codex | Remote | An OpenAI API key, or `krabb codex login` with the Codex CLI installed |
+| Codex | Remote | `krabb codex login` with the Codex CLI installed |
 | Ollama | Local or remote | The local server address, such as `http://127.0.0.1:11434`; an API key for Ollama Cloud |
 
 Telegram and Discord need a bot token, Slack needs bot and app tokens, Signal

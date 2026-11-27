@@ -1,22 +1,15 @@
 [package]
 name = "krabb-plugin-codex"
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
 [dependencies]
-krabb-http.workspace = true
 krabb-openai.workspace = true
 krabb-log.workspace = true
 krabb-core = { path = "../../../krabb-core" }
-krabb-file = { path = "../../../krabb-libs/file" }
-futures-util.workspace = true
-keyring.workspace = true
-reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
-[dev-dependencies]
-krabb-test.workspace = true

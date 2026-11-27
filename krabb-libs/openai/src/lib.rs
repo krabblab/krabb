@@ -1,4 +1,4 @@
-//! OpenAI-specific integration shared by the API-key and Codex providers.
+//! OpenAI-specific integration shared by the OpenAI and Codex providers.
 #![forbid(unsafe_code)]
 
 pub mod responses;

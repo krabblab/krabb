@@ -34,7 +34,6 @@ pub(crate) const SERVICE_VARIABLES: &[&str] = &[
     "KRABB_MEDIA",
     "KRABB_WHISPER",
     "KRABB_WHISPER_COMMAND",
-    "KRABB_CODEX_BASE_URL",
     "KRABB_CODEX_CONTEXT_LENGTH",
     "KRABB_OPENAI_BASE_URL",
     "KRABB_OPENAI_MODEL",
@@ -85,7 +84,6 @@ pub(crate) const SERVICE_VARIABLES: &[&str] = &[
 pub(crate) const SERVICE_SECRETS: &[&str] = &[
     "KRABB_TELEGRAM_TOKEN",
     "KRABB_DISCORD_TOKEN",
-    "KRABB_CODEX_KEY",
     "KRABB_OPENAI_KEY",
     "KRABB_A2A_TOKEN",
     "KRABB_OPENROUTER_KEY",
@@ -150,6 +148,10 @@ pub(crate) fn service_environment_from(
         && let Some(binary) = environment.get("PATH").and_then(|path| codex_binary_from_path(path))
     {
         values.push(("KRABB_CODEX_BINARY".into(), binary.display().to_string()));
+    }
+
+    if cfg!(not(windows)) {
+        values.push(("PATH".into(), search_path(environment)));
     }
 
     let configured = environment
@@ -230,6 +232,45 @@ pub(crate) fn service_environment_from(
     }
 
     Ok(values)
+}
+
+/// The PATH the service starts plugins with, so programs such as `codex` resolve as they do in
+/// a terminal; a service manager otherwise starts the daemon with a minimal PATH. The usual
+/// program folders come first, then the user's own and the installing shell's folders. A
+/// folder that is relative, missing, or writable by anyone is dropped, because the service
+/// would keep running whatever it finds there long after the shell that installed it.
+pub(crate) fn search_path(environment: &BTreeMap<String, String>) -> String {
+    let usual = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+    let local = environment.get("HOME").map(|home| format!("{home}/.local/bin"));
+    let shell = environment.get("PATH").map(String::as_str).unwrap_or_default();
+    let mut folders = Vec::<&str>::new();
+
+    for folder in usual.into_iter().chain(local.as_deref()).chain(shell.split(':')) {
+        if folder.starts_with('/') && trusted(Path::new(folder)) && !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+
+    folders.join(":")
+}
+
+/// Whether FOLDER exists and only its owner and group can add programs to it.
+fn trusted(folder: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(folder) else {
+        return false;
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        metadata.is_dir() && metadata.permissions().mode() & 0o002 == 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        metadata.is_dir()
+    }
 }
 
 pub(crate) fn codex_binary_from_path(path: &str) -> Option<PathBuf> {

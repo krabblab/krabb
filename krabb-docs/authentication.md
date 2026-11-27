@@ -36,6 +36,12 @@ can move a readable store to that key backend. The daemon must be able to access
 the same keyring or key file. On a headless server without a usable keyring,
 the encrypted file works without an interactive unlock after a restart.
 
+Each Krabb process reads the key from the keyring once and keeps it in memory, so
+a command asks for keyring access at most once. On macOS, choose Always Allow when
+the keychain asks: `krabb` and the background service each ask once, and again
+after an update replaces them. Set `KRABB_KEYRING=0` before `krabb init` to keep
+the key in the protected file instead.
+
 Keep both files private and outside version control. Back up the fallback key
 securely: losing it makes the encrypted credentials unrecoverable. Moving only
 the credentials file does not move its key. Encryption protects a copied
@@ -56,7 +62,6 @@ for an interactive account sign-in:
 | Configure a channel | `krabb <id> setup` | Follow the [channel guide](providers.md#platform-setup) for required values and external setup. |
 | Enter a Telegram bot token | `krabb telegram setup` | Krabb prompts and saves it securely. |
 | Enter an Anthropic API key | `krabb anthropic setup` | The same secure setup workflow. |
-| Enter a Codex API key | `krabb codex setup` | Krabb stores the API key. |
 | Sign in to a personal Codex account | `krabb codex login` | The plugin runs its account sign-in flow. |
 the plugin's declared secrets and settings; neither invokes custom login flows.
 Plugins without declared secrets or settings do not gain a setup shortcut. See
@@ -87,8 +92,8 @@ precedence and must be removed separately.
 
 Telegram, Discord, Slack, WhatsApp, Signal, OpenAI, Anthropic, Gemini, OpenRouter,
 Ollama, and Codex then run a connection test with the saved values and report
-`Connection test passed.` Ollama checks that its host answers. Codex checks its API key
-when one is saved, and otherwise that the Codex CLI is signed in. Signal checks that
+`Connection test passed.` Ollama checks that its host answers, and for Ollama Cloud that
+its API key works. Codex checks that the Codex CLI is signed in. Signal checks that
 `signal-cli` lists the account, and WhatsApp that the Graph API accepts the token for
 the phone number ID. A failed test explains what was rejected, but the values stay
 saved so you can rerun setup. The test sends no messages and runs at most 20 seconds.
@@ -159,10 +164,9 @@ pass Codex OAuth tokens to the Codex HTTP client.
 
 Krabb does not pin a Codex CLI release. It checks that the CLI starts and
 validates each required app-server response. If a Codex update changes the
-protocol or a required operation, Krabb fails closed with an error. Codex
-CLI is required only for personal Codex sign-in; OpenAI API-key authentication
-and other providers do not require it. Use an OpenAI API key for unattended
-shared deployments.
+protocol or a required operation, Krabb fails closed with an error. Only the
+Codex provider needs the Codex CLI. For unattended shared deployments, use the
+OpenAI provider with an API key.
 
 ## Channel Trust
 
