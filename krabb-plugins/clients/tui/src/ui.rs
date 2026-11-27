@@ -72,6 +72,7 @@ const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SAVE_ATTEMPTS: u32 = 30;
 const UNSAVED_LIMIT: usize = 64;
 const UNSAVED: &str = "Krabb could not save a reply, so copy it before you close this window.";
+const UNSAVED_FIRST: &str = "Krabb is still saving an earlier reply, so press Enter to try again.";
 /// How long the daemon keeps an approval request open.
 const APPROVAL_LIFE: Duration = Duration::from_secs(300);
 /// How long after an interrupt a repeated Esc is still taken as part of it.
@@ -593,6 +594,10 @@ where
 
                 while let Some(event) = next.take() {
                     moved_only &= is_mouse_motion(&event);
+
+                    if submits(&event, &app) {
+                        retry_unsaved(&home, &mut app, host).await;
+                    }
 
                     if !interrupt_generation(&event, &mut app, &interrupt_tx) {
                         quit = handle_event(event, &mut app, &mut command_tx, engine_finished).await?;
@@ -1175,6 +1180,22 @@ where
     let unsaved = interactions.chain(messages).collect();
 
     persist_all(home, app, unsaved, host).await;
+}
+
+/// Whether EVENT sends a prompt while earlier saves wait, so they are tried first and the
+/// prompt is not saved ahead of them.
+fn submits(event: &Event, app: &App) -> bool {
+    let Event::Key(key) = event else {
+        return false;
+    };
+
+    let first = app.input.iter().find(|character| !character.is_whitespace());
+
+    key.kind == KeyEventKind::Press
+        && key.code == KeyCode::Enter
+        && !key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+        && !app.unsaved.is_empty()
+        && first.is_some_and(|character| !matches!(character, '/' | '!'))
 }
 
 /// Retries the saves the daemon refused, once nothing runs in the session.
@@ -1864,6 +1885,11 @@ where
                             app.push_system(&app.status.clone());
                         }
 
+                        return Ok(false);
+                    }
+
+                    if ordinary && !busy && !app.unsaved.is_empty() {
+                        app.status = UNSAVED_FIRST.into();
                         return Ok(false);
                     }
 
@@ -5098,6 +5124,55 @@ mod tests {
 
         assert!(app.unsaved.is_empty());
         assert_eq!(*appended.lock().unwrap(), ["user", "assistant"]);
+    }
+
+    #[tokio::test]
+    async fn a_prompt_waits_for_earlier_saves() {
+        let (mut command_tx, mut command_rx) = duplex(1024);
+        let refused = std::sync::Mutex::new(true);
+
+        let host = |_home: String, _method: String, _params: serde_json::Value| {
+            let result = if *refused.lock().unwrap() {
+                Err(krabb_core::Error::Denied("Krabb is unavailable.".into()))
+            } else {
+                Ok(serde_json::json!({}))
+            };
+
+            async move { result }
+        };
+
+        let mut app = App { session: "default".into(), ..App::default() };
+
+        app.begin_interaction("/status");
+        app.capture_interaction_output("Ready.");
+        app.completed_interactions = app.finish_interactions();
+        super::persist_pending("home", &mut app, host).await;
+        app.input = "hello".chars().collect();
+        app.cursor = app.input.len();
+
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(super::submits(&enter, &app));
+
+        super::retry_unsaved("home", &mut app, host).await;
+        handle_event(enter.clone(), &mut app, &mut command_tx, false).await.unwrap();
+
+        assert_eq!(app.status, super::UNSAVED_FIRST);
+        assert_eq!(app.input.iter().collect::<String>(), "hello");
+
+        *refused.lock().unwrap() = false;
+        super::retry_unsaved("home", &mut app, host).await;
+
+        assert!(!super::submits(&enter, &app));
+
+        handle_event(enter, &mut app, &mut command_tx, false).await.unwrap();
+        drop(command_tx);
+
+        let mut sent = String::new();
+
+        command_rx.read_to_string(&mut sent).await.unwrap();
+
+        assert_eq!(sent, "\"hello\"\n");
     }
 
     #[tokio::test]

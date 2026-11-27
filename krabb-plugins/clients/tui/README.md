@@ -59,6 +59,8 @@ If it cannot reconnect, it says so once and asks you to reopen it with `krabb tu
 Replies the daemon cannot save while it restarts or another turn runs are saved once the
 session is free, and the status says so if one still cannot be saved after about half a
 minute.
+A new message tries those saves first and waits until they succeed, so the
+conversation keeps its order.
 Approval prompts close when you answer them or after five minutes, when the daemon
 expires them.
 Notices Krabb writes itself, such as retries, failures, and approval results, appear
