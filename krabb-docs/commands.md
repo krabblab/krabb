@@ -161,8 +161,10 @@ krabb completion powershell >> $PROFILE
   internal diagnostics.
 - `--help` (`-h`, `-H`) shows command help; `--version` (`-v`, `-V`) prints
   the version.
-- Application logs are stored under `KRABB_HOME/logs/`. Set `KRABB_LOG` or
-  `RUST_LOG` to filter them; set `KRABB_LOG_FORMAT=json` for JSON logs.
+- Application logs are stored under `KRABB_HOME/logs/`. They hold Krabb's own messages
+  down to `debug` and other libraries' from `info`. Set `KRABB_LOG` or `RUST_LOG` to
+  filter them, such as `KRABB_LOG=trace` for everything; set `KRABB_LOG_FORMAT=json` for
+  JSON logs.
   WebSocket transport internals are always excluded from files and stderr because
   they can contain credentials and message payloads, including at debug level.
 
