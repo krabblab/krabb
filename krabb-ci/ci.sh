@@ -57,7 +57,7 @@ local_make() {
     CARGO_TARGET_DIR="$local_target_dir" make "$@"
 }
 
-printf '\n[INFO] Local Verify preflight\n'
+printf '\n[INFO] Local Check preflight\n'
 local_make fmt clippy metrics
 
 RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR="$local_target_dir" \
@@ -134,8 +134,8 @@ run_workflow() {
     )
 }
 
-run_workflow "Verify" workflow_dispatch \
-    --workflows "$workspace_dir/.github/workflows/verify.yml" \
+run_workflow "Check" workflow_dispatch \
+    --workflows "$workspace_dir/.github/workflows/check.yml" \
     --input "container_image=$container_image" \
     --input local=true
 
@@ -154,12 +154,12 @@ run_workflow "Test Agent" workflow_dispatch \
     --matrix "target:${ci_target}" \
     --input local=true
 
-run_workflow "Test Sandbox" workflow_dispatch \
-    --workflows "$workspace_dir/.github/workflows/test.yml" \
+run_workflow "Integration Sandbox" workflow_dispatch \
+    --workflows "$workspace_dir/.github/workflows/integration.yml" \
     --job sandbox \
     --input local=true
 
-run_workflow "Build Agent" workflow_dispatch \
+run_workflow "Build Release" workflow_dispatch \
     --workflows "$workspace_dir/.github/workflows/build.yml" \
     --job krabb \
     --matrix "target:${ci_target}" \

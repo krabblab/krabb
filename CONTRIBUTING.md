@@ -85,14 +85,14 @@ For the complete non-release CI pipeline, install Docker and
 make ci
 ```
 
-The command first runs the Verify, Test, and Build preflight commands directly
+The command first runs the Check, Test, and Build preflight commands directly
 on the current machine. Only after that passes does it use act's medium
 `catthehacker/ubuntu:act-latest` image and a cached local CI image based on it
 with Rust 1.89 and the native Docker architecture (`linux/arm64` or
 `linux/amd64`). Docker keeps the images and action cache locally, so subsequent
 runs do not download the runner again.
-The command runs Verify, Agentskill, Security, the native Linux tests, the
-sandbox test, and the native Linux build. Release, package, checksum, install,
+The command runs Check, Agentskill, Security, the native Linux tests, the
+sandbox integration, and the native Linux release build. Release, package, checksum, install,
 update, and publish workflows are intentionally excluded; the Install and Update
 workflows check installation, update, and rollback on every target before a
 release (see the [release guide](krabb-docs/release.md)). Native macOS, Windows, and
@@ -110,6 +110,14 @@ make build
 ```
 
 This keeps action-flow debugging separate from normal implementation checks.
+
+On GitHub, `main.yml` runs Changes, then Check (formatting, spacing, loops,
+Clippy, documentation, the minimum Rust version, and the Windows GNU target)
+beside Agentskill and Security. Test then runs on six targets, and Build
+(release binaries for six targets) and Integration (browser, computer, and
+sandbox) run after it. Pull requests test only the packages
+`krabb-scripts/changes.py` selects and skip everything but Agentskill and
+Security when no code changed; main and manual runs test every package.
 
 When changing CLI commands, update the completion command tests and verify at
 least one generated script contains the new command. The completion command

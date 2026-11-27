@@ -30,6 +30,12 @@ on:
 permissions:
   contents: read
 
+# Tests and coverage need no debug info, and CI never reuses incremental state.
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
 jobs:
   krabb:
     name: Krabb (${{ matrix.name }})
@@ -119,6 +125,10 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+        with:
+          shared-key: test-${{ matrix.target }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+
       - if: matrix.coverage
         name: Install Coverage Tool
         uses: taiki-e/install-action@v2
@@ -182,40 +192,3 @@ jobs:
           pwsh -NoProfile -File .\install.ps1
           if ($LASTEXITCODE -eq 0) { throw 'Installer accepted an invalid version.' }
           exit 0
-
-  sandbox:
-    name: Sandbox
-    if: >-
-      inputs.packages == '' ||
-      contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-tools')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-
-      - name: Checkout
-        if: inputs.local != 'true'
-        uses: actions/checkout@v7
-
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      - name: Install Rust Toolchain
-        if: inputs.local != 'true'
-        uses: dtolnay/rust-toolchain@1.100
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Tools Plugin
-        run: cargo build --locked -p krabb-plugin-tools
-
-      - name: Prepare Sandbox Image
-        run: docker pull busybox:1.36.1
-
-      - name: Run Sandbox Smoke Test
-
-        env:
-          KRABB_SANDBOX_RUNTIME: docker
-          KRABB_SANDBOX_IMAGE: busybox:1.36.1
-
-        run: krabb-scripts/sandbox.sh target/debug/krabb-plugin-tools
