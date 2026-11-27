@@ -61,12 +61,7 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install Rust Components
-        run: rustup component add rustfmt clippy
-
-      - name: Check Formatting
-        run: |
-          cargo fmt --all --check
-          bash krabb-scripts/spacing.sh --check
+        run: rustup component add clippy
 
       - name: Run Clippy
         run: CARGO_BUILD_JOBS=4 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -74,11 +69,59 @@ jobs:
       - name: Check Documentation
         run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
 
-      - name: Check Shell Scripts and Engineering Loops
-        run: make loops
-
       - name: Report Metrics
         run: bash krabb-scripts/metrics.sh
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        if: inputs.local != 'true'
+        uses: actions/checkout@v7
+
+      - name: Install Spacing Tools
+        if: inputs.local != 'true'
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y python3
+
+      - name: Install Rust Components
+        run: rustup component add rustfmt
+
+      - name: Check Formatting
+        run: |
+          cargo fmt --all --check
+          bash krabb-scripts/spacing.sh --check
+
+  loops:
+    name: Loops
+    runs-on: ubuntu-latest
+    container: ${{ inputs.container_image || 'rust:1.89-trixie' }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        if: inputs.local != 'true'
+        uses: actions/checkout@v7
+
+      - name: Install Loop Tools
+        if: inputs.local != 'true'
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y python3
+
+      - name: Check Shell Scripts and Engineering Loops
+        run: make loops
 
   msrv:
     name: Minimum Rust Version

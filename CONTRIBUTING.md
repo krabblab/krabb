@@ -111,13 +111,13 @@ make build
 
 This keeps action-flow debugging separate from normal implementation checks.
 
-On GitHub, `main.yml` runs Changes, then Check (formatting, spacing, Clippy,
-documentation, the minimum Rust version, and the Windows GNU target) beside
-Agentskill and Security. Test then runs on six targets, and Build (release
-binaries for six targets) and Integration (browser, computer, and sandbox) run
-after it. Pull requests test only the packages `krabb-scripts/changes.py`
-selects and skip everything but Agentskill and Security when no code changed;
-main and manual runs test every package.
+On GitHub, `main.yml` runs Changes, then Check (formatting, spacing, loops,
+Clippy, documentation, the minimum Rust version, and the Windows GNU target)
+beside Agentskill and Security. Test then runs on six targets, and Build
+(release binaries for six targets) and Integration (browser, computer, and
+sandbox) run after it. Pull requests test only the packages
+`krabb-scripts/changes.py` selects and skip everything but Agentskill and
+Security when no code changed; main and manual runs test every package.
 
 When changing CLI commands, update the completion command tests and verify at
 least one generated script contains the new command. The completion command
