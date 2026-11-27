@@ -318,9 +318,9 @@ You can enter another question while a response is running. The daemon saves it
 with a task ID and answers it after the active foreground turn settles. Esc
 interrupts the current turn and preserves separately queued requests.
 
-Typed `!command` shell execution requires `clients.tui.shell` and is supported on Linux
-and Windows. Other platforms reject typed shell commands because descendant containment
-is unavailable for this execution path. Esc waits for process cleanup before completing
+Typed `!command` shell execution requires `clients.tui.shell` and runs on the host in the
+workspace, in its own process group on Linux and macOS and in a Job Object on Windows.
+Linux also blocks process-group and session changes. Esc waits for process cleanup before completing
 cancellation, and the next command receives a fresh cancellation token.
 
 ## Conversation Commands

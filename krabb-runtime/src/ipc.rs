@@ -23,7 +23,7 @@ use tokio::{
     time::{Duration, timeout},
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 
 use tracing::{debug, warn};
@@ -1277,7 +1277,7 @@ async fn run_terminal_command(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     process.stdin(std::process::Stdio::piped());
 
     #[cfg(target_os = "linux")]
@@ -1289,7 +1289,7 @@ async fn run_terminal_command(
     #[cfg(unix)]
     let _containment = process_id.map(TerminalContainment::new);
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(b"\n").await?;
     }
@@ -1458,7 +1458,7 @@ fn terminal_shell(command: &str) -> io::Result<tokio::process::Command> {
     Ok(process)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn terminal_shell(command: &str) -> io::Result<tokio::process::Command> {
     let mut process = tokio::process::Command::new("sh");
     process.args(["-c", "IFS= read -r _; eval \"$1\"", "krabb-terminal", command]);
@@ -1466,11 +1466,11 @@ fn terminal_shell(command: &str) -> io::Result<tokio::process::Command> {
     Ok(process)
 }
 
-#[cfg(all(not(windows), not(target_os = "linux")))]
+#[cfg(not(any(unix, windows)))]
 fn terminal_shell(_command: &str) -> io::Result<tokio::process::Command> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "Typed shell commands require descendant containment, available only on Linux and Windows.",
+        "Typed shell commands are unavailable on this platform.",
     ))
 }
 
@@ -2869,7 +2869,7 @@ mod tests {
         state_at("")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn direct_terminal_command_streams_output_without_the_tools_plugin() {
         let (notices, mut receiver) = tokio::sync::mpsc::channel(8);
@@ -2905,7 +2905,7 @@ mod tests {
         assert_eq!(streamed, "firstsecond");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn terminal_command_deadline_covers_output_drain_and_kills_background_child() {
         let (notices, _receiver) = tokio::sync::mpsc::channel(8);
@@ -2925,7 +2925,7 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn terminal_command_cancellation_kills_background_child() {
         let (notices, _receiver) = tokio::sync::mpsc::channel(8);
@@ -3010,7 +3010,7 @@ mod tests {
         assert!(!continued, "detached command continued after the deadline");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn dropping_terminal_command_kills_descendants() {
         let (notices, _receiver) = tokio::sync::mpsc::channel(8);
@@ -3045,7 +3045,7 @@ mod tests {
         assert!(!continued, "detached command continued after its task was dropped");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn successful_terminal_command_kills_background_descendants() {
         let (notices, _receiver) = tokio::sync::mpsc::channel(8);
@@ -3077,23 +3077,29 @@ mod tests {
         assert!(!continued, "background descendant continued after successful command");
     }
 
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(unix)]
     #[tokio::test]
-    async fn terminal_command_rejects_uncontained_execution() {
+    async fn terminal_command_runs_in_its_own_process_group() {
         let (notices, _receiver) = tokio::sync::mpsc::channel(8);
-        let result = run_terminal_command(
-            "exit 0",
+
+        let output = run_terminal_command(
+            "echo $$; ps -o pgid= -p $$",
             &std::env::temp_dir(),
             notices,
             Arc::new(crate::Cancellation::new()),
-            tokio::time::Instant::now() + Duration::from_secs(2),
+            tokio::time::Instant::now() + Duration::from_secs(5),
         )
-        .await;
+        .await
+        .unwrap();
 
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+        let lines = output.lines().map(str::trim).collect::<Vec<_>>();
+        let own = rustix::process::getpgrp().as_raw_pid().to_string();
+
+        assert_eq!(lines[0], lines[1]);
+        assert_ne!(lines[1], own);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn terminal_command_retires_cancellation_after_cleanup_and_pins_reservation() {
         use tokio::io::AsyncWriteExt;

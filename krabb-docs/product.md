@@ -139,8 +139,9 @@ their model is explicitly pinned; their history is preserved.
 - TUI supports chat, sessions, model/workspace switching, approvals, schedules,
   memory, plugin health, and streamed activity. Session transcripts retain
   displayed TUI command exchanges alongside model turns.
-  Typed shell commands support Linux and Windows with descendant containment. Commands and
-  manual compaction retain exclusive session ownership until execution and cleanup finish.
+  Typed shell commands run on the host on Linux, macOS, and Windows with descendant
+  containment. Commands and manual compaction retain exclusive session ownership until
+  execution and cleanup finish.
   Automatic compaction shares the model turn's deadline and retires failed requests before
   generation resumes. Stream failures finalize turns after cleanup; approval history writes
   remain available while uninstall waits for active turns.

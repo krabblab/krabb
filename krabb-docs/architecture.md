@@ -468,8 +468,8 @@ Linux host shells install the shared process-group restriction before executing 
 code, preventing descendants from leaving their group or session. On macOS and other Unix
 hosts, tool shell commands start in their own process group without that restriction.
 A configured Docker/Podman sandbox takes precedence over the host shell on every platform.
-Typed TUI shell commands run directly on Linux and
-Windows and reject execution on other hosts before spawning workspace code.
+Typed TUI shell commands run directly on the host, in their own process group on Unix and
+in a Job Object on Windows.
 Tool discovery acquires the plugin connection before starting its response timeout, so an
 active tool call does not make a healthy plugin appear unresponsive.
 Turn cancellation restarts only model and tool provider processes with interrupted requests.
