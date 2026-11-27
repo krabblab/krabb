@@ -2112,7 +2112,16 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
 
         "session.list" => {
             let sessions = state.sessions.lock().map_err(lock)?;
-            json!({"items": sessions.sessions.values().map(summary).collect::<Vec<_>>()})
+
+            // Work sessions belong to tasks and schedules, which have their own commands.
+            let items = sessions
+                .sessions
+                .values()
+                .filter(|session| !session.is_work())
+                .map(summary)
+                .collect::<Vec<_>>();
+
+            json!({"items": items})
         }
 
         "delivery.list" => {
@@ -6363,6 +6372,34 @@ for line in sys.stdin:
         .await;
 
         assert_eq!(expired.error.unwrap().code, -32004);
+    }
+
+    #[test]
+    fn session_lists_show_conversations_but_not_work_sessions() {
+        let state = state_at("-work");
+
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+
+            sessions.create("chat", "model").unwrap();
+            sessions.create("background", "model").unwrap();
+            sessions.sessions.get_mut("background").unwrap().kind =
+                crate::state::SessionKind::Foreground;
+        }
+
+        let listed = dispatch(&IpcRequest::call(1, "secret", "session.list", json!({})), &state)
+            .unwrap()
+            .result
+            .unwrap();
+
+        let ids = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["chat"]);
     }
 
     #[test]
