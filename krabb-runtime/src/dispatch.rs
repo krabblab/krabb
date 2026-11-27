@@ -1933,6 +1933,7 @@ mod tests {
         assert!(prompts(&plugins, "desktop", Some(&desktop)).await);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn official_channels_from_before_the_approvals_key_can_prompt() {
         let script = r#"
