@@ -37,7 +37,8 @@ sandbox network access and Krabb's `web_fetch` tool. A search or cache miss does
 
 The plugin starts Codex read-only with its own shell off, so every change goes through
 Krabb's tools and approvals. Its instructions tell the model that Codex's sandbox does
-not limit those tools and that Krabb's permission summary is authoritative.
+not limit those tools and that Krabb's permission summary is authoritative about which
+Krabb tools are available.
 
 The plugin advertises image-request support during its handshake. It sends inline image inputs through the app-server
 `turn/start` protocol and negotiates the experimental API needed for workspace

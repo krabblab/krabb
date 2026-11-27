@@ -80,19 +80,13 @@ The runtime also adds a short description of itself, built from its version, his
 limit, and commands, so the model can explain how Krabb works. When that is not enough
 and the model has a web tool, it points the model to the Krabb repository's
 documentation. Each turn also states the conversation's own effective settings: its
-configuration section, model, approval mode, installed plugins, and whether workspace
-tools, shell, schedules, and memory are on. For each one that is off, it names the first
+configuration section, model, installed plugins, and whether workspace tools,
+schedules, and memory are on. For each one that is off, it names the first
 unmet requirement and the exact `krabb config set` or `krabb plugin install` command
 that fixes it, so Krabb can tell a misconfiguration from a bug. When you ask, it can
 also apply such a fix itself after the owner approves it; see [safety](safety.md). It
 sees only its own
-section and no secrets, never the settings of other channels or clients.
-Each turn also carries a short permission summary built from the tools actually offered
-and the approval mode: whether the conversation may read and search files, write files,
-run shell commands (on the host, in a container, or not at all), and use web tools, and
-whether each change runs after approval, without asking, or not at all. The summary is
-authoritative over a provider's own sandbox settings, so a Codex session started
-read-only does not make Krabb refuse work its tools can do. Anyone in a
+section and no secrets, never the settings of other channels or clients. Anyone in a
 group chat can ask it about these settings. Conversation history is a bounded
 transcript of up to 1,000 messages, counting tool calls and results. When the
 model's context fills up, older turns are summarized in what the model sees while the
@@ -100,6 +94,13 @@ stored history stays intact; models with no known context window see a `/compact
 summary or the opening request, plus the latest 100 messages. Krabb does not load
 `AGENTS.md` for itself; coding agents it delegates to may use workspace `AGENTS.md`
 instructions.
+
+Each turn also carries a short permission summary built from the tools actually offered,
+the approval mode, and the shell policy. It says whether the conversation may read and
+search files, write files, run shell commands (on the host, in a container, or not at
+all), and use web tools, and whether changes run after approval, without asking, or not
+at all. It is authoritative about which Krabb tools are available, and it is where the
+approval mode and shell fix appear.
 
 These Markdown files guide the model but do not grant capabilities. The host
 continues to enforce workspace confinement, channel tool settings, approvals,
