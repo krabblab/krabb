@@ -147,6 +147,7 @@ jobs:
 
       - if: matrix.coverage == false
         name: Run Workspace Tests
+        shell: pwsh
 
         run: |
           $selection = @('--workspace')

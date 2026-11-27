@@ -23,6 +23,8 @@ section. See the [change rules](../CONTRIBUTING.md#change-rules).
 ## Table Of Contents
 
 - [Version Bumps](#version-bumps)
+- [Release Workflow](#release-workflow)
+- [Dry Runs](#dry-runs)
 - [Krabb Releases](#krabb-releases)
 - [Plugin Releases](#plugin-releases)
 - [Release Checklist](#release-checklist)
@@ -45,6 +47,45 @@ version, or raises the patch version, and `--version X.Y.Z` picks another;
 file that holds the version and `Cargo.lock`. A stable Krabb bump also moves the
 `Unreleased` notes into the new version's `CHANGELOG.md` section, as does a
 stable plugin bump for a plugin with its own `CHANGELOG.md`.
+
+## Release Workflow
+
+```text
+Plan ─┬─ Build ──────────┬─ Install ─┬─ Publish Plugins ─ Publish Krabb
+      └─ Build Previous ─┴─ Update ──┘
+```
+
+- **Plan** confirms that the run covers the head of `main` and that CI passed for it,
+  writes the release notes, and decides what to build: Krabb when its version has no
+  GitHub Release yet, and every plugin whose manifest version is unpublished. When
+  neither is new, the run ends here with a notice. When only plugins are new, Krabb is
+  built for the drills but not published.
+- **Build** packages Krabb and the plugins to release in one job per target, and writes
+  that target's `SHA256SUMS` line. **Build Previous** packages the same source as
+  version `0.0.0-previous` for the Update drill. The six targets are listed once, in
+  `krabb-scripts/targets.json`.
+- **Install** and **Update** run the drills in `krabb-scripts/drills` on exactly these
+  archives. When the run built plugins, the drills install them from a local plugin
+  index that `krabb-scripts/plugins.py local` writes from the archives, with published
+  versions filling in the other plugins, through `KRABB_PLUGIN_INDEX`. Otherwise they
+  use the published index.
+- **Publish Plugins** pushes the new plugin versions and rebuilds the index, and
+  **Publish Krabb** then publishes the GitHub Release. Both run only when both drills
+  passed, so nothing is published from a run whose archives fail on any target. Plan
+  also finds an index that misses published versions after a failed run, and Publish
+  Plugins then rebuilds it without building anything.
+
+## Dry Runs
+
+Run the Release workflow from the Actions tab with its publish option cleared to test a
+branch before merging it. A dry run runs from any branch, plans the same decisions,
+builds, and drills, but skips both publish jobs and their permissions, and never joins
+the release queue. When every version is already published, name plugins under rebuild
+to build and drill them anyway:
+
+```sh
+gh workflow run release.yml --ref <branch> -f publish=false -f rebuild="tools memory"
+```
 
 ## Krabb Releases
 
@@ -72,8 +113,8 @@ tags, pushes it as the `index` tag when it changed, and confirms that anonymous
 clients can download it. A failed run leaves nothing half recorded: the next run
 publishes what is missing and rebuilds the index again. To release only plugins,
 run the Release workflow manually from `main` and clear its Krabb option; clear
-the plugin option to release only Krabb. A manual run releases the head of
-`main` and refuses to release until CI has passed for it. Release runs take turns,
+the plugin option to release only Krabb. A manual run that publishes releases the head
+of `main` and refuses to release until CI has passed for it. Release runs take turns,
 and a newer run replaces a waiting one; that loses nothing, because each run
 releases the whole head of `main`. A manual run with an option cleared can
 therefore replace a waiting full release, so run a full release afterwards if
@@ -100,11 +141,12 @@ explicitly, and shows the reason.
    x86_64, which require 60% per package and 40% for the runtime host.
 3. Inspect archive contents and checksums with `krabb-scripts/check.sh`.
 4. Review installer output on each published target before merging.
-5. Release builds the core archives, then runs the Install workflow on them before
+5. Release builds the archives, then runs the Install workflow on them before
    publishing: it installs them with `install.sh` or `install.ps1` on every target,
    runs `krabb init`, `krabb doctor`, and `krabb status`, installs every official
-   plugin without setting it up, and installs and removes the service. If any target
-   fails, nothing is published. Run the same workflow from the Actions tab: it builds
+   plugin without setting it up, including the plugin versions the run is about to
+   publish, and installs and removes the service. If any target fails, nothing is
+   published. Run the same workflow from the Actions tab: it builds
    the branch or tag chosen under "Use workflow from", latest `main` by default, and
    also runs every Monday against `main`. To test another commit, push a branch or tag
    at it first.
@@ -125,11 +167,12 @@ directory containing the archives and `SHA256SUMS`, for example
 `file:///tmp/krabb-release`. The default remains the versioned HTTPS release
 directory, and installers reject other release-base schemes.
 
-The Package workflow checks every archive and installer it builds. On both
-Windows targets it also installs the service in an isolated home, checks its
-status, and removes it. Run it from the Actions tab with `core` to check
-packaging without releasing. Its optional version input builds Krabb at another
-workspace version; the Update workflow uses it for its previous build.
+The Package workflow checks every archive and installer it builds, and writes the
+target's `SHA256SUMS` line beside a core archive. On both Windows targets it also
+installs the service in an isolated home, checks its status, and removes it. Run it
+from the Actions tab with `core` to check packaging without releasing. Its optional
+version input builds Krabb at another workspace version; Release and the Update
+workflow use it for the previous build.
 
 Release scripts are intentionally explicit. They do not publish crates,
 containers, or services, and they must not receive credentials through command
