@@ -14,8 +14,11 @@ reparse-point-safe file handles. Confined file operations fail closed on
 platforms other than Unix and Windows. Writes reject
 symbolic-link targets, and writes, patches, shell commands, and
 worktree mutations need explicit approval.
+File tools also reject paths inside `KRABB_HOME` when the workspace contains it, and
+`file_read` reads only regular files.
 Git inspection allows status, diff, worktree listing, and worktree add/remove
-operations within that active workspace. All Git operations and Git-backed
+operations within that active workspace, and passes Git the resolved absolute
+worktree path. Patches must name plain, unquoted paths. All Git operations and Git-backed
 patches require shell access and the configured tool approval policy because
 Git can execute repository-configured filters, even during `diff`. They are
 unavailable when shell access is disabled; approval authorizes that execution. When a container sandbox is configured,
@@ -44,10 +47,13 @@ To configure the sandbox, set `KRABB_SANDBOX_RUNTIME` to `docker` or
 The tools plugin never pulls images. The container has no network, a read-only
 root filesystem, dropped Linux capabilities, bounded CPU, memory, process and
 temporary-file resources, and a writable mount limited to the active workspace.
+The workspace's `.git` and `.krabb` entries are mounted read-only.
 The selected image must contain `sh` and allow its configured user to write the
 workspace. Runtime errors fail the command; they never fall back to host shell
 execution. Set `[clients.tui] shell = true` to enable TUI shell access. Shell
 tools requested by an agent also require an enabled approval policy.
+Shell and Git results set `truncated` to `true` when their output was shortened to fit
+the protocol frame.
 
 Use a local Docker or Podman engine. Remote container contexts are unsupported
 because the active workspace mount must refer to this host's filesystem. The
