@@ -208,9 +208,10 @@ impl Default for TuiPreferences {
 }
 
 /// Where streamed text began, so text that turns out to precede a tool call can be removed.
+/// Text streamed before a tool call, kept as transcript ranges that ignore front trimming.
 struct Draft {
-    start: usize,
-    trimmed: usize,
+    ranges: Vec<std::ops::Range<usize>>,
+    output: Option<usize>,
     reply_pending: bool,
     reply_system: bool,
 }
@@ -4283,26 +4284,35 @@ impl App {
     }
 
     fn push_assistant_text(&mut self, value: String) -> Vec<SavedInteraction> {
-        let draft = if self.draft.is_none() {
-            self.reveal_all();
+        let start = self.transcript_end();
 
-            Some(Draft {
-                start: self.transcript.len(),
-                trimmed: self.transcript_trimmed,
+        if self.draft.is_none() {
+            self.draft = Some(Draft {
+                ranges: Vec::new(),
+                output: self.pending_interactions.front().map(|item| item.output.len()),
                 reply_pending: self.reply_pending,
                 reply_system: self.reply_system,
-            })
-        } else {
-            None
-        };
+            });
+        }
 
         let interactions = self.push_assistant_output(value);
+        let end = self.transcript_end();
 
-        if draft.is_some() {
-            self.draft = draft;
+        if let Some(draft) = &mut self.draft {
+            match draft.ranges.last_mut() {
+                Some(last) if last.end == start => last.end = end,
+                _ => draft.ranges.push(start..end),
+            }
         }
 
         interactions
+    }
+
+    /// Returns the transcript end, revealed or not, counting bytes trimmed from the front.
+    fn transcript_end(&self) -> usize {
+        let queued = self.reveal_queue.iter().map(String::len).sum::<usize>();
+
+        self.transcript_trimmed + self.transcript.len() + queued
     }
 
     fn discard_draft(&mut self) {
@@ -4312,16 +4322,49 @@ impl App {
 
         self.reveal_all();
 
-        let trimmed = self.transcript_trimmed.saturating_sub(draft.trimmed);
-        let mut start = draft.start.saturating_sub(trimmed).min(self.transcript.len());
+        let last = draft.ranges.last().map(|range| range.end);
+        let latest = last == Some(self.transcript_end());
 
-        while !self.transcript.is_char_boundary(start) {
-            start -= 1;
+        for range in draft.ranges.into_iter().rev() {
+            let local = |offset: usize| {
+                let mut offset = offset.saturating_sub(self.transcript_trimmed);
+                offset = offset.min(self.transcript.len());
+
+                while !self.transcript.is_char_boundary(offset) {
+                    offset -= 1;
+                }
+
+                offset
+            };
+
+            let (start, end) = (local(range.start), local(range.end));
+            self.transcript.replace_range(start..end, "");
+
+            // A later message keeps its own separator, so drop the one the draft left behind.
+            let mut start = start;
+
+            while start > 0
+                && self.transcript[..start].ends_with('\n')
+                && self.transcript[start..].starts_with("\n\n")
+            {
+                start -= 1;
+                self.transcript.remove(start);
+            }
         }
 
-        self.transcript.truncate(start);
-        self.reply_pending = draft.reply_pending;
-        self.reply_system = draft.reply_system;
+        if let (Some(output), Some(interaction)) =
+            (draft.output, self.pending_interactions.front_mut())
+            && output <= interaction.output.len()
+            && interaction.output.is_char_boundary(output)
+        {
+            interaction.output.truncate(output);
+        }
+
+        if latest {
+            self.reply_pending = draft.reply_pending;
+            self.reply_system = draft.reply_system;
+        }
+
         self.invalidate_transcript_layout();
     }
 
@@ -4431,7 +4474,6 @@ impl App {
 
     fn push_label(&mut self, label: &str) {
         self.reveal_all();
-        self.draft = None;
 
         while self.transcript.ends_with('\n') {
             self.transcript.pop();
@@ -4958,6 +5000,33 @@ mod tests {
 
         assert!(app.transcript.bytes().all(|byte| byte == b'x'));
         assert!(app.reply_pending);
+    }
+
+    #[test]
+    fn a_label_inside_a_draft_survives_while_the_draft_text_goes() {
+        let mut app = App {
+            name: "Krabb".into(),
+            session: "tui".into(),
+            generation_active: true,
+            typewriter: true,
+            ..App::default()
+        };
+
+        app.push_user("Check the weather.");
+        app.begin_interaction("Check the weather.");
+        app.reply_pending = true;
+
+        app.push_assistant_text("Draft one ".into());
+        app.push_user("Also Rome.");
+        app.push_assistant_text("draft two.".into());
+        app.discard_draft();
+        app.reveal_all();
+
+        assert!(!app.transcript.contains("Draft one"));
+        assert!(!app.transcript.contains("draft two."));
+        assert!(app.transcript.contains("Also Rome."));
+        assert!(!app.transcript.contains("\n\n\n"));
+        assert!(app.pending_interactions[0].output.is_empty());
     }
 
     #[test]

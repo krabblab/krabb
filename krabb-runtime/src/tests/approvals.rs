@@ -381,14 +381,14 @@ for line in sys.stdin:
                 "x".repeat(size - overhead)
             ));
 
-            cases.push((name, boundary, size > 512 && name != "file_write"));
+            cases.push((name, boundary, size > 512));
         }
 
         for content in ["é".repeat(260), "\\".repeat(260)] {
             let mut other = args.clone();
 
             other[field] = serde_json::json!(content);
-            cases.push((name, other, name != "file_write"));
+            cases.push((name, other, true));
         }
     }
 
@@ -415,6 +415,8 @@ for line in sys.stdin:
         }
 
         for (name, args, oversized) in &channel_cases {
+            let oversized = &(*oversized && !(*name == "file_write" && channel == "tui"));
+
             for (mode, decision) in [
                 (ApprovalMode::Prompt, true),
                 (ApprovalMode::Prompt, false),
@@ -467,7 +469,7 @@ for line in sys.stdin:
                     let pending = gate.list().unwrap();
                     let target = &pending[0].target.args;
 
-                    let shown = approval_view(name, target).to_string();
+                    let shown = approval_view(name, target, channel).to_string();
 
                     assert_eq!(arguments, shown);
                     assert!(text.contains(&shown), "{name}: {text}");

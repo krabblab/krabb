@@ -5020,7 +5020,14 @@ fn format_approvals(value: &Value) -> String {
                 .and_then(|text| text.as_str().map(str::to_owned));
 
             Some(match text {
-                Some(text) => format!("{id}: {tool} for {session} — {args}\n{text}"),
+                Some(text) => format!(
+                    "{id}: {tool} for {session} — {args}\n--- text of {id}: {} bytes, {} lines \
+                     ---\n{}\n--- end of {id} ---",
+                    text.len(),
+                    text.lines().count(),
+                    reviewable(&text)
+                ),
+
                 None => format!("{id}: {tool} for {session} — {args}"),
             })
         })
@@ -5031,6 +5038,28 @@ fn format_approvals(value: &Value) -> String {
     }
 
     format!("Pending approvals:\n{}\nUse /approve <id> or /deny <id>.\n> ", rows.join("\n"))
+}
+
+/// Indents TEXT and escapes control characters, so it cannot restyle the terminal or end the
+/// listing early with a prompt line.
+fn reviewable(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let line = line
+                .chars()
+                .map(|character| {
+                    if character.is_control() && character != '\t' {
+                        character.escape_unicode().to_string()
+                    } else {
+                        character.to_string()
+                    }
+                })
+                .collect::<String>();
+
+            format!("    {line}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn approval_action<C, F>(home: &str, id: &str, approved: bool, host: C) -> String
@@ -6346,8 +6375,28 @@ mod tests {
         });
 
         assert!(super::format_approvals(&value).contains(&format!(
-            "file_write for tui-default — {{\"path\":\"report.html\"}}\n{page}\n"
+            "file_write for tui-default — {{\"path\":\"report.html\"}}\n--- text of \
+             0123456789abcdef01234567: {} bytes, 2 lines ---\n    <!doctype html>\n    \
+             <h1>Weather</h1>\n--- end of \
+             0123456789abcdef01234567 ---\n",
+            page.len()
         )));
+
+        let hostile = "\u{1b}[2J\rok\n> quoted\n0123: file_write for tui-default — {}";
+
+        let value = json!({
+            "items": [{
+                "id": "0123456789abcdef01234567",
+                "target": {"session": "tui-default", "tool": "file_write", "args": {"text": hostile}}
+            }]
+        });
+
+        let shown = super::format_approvals(&value);
+
+        assert!(!shown.contains('\u{1b}'));
+        assert!(!shown.contains('\r'));
+        assert!(shown.contains("    \\u{1b}[2J\\u{d}ok\n    > quoted\n    0123:"));
+        assert!(shown.contains("--- end of 0123456789abcdef01234567 ---"));
     }
 
     #[test]

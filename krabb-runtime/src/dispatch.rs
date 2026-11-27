@@ -1014,7 +1014,7 @@ pub(crate) async fn execute_tool_with_registry(
         }
 
         (true, ApprovalMode::Prompt) => {
-            let arguments = approval_display(name, &args)?;
+            let arguments = approval_display(name, &args, channel)?;
 
             let text = if name == settings::TOOL {
                 let source =
@@ -1022,7 +1022,7 @@ pub(crate) async fn execute_tool_with_registry(
 
                 settings::describe(source, &args)?
             } else {
-                approval_text(name, &args)
+                approval_message(name, &args, &approval_view(name, &args, channel))
             };
 
             if text.len() > APPROVAL_TEXT_LIMIT {
@@ -1503,11 +1503,16 @@ pub(crate) fn scheduled_message(
     })
 }
 
-/// Returns ARGS as a daemon approval shows them, with long file text replaced by a preview.
+/// Returns ARGS as a TUI approval shows them, with a long file write replaced by a preview.
 ///
-/// Pending approvals keep the full arguments, so `/approvals` can show all of the text.
-pub(crate) fn approval_view(name: &str, args: &serde_json::Value) -> serde_json::Value {
-    let Some(text) = args["text"].as_str().filter(|_| matches!(name, "file_write" | "file_patch"))
+/// Patches stay exact because a preview could hide the files they change, and chat channels
+/// stay exact because only the TUI's `/approvals` shows the full text of a pending approval.
+pub(crate) fn approval_view(
+    name: &str,
+    args: &serde_json::Value,
+    channel: &str,
+) -> serde_json::Value {
+    let Some(text) = args["text"].as_str().filter(|_| name == "file_write" && channel == "tui")
     else {
         return args.clone();
     };
@@ -1523,20 +1528,26 @@ pub(crate) fn approval_view(name: &str, args: &serde_json::Value) -> serde_json:
 
 fn preview(text: &str) -> String {
     let lines = text.lines().collect::<Vec<_>>();
-    let summary =
-        format!("[{} bytes, {} lines; /approvals shows all of it]", text.len(), lines.len());
-    let budget = APPROVAL_PREVIEW_LIMIT.saturating_sub(summary.len() + 16);
-    let head = preview_lines(lines.iter().copied(), budget * 2 / 3);
+
+    let summary = format!(
+        "[{} bytes, {} lines; the TUI's /approvals shows all of it]",
+        text.len(),
+        lines.len()
+    );
+
+    let budget = APPROVAL_PREVIEW_LIMIT.saturating_sub(summary.len() + PREVIEW_MARKER_BYTES);
+    let head = preview_lines(lines.iter().copied(), budget - budget / PREVIEW_TAIL_SHARE);
     let shown = head.len();
-    let mut tail = preview_lines(lines[shown..].iter().rev().copied(), budget / 3);
+    let mut tail = preview_lines(lines[shown..].iter().rev().copied(), budget / PREVIEW_TAIL_SHARE);
 
     tail.reverse();
 
+    let omitted = lines.len() - shown - tail.len();
     let mut parts = vec![summary];
     parts.extend(head);
 
-    if shown + tail.len() < lines.len() {
-        parts.push("…".into());
+    if omitted > 0 {
+        parts.push(format!("[… {omitted} lines omitted …]"));
     }
 
     parts.extend(tail);
@@ -1548,10 +1559,15 @@ fn preview_lines<'a>(lines: impl Iterator<Item = &'a str>, budget: usize) -> Vec
     let mut kept = Vec::new();
 
     for line in lines {
-        let line = clip(line.to_owned(), 240);
+        let line = clip(line.to_owned(), PREVIEW_LINE_BYTES);
         let cost = serde_json::Value::from(line.as_str()).to_string().len();
 
         if used + cost > budget {
+            // A line too long for the budget still shows its start rather than nothing.
+            if kept.is_empty() {
+                kept.push(clip(line, budget / PREVIEW_ESCAPE_BYTES));
+            }
+
             break;
         }
 
@@ -1562,19 +1578,29 @@ fn preview_lines<'a>(lines: impl Iterator<Item = &'a str>, budget: usize) -> Vec
     kept
 }
 
-/// Returns the arguments a daemon approval shows, refusing those too long to review.
+/// Returns the arguments a daemon approval in CHANNEL shows, refusing those too long to review.
 pub(crate) fn approval_display(
     name: &str,
     args: &serde_json::Value,
+    channel: &str,
 ) -> Result<String, PluginError> {
-    if matches!(name, "file_write" | "file_patch") {
-        return Ok(approval_view(name, args).to_string());
+    if name == "file_write" && channel == "tui" {
+        return Ok(approval_view(name, args, channel).to_string());
     }
 
     approval_arguments(name, args)
 }
 
 pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
+    approval_message(name, args, args)
+}
+
+/// Describes the action ARGS request, then lists SHOWN, the arguments the approver reviews.
+pub(crate) fn approval_message(
+    name: &str,
+    args: &serde_json::Value,
+    shown: &serde_json::Value,
+) -> String {
     let details = match name {
         name if tasks::action(name).is_some() => {
             let action = tasks::action(name).unwrap_or_default();
@@ -1631,7 +1657,10 @@ pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
             )
         }
 
-        "file_write" => format!("write to {}", args["path"].as_str().unwrap_or("a workspace path")),
+        "file_write" => format!(
+            "write to {}",
+            args["path"].as_str().unwrap_or("a workspace path").escape_debug()
+        ),
 
         "memory_remember" => {
             format!("save memory {}", args["key"].as_str().unwrap_or("with the requested key"))
@@ -1655,7 +1684,7 @@ pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
         _ => format!("run the {name} tool"),
     };
 
-    format!("Krabb requests approval to {details}.\nArguments: {}", approval_view(name, args))
+    format!("Krabb requests approval to {details}.\nArguments: {shown}")
 }
 
 pub(crate) fn approval_params(
