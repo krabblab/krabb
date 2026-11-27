@@ -69,6 +69,9 @@ const PLACES: [Offer; 6] = [
 const TUI_APPROVAL_FIX: &str = "The terminal makes no changes, so let it ask first with \
      `krabb config set 'clients.tui.approval=\"prompt\"' --force`.";
 
+const OTHER_HOME_SERVICE: &str = "The background service runs another Krabb home, so replace \
+     it with one for this home with `krabb service install --force`.";
+
 const TERMINAL: [Offer; 1] = [offer("Tools", "tools")];
 
 const YES_LATER: [&str; 2] = ["Yes", "Not now"];
@@ -705,9 +708,17 @@ impl Guide {
     fn service(&mut self) -> Result<Flow, Error> {
         self.require_home()?;
         self.section("Service");
+        self.service_at(&crate::service::service_path())
+    }
 
-        let path = crate::service::service_path();
+    /// Installs or starts the service at PATH, and leaves one that runs another home alone.
+    fn service_at(&mut self, path: &Path) -> Result<Flow, Error> {
         let installed = path.is_file();
+
+        if installed && !crate::serves(path, &self.root) {
+            self.note(OTHER_HOME_SERVICE);
+            return Ok(Flow::Next);
+        }
 
         let (question, options) = if installed {
             ("Replace the background service that is already installed?", ["Keep it", "Replace it"])
@@ -733,16 +744,16 @@ impl Guide {
             !installed
         };
 
-        let patched = installed && !write && self.find_codex(&path)?;
+        let patched = installed && !write && self.find_codex(path)?;
 
         if write {
-            crate::service::install_at(&path, installed)?;
+            crate::service::install_at(path, installed)?;
         }
 
         let silent = crate::service::ServiceReport::Silent;
 
         for action in actions(installed && (write || patched)) {
-            crate::service::service_action_with(&path, *action, silent)?;
+            crate::service::service_action_with(path, *action, silent)?;
         }
 
         self.started = true;

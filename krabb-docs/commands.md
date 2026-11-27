@@ -702,7 +702,9 @@ moves on. The `service` step shows only its own outcome, not the service command
 messages. It starts an installed service that is stopped, and replacing a service
 restarts it so the daemon uses the new definition. When Codex is the provider and the
 service was installed before Codex, the step adds the Codex CLI this shell finds to the
-service and restarts it.
+service and restarts it. A service that runs another home, such as when `KRABB_HOME`
+names a different one, stays as it is, and the step prints how to replace it with
+`krabb service install --force`.
 
 The guide ends with the one next action. It says your Krabb is ready only when the
 provider has its key or sign-in and a service or daemon runs. Otherwise it names the fix,

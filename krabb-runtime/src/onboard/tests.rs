@@ -438,3 +438,26 @@ fn without_a_terminal_a_blocked_tui_keeps_its_saved_approval() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn the_service_of_another_home_stays_as_it_is() {
+    let root = crate::tests::test_root("onboard-other-service");
+    let other = root.join("other");
+    let service = root.join("units/krabb.service");
+
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(service.parent().unwrap()).unwrap();
+
+    let environment = [("KRABB_HOME".to_owned(), other.display().to_string())];
+    let text = crate::service_text(Path::new("/usr/local/bin/krabb"), &environment);
+
+    std::fs::write(&service, &text).unwrap();
+
+    let mut guide = guide(root.clone());
+
+    assert!(matches!(guide.service_at(&service).unwrap(), Flow::Next));
+    assert!(!guide.started);
+    assert_eq!(std::fs::read_to_string(&service).unwrap(), text);
+
+    let _ = std::fs::remove_dir_all(root);
+}
