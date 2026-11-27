@@ -62,8 +62,8 @@ fn transport() {
 
     krabb_log::initialize_with_command_log(mode);
     tracing::info!("Transport fixture started");
-    tracing::debug!(target: "unrelated_transport", "Unrelated diagnostics remain available");
-    tracing::debug!(target: "tungstenite_adapter", "Distinct target remains available");
+    tracing::info!(target: "unrelated_transport", "Unrelated diagnostics remain available");
+    tracing::info!(target: "tungstenite_adapter", "Distinct target remains available");
     tracing::error!(target: "tokio_tungstenite::fixture", secret = TOKEN);
     tracing::error!(target: "tungstenite::fixture", secret = TOKEN);
     tracing::error!(target: "tokio_tungstenite", secret = ?Sensitive);
