@@ -826,7 +826,7 @@ Authenticated IPC `session.append` and `session.append_reserved` accept an optio
 `reply_to` message ID or `last`. Targets are resolved from that session's own history
 and saved with the user message, preserving context across client restarts. The
 response returns the saved `message`, so clients show the same reference the model reads.
-A `session.append` whose message ID the session already holds saves nothing and returns
+An idle session that already holds a `session.append` message ID saves nothing and returns
 the saved message, so a client can retry a save whose reply was lost.
 
 ## Runner

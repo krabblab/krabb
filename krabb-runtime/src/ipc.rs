@@ -2329,11 +2329,6 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let session =
                 sessions.sessions.get(id).ok_or_else(|| not_found("Session was not found."))?;
 
-            if !reserved && let Some(saved) = session.messages.iter().find(|kept| kept.id == message.id)
-            {
-                break 'append json!({"id": id, "saved": true, "message": saved});
-            }
-
             if session.inflight.is_some() || reserved != (session.status == "working") {
                 return Err(invalid(krabb_core::types::SESSION_BUSY));
             }
@@ -2348,6 +2343,12 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
                         not_found("The referenced message is unavailable in this session.")
                     })?;
                 message.content = super::quote(std::mem::take(&mut message.content), &reply);
+            }
+
+            if !reserved
+                && let Some(saved) = session.messages.iter().find(|kept| kept.id == message.id)
+            {
+                break 'append json!({"id": id, "saved": true, "message": saved});
             }
 
             let owner = if reserved {
