@@ -41,7 +41,7 @@ Brand positioning:
 
 ## Architecture And Interfaces
 
-- Rust edition 2024, MSRV 1.89, committed lockfile, strict formatting,
+- Rust edition 2024, MSRV 1.96, committed lockfile, strict formatting,
   Clippy/rustdoc, typed errors, bounded queues, cancellation, and unsafe
   forbidden in first-party application code.
 - krabb-core owns normalized types, the agent loop, context, policy, routing,
