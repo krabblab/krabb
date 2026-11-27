@@ -105,6 +105,7 @@ impl Store {
                     "Its effects need review before another start."
                 )
                 .into(),
+                model: false,
             });
         })
     }
@@ -260,6 +261,7 @@ impl Store {
                 task.notice = Some(Notice {
                     id: format!("{id}-operation-{}", task.revision),
                     text: crate::clip(text.into(), crate::TEXT_LIMIT),
+                    model: false,
                 });
             }
 
@@ -353,6 +355,7 @@ impl Store {
                 task.notice = Some(Notice {
                     id: format!("{id}-operation-{}", task.revision),
                     text: text.into(),
+                    model: false,
                 });
             }
 
@@ -402,6 +405,7 @@ impl Store {
                     )
                 }
                 .into(),
+                model: false,
             });
         })
     }
@@ -478,6 +482,7 @@ impl Store {
                         "Its saved handle will be checked again without starting another operation."
                     )
                     .into(),
+                    model: false,
                 });
             }
         })

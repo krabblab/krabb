@@ -73,8 +73,9 @@ Before them comes Krabb's charter, compiled into the runtime so personalization 
 remove it. It orders priorities (host policy, then the charter, then `KLAW.md` and
 `KRAB.md`, then memories and the request), treats content Krabb reads as information
 rather than instructions, and asks for honesty, care before consequential actions, and a
-consistent personality. The charter guides the model; permissions, approvals, and
-limits are still enforced by the host in code.
+consistent personality and language, even when tool results or notices are in English.
+The charter guides the model; permissions, approvals, and limits are still enforced by
+the host in code.
 The runtime also adds a short description of itself, built from its version, history
 limit, and commands, so the model can explain how Krabb works. When that is not enough
 and the model has a web tool, it points the model to the Krabb repository's

@@ -264,7 +264,11 @@ fn last_exchange(messages: &[Message]) -> Result<(usize, String), &'static str> 
     // A failed reply is the host's own answer, so it can be answered again.
     if reply.iter().any(|message| {
         message.role == Role::Assistant
-            && message.sender.as_deref().is_some_and(|sender| sender != krabb_core::types::SYSTEM)
+            && (message.id.starts_with("task-notice-")
+                || message
+                    .sender
+                    .as_deref()
+                    .is_some_and(|sender| sender != krabb_core::types::SYSTEM))
     }) {
         return Err("Something else was posted after that reply, so it can no longer be answered \
                    again.\nAsk again in your own words instead.");

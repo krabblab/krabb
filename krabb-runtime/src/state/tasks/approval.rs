@@ -234,6 +234,7 @@ impl Store {
             task.notice = Some(Notice {
                 id: format!("{}-{}", approval.id, task.revision),
                 text: approval.notice(),
+                model: false,
             });
         }
     }

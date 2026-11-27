@@ -719,6 +719,22 @@ fn again_needs_a_text_question_with_a_reply() {
             .contains("posted after")
     );
 
+    let retry = Message {
+        sender: Some(krabb_core::types::SYSTEM.into()),
+        ..answer(
+            session,
+            "task-notice-at-1-task-1-event-2",
+            Role::Assistant,
+            Content::Text { text: "The request failed.".into() },
+        )
+    };
+
+    assert!(
+        last_exchange(&[question(Content::Text { text: "2+2?".into() }), reply.clone(), retry])
+            .unwrap_err()
+            .contains("posted after")
+    );
+
     assert_eq!(
         last_exchange(&[question(Content::Text { text: "2+2?".into() }), reply]).unwrap(),
         (0, "2+2?".into())
