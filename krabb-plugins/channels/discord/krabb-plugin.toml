@@ -4,6 +4,7 @@ capabilities = ["channel"]
 permissions = ["network"]
 secrets = ["KRABB_DISCORD_TOKEN"]
 check = true
+approvals = true
 
 [protocol]
 major = 0

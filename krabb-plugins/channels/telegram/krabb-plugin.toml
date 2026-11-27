@@ -4,6 +4,7 @@ capabilities = ["channel"]
 permissions = ["network", "filesystem"]
 secrets = ["KRABB_TELEGRAM_TOKEN"]
 check = true
+approvals = true
 
 [protocol]
 major = 0

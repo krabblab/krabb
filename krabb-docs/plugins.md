@@ -166,6 +166,11 @@ error when it is rejected. Setup does not show other result fields. Error text i
 redacted and clipped before setup shows it. Setup reports the result but never fails
 because of it, and skips plugins without the flag or that answer method-not-found.
 
+Set `approvals = true` at the top level of a channel plugin's manifest when it answers
+`approval` by showing approve and deny buttons and reports each press as a `callback`
+event. Under the `prompt` approval mode, a channel without the flag runs no mutating tool
+and the model is told why.
+
 Declare each external program the plugin runs, which Krabb cannot install for it, in a
 `[[requires]]` entry:
 

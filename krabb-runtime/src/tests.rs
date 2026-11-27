@@ -4355,6 +4355,7 @@ fn validates_manifests_and_environment() {
         settings: Vec::new(),
         setup: BTreeMap::new(),
         check: false,
+        approvals: false,
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),
@@ -4429,6 +4430,7 @@ fn validates_manifests_and_environment() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4477,6 +4479,7 @@ fn validates_manifests_and_environment() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4500,6 +4503,7 @@ fn validates_manifests_and_environment() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4532,6 +4536,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             settings: Vec::new(),
             setup: BTreeMap::new(),
             check: false,
+            approvals: false,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -5962,6 +5967,7 @@ fn manifest_round_trips() {
         settings: Vec::new(),
         setup: BTreeMap::new(),
         check: false,
+        approvals: false,
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),
@@ -12299,7 +12305,10 @@ async fn prompts_for_signed_approval_before_mutating_tools() {
     let tool_script = r#"while IFS= read -r line; do request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'); case "$line" in *'"method":"hello"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"protocol":{"major":0,"minor":1},"id":"tools","version":"0.1.0","capabilities":["tool"]}}' ;; *'"method":"file_write"'*) case "$line" in *'"approve":true'*) touch "__MARKER__"; printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"text":"The file was written."}}' ;; *) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"error":{"code":-32000,"message":"Approval was missing."}}' ;; esac ;; *'"method":"shutdown"'*) printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"ok":true}}'; exit 0 ;; esac; done"#
             .replace("__MARKER__", &marker.display().to_string());
 
-    let channel = Process::start_with("sh", ["-c", channel_script]).await.unwrap();
+    let mut channel = Process::start_with("sh", ["-c", channel_script]).await.unwrap();
+
+    channel.approvals = true;
+
     let provider = Process::start_with("sh", ["-c", provider_script]).await.unwrap();
     let tool = Process::start_with("sh", ["-c", &tool_script]).await.unwrap();
     let plugins = registry([channel, provider, tool]).await;

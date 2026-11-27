@@ -56,12 +56,15 @@ for line in sys.stdin:
 "#;
 
 async fn plugin(root: &Path, id: &str, capability: &str, mode: &str) -> Process {
-    Process::start_with(
+    let mut process = Process::start_with(
         "python3",
         ["-u", "-c", FIXTURE, root.to_str().unwrap(), id, capability, mode],
     )
     .await
-    .unwrap()
+    .unwrap();
+
+    process.approvals = capability == "channel";
+    process
 }
 
 fn requests(root: &Path, id: &str, method: &str) -> Vec<Value> {

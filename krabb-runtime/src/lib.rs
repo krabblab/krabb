@@ -350,6 +350,7 @@ impl Plugins {
 /// A plugin's advertised identity over a process slot that survives restarts and updates.
 pub(crate) struct Live {
     hello: Hello,
+    approvals: bool,
     process: Arc<AsyncMutex<Option<Process>>>,
     turns: Arc<turns::Turns>,
     restart_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -402,6 +403,7 @@ impl Live {
 
         Self {
             hello: process.hello.clone(),
+            approvals: process.approvals,
             process: Arc::new(AsyncMutex::new(Some(process))),
             turns: Arc::default(),
             restart_generation: Arc::default(),
@@ -409,9 +411,10 @@ impl Live {
     }
 
     /// The same slot under a new version, so callers holding this one reach the new process.
-    fn successor(&self, hello: Hello) -> Self {
+    fn successor(&self, hello: Hello, approvals: bool) -> Self {
         Self {
             hello,
+            approvals,
             process: Arc::clone(&self.process),
             turns: Arc::clone(&self.turns),
             restart_generation: Arc::clone(&self.restart_generation),
@@ -1314,6 +1317,9 @@ struct Manifest {
     /// Whether the plugin answers `check` to test its saved credentials during setup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     check: bool,
+    /// Whether a channel plugin shows `approval` prompts and reports their `callback`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    approvals: bool,
     #[serde(default)]
     commands: Vec<CommandSpec>,
     /// The schema of the plugin's saved state and the older ones it migrates when it starts.

@@ -280,6 +280,8 @@ pub(crate) struct Process {
     containers: Option<Containers>,
     pub context: super::compaction::Context,
     pub image: Option<super::updates::Image>,
+    /// Whether the manifest declares that this channel shows approval prompts.
+    pub approvals: bool,
 }
 
 struct Containers {
@@ -294,6 +296,7 @@ impl From<CoreProcess> for Process {
             containers: None,
             context: super::compaction::Context::default(),
             image: None,
+            approvals: false,
         }
     }
 }
@@ -496,7 +499,13 @@ impl Process {
             }
         };
 
-        Ok(Self { inner, containers, context: super::compaction::Context::default(), image: None })
+        Ok(Self {
+            inner,
+            containers,
+            context: super::compaction::Context::default(),
+            image: None,
+            approvals: false,
+        })
     }
 
     pub async fn restart(&mut self) -> Result<()> {

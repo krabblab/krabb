@@ -230,6 +230,7 @@ impl Verified {
                 .await?;
 
         process.image = Some(image);
+        process.approvals = manifest.approvals;
 
         if let Some(stderr) = process.take_stderr() {
             capture_plugin_stderr(expected.clone(), stderr);

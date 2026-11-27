@@ -20,6 +20,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         settings: Vec::new(),
         setup: BTreeMap::new(),
         check: false,
+        approvals: false,
         commands: commands.clone(),
         state: None,
         requires: Vec::new(),

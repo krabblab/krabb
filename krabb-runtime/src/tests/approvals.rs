@@ -746,3 +746,103 @@ async fn settings_changes_always_ask_and_show_the_exact_change() {
         assert!(!registry.restart.load(std::sync::atomic::Ordering::Acquire));
     }
 }
+
+async fn settings_change(
+    plugins: &Plugins,
+    channel: &str,
+    approvals: &Arc<AsyncMutex<approval::Gate>>,
+    notices: tokio::sync::mpsc::Sender<StreamNotice>,
+) -> String {
+    let sessions = Arc::new(Mutex::new(state::Store::default()));
+
+    sessions.lock().unwrap().ensure("session", "test").unwrap();
+
+    let mut registry = ToolRegistry::default();
+
+    registry.specs.push(settings::spec());
+    registry.source = Some(sharing::Principal::Channel(channel.into()));
+
+    let mut failed = None;
+
+    let result = execute_tool_with_registry(
+        plugins,
+        &registry,
+        "test-turn",
+        1,
+        settings::TOOL,
+        serde_json::json!({"setting": "shell", "value": "on"}),
+        "fixture",
+        "test",
+        ApprovalMode::Prompt,
+        approvals.clone(),
+        channel,
+        "7",
+        None,
+        "session",
+        &sessions,
+        None,
+        false,
+        false,
+        false,
+        notices,
+        tokio::time::Instant::now() + Duration::from_secs(5),
+        &mut failed,
+        None,
+        None,
+        0,
+    )
+    .await;
+
+    dispatch::tool_result_text(&result.unwrap())
+}
+
+#[tokio::test]
+async fn channels_without_approval_prompts_run_no_mutating_tool() {
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    result = {'protocol': {'major': 0, 'minor': 1}, 'id': 'slack', 'version': '0.1.0',
+              'capabilities': ['channel']} if request['method'] == 'hello' else {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if request['method'] == 'shutdown':
+        break
+"#;
+
+    let process = Process::start_with("python3", ["-u", "-c", script]).await.unwrap();
+    let plugins = Plugins::default();
+
+    plugins.insert(Live::new(process)).await;
+
+    let approvals = Arc::new(AsyncMutex::new(approval::Gate::new().unwrap()));
+    let (notices, mut events) = tokio::sync::mpsc::channel(1);
+    let text = settings_change(&plugins, "slack", &approvals, notices).await;
+
+    assert!(text.starts_with("This channel cannot show approval prompts"), "{text}");
+    assert!(events.recv().await.is_none());
+    assert!(!approvals.lock().await.has_pending());
+
+    for (_, plugin) in plugins.all().await {
+        plugin.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn an_unanswered_approval_tells_the_model_nothing_ran() {
+    let plugins = Plugins::default();
+    let approvals = Arc::new(AsyncMutex::new(approval::Gate::new().unwrap()));
+    let (notices, mut events) = tokio::sync::mpsc::channel(1);
+
+    let review = async {
+        let Some(StreamNotice::Approval { approve, .. }) = events.recv().await else {
+            panic!("The settings change did not ask for approval.");
+        };
+
+        approvals.lock().await.cancel(&approve);
+    };
+
+    let (text, ()) =
+        tokio::join!(settings_change(&plugins, "telegram", &approvals, notices), review);
+
+    assert_eq!(text, "The approval expired, so nothing ran. Ask again to retry.");
+}

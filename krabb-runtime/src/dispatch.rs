@@ -990,6 +990,23 @@ pub(crate) async fn execute_tool_with_registry(
 
         (true, ApprovalMode::Auto) => true,
 
+        (true, ApprovalMode::Prompt) if !prompts(plugins, channel).await => {
+            let text = if name == settings::TOOL {
+                "This channel cannot show approval prompts, so settings cannot change here. The \
+                 owner can change them with `krabb config set`."
+                    .into()
+            } else {
+                format!(
+                    "This channel cannot show approval prompts, so nothing ran. The owner can \
+                     allow such actions without a prompt with `krabb config set \
+                     channels.{channel}.approval=auto --force`, or use a channel that supports \
+                     approvals."
+                )
+            };
+
+            return Ok(ToolResult::text(text));
+        }
+
         (true, ApprovalMode::Prompt) => {
             let arguments = approval_arguments(name, &args)?;
 
@@ -1125,7 +1142,9 @@ pub(crate) async fn execute_tool_with_registry(
                     }
 
                     (None, None) => {
-                        return Err("The approval request is no longer available.".into());
+                        return Ok(ToolResult::text(
+                            "The approval expired, so nothing ran. Ask again to retry.",
+                        ));
                     }
                 }
             }
@@ -1343,6 +1362,14 @@ pub(crate) struct ScheduledMessage {
 }
 
 /// Applies a model-issued task control for the conversation's current sender.
+/// Whether CHANNEL can ask a person to approve: a channel plugin must declare `approvals`.
+async fn prompts(plugins: &Plugins, channel: &str) -> bool {
+    plugins
+        .get(channel)
+        .await
+        .is_none_or(|plugin| !plugin.supports(Capability::Channel) || plugin.approvals)
+}
+
 pub(crate) fn control_task(
     sessions: &Arc<Mutex<state::Store>>,
     session: &str,
