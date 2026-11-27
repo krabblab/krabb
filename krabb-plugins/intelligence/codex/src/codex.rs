@@ -325,9 +325,7 @@ async fn generate_on(
                 "approvalPolicy": "on-request",
                 "sandbox": "read-only",
                 "dynamicTools": tools,
-                "developerInstructions": format!(
-                    "{tool_guidance}\n\n{instructions}"
-                ),
+                "developerInstructions": developer_instructions(&tool_guidance, &instructions),
                 "config": {
                     "web_search": if input.generation.is_none_or(|value| value.search && !value.summary) { "live" } else { "disabled" },
                     "features": {
@@ -390,6 +388,14 @@ async fn generate_on(
     }
 
     Ok(Some(response))
+}
+
+const AUTHORITY: &str = "Codex's own sandbox and shell settings do not limit Krabb's tools; \
+                         Krabb's permission summary in these instructions is authoritative for \
+                         what this conversation may do.";
+
+fn developer_instructions(tool_guidance: &str, instructions: &str) -> String {
+    format!("{AUTHORITY}\n\n{tool_guidance}\n\n{instructions}")
 }
 
 fn tool_guidance(tools: &[ToolSpec]) -> String {
@@ -1254,6 +1260,18 @@ mod tests {
             })),
             None
         );
+    }
+
+    #[test]
+    fn defers_to_krabb_permissions_over_the_codex_sandbox() {
+        let text = super::developer_instructions("Available Krabb tools: read.", "Be brief.");
+
+        assert!(text.starts_with(
+            "Codex's own sandbox and shell settings do not limit Krabb's tools; Krabb's \
+             permission summary in these instructions is authoritative"
+        ));
+
+        assert!(text.ends_with("\n\nAvailable Krabb tools: read.\n\nBe brief."));
     }
 
     #[test]

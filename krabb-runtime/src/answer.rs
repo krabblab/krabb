@@ -459,6 +459,12 @@ pub(crate) async fn answer_with_registry(
         }
     }
 
+    let shown = prompts(plugins, channel, registry.source.as_ref()).await;
+    let permissions =
+        permissions::Permissions::offered(&specs, &registry.owners, approval_mode, shown);
+
+    messages.insert(0, permissions.message(session));
+
     if schedules {
         let channels = plugins
             .all()
