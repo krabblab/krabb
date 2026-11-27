@@ -255,7 +255,7 @@ pub(crate) fn search_path(environment: &BTreeMap<String, String>) -> String {
 }
 
 /// Whether FOLDER exists and only its owner and group can add programs to it.
-fn trusted(folder: &Path) -> bool {
+pub(crate) fn trusted(folder: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(folder) else {
         return false;
     };

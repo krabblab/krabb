@@ -68,11 +68,13 @@ pub(crate) fn refresh(path: &Path) -> Result<bool, PluginError> {
 }
 
 /// ENVIRONMENT with BINARY as the Codex CLI, when the service it belongs to finds no Codex
-/// through `KRABB_CODEX_BINARY` or its PATH. The PATH gains BINARY's folder, because a Codex
-/// installed with a package manager runs a program from that folder.
+/// through `KRABB_CODEX_BINARY` or its PATH. The PATH gains BINARY's folder when only its owner
+/// can add programs to it, because a Codex installed with a package manager runs a program from
+/// that folder. A definition without a PATH gets the one SHELL's variables give a new service.
 pub(crate) fn with_codex(
     environment: &[(String, String)],
     binary: &Path,
+    shell: &BTreeMap<String, String>,
 ) -> Option<Vec<(String, String)>> {
     let value = |wanted: &str| {
         environment.iter().find(|(name, _)| name == wanted).map(|(_, value)| value.as_str())
@@ -85,9 +87,17 @@ pub(crate) fn with_codex(
     }
 
     let mut patched = environment.to_vec();
-    let folder = binary.parent().filter(|folder| folder.is_absolute());
 
-    if let Some(folder) = folder.and_then(Path::to_str)
+    let folder = binary
+        .parent()
+        .filter(|folder| folder.is_absolute() && trusted(folder))
+        .and_then(Path::to_str);
+
+    if cfg!(not(windows)) && !patched.iter().any(|(name, _)| name == "PATH") {
+        patched.insert(0, ("PATH".into(), search_path(shell)));
+    }
+
+    if let Some(folder) = folder
         && let Some((_, path)) = patched.iter_mut().find(|(name, _)| name == "PATH")
         && !path.split(':').any(|known| known == folder)
     {
@@ -471,26 +481,49 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_service_without_codex_gains_the_shells_codex() {
-        let binary = Path::new("/opt/codex/bin/codex");
-        let path = |value: &str| vec![("PATH".to_owned(), value.to_owned())];
+        use std::os::unix::fs::PermissionsExt;
 
-        let patched = with_codex(&path("/nowhere/krabb-bin"), binary).unwrap();
+        let root = crate::tests::test_root("definition-codex");
+        let folder = root.join("codex/bin");
+        let open = root.join("open/bin");
+
+        for (directory, mode) in [(&folder, 0o755), (&open, 0o777)] {
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        let binary = folder.join("codex");
+        let text = folder.display().to_string();
+        let path = |value: &str| vec![("PATH".to_owned(), value.to_owned())];
+        let shell = BTreeMap::new();
+
+        let patched = with_codex(&path("/nowhere/krabb-bin"), &binary, &shell).unwrap();
 
         assert_eq!(
             patched,
             [
-                ("PATH".to_owned(), "/nowhere/krabb-bin:/opt/codex/bin".to_owned()),
-                ("KRABB_CODEX_BINARY".to_owned(), "/opt/codex/bin/codex".to_owned()),
+                ("PATH".to_owned(), format!("/nowhere/krabb-bin:{text}")),
+                ("KRABB_CODEX_BINARY".to_owned(), binary.display().to_string()),
             ]
         );
 
-        let kept = with_codex(&path("/opt/codex/bin"), binary).unwrap();
+        let kept = with_codex(&path(&text), &binary, &shell).unwrap();
 
-        assert_eq!(kept[0].1, "/opt/codex/bin");
-        assert_eq!(with_codex(&[], binary).unwrap().len(), 1);
+        assert_eq!(kept[0].1, text);
+
+        let added = with_codex(&[], &binary, &shell).unwrap();
+
+        assert_eq!(added[0], ("PATH".to_owned(), appended(&search_path(&shell), &text)));
+        assert_eq!(added.len(), 2);
+
+        let untrusted = with_codex(&path("/nowhere"), &open.join("codex"), &shell).unwrap();
+
+        assert_eq!(untrusted[0].1, "/nowhere");
 
         let known = vec![("KRABB_CODEX_BINARY".to_owned(), "/usr/bin/codex".to_owned())];
 
-        assert_eq!(with_codex(&known, binary), None);
+        assert_eq!(with_codex(&known, &binary, &shell), None);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

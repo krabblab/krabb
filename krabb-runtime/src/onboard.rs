@@ -725,7 +725,9 @@ impl Guide {
             return Ok(false);
         };
 
-        let Some(environment) = crate::definition::with_codex(&environment, &binary) else {
+        let shell = std::env::vars().collect();
+
+        let Some(environment) = crate::definition::with_codex(&environment, &binary, &shell) else {
             return Ok(false);
         };
 
