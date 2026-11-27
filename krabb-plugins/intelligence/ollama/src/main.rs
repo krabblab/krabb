@@ -183,10 +183,7 @@ async fn check_key(
         .map_err(|error| krabb_http::transport(&error, "Ollama"))?;
 
     if matches!(response.status().as_u16(), 401 | 403) {
-        return Err(krabb_core::Error::Denied(format!(
-            "Ollama Cloud rejected the API key.\nCreate a new one at {KEYS}, then run `krabb \
-             plugin setup ollama`."
-        )));
+        return Err(rejected_key());
     }
 
     if !response.status().is_success() {
@@ -196,6 +193,14 @@ async fn check_key(
     Ok(())
 }
 
+/// The refusal for a key Ollama Cloud rejected, with the way to replace it.
+fn rejected_key() -> krabb_core::Error {
+    krabb_core::Error::Denied(format!(
+        "Ollama Cloud rejected the API key.\nCreate a new one at {KEYS}, then run `krabb plugin \
+         setup ollama`."
+    ))
+}
+
 /// The models the Ollama server at HOST offers, one `  name - name` line each.
 async fn models_at(
     client: &reqwest::Client,
@@ -203,6 +208,7 @@ async fn models_at(
     key: Option<String>,
 ) -> krabb_core::Result<String> {
     let host = validate_host(host, key.is_some())?;
+
     let mut request = client.get(format!("{host}/api/tags"));
 
     if let Some(key) = key {
@@ -525,9 +531,10 @@ where
     }
 
     if !complete {
-        return Err(krabb_core::Error::Denied(
-            "Ollama stream ended before its completion marker.".into(),
-        ));
+        return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(
+            emitted,
+        ))
+        .error("Ollama stream ended before its completion marker."));
     }
 
     emit(&mut pending, &mut emitted, emitter).await?;

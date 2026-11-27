@@ -1,11 +1,27 @@
 use krabb_core::context::{Profile, Window};
 
+/// The context of a model the host cannot measure, which every runner default holds.
+const FALLBACK: u64 = 4096;
+
 pub(super) async fn profile(
     client: &reqwest::Client,
     model: &str,
     host: &str,
     configured: &str,
     key: Option<&str>,
+) -> krabb_core::Result<Profile> {
+    profile_at(client, model, host, configured, key, super::cloud(host)).await
+}
+
+/// The profile at HOST; only Ollama Cloud runs a model at the context length it reports, since
+/// a local runner loads an idle model at its own small default.
+async fn profile_at(
+    client: &reqwest::Client,
+    model: &str,
+    host: &str,
+    configured: &str,
+    key: Option<&str>,
+    cloud: bool,
 ) -> krabb_core::Result<Profile> {
     let mut settings = serde_json::json!({});
 
@@ -29,6 +45,8 @@ pub(super) async fn profile(
         // Cloud and proxy endpoints may not expose the local runner's allocation.
         let allocated = if response.status() == reqwest::StatusCode::NOT_FOUND {
             None
+        } else if cloud && matches!(response.status().as_u16(), 401 | 403) {
+            return Err(super::rejected_key());
         } else if !response.status().is_success() {
             return Err(krabb_core::Error::Denied(format!(
                 "Ollama context discovery was rejected with {}.",
@@ -42,7 +60,8 @@ pub(super) async fn profile(
 
         match allocated {
             Some(tokens) => tokens,
-            None => shown(client, &host, model, key).await.unwrap_or(4096),
+            None if cloud => shown(client, &host, model, key).await.unwrap_or(FALLBACK),
+            None => FALLBACK,
         }
     };
 
@@ -125,8 +144,9 @@ mod tests {
         let responses = vec![(200, r#"{"models":[]}"#.into()), (200, shown.into())];
         let (base, server) = krabb_test::http::responses(responses).await;
 
+        let client = reqwest::Client::new();
         let result =
-            profile(&reqwest::Client::new(), "big", &base, "auto", Some("fixture")).await.unwrap();
+            profile_at(&client, "big", &base, "auto", Some("fixture"), true).await.unwrap();
 
         assert_eq!(result.window.map(|window| window.tokens), Some(131072));
 
@@ -134,6 +154,28 @@ mod tests {
 
         assert!(requests[1].headers.starts_with("POST /api/show "));
         assert!(requests[1].headers.to_lowercase().contains("authorization: bearer fixture"));
+
+        let responses = vec![(200, r#"{"models":[]}"#.into())];
+        let (base, server) = krabb_test::http::responses(responses).await;
+        let result = profile_at(&client, "big", &base, "auto", None, false).await.unwrap();
+
+        assert_eq!(result.window.map(|window| window.tokens), Some(FALLBACK));
+        assert_eq!(server.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_cloud_key_names_the_key_fix() {
+        let (base, server) = krabb_test::http::responses(vec![(401, "{}".into())]).await;
+        let client = reqwest::Client::new();
+        let error = profile_at(&client, "big", &base, "auto", Some("fixture"), true)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Ollama Cloud rejected the API key."), "{error}");
+        assert!(error.contains("`krabb plugin setup ollama`"), "{error}");
+
+        server.await.unwrap();
     }
 
     #[tokio::test]
