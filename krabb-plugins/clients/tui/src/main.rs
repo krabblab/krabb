@@ -1480,6 +1480,8 @@ where
             let request_identity = user.id.clone();
             messages.push(user);
 
+            while interrupt_rx.try_recv().is_ok() {}
+
             if let Some(events) = &engine_events {
                 let _ = events.send(EngineEvent::UserSaved(submitted.into()));
                 let _ = events.send(EngineEvent::GenerationStarted);
@@ -7561,6 +7563,76 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_left_from_an_earlier_turn_does_not_cancel_the_next() {
+        async fn host(
+            home: String,
+            method: String,
+            params: serde_json::Value,
+        ) -> krabb_core::Result<serde_json::Value> {
+            if method == "session.answer" {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+
+            mock_control(home, method, params).await
+        }
+
+        use tokio::io::duplex;
+
+        let root =
+            std::env::temp_dir().join(format!("krabb-tui-late-interrupt-{}", super::schedule_id()));
+
+        std::fs::create_dir_all(&root).unwrap();
+
+        let (mut input, receiver) = duplex(4096);
+        let (output, _rendered) = duplex(16 * 1024);
+        let (interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut notifications) = tokio::sync::mpsc::unbounded_channel();
+
+        interrupt.send(()).unwrap();
+
+        let engine = tokio::spawn(super::run_with(
+            receiver,
+            output,
+            super::EngineConfig {
+                home: root.display().to_string(),
+                plugin: "codex".into(),
+                model: "base".into(),
+                model_override: None,
+                session: "default".into(),
+            },
+            host,
+            super::EngineEvents { engine: Some(events), ..Default::default() },
+            interrupts,
+        ));
+
+        input.write_all(b"hello\n").await.unwrap();
+
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(super::EngineEvent::GenerationFinished { interrupted }) =
+                    notifications.recv().await
+                {
+                    break interrupted;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(!finished);
+
+        input.write_all(b"/quit\n").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        drop(interrupt);
         std::fs::remove_dir_all(root).unwrap();
     }
 

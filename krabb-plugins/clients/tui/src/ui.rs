@@ -28,7 +28,7 @@ use ratatui::{
 };
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::File,
     ops::Range,
     path::PathBuf,
@@ -68,6 +68,14 @@ const MESSAGE_GAP_ROWS: usize = 2;
 const GENERATION_FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const TYPEWRITER_INTERVAL: Duration = Duration::from_millis(16);
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// Failed attempts, and saves kept, before a reply the daemon refuses is left unsaved.
+const SAVE_ATTEMPTS: u32 = 30;
+const UNSAVED_LIMIT: usize = 64;
+const UNSAVED: &str = "Krabb could not save a reply, so copy it before you close this window.";
+/// How long the daemon keeps an approval request open.
+const APPROVAL_LIFE: Duration = Duration::from_secs(300);
+/// How long after an interrupt a repeated Esc is still taken as part of it.
+const ESCAPE_GRACE: Duration = Duration::from_secs(1);
 /// Input events handled before the next redraw, so a burst of wheel ticks draws once.
 const EVENT_BATCH: usize = 64;
 const TYPEWRITER_BACKLOG: usize = 96;
@@ -265,6 +273,14 @@ struct App {
     interaction_sequence: u64,
     reconnect: reconnect::Reconnect,
     dismissed_approvals: HashSet<String>,
+    /// When each approval prompt first appeared, so expired ones stop showing.
+    approvals_seen: HashMap<String, Instant>,
+    /// Saves the daemon refused, with their failed attempts, waiting for a retry.
+    unsaved: VecDeque<(Unsaved, u32)>,
+    /// Set when a command could not reach the engine, so the loop treats it as failed.
+    engine_unreachable: bool,
+    /// When the last generation was interrupted, so a repeated Esc does not quit.
+    interrupted_at: Option<Instant>,
 }
 
 struct TranscriptLayout {
@@ -400,6 +416,12 @@ struct SavedSystemMessage {
     session: String,
     id: String,
     text: String,
+}
+
+/// A finished reply or notice that the daemon has not saved yet.
+enum Unsaved {
+    Interaction(SavedInteraction),
+    System(SavedSystemMessage),
 }
 
 pub(super) struct ModelOptions {
@@ -576,7 +598,11 @@ where
                         quit = handle_event(event, &mut app, &mut command_tx, engine_finished).await?;
                     }
 
-                    persist_pending(&home, &mut app, host).await?;
+                    if std::mem::take(&mut app.engine_unreachable) {
+                        engine.abort();
+                    }
+
+                    persist_pending(&home, &mut app, host).await;
 
                     if app.statusline_changed {
                         save_preferences(
@@ -661,6 +687,8 @@ where
                 {
                     app.session_revision = revision.map(|revision| (session_id, revision));
                 }
+
+                retry_unsaved(&home, &mut app, host).await;
             }
 
             event = engine_event_rx.recv(), if engine_events_open => {
@@ -699,9 +727,7 @@ where
                     Some(crate::EngineEvent::AssistantText(text)) => {
                         let interactions = app.push_assistant_output(text);
 
-                        for interaction in interactions {
-                            persist_interaction(&home, interaction, host).await?;
-                        }
+                        persist_interactions(&home, &mut app, interactions, host).await;
                     }
 
                     Some(crate::EngineEvent::SystemText(text)) => {
@@ -733,7 +759,7 @@ where
                     None => engine_events_open = false,
                 }
 
-                persist_pending(&home, &mut app, host).await?;
+                persist_pending(&home, &mut app, host).await;
             }
 
             _ = tokio::time::sleep(TYPEWRITER_INTERVAL), if !app.reveal_queue.is_empty() => {
@@ -766,6 +792,9 @@ where
                         };
 
                         if let Some(error) = failure {
+                            session_events_open = false;
+                            engine_events_open = false;
+
                             reconnect_at = app
                                 .engine_failed(&error)
                                 .map(|delay| tokio::time::Instant::now() + delay);
@@ -774,11 +803,11 @@ where
                         }
 
                         app.status = "Session ended".into();
-                        persist_pending(&home, &mut app, host).await?;
+                        persist_pending(&home, &mut app, host).await;
 
-                        for interaction in app.finish_interactions() {
-                            persist_interaction(&home, interaction, host).await?;
-                        }
+                        let interactions = app.finish_interactions();
+
+                        persist_interactions(&home, &mut app, interactions, host).await;
                     }
 
                     Ok(count) => {
@@ -787,9 +816,7 @@ where
                         let text = String::from_utf8_lossy(&buffer[..count]).into_owned();
                         let interactions = app.push_assistant_output(text);
 
-                        for interaction in interactions {
-                            persist_interaction(&home, interaction, host).await?;
-                        }
+                        persist_interactions(&home, &mut app, interactions, host).await;
                     }
 
                     Err(error) => {
@@ -802,11 +829,11 @@ where
                         app.compaction_active = false;
                         app.reply_pending = false;
 
-                        persist_pending(&home, &mut app, host).await?;
+                        persist_pending(&home, &mut app, host).await;
 
-                        for interaction in app.finish_interactions() {
-                            persist_interaction(&home, interaction, host).await?;
-                        }
+                        let interactions = app.finish_interactions();
+
+                        persist_interactions(&home, &mut app, interactions, host).await;
                     }
                 }
             }
@@ -845,9 +872,7 @@ where
                 crate::EngineEvent::AssistantText(text) => {
                     let interactions = app.push_assistant_output(text);
 
-                    for interaction in interactions {
-                        persist_interaction(&home, interaction, host).await?;
-                    }
+                    persist_interactions(&home, &mut app, interactions, host).await;
                 }
 
                 crate::EngineEvent::SystemText(text) => app.push_system_output(&text),
@@ -894,12 +919,14 @@ where
             let text = String::from_utf8_lossy(&buffer[..count]).into_owned();
             let interactions = app.push_assistant_output(text);
 
-            for interaction in interactions {
-                persist_interaction(&home, interaction, host).await?;
-            }
+            persist_interactions(&home, &mut app, interactions, host).await;
         }
 
         app.finish_streamed_interactions();
+    }
+
+    for (mut unsaved, _) in std::mem::take(&mut app.unsaved) {
+        let _ = save(&home, &mut unsaved, host).await;
     }
 
     cancelled.store(true, Ordering::Relaxed);
@@ -1015,91 +1042,158 @@ fn session_view(id: &str, value: &serde_json::Value) -> Result<SessionView> {
     Ok(SessionView { id: id.to_owned(), model, workspace, context_usage, messages, working })
 }
 
-async fn persist_interaction<C, F>(home: &str, interaction: SavedInteraction, host: C) -> Result<()>
+/// Saves INTERACTION, marking its user line saved first, so a retry appends only the rest.
+async fn persist_interaction<C, F>(
+    home: &str,
+    interaction: &mut SavedInteraction,
+    host: C,
+) -> Result<()>
 where
     C: Fn(String, String, serde_json::Value) -> F + Copy,
     F: std::future::Future<Output = Result<serde_json::Value>>,
 {
+    if !interaction.user_message_persisted {
+        let message = Message {
+            id: interaction.user_message_id.clone(),
+            session: interaction.session.clone(),
+            role: Role::User,
+            sender: Some("tui".to_owned()),
+            content: vec![krabb_core::types::Content::Text {
+                text: bounded_interaction_text(&interaction.input),
+            }],
+        };
+
+        append_message(home, message, host).await?;
+        interaction.user_message_persisted = true;
+    }
+
     let output = if interaction.output.is_empty() {
         "No response was produced."
     } else {
         interaction.output.as_str()
     };
 
-    let mut entries = Vec::with_capacity(2);
+    let message = Message {
+        id: interaction.assistant_message_id.clone(),
+        session: interaction.session.clone(),
+        role: Role::Assistant,
+        sender: interaction.output.is_empty().then(|| krabb_core::types::SYSTEM.to_owned()),
+        content: vec![krabb_core::types::Content::Text { text: bounded_interaction_text(output) }],
+    };
 
-    if !interaction.user_message_persisted {
-        entries.push((
-            interaction.user_message_id.as_str(),
-            Role::User,
-            Some("tui".to_owned()),
-            interaction.input.as_str(),
-        ));
-    }
-
-    let sender = interaction.output.is_empty().then(|| krabb_core::types::SYSTEM.to_owned());
-
-    entries.push((interaction.assistant_message_id.as_str(), Role::Assistant, sender, output));
-
-    for (id, role, sender, text) in entries {
-        let text = bounded_interaction_text(text);
-        let session = interaction.session.clone();
-        let message = Message {
-            id: id.to_owned(),
-            session: session.clone(),
-            role,
-            sender,
-            content: vec![krabb_core::types::Content::Text { text }],
-        };
-
-        host(
-            home.to_owned(),
-            "session.append".into(),
-            serde_json::json!({"id": session, "message": message}),
-        )
-        .await?;
-    }
-
-    Ok(())
+    append_message(home, message, host).await
 }
 
-async fn persist_system_message<C, F>(home: &str, saved: SavedSystemMessage, host: C) -> Result<()>
+async fn append_message<C, F>(home: &str, message: Message, host: C) -> Result<()>
 where
     C: Fn(String, String, serde_json::Value) -> F + Copy,
     F: std::future::Future<Output = Result<serde_json::Value>>,
 {
+    let params = serde_json::json!({"id": message.session, "message": message});
+
+    host(home.to_owned(), "session.append".into(), params).await?;
+
+    Ok(())
+}
+
+async fn save<C, F>(home: &str, unsaved: &mut Unsaved, host: C) -> Result<()>
+where
+    C: Fn(String, String, serde_json::Value) -> F + Copy,
+    F: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    let saved = match unsaved {
+        Unsaved::Interaction(interaction) => {
+            return persist_interaction(home, interaction, host).await;
+        }
+
+        Unsaved::System(saved) => saved,
+    };
+
     let message = Message {
-        id: saved.id,
+        id: saved.id.clone(),
         session: saved.session.clone(),
         role: Role::Assistant,
         sender: Some(krabb_core::types::SYSTEM.into()),
-        content: vec![krabb_core::types::Content::Text { text: saved.text }],
+        content: vec![krabb_core::types::Content::Text { text: saved.text.clone() }],
     };
 
-    host(
-        home.to_owned(),
-        "session.append".into(),
-        serde_json::json!({"id": saved.session, "message": message}),
-    )
-    .await?;
-
-    Ok(())
+    append_message(home, message, host).await
 }
 
-async fn persist_pending<C, F>(home: &str, app: &mut App, host: C) -> Result<()>
+/// Saves UNSAVED, or keeps it for a later retry, so a daemon restart or a busy session never
+/// closes the window. A refusal because the session is busy does not use up an attempt.
+async fn save_or_keep<C, F>(home: &str, app: &mut App, mut unsaved: Unsaved, attempts: u32, host: C)
 where
     C: Fn(String, String, serde_json::Value) -> F + Copy,
     F: std::future::Future<Output = Result<serde_json::Value>>,
 {
-    for interaction in app.take_persistable_interactions() {
-        persist_interaction(home, interaction, host).await?;
+    let Err(error) = save(home, &mut unsaved, host).await else {
+        return;
+    };
+
+    let busy = error.to_string().contains(krabb_core::types::SESSION_BUSY);
+
+    app.keep_unsaved(unsaved, attempts.saturating_add(u32::from(!busy)));
+}
+
+/// Saves each of UNSAVED in order, behind any earlier saves still waiting for a retry.
+async fn persist_all<C, F>(home: &str, app: &mut App, unsaved: Vec<Unsaved>, host: C)
+where
+    C: Fn(String, String, serde_json::Value) -> F + Copy,
+    F: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    for item in unsaved {
+        if app.unsaved.is_empty() {
+            save_or_keep(home, app, item, 0, host).await;
+        } else {
+            app.keep_unsaved(item, 0);
+        }
+    }
+}
+
+async fn persist_interactions<C, F>(
+    home: &str,
+    app: &mut App,
+    interactions: Vec<SavedInteraction>,
+    host: C,
+) where
+    C: Fn(String, String, serde_json::Value) -> F + Copy,
+    F: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    let unsaved = interactions.into_iter().map(Unsaved::Interaction).collect();
+
+    persist_all(home, app, unsaved, host).await;
+}
+
+async fn persist_pending<C, F>(home: &str, app: &mut App, host: C)
+where
+    C: Fn(String, String, serde_json::Value) -> F + Copy,
+    F: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    let interactions = app.take_persistable_interactions().into_iter().map(Unsaved::Interaction);
+    let messages = app.take_persistable_system_messages().into_iter().map(Unsaved::System);
+    let unsaved = interactions.chain(messages).collect();
+
+    persist_all(home, app, unsaved, host).await;
+}
+
+/// Retries the saves the daemon refused, once nothing runs in the session.
+async fn retry_unsaved<C, F>(home: &str, app: &mut App, host: C)
+where
+    C: Fn(String, String, serde_json::Value) -> F + Copy,
+    F: std::future::Future<Output = Result<serde_json::Value>>,
+{
+    if app.generation_active || app.compaction_active || app.reply_pending || app.session_working {
+        return;
     }
 
-    for message in app.take_persistable_system_messages() {
-        persist_system_message(home, message, host).await?;
+    for (unsaved, attempts) in std::mem::take(&mut app.unsaved) {
+        if app.unsaved.is_empty() {
+            save_or_keep(home, app, unsaved, attempts, host).await;
+        } else {
+            app.keep_unsaved(unsaved, attempts);
+        }
     }
-
-    Ok(())
 }
 
 fn bounded_interaction_text(text: &str) -> String {
@@ -1287,6 +1381,14 @@ fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
+async fn send_command<W>(command_tx: &mut W, encoded: &str) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    command_tx.write_all(encoded.as_bytes()).await?;
+    command_tx.write_all(b"\n").await
+}
+
 fn is_escape(event: &Event) -> bool {
     matches!(event, Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc)
 }
@@ -1400,15 +1502,24 @@ fn command_suggestions(
     (!matches.is_empty() && (!exact_command_exists || input == "/")).then_some(matches)
 }
 
+/// Approval prompts in TRANSCRIPT that no later line resolved. A resolution matches the id
+/// of the `/approve` or `/deny` sent before it, or the only prompt when none was given.
 fn approval_prompts(transcript: &str) -> Option<Vec<String>> {
-    let mut requests = Vec::new();
+    let mut requests = Vec::<String>::new();
+    let mut answered = None;
 
     for line in transcript.lines() {
         if let Some(id) = line.strip_prefix("Approve: /approve ") {
             requests.push(id.trim().to_owned());
-        } else if matches!(line, "Approval accepted." | "Approval denied.") && !requests.is_empty()
-        {
-            requests.remove(0);
+        } else if let Some(id) = line.strip_prefix("/approve ").or(line.strip_prefix("/deny ")) {
+            answered = Some(id.trim().to_owned());
+        } else if matches!(line, "Approval accepted." | "Approval denied.") {
+            match answered.take() {
+                Some(id) => requests.retain(|request| *request != id),
+                None if requests.len() == 1 => requests.clear(),
+
+                None => {}
+            }
         }
     }
 
@@ -1549,7 +1660,7 @@ where
 
                     KeyCode::Up | KeyCode::Down => return Ok(false),
 
-                    KeyCode::Enter => {
+                    KeyCode::Enter if app.input.is_empty() => {
                         if let Some(id) = approvals.first() {
                             let command =
                                 if app.approval_selection == 0 { "approve" } else { "deny" };
@@ -1941,8 +2052,17 @@ where
 
                     let encoded = crate::attachments::encode(&line, &attachments);
 
-                    command_tx.write_all(encoded.as_bytes()).await?;
-                    command_tx.write_all(b"\n").await?;
+                    if send_command(command_tx, &encoded).await.is_err() {
+                        app.engine_unreachable = true;
+                        app.status = "Reconnecting to Krabb".into();
+                        return Ok(false);
+                    }
+
+                    if let Some(id) =
+                        command.strip_prefix("/approve ").or(command.strip_prefix("/deny "))
+                    {
+                        app.dismissed_approvals.insert(id.trim().to_owned());
+                    }
 
                     if !app.generation_active {
                         app.reply_pending = true;
@@ -1951,6 +2071,11 @@ where
                 }
 
                 KeyCode::Esc if app.input.is_empty() && key.modifiers.is_empty() => {
+                    if app.escape_busy(engine_finished) {
+                        app.status = "Krabb is busy, so press Ctrl+C to leave now.".into();
+                        return Ok(false);
+                    }
+
                     app.exiting = true;
                     return Ok(true);
                 }
@@ -3586,18 +3711,83 @@ impl App {
         hovered != layout.hovered_message
     }
 
-    /// Approvals the running turn still waits for, minus those of turns that already ended.
-    fn approval_prompts(&self) -> Option<Vec<String>> {
+    /// Approvals the running turn still waits for, minus those of turns that already ended,
+    /// those already answered here, and those the daemon has expired.
+    fn approval_prompts(&mut self) -> Option<Vec<String>> {
+        self.approval_prompts_at(Instant::now())
+    }
+
+    fn approval_prompts_at(&mut self, now: Instant) -> Option<Vec<String>> {
         if !self.generation_active {
             return None;
         }
 
-        let requests = approval_prompts(&self.transcript)?
-            .into_iter()
-            .filter(|id| !self.dismissed_approvals.contains(id))
-            .collect::<Vec<_>>();
+        let mut requests = Vec::new();
+
+        for id in approval_prompts(&self.transcript)? {
+            if self.dismissed_approvals.contains(&id) {
+                continue;
+            }
+
+            let seen = *self.approvals_seen.entry(id.clone()).or_insert(now);
+
+            if now.saturating_duration_since(seen) >= APPROVAL_LIFE {
+                self.approvals_seen.remove(&id);
+                self.dismissed_approvals.insert(id);
+            } else {
+                requests.push(id);
+            }
+        }
 
         (!requests.is_empty()).then_some(requests)
+    }
+
+    /// Whether Esc on an empty composer should be ignored, because Krabb is still busy.
+    fn escape_busy(&self, engine_finished: bool) -> bool {
+        let reconnecting =
+            engine_finished && matches!(self.reconnect, reconnect::Reconnect::Waiting { .. });
+
+        let interrupting = self.interrupt_requested
+            || self.interrupted_at.is_some_and(|at| at.elapsed() < ESCAPE_GRACE);
+
+        self.generation_active
+            || self.compaction_active
+            || self.session_working
+            || self.reply_pending
+            || self.running_command.is_some()
+            || reconnecting
+            || interrupting
+    }
+
+    /// Keeps a refused save for a retry, giving up on it after its last attempt or when too
+    /// many are waiting.
+    fn keep_unsaved(&mut self, unsaved: Unsaved, attempts: u32) {
+        if attempts < SAVE_ATTEMPTS {
+            self.unsaved.push_back((unsaved, attempts));
+        } else {
+            self.drop_unsaved(&unsaved);
+        }
+
+        if self.unsaved.len() > UNSAVED_LIMIT
+            && let Some((oldest, _)) = self.unsaved.pop_front()
+        {
+            self.drop_unsaved(&oldest);
+        }
+    }
+
+    fn drop_unsaved(&mut self, unsaved: &Unsaved) {
+        let (session, ids) = match unsaved {
+            Unsaved::Interaction(interaction) => (
+                &interaction.session,
+                vec![&interaction.user_message_id, &interaction.assistant_message_id],
+            ),
+
+            Unsaved::System(message) => (&message.session, vec![&message.id]),
+        };
+
+        self.pending_snapshot_messages.retain(|(owner, id)| owner != session || !ids.contains(&id));
+
+        self.status = UNSAVED.into();
     }
 
     /// Hides the live approval prompts of a turn that ended, since the daemon no longer
@@ -3651,6 +3841,7 @@ impl App {
         self.reply_system = false;
         self.approval_reply_pending = false;
         self.status = if interrupted { "Generation interrupted" } else { "Ready" }.into();
+        self.interrupted_at = interrupted.then(Instant::now);
         self.dismiss_approvals();
 
         if interrupted {
@@ -4544,9 +4735,9 @@ mod tests {
         .await
         .unwrap();
 
-        super::persist_interaction(&home, saved.into_iter().next().unwrap(), crate::local_aware)
-            .await
-            .unwrap();
+        let mut saved = saved.into_iter().next().unwrap();
+
+        super::persist_interaction(&home, &mut saved, crate::local_aware).await.unwrap();
 
         let session = crate::read_session(&home, "default", crate::local_aware).await.unwrap();
 
@@ -4782,11 +4973,20 @@ mod tests {
     }
 
     #[test]
-    fn approval_prompt_parser_drops_resolved_requests_in_order() {
-        let transcript = "System | now\nApproval needed.\nApprove: /approve first\nDeny: /deny first\n\
-            Approval needed.\nApprove: /approve second\nDeny: /deny second\nApproval accepted.";
+    fn approval_prompt_parser_drops_the_request_each_answer_names() {
+        let prompts = "System | now\nApproval needed.\nApprove: /approve first\nDeny: /deny first\n\
+            Approval needed.\nApprove: /approve second\nDeny: /deny second\n";
 
-        assert_eq!(super::approval_prompts(transcript), Some(vec!["second".into()]));
+        let answered =
+            format!("{prompts}You | now\n/deny second\n\nSystem | now\nApproval denied.");
+
+        assert_eq!(super::approval_prompts(&answered), Some(vec!["first".into()]));
+
+        let unnamed = format!("{prompts}Approval accepted.");
+
+        assert_eq!(super::approval_prompts(&unnamed), Some(vec!["first".into(), "second".into()]));
+
+        assert_eq!(super::approval_prompts("Approve: /approve only\nApproval accepted."), None);
 
         assert_eq!(
             super::approval_prompts("Approval needed.\nApprove: /approve id"),
@@ -4847,6 +5047,177 @@ mod tests {
         app.transcript.push_str("Approval needed.\nApprove: /approve new\n");
 
         assert_eq!(app.approval_prompts(), Some(vec!["new".into()]));
+    }
+
+    #[tokio::test]
+    async fn a_refused_save_is_kept_and_retried_without_resending_saved_lines() {
+        let appended = std::sync::Mutex::new(Vec::new());
+        let refusal = std::sync::Mutex::new(None::<String>);
+
+        let host = |_home: String, _method: String, params: serde_json::Value| {
+            let role = params["message"]["role"].as_str().unwrap_or_default().to_owned();
+
+            let result = match refusal.lock().unwrap().clone() {
+                Some(reason) if role == "assistant" => Err(krabb_core::Error::Denied(reason)),
+
+                _ => {
+                    appended.lock().unwrap().push(role);
+                    Ok(serde_json::json!({}))
+                }
+            };
+
+            async move { result }
+        };
+
+        let mut app = App { session: "default".into(), ..App::default() };
+
+        app.begin_interaction("hello");
+        app.capture_interaction_output("Hi.");
+        app.completed_interactions = app.finish_interactions();
+        *refusal.lock().unwrap() = Some("Krabb is unavailable.".into());
+
+        super::persist_pending("home", &mut app, host).await;
+
+        assert_eq!(app.unsaved.len(), 1);
+        assert_eq!(app.unsaved[0].1, 1);
+        assert_eq!(*appended.lock().unwrap(), ["user"]);
+
+        *refusal.lock().unwrap() = Some(krabb_core::types::SESSION_BUSY.into());
+        super::retry_unsaved("home", &mut app, host).await;
+
+        assert_eq!(app.unsaved[0].1, 1);
+
+        *refusal.lock().unwrap() = None;
+        app.session_working = true;
+        super::retry_unsaved("home", &mut app, host).await;
+
+        assert_eq!(app.unsaved.len(), 1);
+
+        app.session_working = false;
+        super::retry_unsaved("home", &mut app, host).await;
+
+        assert!(app.unsaved.is_empty());
+        assert_eq!(*appended.lock().unwrap(), ["user", "assistant"]);
+    }
+
+    #[tokio::test]
+    async fn a_save_refused_on_every_attempt_is_given_up_with_a_notice() {
+        let host = |_home: String, _method: String, _params: serde_json::Value| async {
+            Err::<serde_json::Value, _>(krabb_core::Error::Denied("Krabb is unavailable.".into()))
+        };
+
+        let mut app = App { session: "default".into(), ..App::default() };
+
+        app.begin_interaction("/status");
+        app.capture_interaction_output("Ready.");
+        app.completed_interactions = app.finish_interactions();
+
+        super::persist_pending("home", &mut app, host).await;
+
+        assert_eq!(app.pending_snapshot_messages.len(), 2);
+
+        for _ in 1..super::SAVE_ATTEMPTS {
+            super::retry_unsaved("home", &mut app, host).await;
+        }
+
+        assert!(app.unsaved.is_empty());
+        assert!(app.pending_snapshot_messages.is_empty());
+        assert_eq!(app.status, super::UNSAVED);
+    }
+
+    #[test]
+    fn an_expired_approval_stops_showing() {
+        let mut app = App {
+            transcript: "System | now\nApproval needed.\nApprove: /approve stale\n".into(),
+            generation_active: true,
+            ..App::default()
+        };
+
+        let now = std::time::Instant::now();
+
+        assert_eq!(app.approval_prompts_at(now), Some(vec!["stale".into()]));
+        assert_eq!(app.approval_prompts_at(now + super::APPROVAL_LIFE), None);
+        assert!(app.dismissed_approvals.contains("stale"));
+    }
+
+    #[tokio::test]
+    async fn an_answered_approval_leaves_the_others_showing() {
+        let (mut command_tx, _command_rx) = duplex(1024);
+
+        let mut app = App {
+            generation_active: true,
+            transcript: "System | now\nApproval needed.\nApprove: /approve first\n\
+                Approval needed.\nApprove: /approve second\n"
+                .into(),
+            input: "/deny second".chars().collect(),
+            ..App::default()
+        };
+
+        app.cursor = app.input.len();
+
+        handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.approval_prompts(), Some(vec!["first".into()]));
+    }
+
+    #[tokio::test]
+    async fn escape_quits_only_when_nothing_is_busy() {
+        let (mut command_tx, _command_rx) = duplex(1024);
+        let escape = || Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        let busy = [
+            App { compaction_active: true, ..App::default() },
+            App { session_working: true, ..App::default() },
+            App { reply_pending: true, ..App::default() },
+            App { interrupted_at: Some(std::time::Instant::now()), ..App::default() },
+            App {
+                reconnect: super::reconnect::Reconnect::Waiting { attempt: 1 },
+                ..App::default()
+            },
+        ];
+
+        for (index, mut app) in busy.into_iter().enumerate() {
+            let finished = index == 4;
+            let quit = handle_event(escape(), &mut app, &mut command_tx, finished).await.unwrap();
+
+            assert!(!quit);
+            assert!(app.status.contains("Ctrl+C"));
+        }
+
+        let mut idle = App::default();
+
+        assert!(handle_event(escape(), &mut idle, &mut command_tx, false).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_command_the_engine_cannot_take_marks_it_unreachable() {
+        let (mut command_tx, command_rx) = duplex(1024);
+
+        drop(command_rx);
+
+        let mut app = App { input: "hello".chars().collect(), ..App::default() };
+
+        app.cursor = app.input.len();
+
+        let quit = handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+            &mut command_tx,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(!quit);
+        assert!(app.engine_unreachable);
+        assert!(!app.reply_pending);
     }
 
     #[test]
@@ -5091,8 +5462,8 @@ mod tests {
             async { Ok(serde_json::json!({})) }
         };
 
-        for interaction in saved {
-            super::persist_interaction("home", interaction, host).await.unwrap();
+        for mut interaction in saved {
+            super::persist_interaction("home", &mut interaction, host).await.unwrap();
         }
 
         let appended = appended.into_inner().unwrap();
@@ -5256,7 +5627,9 @@ mod tests {
         let count = command_rx.read(&mut bytes).await.unwrap();
 
         assert_eq!(&bytes[..count], b"\"/deny approval-1\"\n");
+        assert_eq!(app.approval_prompts(), None);
 
+        app.dismissed_approvals.clear();
         app.approval_selection = 1;
 
         handle_event(
@@ -6817,27 +7190,27 @@ mod tests {
         assert!(app.capture_interaction_output("Runtime: ").is_empty());
         assert!(app.capture_interaction_output("stopped.\n").is_empty());
 
-        let saved = app.capture_interaction_output("> ").pop().unwrap();
+        let mut saved = app.capture_interaction_output("> ").pop().unwrap();
 
-        super::persist_interaction(&home, saved, crate::local_aware).await.unwrap();
+        super::persist_interaction(&home, &mut saved, crate::local_aware).await.unwrap();
 
         app.begin_interaction("hello without a model");
 
-        let saved = app
+        let mut saved = app
             .capture_interaction_output(
                 "No intelligence plugin is installed. Install a model plugin to send messages; session and help commands remain available.\n> ",
             )
             .pop()
             .unwrap();
 
-        super::persist_interaction(&home, saved, crate::local_aware).await.unwrap();
+        super::persist_interaction(&home, &mut saved, crate::local_aware).await.unwrap();
 
         app.begin_interaction("/session missing");
         app.capture_interaction_output("\nSession was not found.");
 
-        let saved = app.finish_interactions().pop().unwrap();
+        let mut saved = app.finish_interactions().pop().unwrap();
 
-        super::persist_interaction(&home, saved, crate::local_aware).await.unwrap();
+        super::persist_interaction(&home, &mut saved, crate::local_aware).await.unwrap();
 
         let session = super::load_session(&home, "tui-work", crate::local_aware).await.unwrap();
         let transcript = super::render_messages(&session.messages, "Krabb");

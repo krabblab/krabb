@@ -44,6 +44,7 @@ messages for the latest accepted request, skipping control-only messages. Other
 retained tasks remain available through `/task`.
 
 Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit.
+While Krabb is busy, Escape interrupts the turn or does nothing, so use Ctrl+C to quit.
 Shift+Enter and Alt+Enter also add a line where the terminal reports them, so
 Ctrl+O is the key that works everywhere. Use Up/Down for input history,
 Page Up/Page Down to scroll, and Shift-drag to select text. Typed text, including
@@ -55,6 +56,11 @@ input or an error, it prints why and how to open it again.
 When the daemon restarts, for example after `krabb config set`, the TUI reconnects
 on its own for about half a minute and clears approval prompts the restart dropped.
 If it cannot reconnect, it says so once and asks you to reopen it with `krabb tui`.
+Replies the daemon cannot save while it restarts or another turn runs are saved once the
+session is free, and the status says so if one still cannot be saved after about half a
+minute.
+Approval prompts close when you answer them or after five minutes, when the daemon
+expires them.
 Notices Krabb writes itself, such as retries, failures, and approval results, appear
 as System rather than as your Krabb.
 

@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-pub(super) const RESTORED: &str = "Krabb restarted, and this window reconnected.\nPending \
-    approvals were cleared, so ask again if a reply is missing.";
+pub(super) const RESTORED: &str = "The connection to Krabb was lost, and this window \
+    reconnected.\nPending approvals were cleared, so ask again if a reply is missing.";
 
-pub(super) const LOST: &str =
-    "Krabb restarted, and this window could not reconnect.\nReopen it with `krabb tui`.";
+pub(super) const LOST: &str = "The connection to Krabb was lost, and this window could not \
+    reconnect.\nReopen it with `krabb tui`.";
 
 pub(super) const WAITING: &str = "Krabb is reconnecting, so send this again in a moment.";
 
