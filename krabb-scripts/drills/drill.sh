@@ -13,13 +13,15 @@ usage() {
 
 fail() {
     echo "::error::$*"
-    tail -n 40 "$KRABB_HOME"/logs/*.log 2>/dev/null || true
+    [ -z "${KRABB_HOME:-}" ] || tail -n 40 "$KRABB_HOME"/logs/*.log 2>/dev/null || true
     exit 1
 }
 
+# GNU tools mark a line whose file name has a backslash, as Windows paths do, with one.
 digest() {
     local sum
     sum=$(sha256sum "$1" 2>/dev/null || shasum -a 256 "$1")
+    sum=${sum#\\}
     printf '%s\n' "${sum%% *}"
 }
 
