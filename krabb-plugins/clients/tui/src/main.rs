@@ -5011,8 +5011,18 @@ fn format_approvals(value: &Value) -> String {
             let target = &item["target"];
             let tool = target["tool"].as_str().unwrap_or("tool");
             let session = target["session"].as_str().unwrap_or("unknown session");
-            let args = target["args"].to_string();
-            Some(format!("{id}: {tool} for {session} — {args}"))
+            let mut args = target["args"].clone();
+
+            let text = args
+                .as_object_mut()
+                .filter(|_| matches!(tool, "file_write" | "file_patch"))
+                .and_then(|values| values.remove("text"))
+                .and_then(|text| text.as_str().map(str::to_owned));
+
+            Some(match text {
+                Some(text) => format!("{id}: {tool} for {session} — {args}\n{text}"),
+                None => format!("{id}: {tool} for {session} — {args}"),
+            })
         })
         .collect::<Vec<_>>();
 
@@ -6321,6 +6331,23 @@ mod tests {
         );
 
         assert_eq!(super::format_approvals(&json!({"items": []})), "Pending approvals: none.\n> ");
+
+        let page = "<!doctype html>\n<h1>Weather</h1>";
+
+        let value = json!({
+            "items": [{
+                "id": "0123456789abcdef01234567",
+                "target": {
+                    "session": "tui-default",
+                    "tool": "file_write",
+                    "args": {"path": "report.html", "text": page}
+                }
+            }]
+        });
+
+        assert!(super::format_approvals(&value).contains(&format!(
+            "file_write for tui-default — {{\"path\":\"report.html\"}}\n{page}\n"
+        )));
     }
 
     #[test]

@@ -1014,7 +1014,7 @@ pub(crate) async fn execute_tool_with_registry(
         }
 
         (true, ApprovalMode::Prompt) => {
-            let arguments = approval_arguments(name, &args)?;
+            let arguments = approval_display(name, &args)?;
 
             let text = if name == settings::TOOL {
                 let source =
@@ -1503,6 +1503,77 @@ pub(crate) fn scheduled_message(
     })
 }
 
+/// Returns ARGS as a daemon approval shows them, with long file text replaced by a preview.
+///
+/// Pending approvals keep the full arguments, so `/approvals` can show all of the text.
+pub(crate) fn approval_view(name: &str, args: &serde_json::Value) -> serde_json::Value {
+    let Some(text) = args["text"].as_str().filter(|_| matches!(name, "file_write" | "file_patch"))
+    else {
+        return args.clone();
+    };
+
+    if serde_json::Value::from(text).to_string().len() <= APPROVAL_PREVIEW_LIMIT {
+        return args.clone();
+    }
+
+    let mut view = args.clone();
+    view["text"] = preview(text).into();
+    view
+}
+
+fn preview(text: &str) -> String {
+    let lines = text.lines().collect::<Vec<_>>();
+    let summary =
+        format!("[{} bytes, {} lines; /approvals shows all of it]", text.len(), lines.len());
+    let budget = APPROVAL_PREVIEW_LIMIT.saturating_sub(summary.len() + 16);
+    let head = preview_lines(lines.iter().copied(), budget * 2 / 3);
+    let shown = head.len();
+    let mut tail = preview_lines(lines[shown..].iter().rev().copied(), budget / 3);
+
+    tail.reverse();
+
+    let mut parts = vec![summary];
+    parts.extend(head);
+
+    if shown + tail.len() < lines.len() {
+        parts.push("…".into());
+    }
+
+    parts.extend(tail);
+    parts.join("\n")
+}
+
+fn preview_lines<'a>(lines: impl Iterator<Item = &'a str>, budget: usize) -> Vec<String> {
+    let mut used = 0;
+    let mut kept = Vec::new();
+
+    for line in lines {
+        let line = clip(line.to_owned(), 240);
+        let cost = serde_json::Value::from(line.as_str()).to_string().len();
+
+        if used + cost > budget {
+            break;
+        }
+
+        used += cost;
+        kept.push(line);
+    }
+
+    kept
+}
+
+/// Returns the arguments a daemon approval shows, refusing those too long to review.
+pub(crate) fn approval_display(
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, PluginError> {
+    if matches!(name, "file_write" | "file_patch") {
+        return Ok(approval_view(name, args).to_string());
+    }
+
+    approval_arguments(name, args)
+}
+
 pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
     let details = match name {
         name if tasks::action(name).is_some() => {
@@ -1584,7 +1655,7 @@ pub(crate) fn approval_text(name: &str, args: &serde_json::Value) -> String {
         _ => format!("run the {name} tool"),
     };
 
-    format!("Krabb requests approval to {details}.\nArguments: {args}")
+    format!("Krabb requests approval to {details}.\nArguments: {}", approval_view(name, args))
 }
 
 pub(crate) fn approval_params(

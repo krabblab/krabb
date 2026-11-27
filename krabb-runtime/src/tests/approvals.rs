@@ -381,14 +381,14 @@ for line in sys.stdin:
                 "x".repeat(size - overhead)
             ));
 
-            cases.push((name, boundary, size > 512));
+            cases.push((name, boundary, size > 512 && name != "file_write"));
         }
 
         for content in ["é".repeat(260), "\\".repeat(260)] {
             let mut other = args.clone();
 
             other[field] = serde_json::json!(content);
-            cases.push((name, other, true));
+            cases.push((name, other, name != "file_write"));
         }
     }
 
@@ -467,8 +467,10 @@ for line in sys.stdin:
                     let pending = gate.list().unwrap();
                     let target = &pending[0].target.args;
 
-                    assert_eq!(arguments, target.to_string());
-                    assert!(text.contains(&target.to_string()), "{name}: {text}");
+                    let shown = approval_view(name, target).to_string();
+
+                    assert_eq!(arguments, shown);
+                    assert!(text.contains(&shown), "{name}: {text}");
                     assert!(text.len() <= 2_000);
 
                     if *name == "schedule_propose" {

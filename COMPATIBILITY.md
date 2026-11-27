@@ -25,7 +25,7 @@ passed. Track individual crates and plugins in the
 | System  | Setup | Daemon | Intelligence | Channel | Client | Plugins |
 | ------- | ----- | ------ | ------------ | ------- | ------ | ------- |
 | Linux   | [x]   | [x]    | [x]          | [x]     | [x]    | [x]     |
-| macOS   | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
+| macOS   | [x]   | [x]    | [x]          | [x]     | [x]    | [x]     |
 | Windows | [x]   | [x]    | [ ]          | [ ]     | [ ]    | [x]     |
 
 | Architecture | Setup | Daemon | Intelligence | Channel | Client | Plugins |

@@ -185,6 +185,8 @@ const TOOL_CALLS: usize = 16;
 // Bound complete approval displays, including captured schedule context and channel text.
 const APPROVAL_ARGUMENT_LIMIT: usize = 512;
 const APPROVAL_SCHEDULE_LIMIT: usize = 1_024;
+// File writes show a bounded preview; the full text stays in the pending approval.
+const APPROVAL_PREVIEW_LIMIT: usize = 1_200;
 const APPROVAL_TEXT_LIMIT: usize = 2_000;
 const TURN_LIMIT: std::time::Duration = krabb_core::plugin::TURN_LIMIT;
 const TOKEN_LIMIT: u64 = 128_000;

@@ -8541,6 +8541,39 @@ fn output_tokens_count_payloads_rather_than_their_debug_form() {
 }
 
 #[test]
+fn large_file_writes_get_a_bounded_preview_and_keep_their_full_text() {
+    let page = (0..2_000).map(|line| format!("<p>Line {line}</p>")).collect::<Vec<_>>().join("\n");
+    let args = serde_json::json!({"path": "report.html", "text": page});
+
+    let arguments = super::approval_display("file_write", &args).unwrap();
+    let text = super::approval_text("file_write", &args);
+
+    assert!(arguments.contains("report.html"));
+    assert!(arguments.contains(&format!("[{} bytes, 2000 lines;", page.len())));
+    assert!(arguments.contains("<p>Line 0</p>"));
+    assert!(arguments.contains("<p>Line 1999</p>"));
+    assert!(arguments.contains('…'));
+    assert!(text.len() <= super::APPROVAL_TEXT_LIMIT);
+    assert_eq!(args["text"], page);
+
+    let small = serde_json::json!({"path": "note.txt", "text": "hello"});
+
+    assert_eq!(super::approval_view("file_write", &small), small);
+
+    let quoted = "\"".repeat(20_000);
+
+    let arguments =
+        super::approval_display("file_patch", &serde_json::json!({"text": quoted})).unwrap();
+
+    assert!(arguments.len() <= 2 * super::APPROVAL_PREVIEW_LIMIT);
+
+    let shell = serde_json::json!({"command": "x".repeat(1_000)});
+
+    assert!(super::approval_display("shell_run", &shell).is_err());
+    assert!(super::approval_arguments("file_write", &args).is_err());
+}
+
+#[test]
 fn prepares_approval_text_and_channel_requests() {
     assert!(
         super::approval_text(

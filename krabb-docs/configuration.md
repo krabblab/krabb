@@ -188,7 +188,9 @@ Approval modes are:
   channel, chat, thread, session, tool, and exact arguments.
   Approvals show complete arguments: up to 512 JSON bytes for tool calls or 1,024
   for schedules including captured context, within a 2,000-byte message. Oversized
-  requests are rejected; shorten them to review in full. ACP uses the same limits
+  requests are rejected; shorten them to review in full. File writes and patches
+  are the exception: longer text shows its size and its first and last lines, and
+  `/approvals` in the TUI shows all of it. ACP keeps the complete-argument limits
   and includes the host-selected workspace. The proposed action is also saved
   with its task. If the button expires, the turn is interrupted, or the daemon
   restarts, the task waits for a decision instead of running again. Reply
