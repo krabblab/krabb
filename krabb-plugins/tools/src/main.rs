@@ -26,7 +26,7 @@ use krabb_core::{
 use rustix::{
     fd::OwnedFd,
     fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, renameat, statat, unlinkat},
-    process::{Pid, Signal, getpgid, getpgrp, kill_process, kill_process_group},
+    process::{Pid, Signal, getpgrp, kill_process, kill_process_group},
 };
 
 use reqwest::{Url, header::ACCEPT};
@@ -239,7 +239,7 @@ async fn call_with_sandbox(
         "file_patch" => {
             policy.shell(params["approve"].as_bool() == Some(true))?;
 
-            if sandbox.is_some() {
+            if let Placement::Container(_) = placement(sandbox) {
                 return Err(denied("Use the sandboxed shell tool for Git-backed patches"));
             }
 
@@ -280,7 +280,7 @@ async fn call_with_sandbox(
             let approved = params["approve"].as_bool() == Some(true);
             policy.shell(approved)?;
 
-            if sandbox.is_some() {
+            if let Placement::Container(_) = placement(sandbox) {
                 return Err(denied("Use the sandboxed shell tool for Git operations"));
             }
 
@@ -503,12 +503,6 @@ impl Sandbox {
             .ok_or_else(|| invalid("Sandbox workspace path cannot be represented safely."))?;
 
         let mut process = Command::new(&self.runtime);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            process.as_std_mut().process_group(0);
-        }
 
         process.arg("create");
 
@@ -802,14 +796,10 @@ async fn contained(
     command: Command,
     input: Option<&[u8]>,
 ) -> std::io::Result<std::process::Output> {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     let command = {
         let mut command = command;
-        command.process_group(0);
-
-        #[cfg(target_os = "linux")]
         krabb_process::restrict_process_group(command.as_std_mut());
-
         command
     };
 
@@ -851,6 +841,11 @@ async fn capture(
         command.creation_flags(krabb_process::CREATE_SUSPENDED);
     }
 
+    #[cfg(unix)]
+    if group {
+        command.process_group(0);
+    }
+
     command.kill_on_drop(true);
 
     let mut child = spawn(&mut command).await?;
@@ -870,11 +865,7 @@ async fn capture(
         }
     }
 
-    #[cfg(unix)]
-    let process_group = process_id.and_then(child_group);
-
-    #[cfg(windows)]
-    let process_group = process_id;
+    let process_group = process_id.filter(|_| group);
 
     if let Some(input) = input {
         let mut pipe = child.stdin.take().ok_or_else(|| {
@@ -1064,17 +1055,6 @@ async fn stop(child: &mut Child, process_id: Option<u32>, group: bool) {
 
     let _ = child.kill().await;
     let _ = child.wait().await;
-}
-
-#[cfg(unix)]
-fn child_group(id: u32) -> Option<u32> {
-    let child = Pid::from_raw(i32::try_from(id).ok()?)?;
-
-    let group = getpgid(Some(child)).ok()?;
-
-    let matches = group == child;
-
-    matches.then_some(id)
 }
 
 #[cfg(unix)]
@@ -3154,12 +3134,12 @@ mod tests {
 
         fs::create_dir_all(&root).unwrap();
 
-        let command = "(sleep 2; echo leaked > leaked) & echo ready > ready; wait";
+        let command = "sleep 60 & echo $! > child; echo ready > ready; wait";
         let call = shell(command, &root);
 
         tokio::pin!(call);
 
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 tokio::select! {
                     result = &mut call => panic!("shell ended before timeout: {result:?}"),
@@ -3175,6 +3155,8 @@ mod tests {
         .await
         .unwrap();
 
+        let child = fs::read_to_string(root.join("child")).unwrap().trim().to_owned();
+
         tokio::time::pause();
         tokio::time::advance(super::COMMAND_LIMIT + Duration::from_secs(1)).await;
         tokio::time::resume();
@@ -3183,9 +3165,25 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
 
-        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        let mut stopped = false;
 
-        assert!(!root.join("leaked").exists());
+        for _ in 0..300 {
+            let state = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &child])
+                .output()
+                .unwrap();
+
+            let state = String::from_utf8_lossy(&state.stdout);
+
+            if state.trim().is_empty() || state.trim_start().starts_with('Z') {
+                stopped = true;
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        assert!(stopped, "background child {child} outlived the timeout");
 
         let _ = fs::remove_dir_all(&root);
     }
