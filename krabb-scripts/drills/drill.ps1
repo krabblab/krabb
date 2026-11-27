@@ -51,7 +51,7 @@ function Get-Ready {
     ForEach-Object { $_.id })
 }
 
-function Set-Home([bool] $Release) {
+function Set-Home([bool] $Served) {
   $user = Join-Path $env:RUNNER_TEMP "user"
   New-Item -ItemType Directory -Force -Path $user | Out-Null
   "USERPROFILE=$user" >> $env:GITHUB_ENV
@@ -60,7 +60,7 @@ function Set-Home([bool] $Release) {
   "KRABB_HOME=$user\.krabb" >> $env:GITHUB_ENV
   "$user\AppData\Local\Krabb\bin" >> $env:GITHUB_PATH
 
-  if ($Release) {
+  if ($Served) {
     $release = Join-Path $env:RUNNER_TEMP "release"
     "KRABB_RELEASE_BASE=$(([Uri]$release).AbsoluteUri.TrimEnd('/'))" >> $env:GITHUB_ENV
   }
