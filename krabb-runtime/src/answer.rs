@@ -434,6 +434,9 @@ pub(crate) async fn answer_with_registry(
     let scheduler = plugins.find(Capability::Scheduler).await.is_some();
     let schedules = scheduler && registry.execution.interactive() && !isolated && schedule_enabled;
 
+    let mut fix = None;
+    let mut section = None;
+
     if let Some(source) = &registry.source {
         let installed = installed_plugins(plugins).await;
 
@@ -443,7 +446,6 @@ pub(crate) async fn answer_with_registry(
             model,
             approval: approval_mode,
             tools: tools_enabled,
-            shell: shell_enabled,
             schedules,
             scheduler,
             memory: memory_plugin.is_some() && tools_enabled,
@@ -454,10 +456,35 @@ pub(crate) async fn answer_with_registry(
             plugins: &installed,
         };
 
+        fix = setup.shell_fix();
+        section = setup.section().filter(|_| registry.execution.interactive());
+
         if let Some(message) = setup.message(session) {
             messages.insert(0, message);
         }
     }
+
+    // Worker-run foreground tasks ask through a `/task approve` notice, not a channel prompt.
+    let asking = if registry.execution == state::SessionKind::Foreground {
+        permissions::Asking::Command
+    } else if prompts(plugins, channel, registry.source.as_ref()).await {
+        permissions::Asking::Prompt
+    } else {
+        permissions::Asking::Unavailable
+    };
+
+    let policy = permissions::Policy {
+        approval: approval_mode,
+        asking,
+        shell: shell_enabled,
+        place: permissions::Place::current(),
+        fix,
+        section,
+    };
+
+    let permissions = permissions::Permissions::offered(&specs, &registry.owners, policy);
+
+    messages.insert(permissions::position(&messages), permissions.message(session));
 
     if schedules {
         let channels = plugins

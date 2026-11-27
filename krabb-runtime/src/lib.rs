@@ -84,6 +84,7 @@ mod operations;
 mod origin;
 mod outbound;
 mod pdf;
+mod permissions;
 mod plugins;
 mod process;
 mod recovery;
