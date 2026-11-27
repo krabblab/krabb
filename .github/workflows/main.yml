@@ -37,14 +37,11 @@ jobs:
         name: Select Packages
         run: python3 -B krabb-scripts/changes.py ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
 
-  verify:
-    name: Verify
+  check:
+    name: Check
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    uses: ./.github/workflows/verify.yml
-
-    with:
-      packages: ${{ needs.changes.outputs.packages }}
+    uses: ./.github/workflows/check.yml
 
   agentskill:
     name: Agentskill
@@ -54,15 +51,23 @@ jobs:
     name: Security
     uses: ./.github/workflows/security.yml
 
+  test:
+    name: Test
+    needs: [changes, check]
+    uses: ./.github/workflows/test.yml
+
+    with:
+      packages: ${{ needs.changes.outputs.packages }}
+
   build:
     name: Build
     needs: test
     uses: ./.github/workflows/build.yml
 
-  test:
-    name: Test
-    needs: [changes, verify]
-    uses: ./.github/workflows/test.yml
+  integration:
+    name: Integration
+    needs: [changes, test]
+    uses: ./.github/workflows/integration.yml
 
     with:
       packages: ${{ needs.changes.outputs.packages }}

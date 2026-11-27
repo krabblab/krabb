@@ -1,0 +1,141 @@
+name: Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      local:
+        description: "Use the local act working tree"
+        required: false
+        type: string
+        default: ""
+
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+        default: ""
+
+      packages:
+        description: "JSON array of packages to test; empty tests every package"
+        required: false
+        type: string
+        default: ""
+
+      local:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    name: Browser
+    if: >-
+      inputs.packages == '' ||
+      contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-browser')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        if: inputs.local != 'true'
+        uses: actions/checkout@v7
+
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.100
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --prefix "$RUNNER_TEMP/krabb-playwright" playwright@1.64.1
+          "$RUNNER_TEMP/krabb-playwright/node_modules/.bin/playwright" install --with-deps chromium
+
+      - name: Build Browser Plugin
+        run: cargo build --locked -p krabb-plugin-browser
+
+      - name: Test Browser Routes and Tabs
+        run: node --test krabb-plugins/browser/tests/routes.mjs krabb-plugins/browser/tests/tabs.mjs
+
+      - name: Run Browser Integration
+        run: node krabb-plugins/browser/tests/integration.mjs
+        env:
+          KRABB_BROWSER_PLUGIN: ${{ github.workspace }}/target/debug/krabb-plugin-browser
+          KRABB_PLAYWRIGHT_MODULE: ${{ runner.temp }}/krabb-playwright/node_modules/playwright/index.js
+
+  computer:
+    name: Computer
+    if: >-
+      inputs.packages == '' ||
+      contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-computer')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        if: inputs.local != 'true'
+        uses: actions/checkout@v7
+
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.100
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Isolated Desktop Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y xvfb xauth xdotool imagemagick python3-tk
+
+      - name: Build Computer Plugin
+        run: cargo build --locked -p krabb-plugin-computer
+
+      - name: Run Computer Integration
+        run: python3 krabb-plugins/computer/tests/integration.py
+        env:
+          KRABB_COMPUTER_PLUGIN: ${{ github.workspace }}/target/debug/krabb-plugin-computer
+
+  sandbox:
+    name: Sandbox
+    if: >-
+      inputs.packages == '' ||
+      contains(fromJSON(inputs.packages || '[]'), 'krabb-plugin-tools')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        if: inputs.local != 'true'
+        uses: actions/checkout@v7
+
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Rust Toolchain
+        if: inputs.local != 'true'
+        uses: dtolnay/rust-toolchain@1.100
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Tools Plugin
+        run: cargo build --locked -p krabb-plugin-tools
+
+      - name: Prepare Sandbox Image
+        run: docker pull busybox:1.36.1
+
+      - name: Run Sandbox Smoke Test
+
+        env:
+          KRABB_SANDBOX_RUNTIME: docker
+          KRABB_SANDBOX_IMAGE: busybox:1.36.1
+
+        run: krabb-scripts/sandbox.sh target/debug/krabb-plugin-tools

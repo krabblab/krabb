@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   krabb:
-    name: Krabb (${{ matrix.name }})
+    name: Release (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
 
@@ -84,14 +84,14 @@ jobs:
       - name: Build Workspace
         run: cargo build --workspace --release --locked --target "${{ matrix.target }}"
 
-      - name: Verify Native CLI on Unix
+      - name: Verify CLI on Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
           ./target/${{ matrix.target }}/release/krabb version
           ./target/${{ matrix.target }}/release/krabb version
 
-      - name: Verify Native CLI on Windows
+      - name: Verify CLI on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
