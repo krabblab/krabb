@@ -58,7 +58,9 @@ times, and the breaks the window added. The TUI copies through the terminal's OS
 sequence, which also works over SSH, and through the system clipboard where one is
 available. A notice at the top right of the prompt says how many characters it copied, or
 why it could not and what to do instead. Hold Shift while dragging to use the terminal's
-own selection.
+own selection. A terminal that ignores OSC 52 can show the notice without copying; use
+Shift there.
+
 Click in the prompt to move the cursor there. Typing or Backspace replaces text selected
 in the prompt. Click Approve or Deny in an approval prompt to answer it exactly as the
 typed `/approve` or `/deny` command would. A click runs an action only when the button is

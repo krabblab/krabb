@@ -618,7 +618,7 @@ where
                         retry_unsaved(&home, &mut app, host).await;
                     }
 
-                    if app.pointer.selection.is_some() && is_escape(&event)
+                    if (app.pointer.selection.is_some() && is_escape(&event))
                         || !interrupt_generation(&event, &mut app, &interrupt_tx)
                     {
                         quit = handle_event(event, &mut app, &mut command_tx, engine_finished).await?;
@@ -2254,6 +2254,10 @@ async fn run_action<W>(
 where
     W: AsyncWrite + Unpin,
 {
+    if app.statusline_picker {
+        return Ok(false);
+    }
+
     let input = std::mem::replace(&mut app.input, command.chars().collect());
     let cursor = std::mem::replace(&mut app.cursor, app.input.len());
     let enter = Event::Key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

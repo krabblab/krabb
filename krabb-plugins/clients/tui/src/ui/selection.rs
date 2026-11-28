@@ -167,7 +167,9 @@ pub(super) fn extract(lines: &[Line<'_>], marks: &[Mark], first: Point, last: Po
         let columns = span(mark, row, first, last);
 
         for (column, grapheme) in cells(&lines[row]) {
-            if columns.contains(&column) {
+            let width = UnicodeWidthStr::width(grapheme).max(1).min(usize::from(u16::MAX)) as u16;
+
+            if column < columns.end && column.saturating_add(width) > columns.start {
                 text.push_str(grapheme);
             }
         }
@@ -324,6 +326,8 @@ mod tests {
         assert_eq!(text, "alpha beta gamma界界x\n\nend");
         assert_eq!(extract(&rows.lines, &rows.marks, point(1, 8), point(2, 4)), "beta gam");
         assert_eq!(extract(&rows.lines, &rows.marks, point(3, 4), point(3, 4)), "界");
+        assert_eq!(extract(&rows.lines, &rows.marks, point(3, 3), point(3, 3)), "界");
+        assert_eq!(extract(&rows.lines, &rows.marks, point(3, 5), point(3, 6)), "界x");
         assert_eq!(extract(&rows.lines, &rows.marks, point(0, 0), point(0, 9)), "");
         assert_eq!(extract(&rows.lines, &rows.marks, point(9, 0), point(12, 0)), "");
     }

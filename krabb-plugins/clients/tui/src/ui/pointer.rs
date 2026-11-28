@@ -138,14 +138,12 @@ impl App {
                 let word = selection::input_word(&self.input, index);
 
                 self.cursor = word.end;
-                self.pointer.selection =
-                    Some(Selection::Input { anchor: word.start, head: word.end });
+                self.pointer.selection = input(word.start, word.end);
             }
 
             (Target::Input(_), _) => {
                 self.cursor = self.input.len();
-                self.pointer.selection =
-                    Some(Selection::Input { anchor: 0, head: self.input.len() });
+                self.pointer.selection = input(0, self.input.len());
             }
 
             (Target::Transcript(point), 2) => self.select_word(point),
@@ -179,7 +177,7 @@ impl App {
                 let head = self.input_position(position);
 
                 self.cursor = head;
-                self.pointer.selection = Some(Selection::Input { anchor, head });
+                self.pointer.selection = input(anchor, head);
             }
 
             Target::Elsewhere => {}
@@ -433,6 +431,12 @@ pub(super) fn highlight_input(
     }
 }
 
+/// An input selection from ANCHOR to HEAD, or none when they meet, so an empty selection never
+/// holds back Esc or hover.
+fn input(anchor: usize, head: usize) -> Option<Selection> {
+    (anchor != head).then_some(Selection::Input { anchor, head })
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -458,6 +462,13 @@ mod tests {
                 .into(),
             ..App::default()
         }
+    }
+
+    #[test]
+    fn an_empty_input_selection_is_no_selection() {
+        assert_eq!(input(3, 3), None);
+        assert_eq!(input(1, 4), Some(Selection::Input { anchor: 1, head: 4 }));
+        assert_eq!(input(4, 1), Some(Selection::Input { anchor: 4, head: 1 }));
     }
 
     #[test]

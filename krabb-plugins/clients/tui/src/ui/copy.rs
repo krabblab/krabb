@@ -78,6 +78,7 @@ pub(super) fn copy(
     let fits = text.len() <= TERMINAL_LIMIT;
 
     let through_terminal = fits
+        && sequences()
         && terminal.write_all(sequence(text).as_bytes()).and_then(|()| terminal.flush()).is_ok();
 
     let through_system = system(text);
@@ -89,6 +90,15 @@ pub(super) fn copy(
     } else {
         Notice::new(TOO_LARGE, true, now)
     }
+}
+
+/// Whether the terminal reads escape sequences; a legacy Windows console would print them.
+fn sequences() -> bool {
+    #[cfg(windows)]
+    return crossterm::ansi_support::supports_ansi();
+
+    #[cfg(not(windows))]
+    true
 }
 
 fn notice(text: &str, now: Instant) -> Notice {
