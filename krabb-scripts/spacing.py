@@ -235,17 +235,29 @@ def format_python(source):
 
 
 
+def candidates(root, names):
+    """The JavaScript and Python files to space: NAMES relative to ROOT, or every one."""
+
+    if names:
+        paths = (root / name for name in names)
+    else:
+        paths = (path for suffix in ("*.mjs", "*.py") for path in root.rglob(suffix))
+
+    return sorted(
+        path
+        for path in paths
+        if path.suffix in (".mjs", ".py")
+        and path.is_file()
+        and not any(part in IGNORED for part in path.relative_to(root).parts)
+    )
+
+
 def main():
     root = Path(sys.argv[1])
     check_only = sys.argv[2] == "true"
     status = 0
 
-    paths = sorted(
-        path
-        for suffix in ("*.mjs", "*.py")
-        for path in root.rglob(suffix)
-        if not any(part in IGNORED for part in path.relative_to(root).parts)
-    )
+    paths = candidates(root, sys.argv[3:])
 
     for path in paths:
         original = path.read_text()

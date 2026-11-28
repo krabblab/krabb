@@ -21,18 +21,24 @@ cd krabb
 rustup toolchain install 1.96.0
 lefthook install
 cargo build --workspace --locked
-make verify
+make precommit
 ```
 
 The minimum Rust version is a stable release at least 6 months old. Raise it
 in one change across `Cargo.toml`, CI, and these guides.
 
-Lefthook runs fast checks before commits. `make verify` runs formatting,
-Clippy, locked compilation, all tests, coverage, builds, and metrics. Provider
-tests use local fixtures and never call paid APIs. Every implementation
-handoff must finish with the configured coverage gates passing; run `make verify`
-at the end of each work turn and resolve coverage failures without lowering
-thresholds.
+`make precommit` is the local gate, and Lefthook runs it before each commit. It
+checks formatting and the spacing of files changed since `origin/main` (set
+`BASE=` for another base), then runs Clippy and the tests of the packages those
+changes affect. It takes seconds for documentation and minutes for most code.
+
+CI is the full gate: pull requests run formatting, Clippy, documentation, the
+Windows GNU check, tests and coverage on all six targets, builds, and the
+browser, computer, and sandbox integration checks. Checks and tests cover only
+the packages and files a change affects; builds and `main` run everything.
+`make gate` runs the same checks locally on one machine, for a deep check before
+a release or when CI is unavailable. Provider tests use local fixtures and never
+call paid APIs. Resolve coverage failures without lowering thresholds.
 See [Development](krabb-handbook/development.md) for formatting, coverage, CI, and
 repository scripts.
 
@@ -109,7 +115,7 @@ the important Actions flow through `krabb-ci/ci.sh` and `act`. For ordinary
 Rust or plugin changes, the local commands are sufficient:
 
 ```sh
-make verify
+make precommit
 make test
 make build
 ```
@@ -117,7 +123,7 @@ make build
 This keeps action-flow debugging separate from normal implementation checks.
 
 On GitHub, `main.yml` runs Changes, then Check (formatting, spacing, loops,
-Clippy, documentation, the minimum Rust version, and the Windows GNU target)
+Clippy on the minimum Rust version, documentation, and the Windows GNU target)
 beside Agentskill and Security. Test then runs on six targets, and Build
 (release binaries for six targets) and Integration (browser, computer, and
 sandbox) run after it. Pull requests test only the packages

@@ -87,7 +87,29 @@ class MainTests(unittest.TestCase):
                 mock.patch('builtins.print') as printed:
             self.assertEqual(changes.main([]), 0)
 
-        printed.assert_called_once_with('code=true\npackages=')
+        printed.assert_called_once_with('code=true\npackages=\ncargo=--workspace')
+
+    def test_cargo_flags_follow_the_selection(self):
+        self.assertEqual(changes.cargo(None), '--workspace')
+        self.assertEqual(changes.cargo([]), '')
+        self.assertEqual(changes.cargo(['krabb-core', 'krabb-http']), '-p krabb-core -p krabb-http')
+
+    def test_local_changes_include_the_working_tree_and_new_files(self):
+        replies = {
+            ('merge-base', 'origin/main', 'HEAD'): ['fork'],
+            ('diff', '--name-only', '--no-renames', 'fork'): ['krabb-core/src/lib.rs'],
+            ('ls-files', '--others', '--exclude-standard'): ['krabb-libs/http/src/new.rs'],
+        }
+
+        with mock.patch.object(changes, 'git', side_effect=lambda *call: replies[call]):
+            self.assertEqual(
+                changes.changes('origin/main', local=True),
+                ['krabb-core/src/lib.rs', 'krabb-libs/http/src/new.rs'],
+            )
+
+    def test_local_mode_needs_a_base(self):
+        with mock.patch('builtins.print'):
+            self.assertEqual(changes.main(['--local']), 2)
 
     def test_the_workspace_matches_its_members(self):
         members, dependencies = changes.workspace()
