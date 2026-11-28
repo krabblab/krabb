@@ -198,7 +198,7 @@ async fn output_limit_cleanup_preserves_protocol_framing() {
         process.call(Request::call(
             2,
             "shell_run",
-            json!({"approve": true, "command": "output.cmd"}),
+            json!({"approve": true, "command": r".\output.cmd"}),
         )),
     )
     .await

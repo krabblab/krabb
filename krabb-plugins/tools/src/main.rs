@@ -3140,11 +3140,12 @@ mod tests {
             .unwrap();
             fs::write(
                 root.join("parent.cmd"),
-                "@echo off\r\nstart \"\" /b cmd /c background.cmd >nul 2>&1\r\n:wait\r\nif not exist ready goto wait\r\n",
+                "@echo off\r\nstart \"\" /b cmd /c .\\background.cmd >nul 2>&1\r\n:wait\r\nif not exist ready goto wait\r\n",
             )
             .unwrap();
 
-            "parent.cmd"
+            // The shell never runs programs from the workspace by bare name, so name the path.
+            r".\parent.cmd"
         };
 
         assert!(shell(command, &root).await.unwrap().status.success());
