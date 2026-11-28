@@ -19,6 +19,7 @@ Semantic Versioning.
 - Recover interrupted home upgrades and `krabb update` runs automatically.
 - Update Krabb and every installed plugin with `krabb update`.
 - Uninstall Krabb with one script, and purge every trace of it with `--purge`.
+- Install any release with the installer attached to it, which installs that release.
 - Preview plugin state migrations and block updates that cannot read saved state.
 - Update busy plugins live without pausing other channels or conversations.
 - Revoke a plugin's secrets and grants on uninstall.

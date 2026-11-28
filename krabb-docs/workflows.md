@@ -18,8 +18,10 @@ Use these workflows to set up, operate, and update a Krabb installation.
 
 Install the CLI and daemon with the command in the [README](../README.md#get-started).
 The installer verifies the release checksum and places `krabb` and `krabb-daemon` in
-`~/.local/bin`, or `%LOCALAPPDATA%\Krabb\bin` on Windows. Set `KRABB_VERSION` to pin a
-release, with or without the leading `v`, and `KRABB_PREFIX` to choose another location.
+`~/.local/bin`, or `%LOCALAPPDATA%\Krabb\bin` on Windows. The installer attached to a
+release installs that release, and the one on `main` installs the newest stable release.
+Set `KRABB_VERSION` to pin another release, with or without the leading `v`, and
+`KRABB_PREFIX` to choose another location.
 These variables must reach the installer: put them after the pipe, as in `curl … |
 KRABB_VERSION=0.1.0 sh`, or export them first. On Windows the installer adds its folder
 to your user `PATH`; elsewhere it prints the line to add when the folder is missing from
@@ -51,8 +53,9 @@ location. If a reply does not arrive, start with
 ## Manual Download
 
 Each release on [GitHub Releases](https://github.com/krabblab/krabb/releases)
-publishes one archive per platform, named `krabb-core-v<version>-<target>`, and a
-`SHA256SUMS` file:
+publishes one archive per platform, named `krabb-core-v<version>-<target>`, its
+`install.sh`, `install.ps1`, `uninstall.sh`, and `uninstall.ps1`, and a `SHA256SUMS`
+file that covers them all:
 
 | Platform | Target | Archive |
 |---|---|---|
@@ -278,6 +281,11 @@ curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.sh | 
 ```powershell
 irm https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.ps1 | iex
 ```
+
+Each release with attached installers also attaches its uninstallers, so you can run the
+one from your release instead, such as
+`https://github.com/krabblab/krabb/releases/download/v<version>/uninstall.sh` or
+`uninstall.ps1`. The commands above use the scripts on `main` until 0.1.0.
 
 To leave nothing of Krabb on the machine, purge it. Purging also deletes `KRABB_HOME`,
 the key Krabb saved in the OS keyring for its credentials, and the files Krabb created

@@ -28,6 +28,15 @@ CHANGELOG = '''# Changelog
 '''
 
 
+README = (
+    "curl -fsSL https://example.invalid/install.sh | KRABB_VERSION=0.1.0-rc.1 sh\n"
+    "$env:KRABB_VERSION = '0.1.0-rc.1'; irm https://example.invalid/install.ps1 | iex\n"
+    "curl -fsSL https://example.invalid/releases/download/v0.1.0-rc.1/install.sh | sh\n"
+    "irm https://example.invalid/releases/download/v0.1.0-rc.1/install.ps1 | iex\n"
+    "curl -fsSL https://example.invalid/releases/latest/download/install.sh | sh\n"
+)
+
+
 def node(package, *dependencies):
     return {'id': package, 'deps': [{'pkg': dependency, 'dep_kinds': [{'kind': kind}]}
                                     for dependency, kind in dependencies]}
@@ -52,6 +61,7 @@ class Bump(unittest.TestCase):
         )
 
         (self.root / 'CITATION.cff').write_text('title: Krabb\nversion: 0.1.0\n')
+        (self.root / 'README.md').write_text(README)
         (self.root / 'CHANGELOG.md').write_text(CHANGELOG)
         (self.root / 'krabb/main.rs').write_text('fn main() {}\n')
         (plugin / 'krabb-plugin.toml').write_text('id = "echo"\nversion = "0.1.0"\n\n[protocol]\n')
@@ -195,6 +205,10 @@ class Bump(unittest.TestCase):
 
         self.assertIn('[workspace.package]\nversion = "0.2.0"\n', cargo)
         self.assertIn('version: 0.2.0\n', (self.root / 'CITATION.cff').read_text())
+
+        readme = (self.root / 'README.md').read_text()
+
+        self.assertEqual(readme, README.replace('0.1.0-rc.1', '0.2.0'))
 
         self.assertRegex(changelog, r'## \[Unreleased\]\n\n## \[0\.2\.0\] - \d{4}-\d{2}-\d{2}\n'
                                     r'\n### Added\n\n- Upcoming feature\.')

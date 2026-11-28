@@ -71,7 +71,7 @@ function Install-Krabb {
 
   # The installer runs no native command, so only its own `exit` sets this.
   $global:LASTEXITCODE = 0
-  & "$env:GITHUB_WORKSPACE/install.ps1"
+  & (Join-Path $env:RUNNER_TEMP "installers\install.ps1")
   if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed." }
 }
 
@@ -176,7 +176,8 @@ function Test-Uninstall {
   $bin = Join-Path $env:LOCALAPPDATA "Krabb\bin"
 
   Invoke-Krabb --json service install | Out-Null
-  Invoke-Native "uninstall.ps1 failed." { pwsh -NoProfile -File .\uninstall.ps1 }
+  $uninstaller = Join-Path $env:RUNNER_TEMP "installers\uninstall.ps1"
+  Invoke-Native "uninstall.ps1 failed." { pwsh -NoProfile -File $uninstaller }
   if (Get-Service -Name Krabb -ErrorAction SilentlyContinue) {
     throw "Uninstall left the Krabb service."
   }
@@ -190,7 +191,7 @@ function Test-Uninstall {
   $path = [Environment]::GetEnvironmentVariable("Path", "User")
   if (($path -split ";") -contains $bin) { throw "Uninstall left $bin in the user PATH." }
 
-  Invoke-Native "uninstall.ps1 -Purge failed." { pwsh -NoProfile -File .\uninstall.ps1 -Purge -Yes }
+  Invoke-Native "uninstall.ps1 -Purge failed." { pwsh -NoProfile -File $uninstaller -Purge -Yes }
 
   $left = @(Get-ChildItem $env:USERPROFILE -Recurse -Force -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -like "*krabb*" })
@@ -226,7 +227,6 @@ function New-Broken {
 function Install-Previous {
   $release = Join-Path $env:RUNNER_TEMP "previous"
   $env:KRABB_RELEASE_BASE = ([Uri]$release).AbsoluteUri.TrimEnd('/')
-  $env:KRABB_VERSION = $env:KRABB_PREVIOUS
   Install-Krabb
 
   $reported = krabb version

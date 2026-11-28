@@ -1,6 +1,7 @@
 """Host release archives must pass integrity checks; plugins are delegated to the index."""
 
 import hashlib
+import importlib.util
 import io
 import os
 from pathlib import Path
@@ -16,6 +17,10 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 WINDOWS = os.name == 'nt'
 INSTALLER = ROOT / ('install.ps1' if WINDOWS else 'install.sh')
+SPEC = importlib.util.spec_from_file_location('attached', ROOT / 'krabb-scripts/installers.py')
+attached = importlib.util.module_from_spec(SPEC)
+
+SPEC.loader.exec_module(attached)
 
 
 class Installers(unittest.TestCase):
@@ -90,7 +95,7 @@ class Installers(unittest.TestCase):
         (self.release / 'SHA256SUMS').write_text(f'{expected}  {name}\n')
         return archive, digest, payload
 
-    def run_installer(self, plugin, **env):
+    def run_installer(self, plugin, script=INSTALLER, **env):
         executable = shutil.which('pwsh' if WINDOWS else 'sh')
 
         if not executable:
@@ -98,7 +103,7 @@ class Installers(unittest.TestCase):
 
         args = [executable, '-NoProfile', '-File'] if WINDOWS else [executable]
 
-        return subprocess.run([*args, str(INSTALLER), plugin], env={**self.env, **env},
+        return subprocess.run([*args, str(script), plugin], env={**self.env, **env},
                               capture_output=True, text=True, timeout=20)
 
     def test_rejects_downloads_before_replacement(self):
@@ -154,6 +159,72 @@ class Installers(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('Cannot download SHA256SUMS from file:', result.stderr)
+
+    def test_release_copies_install_their_own_release(self):
+        archive, digest, payload = self.artifact('core', 'valid')
+        newer = archive.name.replace('1.2.3', '9.9.9')
+
+        (self.release / 'SHA256SUMS').write_text(f'{"0" * 64}  {newer}\n{digest}  {archive.name}\n')
+
+        copies = self.root / 'attached'
+
+        attached.write('1.2.3', copies)
+
+        result = self.run_installer('core', script=copies / INSTALLER.name, KRABB_VERSION='')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'Downloading {archive.name}.', result.stdout)
+        self.assertNotIn('overrides', result.stdout)
+
+        for name, content in payload.items():
+            self.assertEqual((self.bin / name).read_bytes(), content)
+
+        result = self.run_installer('core', script=copies / INSTALLER.name, KRABB_VERSION='v1.2.3')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('overrides', result.stdout)
+
+        result = self.run_installer('core', script=copies / INSTALLER.name, KRABB_VERSION='9.9.9')
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        self.assertIn("[INFO] KRABB_VERSION=9.9.9 overrides this installer's release 1.2.3.",
+                      result.stdout)
+
+        self.assertIn(f'Downloading {newer}.', result.stdout)
+
+    def test_release_copies_are_covered_by_their_checksums(self):
+        copies = self.root / 'attached'
+
+        attached.write('4.5.6-rc.7', copies)
+
+        sums = {}
+
+        for line in (copies / 'SHA256SUMS').read_text().splitlines():
+            digest, name = line.split('  ')
+            sums[name] = digest
+
+        self.assertEqual(sorted(sums), sorted(attached.STAMPS))
+
+        for name, digest in sums.items():
+            content = (copies / name).read_bytes()
+
+            self.assertEqual(hashlib.sha256(content).hexdigest(), digest)
+            self.assertNotIn(b'\r\n', content)
+
+            source = (ROOT / name).read_bytes().replace(b'\r\n', b'\n')
+
+            if attached.STAMPS[name] is None:
+                self.assertEqual(content, source)
+            else:
+                blank, stamped = attached.STAMPS[name]
+
+                self.assertEqual(content, source.replace(blank.encode(),
+                                                         stamped.format('4.5.6-rc.7').encode()))
+
+        for version in ['latest', "1.0.0'; rm -rf ~; '", '1.0.0\n']:
+            with self.subTest(version=version), self.assertRaises(attached.Failure):
+                attached.write(version, self.root / 'rejected')
 
     def test_release_tags_and_bare_versions_both_install(self):
         _, _, payload = self.artifact('core', 'valid')

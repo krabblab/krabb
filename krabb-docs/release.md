@@ -63,12 +63,14 @@ Plan ─┬─ Build ────┬─ Install ─┬─ Plugins ─ Publish
 - **Build** packages Krabb and the plugins to release in one job per target, and writes
   that target's `SHA256SUMS` line. **Previous** packages the same source as
   version `0.0.0-previous` for the Update drill. The six targets are listed once, in
-  `krabb-scripts/targets.json`.
+  `krabb-scripts/targets.json`. Build also writes the installers the release attaches
+  with `krabb-scripts/installers.py`: `install.sh` and `install.ps1` stamped with the
+  release version, `uninstall.sh` and `uninstall.ps1`, and their `SHA256SUMS` lines.
 - **Install** and **Update** run the drills in `krabb-scripts/drills` on exactly these
-  archives. When the run built plugins, the drills install them from a local plugin
-  index that `krabb-scripts/plugins.py local` writes from the archives, with published
-  versions filling in the other plugins, through `KRABB_PLUGIN_INDEX`. Otherwise they
-  use the published index.
+  archives, with the installers Build wrote for them. When the run built plugins, the
+  drills install them from a local plugin index that `krabb-scripts/plugins.py local`
+  writes from the archives, with published versions filling in the other plugins,
+  through `KRABB_PLUGIN_INDEX`. Otherwise they use the published index.
 - **Plugins** pushes the new plugin versions and rebuilds the index, and
   **Publish** then publishes the Krabb GitHub Release. Both run only when both drills
   passed, so nothing is published from a run whose archives fail on any target. Plan
@@ -91,15 +93,26 @@ gh workflow run release.yml --ref <branch> -f publish=false -f rebuild="tools me
 
 When the workspace version has no published GitHub Release, the Release workflow
 builds the host archive (`krabb` and `krabb-daemon`) for Linux, macOS, and
-Windows on x86_64 and ARM64, emits `SHA256SUMS`, and publishes the release as
-`vX.Y.Z`. The release stays a draft until every file is attached. A stable
+Windows on x86_64 and ARM64, attaches the installers and uninstallers it drilled,
+emits `SHA256SUMS` for all of them, and publishes the release as `vX.Y.Z`. The
+release stays a draft until every file is attached. A stable
 release takes its notes from the matching `CHANGELOG.md` section under a
 `krabb@vX.Y.Z | YYYY-MM-DD` headline, dated by the heading or else the release
 day, and uses a short standard description when the section is missing or empty.
 A pre-release gets a short standard description and is published as a GitHub
-pre-release. Releases contain no plugins. Installers take the newest stable
-release unless `KRABB_VERSION` names another, and verify checksums before
-activation. Krabb does not publish crates.
+pre-release. Releases contain no plugins. An installer attached to a release installs
+that release, and the one on `main` takes the newest stable release; `KRABB_VERSION`
+names another for either. Installers verify checksums before activation. Krabb does
+not publish crates.
+
+`make bump` keeps the README's pre-release commands on the bumped version, whether they
+set `KRABB_VERSION` for the installer on `main` or fetch
+`releases/download/vX.Y.Z-rc.N/install.sh`. Releases published before this change have
+no attached installers, so the README switches to the release-download form with the
+bump of the first release that has them. Once 0.1.0 is published, point the README's
+commands at `https://github.com/krabblab/krabb/releases/latest/download/` and remove its
+pre-release note; `releases/latest` ignores pre-releases, so it cannot serve them before
+then.
 
 ## Plugin Releases
 
@@ -142,22 +155,22 @@ explicitly, and shows the reason.
 3. Inspect archive contents and checksums with `krabb-scripts/check.sh`.
 4. Review installer output on each published target before merging.
 5. Release builds the archives, then runs the Install workflow on them before
-   publishing: it installs them with `install.sh` or `install.ps1` on every target,
-   runs `krabb init`, `krabb doctor`, and `krabb status`, installs every official
-   plugin without setting it up, including the plugin versions the run is about to
-   publish, and installs and removes the service. If any target fails, nothing is
-   published. Run the same workflow from the Actions tab: it builds
-   the branch or tag chosen under "Use workflow from", latest `main` by default, and
-   also runs every Monday against `main`. To test another commit, push a branch or tag
-   at it first.
+   publishing: it installs them with the release's own `install.sh` or `install.ps1` on
+   every target, runs `krabb init`, `krabb doctor`, and `krabb status`, installs every
+   official plugin without setting it up, including the plugin versions the run is about
+   to publish, installs and removes the service, and uninstalls with the release's own
+   uninstaller. If any target fails, nothing is published. Run the same workflow from
+   the Actions tab: it builds the branch or tag chosen under "Use workflow from", latest
+   `main` by default, and also runs every Monday against `main`. To test another commit,
+   push a branch or tag at it first.
 6. Release also runs the Update workflow on the same archives before publishing. On
-   every target it installs the same source built as version `0.0.0-previous`, sets up
-   official plugins and the service, and serves releases from local `file://`
-   directories. An update whose daemon cannot start must restore the previous binaries,
-   state, and service; the real update must keep the service ready and a detached
-   plugin detached; and the recovery point's `krabb update --rollback` must restore the
-   previous build while the new daemon cannot start. It also runs from the Actions tab
-   and every Monday against `main`.
+   every target it installs the same source built as version `0.0.0-previous` with that
+   build's installer, sets up official plugins and the service, and serves releases from
+   local `file://` directories. An update whose daemon cannot start must restore the
+   previous binaries, state, and service; the real update must keep the service ready
+   and a detached plugin detached; and the recovery point's `krabb update --rollback`
+   must restore the previous build while the new daemon cannot start. It also runs from
+   the Actions tab and every Monday against `main`.
 7. Before a stable release, remove every bridge the [ledger](../DEPRECATIONS.md) lists for
    it; the deprecation test fails until they are gone. Add the release's row to the home
    schema floor table, and announce any bridge or floor change planned for the next one.
@@ -167,8 +180,9 @@ directory containing the archives and `SHA256SUMS`, for example
 `file:///tmp/krabb-release`. The default remains the versioned HTTPS release
 directory, and installers reject other release-base schemes.
 
-The Package workflow checks every archive and installer it builds, and writes the
-target's `SHA256SUMS` line beside a core archive. On both Windows targets it also
+The Package workflow checks every archive and installer it builds, writes the
+target's `SHA256SUMS` line beside a core archive, and uploads the release's stamped
+installers as `<artifact>-installers`. On both Windows targets it also
 installs the service in an isolated home, checks its status, and removes it. Run it
 from the Actions tab with `core` to check packaging without releasing. Its optional
 version input builds Krabb at another workspace version; Release and the Update

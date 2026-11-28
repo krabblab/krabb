@@ -85,6 +85,19 @@ check_release() {
         "$dir/SHA256SUMS" || fail "SHA256SUMS in $dir does not match $archive."
 }
 
+# Checks that DIR holds the installers a release attaches and their SHA256SUMS lines.
+check_installers() {
+    local dir=$1 name
+
+    for name in install.sh install.ps1 uninstall.sh uninstall.ps1; do
+        test -f "$dir/$name" || fail "The installers in $dir have no $name."
+
+        awk -v name="$name" -v sum="$(digest "$dir/$name")" \
+            '$1 == sum && $2 == name { found = 1 } END { exit !found }' "$dir/SHA256SUMS" ||
+            fail "SHA256SUMS in $dir does not match $name."
+    done
+}
+
 # Plugins come from an index of the plugin archives in DIR when it has any, with published
 # versions filling in the rest, and from the published index otherwise.
 serve_plugins() {
@@ -112,12 +125,9 @@ install_serve() {
     local version
     version=$(bash krabb-scripts/version.sh)
     check_release "$RUNNER_TEMP/release" "$version"
+    check_installers "$RUNNER_TEMP/installers"
     serve_plugins "$RUNNER_TEMP/release"
-
-    {
-        echo "KRABB_EXPECTED=$version"
-        echo "KRABB_VERSION=$version"
-    } >> "$GITHUB_ENV"
+    echo "KRABB_EXPECTED=$version" >> "$GITHUB_ENV"
 }
 
 install_home() {
@@ -212,7 +222,7 @@ install_uninstall() {
 
     krabb --json service install > /dev/null
     krabb service start
-    sh uninstall.sh
+    sh "$RUNNER_TEMP/installers/uninstall.sh"
 
     if [ "$RUNNER_OS" = Linux ] && systemctl --user is-active --quiet krabb.service; then
         fail "Uninstall left the service running."
@@ -224,7 +234,7 @@ install_uninstall() {
 
     test -f "$KRABB_HOME/config.toml"
     test -d "$KRABB_HOME/plugins"
-    sh uninstall.sh --purge --yes
+    sh "$RUNNER_TEMP/installers/uninstall.sh" --purge --yes
 
     left=$(find "$HOME" "$KRABB_RUNNER_HOME/.config/systemd" -iname '*krabb*' 2>/dev/null || true)
     [ -z "$left" ] || fail "Purge left: $left"
@@ -236,6 +246,7 @@ update_serve() {
     test "$candidate" != "$KRABB_PREVIOUS"
     check_release "$RUNNER_TEMP/previous" "$KRABB_PREVIOUS"
     check_release "$RUNNER_TEMP/candidate" "$candidate"
+    check_installers "$RUNNER_TEMP/installers"
     serve_plugins "$RUNNER_TEMP/candidate"
 
     # `krabb update` reads a file:// base as a native path, so Windows uses D:/a/... form.
@@ -297,7 +308,7 @@ update_home() {
 }
 
 update_previous() {
-    KRABB_RELEASE_BASE="$KRABB_PREVIOUS_BASE" KRABB_VERSION="$KRABB_PREVIOUS" sh install.sh
+    KRABB_RELEASE_BASE="$KRABB_PREVIOUS_BASE" sh "$RUNNER_TEMP/installers/install.sh"
     test "$(krabb version)" = "krabb $KRABB_PREVIOUS"
 }
 
@@ -433,7 +444,7 @@ main() {
     case "${1:-}" in
         install-serve) install_serve ;;
         install-home) install_home ;;
-        install) sh install.sh ;;
+        install) sh "$RUNNER_TEMP/installers/install.sh" ;;
         version) test "$(krabb version)" = "krabb $KRABB_EXPECTED" ;;
         init) krabb --json init < /dev/null ;;
         doctor) krabb --json doctor < /dev/null ;;

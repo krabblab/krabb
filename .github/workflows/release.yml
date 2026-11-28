@@ -239,7 +239,8 @@ jobs:
           pattern: krabb-release-*
           path: dist
 
-      # Each target's build wrote its line of SHA256SUMS, which the drills installed against.
+      # Each target's build wrote its line of SHA256SUMS, which the drills installed against,
+      # and the installers the drills ran wrote theirs.
       - name: Collect The Release
         env:
           KRABB_VERSION: ${{ needs.plan.outputs.version }}
@@ -250,9 +251,12 @@ jobs:
           targets=$(jq length <<<"$KRABB_TARGETS")
           mkdir release
           cp dist/*/krabb-core-v"$KRABB_VERSION"-* release/
+          cp dist/krabb-release-installers/{install,uninstall}.{sh,ps1} release/
           cat dist/*/SHA256SUMS | sort -k 2 > release/SHA256SUMS
           test "$(find release -name 'krabb-core-*' | wc -l)" -eq "$targets"
-          test "$(wc -l < release/SHA256SUMS)" -eq "$targets"
+          test "$(wc -l < release/SHA256SUMS)" -eq "$((targets + 4))"
+          grep -qxF "stamp='$KRABB_VERSION'" release/install.sh
+          grep -qxF "\$stamp = \"$KRABB_VERSION\"" release/install.ps1
           (cd release && sha256sum --check --strict SHA256SUMS)
 
       # The release stays a draft until every file is attached, so installers that read the

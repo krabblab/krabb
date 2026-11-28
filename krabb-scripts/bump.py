@@ -261,6 +261,21 @@ def assign(path, section, version):
     path.write_text(updated)
 
 
+def pin(path, version):
+    """Points the README's install commands at VERSION, when they name one."""
+
+    if not path.is_file():
+        return
+
+    text = path.read_text()
+    release = r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?'
+    text = re.sub(rf"KRABB_VERSION={release}\b", f'KRABB_VERSION={version}', text)
+    text = re.sub(rf"KRABB_VERSION = '{release}'", f"KRABB_VERSION = '{version}'", text)
+    text = re.sub(rf'releases/download/v{release}/', f'releases/download/v{version}/', text)
+
+    path.write_text(text)
+
+
 def roll(path, version, today):
     """Turns `Unreleased` into the version's section; returns whether notes exist."""
 
@@ -311,6 +326,9 @@ def apply(bumps, root=ROOT, today=None):
     for component, version in bumps:
         for path, section in component.files:
             assign(path, section, version)
+
+        if component.name == KRABB:
+            pin(root / 'README.md', version)
 
         stable = parse(version)[1] is None
 
