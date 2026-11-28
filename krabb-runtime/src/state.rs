@@ -1,5 +1,6 @@
 pub(crate) mod dialog;
 mod journals;
+mod queue;
 mod replies;
 mod runs;
 mod tasks;
@@ -1442,7 +1443,7 @@ impl Store {
         }) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
-                "Session queue is full, and no message was discarded.",
+                krabb_core::types::QUEUE_FULL,
             ));
         }
 
@@ -1805,7 +1806,11 @@ impl Store {
             ));
         }
 
-        if session.reservation_active || session.inflight.is_some() || session.status == "working" {
+        if session.reservation_active
+            || session.inflight.is_some()
+            || session.status == "working"
+            || !session.queued.is_empty()
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 krabb_core::types::SESSION_BUSY,

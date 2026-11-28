@@ -1,4 +1,5 @@
 mod attach;
+mod queue;
 mod requests;
 mod tasks;
 
@@ -137,6 +138,8 @@ fn control_method(method: &str) -> bool {
             | "task.control"
             | "task.message"
             | "session.enqueue"
+            | "session.queue"
+            | "session.unqueue"
             | "session.cancel"
             | "approval.resolve"
             | "approval.list"
@@ -677,9 +680,9 @@ async fn session_answer(
         None,
     );
 
-    // A stalled client stops receiving frames, since a timed-out write may have left one
-    // partial, but its turn still finishes and saves the answer for receipt recovery; a
-    // disconnected client cancels the turn.
+    // A stalled or disconnected client stops receiving frames, since a failed write may have
+    // left one partial, but its turn still finishes and saves the answer, as a chat's would;
+    // only an explicit cancellation stops it.
     let mut stalled = false;
 
     let result = async {
@@ -695,17 +698,9 @@ async fn session_answer(
                         continue;
                     }
 
-                    match write_stream_notice(output, request.id, notice).await {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == io::ErrorKind::TimedOut => stalled = true,
-
-                        Err(error) => {
-                            receiver.close();
-                            cancel.request();
-                            let _ = answer.await;
-
-                            return Err(error);
-                        }
+                    if let Err(error) = write_stream_notice(output, request.id, notice).await {
+                        detached(id, &error);
+                        stalled = true;
                     }
                 }
             }
@@ -716,20 +711,13 @@ async fn session_answer(
                 continue;
             }
 
-            match write_stream_notice(output, request.id, notice).await {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::TimedOut => stalled = true,
-
-                Err(error) => {
-                    receiver.close();
-                    cancel.request();
-
-                    return Err(error);
-                }
+            if let Err(error) = write_stream_notice(output, request.id, notice).await {
+                detached(id, &error);
+                stalled = true;
             }
         }
 
-        Ok(result)
+        Ok::<_, io::Error>(result)
     }
     .await;
 
@@ -822,6 +810,13 @@ async fn session_answer(
     }
 
     written
+}
+
+fn detached(session: &str, error: &io::Error) {
+    if !is_client_disconnect(error.kind()) && error.kind() != io::ErrorKind::TimedOut {
+        warn!(session, error = %super::diagnostic(super::sentence(error.to_string())),
+            "A client stopped receiving its turn, which continues.");
+    }
 }
 
 async fn session_compact(
@@ -2059,6 +2054,9 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
         "task.control" => tasks::control(&request.params, state)?,
         "task.message" => tasks::message(&request.params, state)?,
         "session.enqueue" => tasks::enqueue(&request.params, state)?,
+        "session.queue" => queue::add(&request.params, state)?,
+        "session.unqueue" => queue::remove(&request.params, state)?,
+        "session.next" => queue::next(&request.params, state)?,
 
         "status" => {
             json!({
@@ -2608,13 +2606,16 @@ pub(crate) fn delivery(item: &super::state::Delivery) -> Value {
 pub(crate) fn detail(session: &super::state::Session) -> Value {
     let mut messages = Vec::new();
     let mut truncated = false;
+    let queue = queue::view(session);
+    let reserved =
+        serde_json::to_vec(&queue).map_or(FRAME, |bytes| bytes.len()).saturating_add(DETAIL_LIMIT);
 
     for item in session.messages.iter().rev() {
         let item = message_value(item);
         messages.push(item);
 
         if serde_json::to_vec(&messages)
-            .map_or(true, |bytes| bytes.len().saturating_add(DETAIL_LIMIT) > FRAME)
+            .map_or(true, |bytes| bytes.len().saturating_add(reserved) > FRAME)
         {
             messages.pop();
 
@@ -2626,6 +2627,7 @@ pub(crate) fn detail(session: &super::state::Session) -> Value {
     messages.reverse();
     let mut value = summary(session);
     value["messages"] = Value::Array(messages);
+    value["queue"] = queue;
     value["workspace"] =
         session.workspace.as_ref().map_or(Value::Null, |path| Value::String(path.clone()));
 
@@ -4135,7 +4137,7 @@ done"##;
         std::fs::remove_dir_all(&state.home).unwrap();
     }
 
-    fn test_store_path(label: &str) -> PathBuf {
+    pub(super) fn test_store_path(label: &str) -> PathBuf {
         let thread = std::thread::current()
             .name()
             .unwrap_or("test")

@@ -227,6 +227,9 @@ pub const TEXT_LIMIT: usize = 256 * 1024;
 /// Reports that a session already has a turn running; clients match it to queue input.
 pub const SESSION_BUSY: &str = "Session is already working.";
 
+/// Reports that a session's bounded queue refused a message without dropping another.
+pub const QUEUE_FULL: &str = "Session queue is full, and no message was discarded.";
+
 /// Ends a final answer the host clipped at the response limit, after its clip marker.
 pub const CLIP_NOTICE: &str =
     "\n\nThis answer reached the response limit. Ask me to continue for the rest.";

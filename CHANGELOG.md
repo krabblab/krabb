@@ -12,6 +12,7 @@ Semantic Versioning.
 - Ask Krabb why a capability is off and get the exact command that turns it on.
 - Let Krabb read the GIFs, stickers, PDFs, and audio files you send in chat.
 - Attach files and clipboard images in the TUI by pasting a path or pressing Ctrl+V.
+- Queue several TUI messages while Krabb answers, like in a chat, and cancel any before it starts.
 - Let Krabb turn its own tools, shell, or approval on or off when you ask and approve.
 - Install official plugins from the plugin index without a source checkout.
 - List and install any published plugin version with `krabb plugin versions`.

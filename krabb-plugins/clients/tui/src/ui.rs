@@ -68,6 +68,7 @@ const MESSAGE_GAP_ROWS: usize = 2;
 const GENERATION_FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const TYPEWRITER_INTERVAL: Duration = Duration::from_millis(16);
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const QUEUE_ROWS: usize = 3;
 /// Failed attempts, and saves kept, before a reply the daemon refuses is left unsaved.
 const SAVE_ATTEMPTS: u32 = 30;
 const UNSAVED_LIMIT: usize = 64;
@@ -247,6 +248,8 @@ struct App {
     model: String,
     completed_system_messages: Vec<SavedSystemMessage>,
     pending_snapshot_messages: Vec<(String, String)>,
+    /// The session's queued messages, in the order their turns start.
+    queue: Vec<crate::queue::Queued>,
     /// The session and revision of the last snapshot applied, so polling skips unchanged ones.
     session_revision: Option<(String, String)>,
     model_available: bool,
@@ -499,6 +502,7 @@ where
         mut session_rx,
         mut engine_event_rx,
         mut interrupt_tx,
+        mut wake_tx,
         mut engine,
     ) = spawn_engine(&home, &plugin, &model, &session, host);
 
@@ -699,9 +703,16 @@ where
 
                 if let Ok(Some((session, revision))) =
                     poll_session(&home, &session_id, known, host).await
-                    && app.refresh_session(session)
                 {
-                    app.session_revision = revision.map(|revision| (session_id, revision));
+                    let startable = !session.working && !session.queue.is_empty();
+
+                    if app.refresh_session(session) {
+                        app.session_revision = revision.map(|revision| (session_id, revision));
+                    }
+
+                    if startable {
+                        let _ = wake_tx.send(());
+                    }
                 }
 
                 retry_unsaved(&home, &mut app, host).await;
@@ -761,6 +772,10 @@ where
                     Some(crate::EngineEvent::InputRejected { input, reason }) => {
                         app.queued_input(&input, &reason, true)
                     }
+
+                    Some(crate::EngineEvent::Queue(queue)) => app.queue = queue,
+
+                    Some(crate::EngineEvent::QueueStarted(text)) => app.start_queued(&text),
 
                     Some(crate::EngineEvent::ControlNotice(text)) => app.push_control_notice(&text),
 
@@ -865,6 +880,7 @@ where
                     session_rx,
                     engine_event_rx,
                     interrupt_tx,
+                    wake_tx,
                     engine,
                 ) = spawn_engine(&home, &plugin, &model, &app.session, host);
 
@@ -908,6 +924,10 @@ where
                 crate::EngineEvent::InputRejected { input, reason } => {
                     app.queued_input(&input, &reason, true)
                 }
+
+                crate::EngineEvent::Queue(queue) => app.queue = queue,
+
+                crate::EngineEvent::QueueStarted(_) => {}
 
                 crate::EngineEvent::ControlNotice(text) => app.push_control_notice(&text),
 
@@ -968,10 +988,12 @@ type EngineLink = (
     mpsc::UnboundedReceiver<SessionView>,
     mpsc::UnboundedReceiver<crate::EngineEvent>,
     mpsc::UnboundedSender<()>,
+    mpsc::UnboundedSender<()>,
     tokio::task::JoinHandle<Result<()>>,
 );
 
-/// Starts the session engine, returning its input, output, events, interrupt, and task.
+/// Starts the session engine, returning its input, output, events, interrupt, queue wake, and
+/// task.
 fn spawn_engine<C, F>(home: &str, plugin: &str, model: &str, session: &str, host: C) -> EngineLink
 where
     C: Fn(String, String, serde_json::Value) -> F + Copy + Send + Sync + 'static,
@@ -982,6 +1004,7 @@ where
     let (session_tx, session_rx) = mpsc::unbounded_channel();
     let (engine_event_tx, engine_event_rx) = mpsc::unbounded_channel();
     let (interrupt_tx, interrupt_rx) = mpsc::unbounded_channel();
+    let (wake_tx, wake_rx) = mpsc::unbounded_channel();
 
     let engine = tokio::spawn(crate::run_with(
         command_rx,
@@ -999,11 +1022,12 @@ where
             engine: Some(engine_event_tx),
             streaming_host: Some(crate::daemon_streaming_control),
             stop_after_generation: false,
+            wake: Some(wake_rx),
         },
         interrupt_rx,
     ));
 
-    (command_tx, output_rx, session_rx, engine_event_rx, interrupt_tx, engine)
+    (command_tx, output_rx, session_rx, engine_event_rx, interrupt_tx, wake_tx, engine)
 }
 
 async fn load_session<C, F>(home: &str, id: &str, host: C) -> Result<SessionView>
@@ -1058,8 +1082,9 @@ fn session_view(id: &str, value: &serde_json::Value) -> Result<SessionView> {
     let workspace = value["workspace"].as_str().map(str::to_owned);
     let context_usage = serde_json::from_value(value["context_usage"].clone()).ok().flatten();
     let working = value["status"] == "working" || value["inflight"] == true;
+    let queue = crate::queue::parse(value);
 
-    Ok(SessionView { id: id.to_owned(), model, workspace, context_usage, messages, working })
+    Ok(SessionView { id: id.to_owned(), model, workspace, context_usage, messages, working, queue })
 }
 
 /// Saves INTERACTION, marking its user line saved first, so a retry appends only the rest.
@@ -1253,6 +1278,7 @@ pub(super) struct SessionView {
     pub(super) context_usage: Option<krabb_core::types::ContextUsage>,
     pub(super) messages: Vec<Message>,
     pub(super) working: bool,
+    pub(super) queue: Vec<crate::queue::Queued>,
 }
 
 fn display_model(model: &str, model_available: bool) -> String {
@@ -1488,6 +1514,8 @@ fn command_options(home: &str, has_model: bool) -> Vec<(&'static str, &'static s
         commands.extend([
             ("/approval", "Show approval policy."),
             ("/approvals", "List pending tool approvals."),
+            ("/queue", "List queued messages."),
+            ("/unqueue <position>", "Cancel a queued message before it starts."),
             ("/approve <id>", "Approve a pending tool action."),
             ("/deny <id>", "Deny a pending tool action."),
         ]);
@@ -1860,9 +1888,13 @@ where
 
                     let busy = app.generation_active
                         || app.session_working
-                        || !app.pending_interactions.is_empty();
+                        || !app.pending_interactions.is_empty()
+                        || !app.queue.is_empty();
                     let ordinary = !command.starts_with('/') && !command.starts_with('!');
                     let is_task_command = krabb_core::task::command(command);
+                    let is_queue_command = command == "/queue"
+                        || command == "/unqueue"
+                        || command.starts_with("/unqueue ");
                     let is_live_control = (ordinary && !app.compaction_active)
                         || is_task_command
                         || matches!(
@@ -1871,6 +1903,7 @@ where
                         )
                         || command.starts_with("/approve ")
                         || command.starts_with("/deny ")
+                        || is_queue_command
                         || command == "/animation"
                         || command == "/attach"
                         || command.starts_with("/attach ")
@@ -1944,6 +1977,7 @@ where
                         || command.starts_with("/deny ");
 
                     if !(is_task_command
+                        || is_queue_command
                         || busy && ordinary
                         || app.generation_active && is_approval
                         || matches!(line.as_str(), "/clear" | "/quit" | "/exit"))
@@ -1952,7 +1986,11 @@ where
                     }
 
                     app.transcript_scroll.follow_latest();
-                    app.push_user(&shown);
+
+                    if !(busy && ordinary) {
+                        app.push_user(&shown);
+                    }
+
                     app.remember_input(&line);
 
                     if line == "/history" || line.starts_with("/history ") {
@@ -2282,8 +2320,10 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         STATUSLINE_ITEMS.len().min(u16::MAX as usize) as u16
     } else if !approvals.is_empty() {
         3
+    } else if let Some(items) = suggestions.as_ref() {
+        items.len().min(7) as u16
     } else {
-        suggestions.as_ref().map_or(0, |items| items.len().min(7) as u16)
+        queue_rows(&app.queue).len() as u16
     };
 
     let is_working = app.generation_active
@@ -2417,7 +2457,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         } else if app.compaction_active {
             "Compacting conversation  |  Please wait ".into()
         } else if app.generation_active {
-            "Approval commands only  |  /approvals  |  /approve <id>  |  Esc interrupt ".into()
+            "Enter queue  |  /queue  |  /approvals  |  /approve <id>  |  Esc interrupt ".into()
         } else if app.session_working {
             "Session busy  |  /approvals  |  /approve <id>  |  /deny <id> ".into()
         } else if !app.attachments.is_empty() {
@@ -2622,6 +2662,19 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
             let popup = List::new(items);
 
             frame.render_widget(popup, popup_area);
+        } else {
+            let style = if app.theme_enabled {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+
+            let rows = queue_rows(&app.queue)
+                .into_iter()
+                .map(|row| Line::from(vec![Span::styled("▌ ", style), Span::styled(row, style)]))
+                .collect::<Vec<_>>();
+
+            frame.render_widget(Paragraph::new(rows), popup_area);
         }
     }
 
@@ -2652,6 +2705,24 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
             frame.set_cursor_position(cursor_position);
         }
     }
+}
+
+/// Shows the first queued messages with their positions, and how many more wait after them.
+fn queue_rows(queue: &[crate::queue::Queued]) -> Vec<String> {
+    let shown = if queue.len() > QUEUE_ROWS { QUEUE_ROWS - 1 } else { queue.len() };
+
+    let mut rows = queue
+        .iter()
+        .take(shown)
+        .enumerate()
+        .map(|(index, item)| format!("Queued {} · {}", index + 1, crate::queue::line(&item.text)))
+        .collect::<Vec<_>>();
+
+    if queue.len() > shown {
+        rows.push(format!("{} more queued · /queue lists them", queue.len() - shown));
+    }
+
+    rows
 }
 
 fn generation_status_line(text: &str, elapsed: Duration) -> Line<'static> {
@@ -4054,6 +4125,7 @@ impl App {
         self.workspace = session.workspace.unwrap_or_else(|| self.default_workspace.clone());
         self.context_usage = session.context_usage;
         self.session_working = session.working;
+        self.queue = session.queue;
         self.transcript = render_messages(&session.messages, &self.name);
         self.draft = None;
         self.dismiss_approvals();
@@ -4063,6 +4135,8 @@ impl App {
 
     /// Applies a polled snapshot, and returns whether it was applied rather than deferred.
     fn refresh_session(&mut self, session: SessionView) -> bool {
+        self.queue.clone_from(&session.queue);
+
         // A snapshot can lag behind locally streamed output until its delimiter is saved.
         if self.generation_active
             || self.reply_pending
@@ -4106,6 +4180,7 @@ impl App {
                 context_usage: session.context_usage,
                 messages: session.messages,
                 working: session.working,
+                queue: session.queue,
             });
         }
 
@@ -4401,6 +4476,17 @@ impl App {
         }
     }
 
+    /// Shows a queued message as sent when its turn starts here, and takes it off the queue.
+    fn start_queued(&mut self, text: &str) {
+        if let Some(index) = self.queue.iter().position(|item| item.text == text) {
+            self.queue.remove(index);
+        }
+
+        self.transcript_scroll.follow_latest();
+        self.push_user(text);
+        self.begin_interaction(text);
+    }
+
     fn queued_input(&mut self, input: &str, receipt: &str, rejected: bool) {
         if !self.generation_active
             && self
@@ -4681,6 +4767,7 @@ mod tests {
             context_usage: None,
             messages: Vec::new(),
             working: false,
+            queue: Vec::new(),
         };
 
         let mut busy = App { generation_active: true, ..Default::default() };
@@ -4849,6 +4936,7 @@ mod tests {
             context_usage: None,
             messages: Vec::new(),
             working: false,
+            queue: Vec::new(),
         });
 
         assert!(app.transcript.contains("Request failed"));
@@ -4921,6 +5009,7 @@ mod tests {
             context_usage: None,
             messages: Vec::new(),
             working: false,
+            queue: Vec::new(),
         });
 
         assert!(app.transcript.contains(error));
@@ -4955,6 +5044,7 @@ mod tests {
             context_usage: None,
             messages,
             working: false,
+            queue: Vec::new(),
         });
 
         assert!(app.transcript.contains(error));
@@ -5154,6 +5244,7 @@ mod tests {
             context_usage: None,
             messages: Vec::new(),
             working: false,
+            queue: Vec::new(),
         });
 
         assert!(app.transcript.contains(notice));
@@ -5173,6 +5264,7 @@ mod tests {
             context_usage: None,
             messages: vec![message],
             working: false,
+            queue: Vec::new(),
         });
 
         assert!(app.transcript.contains(notice));
@@ -6380,11 +6472,11 @@ mod tests {
             (0..12).find(|row| row_text(*row).contains(app.generation_message)).unwrap();
 
         assert!(row_text(status_row - 1).trim().is_empty());
-        assert!(row_text(status_row + 1).contains("Approval commands only"));
+        assert!(row_text(status_row + 1).contains("Enter queue  |  /queue"));
 
         let input_area = app.input_area.unwrap();
 
-        assert_eq!(terminal.backend().buffer()[(input_area.x, input_area.y)].symbol(), "A");
+        assert_eq!(terminal.backend().buffer()[(input_area.x, input_area.y)].symbol(), "E");
 
         let phrase_start = terminal
             .backend()
@@ -7194,6 +7286,7 @@ mod tests {
             context_usage: None,
             messages: Vec::new(),
             working: false,
+            queue: Vec::new(),
         });
 
         assert_eq!(app.session, "fresh");
@@ -7211,6 +7304,7 @@ mod tests {
             context_usage: None,
             messages: Vec::new(),
             working: false,
+            queue: Vec::new(),
         });
 
         assert_eq!(app.model, "provider/model");
@@ -7243,6 +7337,7 @@ mod tests {
                 }],
             }],
             working: true,
+            queue: Vec::new(),
         });
 
         assert!(app.transcript.contains("message from the other TUI"));
@@ -7278,6 +7373,7 @@ mod tests {
                 }],
             }],
             working: false,
+            queue: Vec::new(),
         });
 
         assert!(app.transcript.contains("/compact"));
@@ -7310,6 +7406,7 @@ mod tests {
                 },
             ],
             working: false,
+            queue: Vec::new(),
         });
 
         assert_eq!(app.transcript.matches(reply).count(), 1);
@@ -7351,6 +7448,7 @@ mod tests {
                 context_usage: None,
                 messages: Vec::new(),
                 working: false,
+                queue: Vec::new(),
             });
 
             assert_eq!(app.transcript, transcript);
@@ -7385,6 +7483,7 @@ mod tests {
                 content: vec![krabb_core::types::Content::Text { text: "Previous reply".into() }],
             }],
             working: false,
+            queue: Vec::new(),
         });
 
         app.push_bot("Using session work.\n".into());
@@ -7606,7 +7705,7 @@ mod tests {
         .unwrap();
 
         assert!(app.input.is_empty());
-        assert!(app.transcript.contains("please wait"));
+        assert!(!app.transcript.contains("please wait"));
 
         let mut queued = [0; 64];
         let count = command_rx.read(&mut queued).await.unwrap();
@@ -7667,7 +7766,7 @@ mod tests {
         .unwrap();
 
         assert!(app.input.is_empty());
-        assert!(app.transcript.contains("You | "));
+        assert!(!app.transcript.contains("You | "));
         assert!(app.pending_interactions.is_empty());
 
         let mut queued = [0; 128];
@@ -8571,6 +8670,7 @@ mod tests {
             context_usage: None,
             messages: Vec::new(),
             working: false,
+            queue: Vec::new(),
         });
 
         assert_eq!(app.model, "unset");

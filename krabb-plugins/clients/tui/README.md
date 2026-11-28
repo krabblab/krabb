@@ -44,6 +44,12 @@ messages for the latest accepted request, skipping control-only messages. Other
 retained tasks remain available through `/task`.
 
 Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit.
+While Krabb answers, Enter queues the message in the session's queue, as a chat
+channel would; queued messages appear above the input with their positions and
+start in order. A full queue says so and keeps the text in the input. Every TUI
+window on a session shows the same queue, and any open window starts the next
+message once the session is free. Quitting during a turn leaves it running;
+reopening the session shows its reply and the remaining queue once.
 While Krabb is busy, Escape interrupts the turn or does nothing, so use Ctrl+C to quit.
 Shift+Enter and Alt+Enter also add a line where the terminal reports them, so
 Ctrl+O is the key that works everywhere. Use Up/Down for input history,
@@ -86,7 +92,10 @@ Use `/help` for commands available in the current session. Common commands:
 - `/status` shows the same status as `krabb status`, and `/plugin` lists plugins
   as `krabb plugin list` does.
 - `/approval`, `/approvals`, `/approve <id>`, and `/deny <id>` manage pending
-  approvals, including while a turn waits for one.
+  approvals, including while a turn waits for one. `/approvals` names who asked
+  and what each one does, and approvals can be decided one by one in any order.
+- `/queue` lists queued messages, and `/unqueue <position>` cancels one before it
+  starts.
 - `/session`, `/new`, `/model`, and `/workspace` manage conversation context.
 - `/deliveries`, `/retry`, and `/drop` inspect delivery state.
 - `/schedule`, `/memory`, and `/data` are available when their plugins are

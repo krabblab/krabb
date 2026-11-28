@@ -292,7 +292,7 @@ panels using terminal styles. Links retain visible URLs. Formatting also applies
 to streamed replies and saved history; `--once` keeps its plain output behavior.
 
 The TUI supports `/help`, `/status`, `/model`, `/session`, `/workspace`,
-`/approvals`, `/schedule`, `/memory`, `/data`, and `/plugin`. Use `/help` for
+`/approvals`, `/queue`, `/schedule`, `/memory`, `/data`, and `/plugin`. Use `/help` for
 the commands available in the current session. `/data value` manages simple
 session-scoped values; `/data database`, `/data table`, and `/data column`
 manage structured records. `/store` remains as a compatibility alias. See the
@@ -314,9 +314,12 @@ conversation. Exact commands also work while the model is busy or unavailable:
 Only the saved action runs after approval, and cancellation discards it. Task
 results still arrive in the conversation where work began.
 
-You can enter another question while a response is running. The daemon saves it
-with a task ID and answers it after the active foreground turn settles. Esc
-interrupts the current turn and preserves separately queued requests.
+You can keep typing while a response is running. Like a chat channel, the TUI
+queues each message in the session's bounded queue, shows its position, and starts
+it after the turns ahead of it. `/queue` lists queued messages and
+`/unqueue <position>` cancels one before it starts. Esc interrupts the current turn
+and keeps the queue; closing the TUI leaves the turn running, and reopening it shows
+the reply and the remaining queue.
 
 Typed `!command` shell execution requires `clients.tui.shell` and is supported on Linux
 and Windows. Other platforms reject typed shell commands because descendant containment

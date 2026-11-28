@@ -5,6 +5,7 @@ mod data;
 mod date;
 #[cfg(test)]
 mod offline;
+mod queue;
 mod recovery;
 mod transport;
 mod ui;
@@ -172,6 +173,8 @@ enum EngineEvent {
     ControlNotice(String),
     InputQueued { input: String, receipt: String },
     InputRejected { input: String, reason: String },
+    Queue(Vec<queue::Queued>),
+    QueueStarted(String),
     Progress(String),
     DraftDiscarded,
     AssistantFinished,
@@ -191,6 +194,20 @@ struct EngineEvents {
     engine: Option<mpsc::UnboundedSender<EngineEvent>>,
     streaming_host: Option<StreamingHost>,
     stop_after_generation: bool,
+    wake: Option<mpsc::UnboundedReceiver<()>>,
+}
+
+/// Waits for the interface to report that the session's queue may start, or forever.
+async fn woken(wake: &mut Option<mpsc::UnboundedReceiver<()>>) {
+    if let Some(receiver) = wake
+        && receiver.recv().await.is_some()
+    {
+        while receiver.try_recv().is_ok() {}
+
+        return;
+    }
+
+    std::future::pending::<()>().await
 }
 
 struct SessionReservation {
@@ -578,6 +595,7 @@ where
         engine: engine_events,
         streaming_host,
         stop_after_generation,
+        mut wake,
     } = events;
     let input = BufReader::new(input);
     let initial_session = ensure_session(&home, &session, &model, host).await?;
@@ -658,7 +676,63 @@ where
     let result = async {
         let mut lines = input.lines();
 
-        while let Some(line) = lines.next_line().await? {
+        let mut drain = !stop_after_generation;
+
+        loop {
+            if std::mem::take(&mut drain)
+                && let Some((owner, user)) = queue::next(&home, &session, host).await
+            {
+                let reservation =
+                    SessionReservation::new(home.clone(), session.clone(), owner, host);
+                let submitted = queue::text(&user);
+
+                messages = read_session_reserved(&home, &session, host).await?.messages;
+
+                if let Some(events) = &engine_events {
+                    let _ = events.send(EngineEvent::QueueStarted(submitted.clone()));
+                }
+
+                if turn(
+                    Turn {
+                        home: &home,
+                        session: &session,
+                        plugin: &plugin,
+                        output: &mut output,
+                        lines: &mut lines,
+                        interrupt_rx: &mut interrupt_rx,
+                        engine_events: &engine_events,
+                        streaming_host,
+                        sequence: &mut sequence,
+                    },
+                    reservation,
+                    user.id,
+                    submitted,
+                    false,
+                    host,
+                )
+                .await?
+                {
+                    break;
+                }
+
+                drain = true;
+                continue;
+            }
+
+            let incoming = tokio::select! {
+                biased;
+                line = lines.next_line() => line?,
+
+                () = woken(&mut wake) => {
+                    drain = true;
+                    continue;
+                }
+            };
+
+            let Some(line) = incoming else {
+                break;
+            };
+
             let (line, attachments) = attachments::decode(&line)
                 .unwrap_or_else(|| (decode_terminal_input(&line), Vec::new()));
             let _cleanup = attachments::Cleanup(&attachments);
@@ -666,6 +740,20 @@ where
 
             if line == "/quit" || line == "/exit" {
                 break;
+            }
+
+            if let Some(text) =
+                queue_command(&home, &session, line, engine_events.as_ref(), host).await
+            {
+                announce(
+                    engine_events.as_ref(),
+                    &mut output,
+                    EngineEvent::ControlNotice(text),
+                    "\n> ",
+                )
+                .await?;
+
+                continue;
             }
 
             if let Some(result) = task_message(&home, &session, line, &mut sequence, host).await {
@@ -1321,18 +1409,20 @@ where
                     if reply_to.is_none() && !line.starts_with('/') && !line.starts_with('!')
                         && attachments.is_empty()
                         && error.to_string().contains(krabb_core::types::SESSION_BUSY) {
-                        let event = enqueue_input(
+                        let event = queue_input(
                             &home,
                             &session,
                             &plugin,
                             line,
                             &mut sequence,
+                            engine_events.as_ref(),
                             host,
                         )
                         .await;
 
                         announce(engine_events.as_ref(), &mut output, event, "\n> ").await?;
 
+                        drain = true;
                         continue;
                     }
 
@@ -1482,214 +1572,32 @@ where
             let request_identity = user.id.clone();
             messages.push(user);
 
-            while interrupt_rx.try_recv().is_ok() {}
+            let quit = turn(
+                Turn {
+                    home: &home,
+                    session: &session,
+                    plugin: &plugin,
+                    output: &mut output,
+                    lines: &mut lines,
+                    interrupt_rx: &mut interrupt_rx,
+                    engine_events: &engine_events,
+                    streaming_host,
+                    sequence: &mut sequence,
+                },
+                reservation,
+                request_identity,
+                submitted.to_owned(),
+                terminal_command.is_some(),
+                host,
+            )
+            .await?;
 
-            if let Some(events) = &engine_events {
-                let _ = events.send(EngineEvent::UserSaved(submitted.into()));
-                let _ = events.send(EngineEvent::GenerationStarted);
-            }
-
-            let (method, params) = if terminal_command.is_some() {
-                (
-                    "session.command",
-                    serde_json::json!({"id": session, "owner": reservation.owner}),
-                )
-            } else {
-                ("session.answer", serde_json::json!({"id": session, "plugin": plugin,
-                    "client": client::TUI, "request":request_identity}))
-            };
-
-            let streaming_turn = streaming_host.is_some() && engine_events.is_some();
-            let response: Pin<
-                Box<dyn Future<Output = krabb_core::Result<Value>> + Send>,
-            > = match (streaming_host, engine_events.as_ref()) {
-                (Some(streaming_host), Some(events)) => {
-                    streaming_host(home.clone(), method.into(), params, events.clone())
-                }
-
-                _ => Box::pin(host(home.clone(), method.into(), params)),
-            };
-
-            tokio::pin!(response);
-            let (response, interrupted) = loop {
-                tokio::select! {
-                    biased;
-                    response = &mut response => break (response, false),
-
-                    incoming = lines.next_line() => {
-                        let Some(command) = incoming? else { break (Err(krabb_core::Error::Denied("Terminal input closed during generation".into())), true) };
-
-                        let command = decode_terminal_input(&command);
-                        let command = command.trim();
-
-                        if command == "/quit" || command == "/exit" {
-                            let _ = host(
-                                home.clone(),
-                                "session.cancel".into(),
-                                serde_json::json!({"id": session, "turn": true}),
-                            )
-                            .await;
-                            break (Err(krabb_core::Error::Denied("Generation interrupted".into())), true);
-                        }
-
-                        if let Some(result) =
-                            task_message(&home, &session, command, &mut sequence, host).await
-                        {
-                            let message = control_text(result);
-
-                            announce(
-                                engine_events.as_ref(),
-                                &mut output,
-                                EngineEvent::ControlNotice(message),
-                                "\n",
-                            )
-                            .await?;
-
-                            continue;
-                        }
-
-                        if command == "/approvals" || command.starts_with("/approve") || command.starts_with("/deny") {
-                            let message = resolve_turn_approval(
-                                &home,
-                                &session,
-                                &reservation.owner,
-                                command,
-                                &mut sequence,
-                                engine_events.as_ref(),
-                                host,
-                            )
-                            .await;
-
-                            let reported = engine_events
-                                .as_ref()
-                                .is_some_and(|events| {
-                                    events
-                                        .send(EngineEvent::SystemNotice(
-                                            message.trim_end().to_owned(),
-                                        ))
-                                        .is_ok()
-                                });
-
-                            if !reported {
-                                output.write_all(message.as_bytes()).await?;
-                                output.flush().await?;
-                            }
-
-                            continue;
-                        }
-
-                        if !command.starts_with('/')
-                            && !command.starts_with('!')
-                            && !command.is_empty()
-                        {
-                            let event = enqueue_input(
-                                &home,
-                                &session,
-                                &plugin,
-                                command,
-                                &mut sequence,
-                                host,
-                            )
-                            .await;
-
-                            announce(engine_events.as_ref(), &mut output, event, "\n").await?;
-
-                            continue;
-                        }
-
-                        output.write_all(b"A turn is still running.\nUse /approvals, /approve \
-                                          <id>, /deny <id>, or Esc to cancel.\n").await?;
-                        output.flush().await?;
-                    }
-
-                    _ = interrupt_rx.recv(), if !interrupt_rx.is_closed() => {
-                        let _ = host(
-                            home.clone(),
-                            "session.cancel".into(),
-                            serde_json::json!({"id": session, "turn":true}),
-                        ).await;
-                        break (Err(krabb_core::Error::Denied("Generation interrupted".into())), true);
-                    }
-                }
-            };
-
-            let response = if response.is_err() && !interrupted && terminal_command.is_none() {
-                match recovery::lookup(&home, &session, &request_identity, host).await {
-                    Ok(Some(saved)) if recovery::useful(&saved) => Ok(saved),
-                    _ => response,
-                }
-            } else {
-                response
-            };
-
-            let _ = reservation.release().await;
-
-            let request_succeeded = response.is_ok();
-
-            match response {
-                Ok(value) => {
-                    if let Some(notice) = recovery::notice(&value) {
-                        announce(
-                            engine_events.as_ref(),
-                            &mut output,
-                            EngineEvent::ControlNotice(notice),
-                            "\n",
-                        )
-                        .await?;
-                    }
-
-                    let reply = value["text"].as_str().unwrap_or_default();
-
-                    let restored = value["recovered"] == true || value["replayed"] == true;
-
-                    if !reply.is_empty() && (!streaming_turn || restored) {
-                        if let Some(events) = &engine_events {
-                            let _ = events.send(EngineEvent::AssistantText(reply.to_owned()));
-                        } else {
-                            output.write_all(reply.as_bytes()).await?;
-                            output.write_all(b"\n").await?;
-                        }
-                    }
-                }
-
-                Err(error) => {
-                    if interrupted {
-                        output.write_all(b"Generation interrupted.\n").await?;
-                    } else if let Some(events) = &engine_events {
-                        let message = format!(
-                            "Request failed: {}.",
-                            sentence(error.to_string())
-                        );
-
-                        let _ = events.send(EngineEvent::RequestFailed(message));
-                    } else {
-                        output
-                            .write_all(format!("Request failed: {}.\n", sentence(error.to_string())).as_bytes())
-                            .await?;
-                    }
-                }
-            }
-
-            if request_succeeded
-                && streaming_turn
-                && let Some(events) = &engine_events
-            {
-                let _ = events.send(EngineEvent::AssistantFinished);
-            }
-
-            if let Some(events) = &engine_events {
-                let _ = events.send(EngineEvent::GenerationFinished { interrupted });
-            }
-
-            output.write_all(b"> ").await?;
-            output.flush().await?;
-
-            if stop_after_generation {
+            if quit || stop_after_generation {
                 break;
             }
 
+            drain = true;
             continue;
-
         }
 
         Ok::<(), krabb_core::Error>(())
@@ -1698,6 +1606,256 @@ where
 
     result?;
     Ok(())
+}
+
+/// Borrows what a running turn reads and writes, from the engine loop.
+struct Turn<'a, R, W> {
+    home: &'a String,
+    session: &'a String,
+    plugin: &'a String,
+    output: &'a mut W,
+    lines: &'a mut tokio::io::Lines<BufReader<R>>,
+    interrupt_rx: &'a mut mpsc::UnboundedReceiver<()>,
+    engine_events: &'a Option<mpsc::UnboundedSender<EngineEvent>>,
+    streaming_host: Option<StreamingHost>,
+    sequence: &'a mut u64,
+}
+
+/// Runs the saved turn of REQUEST under RESERVATION, handling input typed while it runs.
+async fn turn<R, W, C, F>(
+    link: Turn<'_, R, W>,
+    mut reservation: SessionReservation,
+    request_identity: String,
+    submitted: String,
+    terminal: bool,
+    host: C,
+) -> krabb_core::Result<bool>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    C: Fn(String, String, Value) -> F + Copy + Send + Sync + 'static,
+    F: Future<Output = krabb_core::Result<Value>> + Send + 'static,
+{
+    let Turn {
+        home,
+        session,
+        plugin,
+        output,
+        lines,
+        interrupt_rx,
+        engine_events,
+        streaming_host,
+        sequence,
+    } = link;
+
+    while interrupt_rx.try_recv().is_ok() {}
+
+    if let Some(events) = &engine_events {
+        let _ = events.send(EngineEvent::UserSaved(submitted));
+        let _ = events.send(EngineEvent::GenerationStarted);
+    }
+
+    let (method, params) = if terminal {
+        ("session.command", serde_json::json!({"id": session, "owner": reservation.owner}))
+    } else {
+        (
+            "session.answer",
+            serde_json::json!({"id": session, "plugin": plugin,
+            "client": client::TUI, "request":request_identity}),
+        )
+    };
+
+    let streaming_turn = streaming_host.is_some() && engine_events.is_some();
+    let response: Pin<Box<dyn Future<Output = krabb_core::Result<Value>> + Send>> =
+        match (streaming_host, engine_events.as_ref()) {
+            (Some(streaming_host), Some(events)) => {
+                streaming_host(home.clone(), method.into(), params, events.clone())
+            }
+
+            _ => Box::pin(host(home.clone(), method.into(), params)),
+        };
+
+    tokio::pin!(response);
+    let (response, interrupted) = loop {
+        tokio::select! {
+            biased;
+            response = &mut response => break (response, false),
+
+            incoming = lines.next_line() => {
+                let Some(command) = incoming? else { break (Err(krabb_core::Error::Denied("Terminal input closed during generation".into())), true) };
+
+                let command = decode_terminal_input(&command);
+                let command = command.trim();
+
+                if command == "/quit" || command == "/exit" {
+                    output.write_all(DETACHED.as_bytes()).await?;
+                    output.flush().await?;
+
+                    return Ok(true);
+                }
+
+                if let Some(text) =
+                    queue_command(home, session, command, engine_events.as_ref(), host).await
+                {
+                    announce(
+                        engine_events.as_ref(),
+                        output,
+                        EngineEvent::ControlNotice(text),
+                        "\n",
+                    )
+                    .await?;
+
+                    continue;
+                }
+
+                if let Some(result) =
+                    task_message(home, session, command, sequence, host).await
+                {
+                    let message = control_text(result);
+
+                    announce(
+                        engine_events.as_ref(),
+                        output,
+                        EngineEvent::ControlNotice(message),
+                        "\n",
+                    )
+                    .await?;
+
+                    continue;
+                }
+
+                if command == "/approvals" || command.starts_with("/approve") || command.starts_with("/deny") {
+                    let message = resolve_turn_approval(
+                        home,
+                        session,
+                        &reservation.owner,
+                        command,
+                        sequence,
+                        engine_events.as_ref(),
+                        host,
+                    )
+                    .await;
+
+                    let reported = engine_events
+                        .as_ref()
+                        .is_some_and(|events| {
+                            events
+                                .send(EngineEvent::SystemNotice(
+                                    message.trim_end().to_owned(),
+                                ))
+                                .is_ok()
+                        });
+
+                    if !reported {
+                        output.write_all(message.as_bytes()).await?;
+                        output.flush().await?;
+                    }
+
+                    continue;
+                }
+
+                if !command.starts_with('/')
+                    && !command.starts_with('!')
+                    && !command.is_empty()
+                {
+                    let event = queue_input(
+                        home,
+                        session,
+                        plugin,
+                        command,
+                        sequence,
+                        engine_events.as_ref(),
+                        host,
+                    )
+                    .await;
+
+                    announce(engine_events.as_ref(), output, event, "\n").await?;
+
+                    continue;
+                }
+
+                output.write_all(b"A turn is still running.\nUse /queue, /approvals, \
+                                  /approve <id>, /deny <id>, or Esc to cancel.\n").await?;
+                output.flush().await?;
+            }
+
+            _ = interrupt_rx.recv(), if !interrupt_rx.is_closed() => {
+                let _ = host(
+                    home.clone(),
+                    "session.cancel".into(),
+                    serde_json::json!({"id": session, "turn":true}),
+                ).await;
+                break (Err(krabb_core::Error::Denied("Generation interrupted".into())), true);
+            }
+        }
+    };
+
+    let response = if response.is_err() && !interrupted && !terminal {
+        match recovery::lookup(home, session, &request_identity, host).await {
+            Ok(Some(saved)) if recovery::useful(&saved) => Ok(saved),
+            _ => response,
+        }
+    } else {
+        response
+    };
+
+    let _ = reservation.release().await;
+
+    let request_succeeded = response.is_ok();
+
+    match response {
+        Ok(value) => {
+            if let Some(notice) = recovery::notice(&value) {
+                announce(engine_events.as_ref(), output, EngineEvent::ControlNotice(notice), "\n")
+                    .await?;
+            }
+
+            let reply = value["text"].as_str().unwrap_or_default();
+
+            let restored = value["recovered"] == true || value["replayed"] == true;
+
+            if !reply.is_empty() && (!streaming_turn || restored) {
+                if let Some(events) = &engine_events {
+                    let _ = events.send(EngineEvent::AssistantText(reply.to_owned()));
+                } else {
+                    output.write_all(reply.as_bytes()).await?;
+                    output.write_all(b"\n").await?;
+                }
+            }
+        }
+
+        Err(error) => {
+            if interrupted {
+                output.write_all(b"Generation interrupted.\n").await?;
+            } else if let Some(events) = &engine_events {
+                let message = format!("Request failed: {}.", sentence(error.to_string()));
+
+                let _ = events.send(EngineEvent::RequestFailed(message));
+            } else {
+                output
+                    .write_all(
+                        format!("Request failed: {}.\n", sentence(error.to_string())).as_bytes(),
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    if request_succeeded
+        && streaming_turn
+        && let Some(events) = &engine_events
+    {
+        let _ = events.send(EngineEvent::AssistantFinished);
+    }
+
+    if let Some(events) = &engine_events {
+        let _ = events.send(EngineEvent::GenerationFinished { interrupted });
+    }
+
+    output.write_all(b"> ").await?;
+    output.flush().await?;
+
+    Ok(false)
 }
 
 fn workspace_root(home: &str, session_workspace: Option<&str>) -> PathBuf {
@@ -1797,7 +1955,17 @@ where
     let workspace = value["workspace"].as_str().map(str::to_owned);
     let context_usage = serde_json::from_value(value["context_usage"].clone()).ok().flatten();
     let working = value["status"] == "working" || value["inflight"] == true;
-    Ok(ui::SessionView { id: id.to_owned(), model, workspace, context_usage, messages, working })
+    let queue = queue::parse(&value);
+
+    Ok(ui::SessionView {
+        id: id.to_owned(),
+        model,
+        workspace,
+        context_usage,
+        messages,
+        working,
+        queue,
+    })
 }
 
 fn send_session_view(
@@ -4527,6 +4695,78 @@ where
     }
 }
 
+const DETACHED: &str = "The turn keeps running in Krabb, and its reply is saved in the session.\n";
+
+/// Queues a message typed while the session is busy, as a chat channel would, or passes it to
+/// the running work on a daemon without a queue.
+async fn queue_input<C, F>(
+    home: &str,
+    session: &str,
+    plugin: &str,
+    input: &str,
+    sequence: &mut u64,
+    events: Option<&mpsc::UnboundedSender<EngineEvent>>,
+    host: C,
+) -> EngineEvent
+where
+    C: Fn(String, String, Value) -> F,
+    F: Future<Output = krabb_core::Result<Value>>,
+{
+    *sequence = sequence.saturating_add(1);
+
+    match queue::add(home, session, queue::request(*sequence), input, &host).await {
+        queue::Added::Queued { position, queue } => {
+            if let Some(events) = events {
+                let _ = events.send(EngineEvent::Queue(queue));
+            }
+
+            EngineEvent::InputQueued { input: input.into(), receipt: queue::receipt(position) }
+        }
+
+        queue::Added::Full => {
+            EngineEvent::InputRejected { input: input.into(), reason: queue::FULL.into() }
+        }
+
+        queue::Added::Unsupported => {
+            enqueue_input(home, session, plugin, input, sequence, host).await
+        }
+
+        queue::Added::Failed(reason) => EngineEvent::InputRejected {
+            input: input.into(),
+            reason: format!("The message was not queued: {reason}."),
+        },
+    }
+}
+
+/// Lists or cancels queued messages, leaving other text unhandled.
+async fn queue_command<C, F>(
+    home: &str,
+    session: &str,
+    command: &str,
+    events: Option<&mpsc::UnboundedSender<EngineEvent>>,
+    host: C,
+) -> Option<String>
+where
+    C: Fn(String, String, Value) -> F + Copy,
+    F: Future<Output = krabb_core::Result<Value>>,
+{
+    let (text, queue) = if command == "/queue" {
+        queue::list(home, session, host).await
+    } else {
+        let position = command
+            .strip_prefix("/unqueue")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))?;
+
+        queue::remove(home, session, position, host).await
+    };
+
+    if let (Some(events), Some(queue)) = (events, queue) {
+        let _ = events.send(EngineEvent::Queue(queue));
+    }
+
+    Some(text)
+}
+
 fn printable(event: &EngineEvent) -> &str {
     match event {
         EngineEvent::InputQueued { receipt, .. } => receipt,
@@ -5011,6 +5251,11 @@ fn format_approvals(value: &Value) -> String {
             let target = &item["target"];
             let tool = target["tool"].as_str().unwrap_or("tool");
             let session = target["session"].as_str().unwrap_or("unknown session");
+            let session = match target["source"].as_str() {
+                Some(source) => format!("{session}, asked by {source}"),
+                None => session.to_owned(),
+            };
+
             let mut args = target["args"].clone();
 
             let text = args
@@ -5454,6 +5699,8 @@ fn reply_command(line: &str) -> Option<Option<(&str, &str)>> {
 
 #[cfg(test)]
 mod tests {
+    mod queued;
+
     mod replies;
 
     use serde_json::json;
