@@ -349,8 +349,8 @@ async fn a_found_server_that_stops_is_forgotten_and_the_next_one_found() {
 
     assert!(failed.is_err());
 
-    let (emitter, _events) = emitter();
-    let answer = handle(&client, Request::call(2, "generate", input), emitter, &found).await;
+    let (second_emitter, _second_events) = emitter();
+    let answer = handle(&client, Request::call(2, "generate", input), second_emitter, &found).await;
 
     assert_eq!(answer.unwrap().unwrap().result.unwrap()["text"], "From the second.");
 }
