@@ -55,6 +55,22 @@ Confined Unix file writes preserve existing regular files’ ordinary permission
 bits, including executable bits. New files use mode `0600`; replacement files
 do not inherit set-user-ID, set-group-ID, or sticky bits.
 
+### Shell Placement
+
+Approved shell commands, Git operations, Git-backed patches, and typed TUI `!command`
+shells run in the first place available on the machine:
+
+1. **Container.** A configured Docker or Podman container, described below.
+2. **OS sandbox.** Landlock on Linux 5.13 or later, or the built-in macOS sandbox. Commands
+   read and write only the workspace and a private temporary folder, which is also their
+   `HOME`, and read system paths such as `/usr`, `/bin`, `/lib`, and `/etc`. Krabb's home,
+   its credentials and keys, and every other folder stay out of reach. The network stays
+   open. The sandbox is skipped when the workspace contains Krabb's home.
+3. **Host.** Commands run as the daemon's user. The workspace limit is advisory: commands
+   can reach any file that user can, and Krabb says so in the model's permission summary.
+
+Windows has no OS sandbox, so it uses a container or the host.
+
 ### Container Sandbox
 
 When shell tools are enabled, a Docker or Podman sandbox can keep approved
@@ -63,7 +79,7 @@ commands away from the host filesystem and network. Set
 `KRABB_SANDBOX_IMAGE` to an image already available locally. Krabb mounts
 only the active workspace writable, uses a read-only container root, drops
 Linux capabilities, disables networking, and applies bounded resource limits.
-Without a configured sandbox, approved commands run on the host as the daemon's user.
+Without a configured container, approved commands use the OS sandbox or the host.
 The tools plugin creates each container before starting its command and records the
 ID in the host's private tracking directory. The host force-removes tracked containers
 after stopping the plugin, before completing restart or acknowledging cancellation.
@@ -98,8 +114,8 @@ commands in those sessions even when they use separate process groups.
 Linux host shells inherit a syscall filter that rejects `setsid` and `setpgid`,
 so descendants cannot detach from cleanup. macOS and other non-Linux Unix host shells
 start in their own process group without that filter: a descendant that starts its own
-session or process group survives cancellation, and setuid programs keep their
-privileges. The container sandbox is the stronger choice there.
+session or process group survives cancellation, and setuid programs outside the macOS
+sandbox keep their privileges. The container sandbox is the stronger choice there.
 Windows tool commands start suspended and enter a kill-on-close Job Object before
 execution. Completion, failure, cancellation, and plugin termination stop their
 descendants, including background commands whose parent has already exited.

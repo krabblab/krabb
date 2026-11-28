@@ -1,7 +1,16 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod confinement;
+pub use confinement::{Confinement, Mechanism, supports};
+
 mod program;
 pub use program::program;
+
+#[cfg(target_os = "linux")]
+mod landlock;
+
+#[cfg(target_os = "macos")]
+mod seatbelt;
 
 #[cfg(unix)]
 mod session;

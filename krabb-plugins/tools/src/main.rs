@@ -101,6 +101,11 @@ async fn plugin_main() -> krabb_core::Result<()> {
     };
 
     let sandbox = Sandbox::from_env()?;
+
+    let reach = std::env::var_os("KRABB_HOME")
+        .map(|home| Reach { root: root.clone(), home: PathBuf::from(home) })
+        .filter(Reach::supported);
+
     let policy = Arc::new(Policy { shell, root: Some(root) });
 
     serve_with(
@@ -115,7 +120,12 @@ async fn plugin_main() -> krabb_core::Result<()> {
         move |request| {
             let policy = Arc::clone(&policy);
             let sandbox = sandbox.clone();
-            async move { call_with_sandbox(&policy, request, sandbox.as_ref()).await }
+            let reach = reach.clone();
+
+            async move {
+                let placement = placement(sandbox.as_ref(), reach.as_ref());
+                call_with_sandbox(&policy, request, placement).await
+            }
         },
     )
     .await
@@ -123,13 +133,13 @@ async fn plugin_main() -> krabb_core::Result<()> {
 
 #[cfg(test)]
 async fn call(policy: &Policy, request: Request) -> krabb_core::Result<Option<Response>> {
-    Box::pin(call_with_sandbox(policy, request, None)).await
+    Box::pin(call_with_sandbox(policy, request, Placement::Host)).await
 }
 
 async fn call_with_sandbox(
     policy: &Policy,
     request: Request,
-    sandbox: Option<&Sandbox>,
+    placement: Placement<'_>,
 ) -> krabb_core::Result<Option<Response>> {
     let (id, method, params) = match request {
         Request::Call { id, method, params, .. } => (id, method, params),
@@ -239,9 +249,9 @@ async fn call_with_sandbox(
         "file_patch" => {
             policy.shell(params["approve"].as_bool() == Some(true))?;
 
-            if let Placement::Container(_) = placement(sandbox) {
-                return Err(denied("Use the sandboxed shell tool for Git-backed patches"));
-            }
+            let reach = placement
+                .reach()
+                .map_err(|_| denied("Use the sandboxed shell tool for Git-backed patches"))?;
 
             if params["approve"].as_bool() != Some(true) {
                 return Err(denied("Patch approval is required"));
@@ -251,7 +261,7 @@ async fn call_with_sandbox(
             let workspace = workspace(params["workspace"].as_str())?;
             let root = file_at(policy, ".", workspace.as_deref())?;
             patch_paths_at(policy, text, workspace.as_deref())?;
-            let checked = apply(&root, text, true)
+            let checked = apply_at(&root, text, true, reach)
                 .await
                 .map_err(|error| denied(format!("Patch check failed: {error}")))?;
 
@@ -262,7 +272,7 @@ async fn call_with_sandbox(
                 )));
             }
 
-            let applied = apply(&root, text, false)
+            let applied = apply_at(&root, text, false, reach)
                 .await
                 .map_err(|error| denied(format!("Patch failed: {error}")))?;
 
@@ -280,9 +290,9 @@ async fn call_with_sandbox(
             let approved = params["approve"].as_bool() == Some(true);
             policy.shell(approved)?;
 
-            if let Placement::Container(_) = placement(sandbox) {
-                return Err(denied("Use the sandboxed shell tool for Git operations"));
-            }
+            let reach = placement
+                .reach()
+                .map_err(|_| denied("Use the sandboxed shell tool for Git operations"))?;
 
             if !approved {
                 return Err(denied("Git execution approval is required"));
@@ -317,8 +327,9 @@ async fn call_with_sandbox(
             }
 
             let root = file_at(policy, ".", workspace.as_deref())?;
-            let output =
-                git(&args, &root).await.map_err(|error| denied(format!("Git failed: {error}")))?;
+            let output = git_at(&args, &root, reach)
+                .await
+                .map_err(|error| denied(format!("Git failed: {error}")))?;
             command_output(&output)
         }
 
@@ -328,7 +339,7 @@ async fn call_with_sandbox(
                 params["command"].as_str().ok_or_else(|| denied("shell.command is required"))?;
             let workspace = workspace(params["workspace"].as_str())?;
             let root = file_at(policy, ".", workspace.as_deref())?;
-            let output = shell_with(command, &root, sandbox)
+            let output = shell_with(command, &root, placement)
                 .await
                 .map_err(|error| denied(format!("Shell failed: {error}")))?;
             command_output(&output)
@@ -444,7 +455,7 @@ fn response(id: u64, result: serde_json::Value) -> krabb_core::Result<Option<Res
 
 #[cfg(test)]
 async fn shell(command: &str, root: &Path) -> std::io::Result<std::process::Output> {
-    shell_with(command, root, None).await
+    shell_with(command, root, Placement::Host).await
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -586,15 +597,59 @@ impl Sandbox {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+/// The folder an OS sandbox confines commands to, and the Krabb home it must keep out.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Reach {
+    root: PathBuf,
+    home: PathBuf,
+}
+
+impl Reach {
+    fn supported(&self) -> bool {
+        krabb_process::supports(&self.root, &self.home)
+    }
+
+    fn command(
+        reach: Option<&Self>,
+        program: &str,
+    ) -> std::io::Result<(Command, Option<krabb_process::Confinement>)> {
+        let Some(reach) = reach else {
+            return Ok((Command::new(program), None));
+        };
+
+        let confinement = krabb_process::Confinement::new(&reach.root, &reach.home)?;
+        let command = Command::from(confinement.command(program));
+
+        Ok((command, Some(confinement)))
+    }
+}
+
+/// Where shell commands run: a container, then an OS sandbox, then the host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Placement<'a> {
     Container(&'a Sandbox),
+    Sandbox(&'a Reach),
     Host,
 }
 
-fn placement(sandbox: Option<&Sandbox>) -> Placement<'_> {
+impl<'a> Placement<'a> {
+    /// The OS sandbox for host-run Git, or an error inside a container.
+    fn reach(self) -> Result<Option<&'a Reach>, &'a Sandbox> {
+        match self {
+            Self::Container(sandbox) => Err(sandbox),
+            Self::Sandbox(reach) => Ok(Some(reach)),
+            Self::Host => Ok(None),
+        }
+    }
+}
+
+fn placement<'a>(sandbox: Option<&'a Sandbox>, reach: Option<&'a Reach>) -> Placement<'a> {
     if let Some(sandbox) = sandbox {
         return Placement::Container(sandbox);
+    }
+
+    if let Some(reach) = reach {
+        return Placement::Sandbox(reach);
     }
 
     Placement::Host
@@ -603,27 +658,32 @@ fn placement(sandbox: Option<&Sandbox>) -> Placement<'_> {
 async fn shell_with(
     command: &str,
     root: &Path,
-    sandbox: Option<&Sandbox>,
+    placement: Placement<'_>,
 ) -> std::io::Result<std::process::Output> {
-    match placement(sandbox) {
+    match placement {
         Placement::Container(sandbox) => sandbox_shell(command, root, sandbox).await,
-        Placement::Host => host_shell(command, root).await,
+        Placement::Sandbox(reach) => host_shell(command, root, Some(reach)).await,
+        Placement::Host => host_shell(command, root, None).await,
     }
 }
 
-async fn host_shell(command: &str, root: &Path) -> std::io::Result<std::process::Output> {
+async fn host_shell(
+    command: &str,
+    root: &Path,
+    reach: Option<&Reach>,
+) -> std::io::Result<std::process::Output> {
     #[cfg(windows)]
-    let mut process = {
-        let mut process = Command::new("cmd");
+    let (mut process, _confinement) = {
+        let (mut process, confinement) = Reach::command(reach, "cmd")?;
         process.args(["/C", command]);
-        process
+        (process, confinement)
     };
 
     #[cfg(not(windows))]
-    let mut process = {
-        let mut process = Command::new("sh");
+    let (mut process, _confinement) = {
+        let (mut process, confinement) = Reach::command(reach, "sh")?;
         process.args(["-c", command]);
-        process
+        (process, confinement)
     };
 
     process.current_dir(root);
@@ -734,8 +794,11 @@ const DISABLED_HOOKS: &str = "NUL";
 #[cfg(not(windows))]
 const DISABLED_HOOKS: &str = "/dev/null";
 
-fn git_command(args: &[String]) -> Command {
-    let mut process = Command::new("git");
+fn git_command(
+    args: &[String],
+    reach: Option<&Reach>,
+) -> std::io::Result<(Command, Option<krabb_process::Confinement>)> {
+    let (mut process, confinement) = Reach::command(reach, "git")?;
 
     process.args(["--no-pager", "--no-optional-locks", "-c"]);
     process.arg(format!("core.hooksPath={DISABLED_HOOKS}"));
@@ -763,18 +826,37 @@ fn git_command(args: &[String]) -> Command {
     process.env_remove("GIT_EDITOR");
     process.env_remove("GIT_SEQUENCE_EDITOR");
     process.env_remove("GIT_ASKPASS");
-    process
+    Ok((process, confinement))
 }
 
+#[cfg(test)]
 async fn git(args: &[String], root: &Path) -> std::io::Result<std::process::Output> {
-    let mut process = git_command(args);
+    git_at(args, root, None).await
+}
+
+async fn git_at(
+    args: &[String],
+    root: &Path,
+    reach: Option<&Reach>,
+) -> std::io::Result<std::process::Output> {
+    let (mut process, _confinement) = git_command(args, reach)?;
 
     process.current_dir(root);
     contained(process, None).await
 }
 
+#[cfg(test)]
 async fn apply(root: &Path, text: &str, check: bool) -> std::io::Result<std::process::Output> {
-    let mut command = git_command(&["apply".into()]);
+    apply_at(root, text, check, None).await
+}
+
+async fn apply_at(
+    root: &Path,
+    text: &str,
+    check: bool,
+    reach: Option<&Reach>,
+) -> std::io::Result<std::process::Output> {
+    let (mut command, _confinement) = git_command(&["apply".into()], reach)?;
 
     command.arg("--whitespace=error");
 
@@ -2141,8 +2223,9 @@ mod tests {
     mod git;
 
     use super::{
-        ENTRY_LIMIT, Policy, Sandbox, Shell, apply, call, confined, denied, fetch_url_parse, file,
-        git, list_confined, patch_paths, public_ip, search, shell, shell_with, tool_specs,
+        ENTRY_LIMIT, Placement, Policy, Reach, Sandbox, Shell, apply, call, call_with_sandbox,
+        confined, denied, fetch_url_parse, file, git, list_confined, patch_paths, placement,
+        public_ip, search, shell, shell_with, tool_specs,
     };
 
     use krabb_core::types::{Request, Response};
@@ -2406,7 +2489,10 @@ mod tests {
             image: "local/tool:latest".into(),
         };
 
-        assert!(shell_with("touch host-marker", &root, Some(&sandbox)).await.is_err());
+        assert!(
+            shell_with("touch host-marker", &root, Placement::Container(&sandbox)).await.is_err()
+        );
+
         assert!(!root.join("host-marker").exists());
 
         let _ = fs::remove_dir_all(root);
@@ -2434,7 +2520,8 @@ mod tests {
         let sandbox =
             Sandbox { runtime: runtime.display().to_string(), image: "local/tool:latest".into() };
 
-        let output = shell_with("printf sandboxed", &root, Some(&sandbox)).await.unwrap();
+        let output =
+            shell_with("printf sandboxed", &root, Placement::Container(&sandbox)).await.unwrap();
 
         assert_eq!(String::from_utf8_lossy(&output.stdout), "sandboxed");
         assert!(!root.join("host-marker").exists());
@@ -3095,8 +3182,110 @@ mod tests {
     fn shell_placement_prefers_a_configured_container() {
         let sandbox = Sandbox::parse(Some("docker"), Some("local/tool:latest")).unwrap().unwrap();
 
-        assert_eq!(super::placement(Some(&sandbox)), super::Placement::Container(&sandbox));
-        assert_eq!(super::placement(None), super::Placement::Host);
+        let reach = Reach { root: "/work".into(), home: "/home".into() };
+
+        assert_eq!(placement(Some(&sandbox), Some(&reach)), Placement::Container(&sandbox));
+        assert_eq!(placement(Some(&sandbox), None), Placement::Container(&sandbox));
+        assert_eq!(placement(None, Some(&reach)), Placement::Sandbox(&reach));
+        assert_eq!(placement(None, None), Placement::Host);
+        assert_eq!(Placement::Container(&sandbox).reach(), Err(&sandbox));
+        assert_eq!(Placement::Sandbox(&reach).reach(), Ok(Some(&reach)));
+        assert_eq!(Placement::Host.reach(), Ok(None));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn os_sandbox_keeps_shell_and_git_inside_the_workspace() {
+        let base = test_root("krabb-tools-confined");
+        let root = base.join("workspace");
+        let home = base.join("home");
+        let _ = fs::remove_dir_all(&base);
+
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("credentials.json"), "secret-token").unwrap();
+
+        let reach = Reach { root: root.clone(), home: home.clone() };
+
+        if cfg!(target_os = "linux") && !reach.supported() {
+            eprintln!("Landlock is unavailable; skipping the OS sandbox test.");
+            return;
+        }
+
+        assert!(reach.supported());
+        assert!(!Reach { root: base.clone(), home: home.clone() }.supported());
+
+        let policy = Policy { shell: Shell::On, ..policy(&root) };
+
+        let run = |command: String| {
+            let policy = policy.clone();
+            let reach = reach.clone();
+
+            async move {
+                let request =
+                    Request::call(1, "shell_run", json!({"command": command, "approve": true}));
+
+                call_with_sandbox(&policy, request, Placement::Sandbox(&reach))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .result
+                    .unwrap()
+            }
+        };
+
+        let written = run("printf inside > note && cat note".into()).await;
+
+        assert_eq!(written["status"], 0, "{written}");
+        assert_eq!(written["stdout"], "inside");
+
+        let secret = run(format!("cat '{}'", home.join("credentials.json").display())).await;
+
+        assert_ne!(secret["status"], 0);
+        assert!(!secret["stdout"].as_str().unwrap().contains("secret-token"));
+
+        let outside = run(format!("printf x > '{}'", base.join("escaped").display())).await;
+
+        assert_ne!(outside["status"], 0);
+        assert!(!base.join("escaped").exists());
+
+        if cfg!(target_os = "linux") {
+            assert_git_runs_confined(&policy, &reach, &root).await;
+        }
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    async fn assert_git_runs_confined(policy: &Policy, reach: &Reach, root: &Path) {
+        assert!(git(&["init".into()], root).await.unwrap().status.success());
+
+        let status = call_with_sandbox(
+            policy,
+            Request::call(2, "git_run", json!({"args": ["status"], "approve": true})),
+            Placement::Sandbox(reach),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .result
+        .unwrap();
+
+        assert_eq!(status["status"], 0, "{status}");
+
+        let patch = "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+patched\n";
+
+        let patched = call_with_sandbox(
+            policy,
+            Request::call(3, "file_patch", json!({"text": patch, "approve": true})),
+            Placement::Sandbox(reach),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(patched.result.unwrap()["ok"], true);
+        assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "patched\n");
     }
 
     #[cfg(unix)]
@@ -3262,7 +3451,7 @@ mod tests {
                 super::call_with_sandbox(
                     &policy,
                     Request::call(2, name, json!({"args": ["diff"], "approve": true})),
-                    Some(&sandbox),
+                    Placement::Container(&sandbox),
                 )
                 .await
                 .is_err()

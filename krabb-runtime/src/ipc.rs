@@ -1179,9 +1179,13 @@ async fn session_command(
     let result = async {
         let text = if state.client(client_id)?.shell.load(Ordering::Acquire) {
             let (notices, mut receiver) = tokio::sync::mpsc::channel(8);
+            let confinement = krabb_process::supports(&state.root, &state.home)
+                .then(|| krabb_process::Confinement::new(&state.root, &state.home))
+                .transpose()?;
             let command_task = run_terminal_command(
                 &command,
                 workspace,
+                confinement.as_ref(),
                 notices,
                 Arc::clone(&cancel),
                 tokio::time::Instant::now() + super::TURN_LIMIT,
@@ -1259,11 +1263,12 @@ async fn session_command(
 async fn run_terminal_command(
     command: &str,
     workspace: &Path,
+    confinement: Option<&krabb_process::Confinement>,
     notices: tokio::sync::mpsc::Sender<super::StreamNotice>,
     cancel: Arc<super::Cancellation>,
     deadline: tokio::time::Instant,
 ) -> io::Result<String> {
-    let mut process = terminal_shell(command)?;
+    let mut process = terminal_shell(command, confinement)?;
 
     strip_secrets(&mut process, std::env::vars_os().map(|(name, _)| name));
 
@@ -1475,22 +1480,35 @@ async fn stop_terminal_readers(
 }
 
 #[cfg(windows)]
-fn terminal_shell(command: &str) -> io::Result<tokio::process::Command> {
+fn terminal_shell(
+    command: &str,
+    _: Option<&krabb_process::Confinement>,
+) -> io::Result<tokio::process::Command> {
     let mut process = tokio::process::Command::new("cmd.exe");
     process.args(["/C", command]);
     Ok(process)
 }
 
 #[cfg(unix)]
-fn terminal_shell(command: &str) -> io::Result<tokio::process::Command> {
-    let mut process = tokio::process::Command::new("sh");
+fn terminal_shell(
+    command: &str,
+    confinement: Option<&krabb_process::Confinement>,
+) -> io::Result<tokio::process::Command> {
+    let mut process = match confinement {
+        Some(confinement) => tokio::process::Command::from(confinement.command("sh")),
+        None => tokio::process::Command::new("sh"),
+    };
+
     process.args(["-c", "IFS= read -r _; eval \"$1\"", "krabb-terminal", command]);
     process.process_group(0);
     Ok(process)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn terminal_shell(_command: &str) -> io::Result<tokio::process::Command> {
+fn terminal_shell(
+    _: &str,
+    _: Option<&krabb_process::Confinement>,
+) -> io::Result<tokio::process::Command> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "Typed shell commands are unavailable on this platform.",
@@ -2900,6 +2918,7 @@ mod tests {
         let command = run_terminal_command(
             "printf first; sleep 0.05; printf second",
             &workspace,
+            None,
             notices,
             Arc::new(crate::Cancellation::new()),
             tokio::time::Instant::now() + Duration::from_secs(5),
@@ -2937,6 +2956,7 @@ mod tests {
             run_terminal_command(
                 "sleep 30 &",
                 &std::env::temp_dir(),
+                None,
                 notices,
                 Arc::new(crate::Cancellation::new()),
                 tokio::time::Instant::now() + Duration::from_millis(100),
@@ -2957,6 +2977,7 @@ mod tests {
         let command = run_terminal_command(
             "sleep 30 &",
             &workspace,
+            None,
             notices,
             Arc::clone(&cancel),
             tokio::time::Instant::now() + Duration::from_secs(5),
@@ -2989,6 +3010,7 @@ mod tests {
         let output = run_terminal_command(
             &command,
             &std::env::temp_dir(),
+            None,
             notices,
             Arc::new(crate::Cancellation::new()),
             tokio::time::Instant::now() + Duration::from_secs(2),
@@ -3016,6 +3038,7 @@ mod tests {
             run_terminal_command(
                 &command,
                 &std::env::temp_dir(),
+                None,
                 notices,
                 Arc::new(crate::Cancellation::new()),
                 tokio::time::Instant::now() + Duration::from_millis(100),
@@ -3050,6 +3073,7 @@ mod tests {
             run_terminal_command(
                 &command,
                 &workspace,
+                None,
                 notices,
                 Arc::new(crate::Cancellation::new()),
                 tokio::time::Instant::now() + Duration::from_secs(5),
@@ -3085,6 +3109,7 @@ mod tests {
         run_terminal_command(
             &command,
             &std::env::temp_dir(),
+            None,
             notices,
             Arc::new(crate::Cancellation::new()),
             tokio::time::Instant::now() + Duration::from_secs(2),
@@ -3149,6 +3174,7 @@ mod tests {
         let output = run_terminal_command(
             "echo $$; ps -o pgid= -p $$",
             &std::env::temp_dir(),
+            None,
             notices,
             Arc::new(crate::Cancellation::new()),
             tokio::time::Instant::now() + Duration::from_secs(5),
@@ -3161,6 +3187,48 @@ mod tests {
 
         assert_eq!(lines[0], lines[1]);
         assert_ne!(lines[1], own);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn terminal_command_stays_in_the_os_sandbox() {
+        let base = std::env::temp_dir()
+            .join(format!("krabb-terminal-sandbox-{}", super::token().unwrap()));
+        let root = base.join("workspace");
+        let home = base.join("home");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("credentials.json"), "secret-token").unwrap();
+
+        if !krabb_process::supports(&root, &home) {
+            assert!(cfg!(target_os = "linux"), "the macOS sandbox is unavailable");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let confinement = krabb_process::Confinement::new(&root, &home).unwrap();
+        let (notices, _receiver) = tokio::sync::mpsc::channel(8);
+
+        let output = run_terminal_command(
+            &format!(
+                "printf inside > note; cat note; cat '{}' || printf ' denied'",
+                home.join("credentials.json").display()
+            ),
+            &root,
+            Some(&confinement),
+            notices,
+            Arc::new(crate::Cancellation::new()),
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.contains("inside"), "{output}");
+        assert!(output.contains("denied"), "{output}");
+        assert!(!output.contains("secret-token"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]

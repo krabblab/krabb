@@ -15,10 +15,14 @@ const UNSUPPORTED: &str = "this platform runs shell commands only in a container
 
 const INVALID: &str = "KRABB_SANDBOX_RUNTIME or KRABB_SANDBOX_IMAGE is invalid.";
 
-/// Where the tools plugin runs approved shell commands.
+const ADVISORY: &str = "No container or OS sandbox is available, so the workspace limit is                         advisory: commands can reach any file this user can";
+
+/// Where the tools plugin runs approved shell commands: a container, then an OS sandbox, then
+/// the host.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Place {
     Host { root: bool },
+    Sandbox(PathBuf),
     Container(String),
     Plugin(String),
     Unsupported,
@@ -27,9 +31,19 @@ pub(crate) enum Place {
 
 impl Place {
     /// Mirrors the tools plugin's sandbox settings, on a host that may or may not support
-    /// uncontained commands.
-    pub(crate) fn of(runtime: Option<&str>, image: Option<&str>, host: bool, root: bool) -> Self {
-        let uncontained = if host { Self::Host { root } } else { Self::Unsupported };
+    /// uncontained commands, with SANDBOX naming the folder an OS sandbox would confine.
+    pub(crate) fn of(
+        runtime: Option<&str>,
+        image: Option<&str>,
+        host: bool,
+        root: bool,
+        sandbox: Option<&Path>,
+    ) -> Self {
+        let uncontained = match sandbox {
+            Some(folder) => Self::Sandbox(folder.to_path_buf()),
+            None if host => Self::Host { root },
+            None => Self::Unsupported,
+        };
 
         match runtime {
             None | Some("off") if image.is_some() => Self::Invalid,
@@ -48,21 +62,30 @@ impl Place {
         let runtime = value("KRABB_SANDBOX_RUNTIME");
         let image = value("KRABB_SANDBOX_IMAGE");
         let host = cfg!(any(unix, windows));
+        let workspace = home::workspace_root();
+        let sandbox = krabb_process::supports(&workspace, &home::home()).then_some(&*workspace);
 
-        Self::of(runtime.as_deref(), image.as_deref(), host, root())
+        Self::of(runtime.as_deref(), image.as_deref(), host, root(), sandbox)
     }
 
     fn text(&self) -> String {
         match self {
-            Self::Host { root: true } => "on the host as root, starting in the workspace".into(),
+            Self::Host { root: true } => {
+                format!("on the host as root, starting in the workspace. {ADVISORY}")
+            }
 
             Self::Host { root: false } => format!(
-                "on the host as Krabb's own user, starting in the workspace{}",
+                "on the host as Krabb's own user, starting in the workspace{}. {ADVISORY}",
                 if cfg!(target_os = "linux") {
                     ". Commands cannot gain privileges, so sudo does not work"
                 } else {
                     ""
                 }
+            ),
+
+            Self::Sandbox(folder) => format!(
+                "in an OS sandbox limited to {}, where commands read and write only that folder                  and a temporary folder, read system programs, and keep network access; Krabb's                  home and other folders are out of reach",
+                folder.display()
             ),
 
             Self::Container(runtime) => format!(
@@ -369,21 +392,38 @@ mod tests {
 
     #[test]
     fn mirrors_the_tools_plugin_sandbox_settings() {
-        assert_eq!(Place::of(None, None, true, false), Place::Host { root: false });
-        assert_eq!(Place::of(Some("off"), None, true, true), Place::Host { root: true });
-        assert_eq!(Place::of(None, None, false, false), Place::Unsupported);
+        let folder = Path::new("/work");
+
+        assert_eq!(Place::of(None, None, true, false, None), Place::Host { root: false });
+        assert_eq!(Place::of(Some("off"), None, true, true, None), Place::Host { root: true });
+        assert_eq!(Place::of(None, None, false, false, None), Place::Unsupported);
+
+        assert_eq!(Place::of(None, None, true, false, Some(folder)), Place::Sandbox(folder.into()));
+        assert_eq!(
+            Place::of(Some("off"), None, true, true, Some(folder)),
+            Place::Sandbox(folder.into())
+        );
 
         assert_eq!(
-            Place::of(Some("podman"), Some("alpine:3"), false, false),
+            Place::of(Some("podman"), Some("alpine:3"), false, false, None),
             Place::Container("podman".into())
         );
 
-        assert_eq!(Place::of(Some("docker"), None, true, false), Place::Invalid);
-        assert_eq!(Place::of(Some("docker"), Some("-x"), true, false), Place::Invalid);
-        assert_eq!(Place::of(Some("lxc"), Some("alpine"), true, false), Place::Invalid);
-        assert_eq!(Place::of(None, Some("alpine"), true, false), Place::Invalid);
-        assert_eq!(Place::of(Some("off"), Some("alpine"), true, false), Place::Invalid);
+        assert_eq!(
+            Place::of(Some("docker"), Some("alpine:3"), true, false, Some(folder)),
+            Place::Container("docker".into())
+        );
+
+        assert_eq!(Place::of(Some("docker"), None, true, false, Some(folder)), Place::Invalid);
+        assert_eq!(Place::of(Some("docker"), Some("-x"), true, false, None), Place::Invalid);
+        assert_eq!(Place::of(Some("lxc"), Some("alpine"), true, false, None), Place::Invalid);
+        assert_eq!(Place::of(None, Some("alpine"), true, false, None), Place::Invalid);
+        assert_eq!(Place::of(Some("off"), Some("alpine"), true, false, None), Place::Invalid);
         assert!(!matches!(Place::current(), Place::Plugin(_)));
+
+        if cfg!(windows) {
+            assert!(!matches!(Place::current(), Place::Sandbox(_)));
+        }
     }
 
     #[test]
@@ -414,10 +454,31 @@ mod tests {
 
         assert!(text.contains(
             "- Shell commands: available without asking, on the host as root, starting in the \
-             workspace.\n"
+             workspace. No container or OS sandbox is available, so the workspace limit is \
+             advisory: commands can reach any file this user can.\n"
         ));
 
         assert!(!text.contains("sudo"));
+
+        let host = Permissions {
+            shell: Shell::Available(Place::Host { root: false }),
+            ..telegram(ApprovalMode::Auto)
+        };
+
+        assert!(render(&host).contains("as Krabb's own user, starting in the workspace"));
+        assert!(render(&host).contains("so the workspace limit is advisory"));
+
+        let confined = Permissions {
+            shell: Shell::Available(Place::Sandbox("/work".into())),
+            ..telegram(ApprovalMode::Auto)
+        };
+
+        assert!(render(&confined).contains(
+            "- Shell commands: available without asking, in an OS sandbox limited to /work, \
+             where commands read and write only that folder and a temporary folder, read system \
+             programs, and keep network access; Krabb's home and other folders are out of \
+             reach.\n"
+        ));
 
         let contained = Permissions {
             shell: Shell::Available(Place::Container("docker".into())),

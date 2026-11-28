@@ -24,8 +24,9 @@ Git can execute repository-configured filters, even during `diff`. They are
 unavailable when shell access is disabled; approval authorizes that execution. When a container sandbox is configured,
 use the sandboxed shell tool for Git operations and patches; the direct Git
 and patch tools reject execution on the host.
-Git runs in the active workspace, but repository-configured programs have
-shell permissions and may access paths outside that workspace.
+Git runs in the active workspace and in the OS sandbox when one is available; on the
+host, repository-configured programs have shell permissions and may access paths
+outside that workspace.
 Direct Git operations and Git-backed patches use the same descendant containment as host
 shell commands. Descendants are stopped on completion, timeout, or plugin restart, with
 the macOS limits described for the shell below.
@@ -37,13 +38,19 @@ addresses, rechecks redirects, caps redirects at three and response bodies at
 deadline and a four-request concurrency limit. The plugin declares its network
 permission in the manifest.
 
-Approved shell commands use the container sandbox when one is configured and otherwise run
-on the host as the daemon's user. Host commands start in their own process group on Unix
+Approved shell commands run in the first place available: the container sandbox when one
+is configured, then the OS sandbox, then the host as the daemon's user. The OS sandbox is
+Landlock on Linux 5.13 or later and `sandbox-exec` on macOS; Windows has none. It lets
+commands read and write only the workspace and a private temporary folder (also their
+`HOME` and `TMPDIR`), read system paths such as `/usr`, `/bin`, `/lib`, and `/etc`, and
+use the network. Krabb's home, credentials, keys, and other folders are out of reach. The
+plugin skips the OS sandbox when the workspace contains `KRABB_HOME`. Commands start in
+their own process group on Unix
 and in a Job Object on Windows. Linux also sets no-new-privileges and rejects process-group
 and session changes, so descendants cannot escape cancellation. macOS and other Unix hosts
 have no equivalent restriction: a descendant that starts its own session survives
-cancellation, and setuid programs keep their privileges. The host shell has the daemon
-user's file access; only the container keeps commands inside the workspace.
+cancellation, and setuid programs outside the macOS sandbox keep their privileges. The
+host shell has the daemon user's file access, so its workspace limit is advisory.
 To configure the sandbox, set `KRABB_SANDBOX_RUNTIME` to `docker` or
 `podman` and `KRABB_SANDBOX_IMAGE` to an image already available locally.
 The tools plugin never pulls images. The container has no network, a read-only
