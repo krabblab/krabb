@@ -47,9 +47,24 @@ Press Enter to send, Ctrl+O to add a line, and Escape or Ctrl+C to quit.
 While Krabb is busy, Escape interrupts the turn or does nothing, so use Ctrl+C to quit.
 Shift+Enter and Alt+Enter also add a line where the terminal reports them, so
 Ctrl+O is the key that works everywhere. Use Up/Down for input history,
-Page Up/Page Down to scroll, and Shift-drag to select text. Typed text, including
+Page Up/Page Down or the mouse wheel to scroll. Typed text, including
 capitals, shifted symbols, and Option or AltGr characters, arrives as the
 keyboard layout produces it.
+
+Drag with the mouse to select text in the conversation or the prompt, and release to
+copy it. Double-click selects a word, triple-click a whole message, and Escape clears the
+selection. Copied text keeps the reply's own line breaks and leaves out names, rails,
+times, and the breaks the window added. The TUI copies through the terminal's OSC 52
+sequence, which also works over SSH, and through the system clipboard where one is
+available. A notice at the top right of the prompt says how many characters it copied, or
+why it could not and what to do instead. Hold Shift while dragging to use the terminal's
+own selection. A terminal that ignores OSC 52 can show the notice without copying; use
+Shift there.
+
+Click in the prompt to move the cursor there. Typing or Backspace replaces text selected
+in the prompt. Click Approve or Deny in an approval prompt to answer it exactly as the
+typed `/approve` or `/deny` command would. A click runs an action only when the button is
+pressed and released on it without dragging, so scrolling and selecting never run one.
 
 When the TUI closes for any reason other than quitting, such as lost terminal
 input or an error, it prints why and how to open it again.

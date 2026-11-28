@@ -2,19 +2,19 @@ use std::ops::Range;
 
 use krabb_text::{Document, Style as TextStyle};
 
-use ratatui::{
-    style::{Modifier, Style},
-    text::Line,
-};
+use ratatui::style::{Modifier, Style};
 
-pub(super) fn render(source: &str, width: usize) -> Vec<Line<'static>> {
+use super::selection::Rows;
+
+pub(super) fn render(source: &str, width: usize) -> Rows {
+    let mut rows = Rows::default();
+
     if source.len() > krabb_text::LIMIT {
-        return source
-            .lines()
-            .flat_map(|line| {
-                super::wrap_styled_segments(&[(visible(line), Style::default())], width)
-            })
-            .collect();
+        for line in source.lines() {
+            rows.append(super::wrap_styled_segments(&[(visible(line), Style::default())], width));
+        }
+
+        return rows;
     }
 
     let document = Document::parse(source, false);
@@ -26,7 +26,6 @@ pub(super) fn render(source: &str, width: usize) -> Vec<Line<'static>> {
 
     let mut block = blocks.next();
     let mut offset = 0;
-    let mut rows = Vec::new();
 
     while offset < document.text.len() {
         if let Some((range, language)) = &block
@@ -38,7 +37,7 @@ pub(super) fn render(source: &str, width: usize) -> Vec<Line<'static>> {
             let lines = lines.iter().map(String::as_str).collect::<Vec<_>>();
             let language = if language.is_empty() { "code" } else { language };
 
-            rows.extend(super::wrap_code_block(&lines, language, width));
+            rows.append(super::wrap_code_block(&lines, language, width));
             offset = range.end;
             block = blocks.next();
             continue;
@@ -56,7 +55,7 @@ pub(super) fn render(source: &str, width: usize) -> Vec<Line<'static>> {
             })
             .collect::<Vec<_>>();
 
-        rows.extend(super::wrap_styled_segments(&segments, width));
+        rows.append(super::wrap_styled_segments(&segments, width));
 
         let starts_block = block.as_ref().is_some_and(|(range, _)| range.start == end);
         offset = end.saturating_add(usize::from(!starts_block));
@@ -148,8 +147,9 @@ pub(super) fn visible(text: &str) -> String {
 mod tests {
     use super::*;
 
-    fn text(rows: &[Line<'_>]) -> String {
-        rows.iter()
+    fn text(rows: &Rows) -> String {
+        rows.lines
+            .iter()
             .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
@@ -169,7 +169,7 @@ mod tests {
              quoted\n\nANSA (https://www.ansa.it/english/news/)"
         );
 
-        let spans = rows.iter().flat_map(|row| &row.spans).collect::<Vec<_>>();
+        let spans = rows.lines.iter().flat_map(|row| &row.spans).collect::<Vec<_>>();
         let styled = |word: &str, modifiers| {
             spans.iter().any(|span| {
                 span.content.contains(word) && span.style.add_modifier.contains(modifiers)
@@ -199,8 +199,8 @@ mod tests {
     fn wraps_unicode_styles_and_keeps_unmatched_or_escaped_markers_literal() {
         let rows = render("**こんにちは e\u{301} 👩‍💻 world** plain", 10);
 
-        assert!(rows.iter().all(|row| row.width() <= 10));
-        assert!(rows.iter().flat_map(|row| &row.spans).any(|span| {
+        assert!(rows.lines.iter().all(|row| row.width() <= 10));
+        assert!(rows.lines.iter().flat_map(|row| &row.spans).any(|span| {
             span.content.contains("👩‍💻") && span.style.add_modifier.contains(Modifier::BOLD)
         }));
 
@@ -210,7 +210,7 @@ mod tests {
         );
 
         assert_eq!(text(&render("**first\nsecond**", 80)), "first\nsecond");
-        assert!(render("**first\nsecond**", 80).iter().all(|row| {
+        assert!(render("**first\nsecond**", 80).lines.iter().all(|row| {
             row.spans.iter().all(|span| span.style.add_modifier.contains(Modifier::BOLD))
         }));
     }
@@ -225,7 +225,7 @@ mod tests {
         assert!(text(&rows).ends_with("End."));
         assert_eq!(text(&render("a\u{1b}[31m\u{7}\tb", 80)), "a�[31m�    b");
 
-        assert!(render("", 80).is_empty());
+        assert!(render("", 80).lines.is_empty());
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
         let rows = render(&source, 80);
 
         assert_eq!(text(&rows).replace('\n', ""), source.replace('\n', ""));
-        assert!(rows.iter().all(|row| row.width() <= 80));
+        assert!(rows.lines.iter().all(|row| row.width() <= 80));
     }
 
     #[test]
@@ -262,7 +262,7 @@ mod tests {
         for end in source.char_indices().map(|(offset, _)| offset).chain([source.len()]) {
             let rows = render(&source[..end], 12);
 
-            assert!(rows.iter().all(|row| row.width() <= 12));
+            assert!(rows.lines.iter().all(|row| row.width() <= 12));
         }
     }
 }

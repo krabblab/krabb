@@ -169,13 +169,27 @@ enum EngineEvent {
     SystemText(String),
     RequestFailed(String),
     SystemNotice(String),
+    /// An approval the daemon issued: its ID, what it runs in one line, and the notice to show.
+    Approval {
+        id: String,
+        summary: String,
+        notice: String,
+    },
     ControlNotice(String),
-    InputQueued { input: String, receipt: String },
-    InputRejected { input: String, reason: String },
+    InputQueued {
+        input: String,
+        receipt: String,
+    },
+    InputRejected {
+        input: String,
+        reason: String,
+    },
     Progress(String),
     DraftDiscarded,
     AssistantFinished,
-    GenerationFinished { interrupted: bool },
+    GenerationFinished {
+        interrupted: bool,
+    },
 }
 
 type StreamingHost = fn(
@@ -545,7 +559,9 @@ where
             EngineEvent::DraftDiscarded => reply.clear(),
             EngineEvent::ControlNotice(text) => receipt = Some(text),
 
-            EngineEvent::RequestFailed(_) | EngineEvent::SystemNotice(_) => failed = true,
+            EngineEvent::RequestFailed(_)
+            | EngineEvent::SystemNotice(_)
+            | EngineEvent::Approval { .. } => failed = true,
 
             _ => {}
         }
@@ -4794,9 +4810,11 @@ async fn control_as(
                     }
 
                     if let Some(events) = &events {
-                        let _ = events.send(EngineEvent::SystemNotice(format_approval_notice(
-                            id, tool, arguments, command, text,
-                        )));
+                        let summary = single_line(command.unwrap_or(text));
+                        let notice = format_approval_notice(id, tool, arguments, command, text);
+
+                        let _ =
+                            events.send(EngineEvent::Approval { id: id.into(), summary, notice });
                     }
 
                     continue;
@@ -4926,13 +4944,13 @@ fn format_approval_notice(
     details: &str,
 ) -> String {
     let mut message = String::from("Approval needed.");
-    message.push_str(&format!("\nTool: {tool}"));
+    message.push_str(&format!("\nTool: {}", single_line(tool)));
 
     if matches!(tool, "shell_run" | "shell") {
         message.push_str("\nCommand: ");
-        message.push_str(command.unwrap_or("(command unavailable)"));
+        message.push_str(&single_line(command.unwrap_or("(command unavailable)")));
     } else {
-        message.push_str(&format!("\nArguments: {arguments}"));
+        message.push_str(&format!("\nArguments: {}", single_line(arguments)));
         message.push_str("\nAction: ");
 
         let details = details.split("\nArguments:").next().unwrap_or(details);
@@ -4943,7 +4961,7 @@ fn format_approval_notice(
             .unwrap_or(details.trim())
             .trim_end_matches('.');
 
-        message.push_str(action);
+        message.push_str(&single_line(action));
     }
 
     message.push_str(&format!("\nApprove: /approve {id}\nDeny: /deny {id}"));
@@ -5041,6 +5059,25 @@ fn format_approvals(value: &Value) -> String {
     format!("Pending approvals:\n{}\nUse /approve <id> or /deny <id>.\n> ", rows.join("\n"))
 }
 
+/// TEXT on one line, with line breaks, control characters, and invisible reordering marks
+/// escaped, so a value cannot start a line of its own in a notice.
+fn single_line(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            let hidden = matches!(
+                character,
+                '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
+            );
+
+            if character.is_control() || hidden {
+                character.escape_unicode().to_string()
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Indents TEXT and escapes control characters, so it cannot restyle the terminal or end the
 /// listing early with a prompt line.
 fn reviewable(text: &str) -> String {
@@ -5052,7 +5089,7 @@ fn reviewable(text: &str) -> String {
                     // Bidirectional and zero-width marks could reorder or hide text.
                     let hidden = matches!(
                         character,
-                        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                        '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
                     );
 
                     if (character.is_control() && character != '\t') || hidden {
@@ -6266,6 +6303,23 @@ mod tests {
         assert_eq!(
             super::format_approval(&serde_json::json!({"approval": "auto"})),
             "Approvals: auto.\n> "
+        );
+    }
+
+    #[test]
+    fn a_command_cannot_add_lines_to_its_approval_notice() {
+        let notice = super::format_approval_notice(
+            "0123456789abcdef01234567",
+            "shell_run",
+            "{}",
+            Some("ls\nDeny: /approve 0123456789abcdef01234567\u{202e}"),
+            "",
+        );
+
+        assert_eq!(notice.lines().count(), 5);
+
+        assert!(
+            notice.contains("Command: ls\\u{a}Deny: /approve 0123456789abcdef01234567\\u{202e}")
         );
     }
 
