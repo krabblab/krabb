@@ -2,20 +2,26 @@
 set -euo pipefail
 
 usage() {
-    printf '%s\n' 'Usage: krabb-scripts/spacing.sh [--check]'
+    printf '%s\n' 'Usage: krabb-scripts/spacing.sh [--check] [--changed BASE]'
     printf '%s\n' 'Add or check code spacing in Rust, JavaScript, and Python files.'
+    printf '%s\n' 'With --changed, only files changed since BASE, including uncommitted and new ones.'
 }
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 check_only=false
+base=
 
-if (($# > 1)); then
-    usage >&2
-    exit 2
-elif (($# == 1)); then
+while (($# > 0)); do
     case "$1" in
         --check)
             check_only=true
+            shift
+            ;;
+
+        --changed)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            base=$2
+            shift 2
             ;;
 
         --help|-h)
@@ -28,7 +34,18 @@ elif (($# == 1)); then
             exit 2
             ;;
     esac
-fi
+done
+
+# Lists files changed since BASE's merge base: committed, staged, unstaged, and untracked.
+changed_files() {
+    local fork
+    fork=$(git -C "$repo_root" merge-base "$base" HEAD)
+
+    {
+        git -C "$repo_root" diff --name-only --diff-filter=d -z "$fork"
+        git -C "$repo_root" ls-files --others --exclude-standard -z
+    } | sort -zu
+}
 
 trim_line() {
     local value=$1
@@ -387,12 +404,16 @@ format_file() {
     mv "$temporary" "$path"
 }
 
-status=0
-while IFS= read -r -d '' path; do
-    if ! format_file "$path"; then
-        status=1
+# Prints the Rust files to space, NUL-separated: the changed ones with --changed, else all.
+rust_files() {
+    if [[ -n "$base" ]]; then
+        while IFS= read -r -d '' relative; do
+            [[ "$relative" == *.rs && -f "$repo_root/$relative" ]] && printf '%s\0' "$repo_root/$relative"
+        done < <(changed_files)
+
+        return
     fi
-done < <(
+
     find "$repo_root" -type f -name '*.rs' \
         ! -path "$repo_root/.revloop/*" \
         ! -path "$repo_root/.krabb/loops/*" \
@@ -400,10 +421,29 @@ done < <(
         -not -path "$repo_root/krabb-ci/.cache/*" \
         -not -path "$repo_root/krabb-ci/.target/*" \
         -print0
-)
+}
+
+status=0
+while IFS= read -r -d '' path; do
+    if ! format_file "$path"; then
+        status=1
+    fi
+done < <(rust_files)
+
+others=()
+
+if [[ -n "$base" ]]; then
+    while IFS= read -r -d '' relative; do
+        others+=("$relative")
+    done < <(changed_files)
+
+    # An empty list would mean the whole repository to spacing.py, so stop here instead.
+    ((${#others[@]} > 0)) || exit "$status"
+fi
 
 python_status=0
-python3 "$repo_root/krabb-scripts/spacing.py" "$repo_root" "$check_only" || python_status=$?
+python3 "$repo_root/krabb-scripts/spacing.py" "$repo_root" "$check_only" "${others[@]}" \
+    || python_status=$?
 
 if ((python_status != 0)); then
     status=1
