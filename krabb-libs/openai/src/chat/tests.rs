@@ -75,7 +75,9 @@ fn tool_calls_and_results_pair_up_and_images_need_safe_references() {
     assert!(unanswered[1]["content"].as_str().unwrap().contains("No tool result was recorded"));
     assert!(image(PROVIDER, "https://cdn.test/a.png").is_ok());
     assert!(image(PROVIDER, "data:image/png;base64,AA").is_ok());
-    assert!(image(PROVIDER, "file:///etc/passwd").unwrap_err().to_string().starts_with("Fixture"));
+    assert!(
+        image(PROVIDER, "file:///etc/passwd").unwrap_err().to_string().contains("Fixture received")
+    );
 }
 
 #[tokio::test]
