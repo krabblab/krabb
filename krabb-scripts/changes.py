@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Select the workspace packages that a change can affect, so CI tests only those.
 
-changes.py [BASE]
-    Compare BASE with HEAD and print `code` and `packages` as GitHub outputs (to
+changes.py [--local] [BASE]
+    Compare BASE with HEAD and print `code`, `packages`, and `cargo` as GitHub outputs (to
     $GITHUB_OUTPUT when it is set). `code=false` means only documentation or assets
     changed. `packages` is a JSON array of the changed packages and every package that
-    depends on them, or empty when every package must run. Without BASE, every package
-    runs.
+    depends on them, or empty when every package must run. `cargo` holds the matching
+    Cargo selection: `-p` flags, `--workspace`, or nothing when no code changed. Without
+    BASE, every package runs.
+
+    With --local, compare the working tree, including staged, unstaged, and new files,
+    with the merge base of BASE and HEAD, for checks before a commit or push.
 """
 
 import json
@@ -106,13 +110,35 @@ def workspace():
     return members, dependencies
 
 
-def changes(base):
+def git(*arguments):
     output = subprocess.run(
-        ['git', 'diff', '--name-only', '--no-renames', base, 'HEAD'],
-        cwd=ROOT, check=True, capture_output=True, text=True,
+        ['git', *arguments], cwd=ROOT, check=True, capture_output=True, text=True,
     ).stdout
 
     return [line for line in output.splitlines() if line]
+
+
+def changes(base, local=False):
+    """The paths that differ from BASE: between commits, or, when LOCAL, in the working tree."""
+
+    if not local:
+        return git('diff', '--name-only', '--no-renames', base, 'HEAD')
+
+    fork = git('merge-base', base, 'HEAD')[0]
+
+    tracked = git('diff', '--name-only', '--no-renames', fork)
+    untracked = git('ls-files', '--others', '--exclude-standard')
+
+    return sorted(set(tracked + untracked))
+
+
+def cargo(packages):
+    """The Cargo package selection for PACKAGES, as `select` returns them."""
+
+    if packages is None:
+        return '--workspace'
+
+    return ' '.join(f'-p {package}' for package in packages)
 
 
 def main(arguments):
@@ -120,17 +146,26 @@ def main(arguments):
         print(__doc__.strip())
         return 0
 
-    if len(arguments) > 1:
+    local = arguments[:1] == ['--local']
+    arguments = arguments[1:] if local else arguments
+
+    if len(arguments) > 1 or local and not arguments:
         print(__doc__.strip(), file=sys.stderr)
         return 2
 
     packages = None
 
     if arguments:
-        packages = select(changes(arguments[0]), *workspace())
+        packages = select(changes(arguments[0], local), *workspace())
 
     code = packages != []
-    lines = [f'code={str(code).lower()}', f'packages={json.dumps(packages) if packages else ""}']
+
+    lines = [
+        f'code={str(code).lower()}',
+        f'packages={json.dumps(packages) if packages else ""}',
+        f'cargo={cargo(packages)}',
+    ]
+
     target = os.environ.get('GITHUB_OUTPUT')
 
     if target:
