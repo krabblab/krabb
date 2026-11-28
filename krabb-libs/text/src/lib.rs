@@ -20,6 +20,10 @@ pub enum Style {
     Heading(u8),
     Quote,
     Link(String),
+    /// A list item, from its indent and marker to its end.
+    Item,
+    /// A table, whose rows end at line breaks and whose cells end at tabs.
+    Table,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,8 +91,14 @@ impl Document {
                             lists.push(start);
                         }
 
+                        Tag::Table(_) => {
+                            newline(&mut doc.text);
+                            open.push((End::Table, doc.text.len(), Style::Table));
+                        }
+
                         Tag::Item => {
                             newline(&mut doc.text);
+                            open.push((End::Item, doc.text.len(), Style::Item));
                             doc.text.push_str(&"  ".repeat(lists.len().saturating_sub(1)));
 
                             if let Some(Some(number)) = lists.last_mut() {
@@ -578,6 +588,22 @@ mod tests {
         );
 
         assert_eq!(Document::plain("<https://example.com>"), "https://example.com");
+    }
+
+    #[test]
+    fn marks_list_items_and_tables_for_layout() {
+        let doc = Document::parse("- one\n  - [x] two\n\n| a | b |\n|---|---|\n| 1 | 2 |", false);
+
+        let text = |style: Style| {
+            doc.spans
+                .iter()
+                .filter(|span| span.style == style)
+                .map(|span| &doc.text[span.start..span.end])
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(text(Style::Item), ["• one\n  • [x] two\n", "  • [x] two"]);
+        assert_eq!(text(Style::Table), ["a\tb\n1\t2"]);
     }
 
     #[test]

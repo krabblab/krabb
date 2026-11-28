@@ -87,10 +87,22 @@ empty prompt removes the last one. Send them once Krabb's current turn ends. See
 [Media](../../../krabb-docs/media.md) for what Krabb reads.
 
 Assistant replies display bold, italic, strikethrough, headings, and inline code
-with terminal text styles. Code blocks appear in language-labeled panels, and
-links show their labels and URLs. Formatting stays readable while replies stream
-and when revisiting saved sessions. Terminal support determines how styles look;
-disabling colors preserves emphasis. Input and system command output remain literal.
+with terminal text styles. Code blocks appear in language-labeled panels, and a
+built-in highlighter colors keywords, strings, comments, and numbers in Rust, Python,
+JavaScript, TypeScript, shell, JSON, TOML, YAML, Go, and diffs. Other languages stay
+plain. Unified diffs show added lines in green and removed lines in red, even without
+a `diff` label.
+Tables keep their columns aligned inside borders and wrap long cells to fit the window.
+Nested bullet and numbered lists keep hanging indents, and task lists show `[✓]` or
+`[ ]`. Links show their label and address, and terminals that support OSC 8 open them
+on click, usually with Ctrl or Cmd held.
+Colors come from the terminal's own palette plus the Krabb Coral accent, so they read
+on light and dark themes. With `NO_COLOR` set, bold, italic, and underline still mark
+keywords, comments, and links.
+Formatting stays readable while replies stream and when revisiting saved sessions.
+Krabb wraps each message once and re-wraps only the one that changes, so long
+conversations and fast streaming stay smooth. Input and system command output remain
+literal.
 
 ## Commands
 

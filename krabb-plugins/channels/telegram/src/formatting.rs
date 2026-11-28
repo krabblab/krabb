@@ -45,6 +45,8 @@ pub fn parts(text: &str, draft: bool) -> Vec<Value> {
                             entity["url"] = json!(url);
                             "text_link"
                         }
+
+                        Style::Item | Style::Table => continue,
                     };
 
                     if !kinds.contains(&kind) {

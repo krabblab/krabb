@@ -36,11 +36,21 @@ impl Mark {
     }
 }
 
-/// Wrapped rows with the marks that tell selection and copying what each row holds.
+/// Columns of a wrapped row that open TARGET when the terminal supports links.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Link {
+    pub(super) row: usize,
+    pub(super) columns: Range<u16>,
+    pub(super) target: String,
+}
+
+/// Wrapped rows with the marks that tell selection and copying what each row holds, and the
+/// links drawn in them.
 #[derive(Default)]
 pub(super) struct Rows {
     pub(super) lines: Vec<Line<'static>>,
     pub(super) marks: Vec<Mark>,
+    pub(super) links: Vec<Link>,
 }
 
 impl Rows {
@@ -65,6 +75,9 @@ impl Rows {
     }
 
     pub(super) fn append(&mut self, mut other: Rows) {
+        let offset = self.lines.len();
+
+        self.links.extend(other.links.into_iter().map(|link| Link { row: link.row + offset, ..link }));
         self.lines.append(&mut other.lines);
         self.marks.append(&mut other.marks);
     }
@@ -78,6 +91,11 @@ impl Rows {
     pub(super) fn indent(&mut self, columns: u16) {
         for mark in &mut self.marks {
             mark.skip = mark.skip.saturating_add(columns);
+        }
+
+        for link in &mut self.links {
+            link.columns =
+                link.columns.start.saturating_add(columns)..link.columns.end.saturating_add(columns);
         }
     }
 }

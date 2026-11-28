@@ -1,4 +1,7 @@
+#[cfg(test)]
+mod budget;
 mod copy;
+mod highlight;
 mod pointer;
 mod reconnect;
 mod rich;
@@ -32,6 +35,7 @@ use ratatui::{
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    hash::{Hash, Hasher},
     fs::File,
     ops::Range,
     path::PathBuf,
@@ -53,7 +57,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use pointer::ACTION_LABELS;
-use selection::{Joint, Mark, Rows, Selection};
+use selection::{Joint, Link, Mark, Rows, Selection};
 
 pub(super) const ACCENT_COLOR: Color = Color::Rgb(255, 111, 44);
 const TRANSCRIPT_LIMIT: usize = 512 * 1024;
@@ -300,6 +304,8 @@ struct App {
     /// When the last generation was interrupted, so a repeated Esc does not quit.
     interrupted_at: Option<Instant>,
     pointer: pointer::Pointer,
+    /// Whether to wrap links in OSC 8 sequences, so the terminal can open them.
+    hyperlinks: bool,
 }
 
 struct TranscriptLayout {
@@ -307,7 +313,12 @@ struct TranscriptLayout {
     width: u16,
     rows: Vec<Line<'static>>,
     marks: Vec<Mark>,
+    links: Vec<Link>,
     messages: Vec<MessageLayout>,
+    /// The hash and rows of each message or loose line, so the next layout can reuse them.
+    blocks: Vec<(u64, Range<usize>)>,
+    /// How many blocks the last layout wrapped rather than reused.
+    wrapped: usize,
     hovered_message: Option<usize>,
     hovered_rows: Option<Rows>,
 }
@@ -564,6 +575,7 @@ where
         preferences_path,
         typewriter,
         theme_enabled,
+        hyperlinks: !std::env::var("TERM").is_ok_and(|term| term == "dumb"),
         generation_message: random_generation_message(),
         ..App::default()
     };
@@ -2448,6 +2460,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         _ => (..layout.rows.len(), None, layout.rows.len()..),
     };
 
+    let after_start = after.start;
     let hovered_lines = hovered.map_or(&[][..], |rows| rows.lines.as_slice());
     let hovered_marks = hovered.map_or(&[][..], |rows| rows.marks.as_slice());
     let total_rows = before.end + hovered_lines.len() + layout.rows[after.clone()].len();
@@ -2540,6 +2553,32 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         transcript,
         Rect::new(areas[0].x, areas[0].y, areas[0].width, transcript_height as u16),
     );
+
+    if app.hyperlinks {
+        let shown = before.end..before.end + hovered_lines.len();
+
+        let links = layout
+            .links
+            .iter()
+            .filter_map(|link| {
+                let row = if link.row < before.end {
+                    link.row
+                } else if link.row >= after_start {
+                    link.row - after_start + shown.end
+                } else {
+                    return None;
+                };
+
+                Some((row, link))
+            })
+            .chain(hovered.into_iter().flat_map(|rows| &rows.links).map(|link| (link.row + shown.start, link)));
+
+        for (row, link) in links {
+            if let Some(y) = row.checked_sub(start).filter(|y| *y < transcript_height) {
+                rich::hyperlink(frame.buffer_mut(), transcript_area, y as u16, link);
+            }
+        }
+    }
 
     if let Some((first, last)) = app.pointer.selection.and_then(Selection::cells) {
         selection::highlight(
@@ -3080,24 +3119,103 @@ fn wrap_transcript(transcript: &str, name: &str, width: u16) -> Vec<Line<'static
 }
 
 fn wrap_transcript_layout(transcript: &str, name: &str, width: u16) -> (Rows, Vec<MessageLayout>) {
-    let mut rows = Rows::default();
+    let layout = layout_transcript(transcript, name, width, None, false);
+    let rows = Rows { lines: layout.rows, marks: layout.marks, links: layout.links };
 
-    if width == 0 {
-        return (rows, Vec::new());
+    (rows, layout.messages)
+}
+
+/// Rows of an earlier layout that a new one can move instead of wrapping again, found by
+/// the hash of the text each block of rows shows.
+struct Reuse {
+    rows: Vec<Line<'static>>,
+    marks: Vec<Mark>,
+    links: Vec<Link>,
+    blocks: HashMap<u64, Vec<Range<usize>>>,
+}
+
+impl Reuse {
+    fn new(layout: TranscriptLayout) -> Self {
+        let mut blocks = HashMap::<u64, Vec<Range<usize>>>::new();
+
+        for (hash, rows) in layout.blocks.into_iter().rev() {
+            blocks.entry(hash).or_default().push(rows);
+        }
+
+        Self { rows: layout.rows, marks: layout.marks, links: layout.links, blocks }
     }
 
-    if transcript.is_empty() {
+    /// Moves the rows that showed the text hashed as HASH, if an earlier layout had them.
+    fn take(&mut self, hash: u64) -> Option<Rows> {
+        let range = self.blocks.get_mut(&hash)?.pop()?;
+        let first = self.links.partition_point(|link| link.row < range.start);
+        let last = self.links.partition_point(|link| link.row < range.end);
+
+        let links = self.links[first..last]
+            .iter()
+            .map(|link| Link { row: link.row - range.start, ..link.clone() })
+            .collect();
+
+        Some(Rows {
+            lines: self.rows[range.clone()].iter_mut().map(std::mem::take).collect(),
+            marks: self.marks[range].to_vec(),
+            links,
+        })
+    }
+}
+
+fn hash_of(parts: &[&str], flags: (bool, bool)) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+
+    parts.hash(&mut hasher);
+    flags.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Wraps TRANSCRIPT for WIDTH columns. Each message whose text PREVIOUS already wrapped at
+/// the same width keeps its rows, so a streamed reply re-wraps only itself. STRIP removes
+/// colors from the rows it wraps.
+fn layout_transcript(
+    transcript: &str,
+    name: &str,
+    width: u16,
+    previous: Option<TranscriptLayout>,
+    strip: bool,
+) -> TranscriptLayout {
+    let mut reuse = previous.filter(|layout| layout.width == width).map(Reuse::new);
+    let mut rows = Rows::default();
+    let mut blocks = Vec::new();
+    let mut messages = Vec::new();
+    let mut wrapped = 0;
+
+    let mut place = |rows: &mut Rows, hash: u64, wrap: &dyn Fn() -> Rows| {
+        let start = rows.len();
+
+        let block = reuse.as_mut().and_then(|reuse| reuse.take(hash)).unwrap_or_else(|| {
+            let mut block = wrap();
+
+            wrapped += 1;
+
+            if strip {
+                strip_transcript_colors(&mut block.lines);
+            }
+
+            block
+        });
+
+        rows.append(block);
+        blocks.push((hash, start..rows.len()));
+    };
+
+    if width > 0 && transcript.is_empty() {
         rows.hidden(Line::styled(
             "No messages in this session yet.",
             Style::default().fg(Color::DarkGray),
         ));
-
-        return (rows, Vec::new());
     }
 
-    let width = width as usize;
-    let mut messages = Vec::new();
-    let lines = transcript.lines().collect::<Vec<_>>();
+    let lines = if width == 0 { Vec::new() } else { transcript.lines().collect::<Vec<_>>() };
+    let columns = usize::from(width);
     let offset = |line: &str| line.as_ptr() as usize - transcript.as_ptr() as usize;
     let mut index = 0;
 
@@ -3141,31 +3259,27 @@ fn wrap_transcript_layout(transcript: &str, name: &str, width: u16) -> (Rows, Ve
                 body_end -= 1;
             }
 
-            let start = rows.len();
-
-            rows.append(wrap_rail_message(
-                title,
-                &lines[body_start..body_end],
-                name,
-                width,
-                is_user,
-                is_system,
-                false,
-            ));
-
-            let title = offset(line)..offset(line) + line.len();
+            let title_range = offset(line)..offset(line) + line.len();
 
             let body = if body_end > body_start {
                 let last = lines[body_end - 1];
 
                 offset(lines[body_start])..offset(last) + last.len()
             } else {
-                title.end..title.end
+                title_range.end..title_range.end
             };
+
+            let start = rows.len();
+            let hash = hash_of(&[title, &transcript[body.clone()]], (is_user, is_system));
+            let body_lines = &lines[body_start..body_end];
+
+            place(&mut rows, hash, &|| {
+                wrap_rail_message(title, body_lines, name, columns, is_user, is_system, false)
+            });
 
             messages.push(MessageLayout {
                 rows: start..rows.len(),
-                title,
+                title: title_range,
                 body,
                 is_user,
                 is_system,
@@ -3186,11 +3300,25 @@ fn wrap_transcript_layout(transcript: &str, name: &str, width: u16) -> (Rows, Ve
             continue;
         }
 
-        rows.append(wrap_transcript_line(line, name, width));
+        place(&mut rows, hash_of(&[line], (false, false)), &|| {
+            wrap_transcript_line(line, name, columns)
+        });
+
         index += 1;
     }
 
-    (rows, messages)
+    TranscriptLayout {
+        generation: 0,
+        width,
+        rows: rows.lines,
+        marks: rows.marks,
+        links: rows.links,
+        messages,
+        blocks,
+        wrapped,
+        hovered_message: None,
+        hovered_rows: None,
+    }
 }
 
 /// Wraps one message from the transcript on its own, as `wrap_transcript_layout` would.
@@ -3497,8 +3625,8 @@ fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Rows {
     let header_style = Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD);
     let code_style = Style::default().fg(Color::Reset);
     let inner_width = width.saturating_sub(4);
-    let language = truncate_display_width(language, width.saturating_sub(5));
-    let header = format!("┌─ {language} ");
+    let label = truncate_display_width(language, width.saturating_sub(5));
+    let header = format!("┌─ {label} ");
     let header_width = UnicodeWidthStr::width(header.as_str());
 
     let mut rows = Rows::default();
@@ -3509,9 +3637,16 @@ fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Rows {
         Span::styled("┐", border_style),
     ]));
 
+    let shown = lines.iter().map(String::as_str).collect::<Vec<_>>();
+    let highlighting = highlight::Language::detect(language, &shown);
+    let mut state = highlight::State::default();
+
     for line in &lines {
-        for (index, fragment) in wrap_code_line(line, inner_width).into_iter().enumerate() {
-            let fragment_width = UnicodeWidthStr::width(fragment.as_str());
+        let pieces = highlight::pieces(highlighting, &mut state, line);
+
+        for (index, (spans, fragment_width)) in
+            wrap_code_line(line, &pieces, inner_width).into_iter().enumerate()
+        {
             let padding = " ".repeat(inner_width.saturating_sub(fragment_width));
             let joint = if index == 0 { Joint::Break } else { Joint::Glue };
 
@@ -3522,15 +3657,12 @@ fn wrap_code_block(lines: &[&str], language: &str, width: usize) -> Rows {
                 action: None,
             };
 
-            rows.push(
-                Line::from(vec![
-                    Span::styled("│ ", border_style),
-                    Span::styled(fragment, code_style),
-                    Span::styled(padding, code_style),
-                    Span::styled(" │", border_style),
-                ]),
-                mark,
-            );
+            let mut row = vec![Span::styled("│ ", border_style)];
+
+            row.extend(spans);
+            row.push(Span::styled(padding, code_style));
+            row.push(Span::styled(" │", border_style));
+            rows.push(Line::from(row), mark);
         }
     }
 
@@ -3560,29 +3692,43 @@ fn truncate_display_width(text: &str, width: usize) -> String {
     result
 }
 
-fn wrap_code_line(line: &str, width: usize) -> Vec<String> {
-    if line.is_empty() {
-        return vec![String::new()];
-    }
-
+/// Wraps LINE by grapheme into rows of WIDTH columns, keeping each piece's style, and
+/// returns each row's spans and width.
+fn wrap_code_line(
+    line: &str,
+    pieces: &[(Range<usize>, Style)],
+    width: usize,
+) -> Vec<(Vec<Span<'static>>, usize)> {
     let mut rows = Vec::new();
-    let mut fragment = String::new();
+    let mut spans = Vec::new();
     let mut columns = 0;
 
-    for grapheme in line.graphemes(true) {
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
+    for (range, style) in pieces {
+        let mut fragment = String::new();
 
-        if columns > 0 && columns + grapheme_width > width {
-            rows.push(std::mem::take(&mut fragment));
-            columns = 0;
+        for grapheme in line[range.clone()].graphemes(true) {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+
+            if columns > 0 && columns + grapheme_width > width {
+                if !fragment.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut fragment), *style));
+                }
+
+                rows.push((std::mem::take(&mut spans), columns));
+                columns = 0;
+            }
+
+            fragment.push_str(grapheme);
+            columns += grapheme_width;
         }
 
-        fragment.push_str(grapheme);
-        columns += grapheme_width;
+        if !fragment.is_empty() {
+            spans.push(Span::styled(fragment, *style));
+        }
     }
 
-    if !fragment.is_empty() {
-        rows.push(fragment);
+    if !spans.is_empty() || rows.is_empty() {
+        rows.push((spans, columns));
     }
 
     rows
@@ -4530,21 +4676,12 @@ impl App {
             self.clear_transcript_selection();
         }
 
-        let (mut rows, messages) = wrap_transcript_layout(&self.transcript, &self.name, width);
+        let previous = self.transcript_layout.take();
+        let strip = !self.theme_enabled;
+        let mut layout = layout_transcript(&self.transcript, &self.name, width, previous, strip);
 
-        if !self.theme_enabled {
-            strip_transcript_colors(&mut rows.lines);
-        }
-
-        self.transcript_layout = Some(TranscriptLayout {
-            generation: self.transcript_generation,
-            width,
-            rows: rows.lines,
-            marks: rows.marks,
-            messages,
-            hovered_message: None,
-            hovered_rows: None,
-        });
+        layout.generation = self.transcript_generation;
+        self.transcript_layout = Some(layout);
     }
 
     fn invalidate_transcript_layout(&mut self) {
