@@ -1575,7 +1575,9 @@ where
             json!({"event": "system", "text": text, "progress": true})
         }
 
-        super::StreamNotice::Approval { tool, arguments, command, text, approve, .. } => {
+        super::StreamNotice::Approval {
+            tool, arguments, command, text, approve, always, ..
+        } => {
             let id = approve.split('.').next().unwrap_or_default();
             json!({
                 "event": "approval",
@@ -1583,7 +1585,8 @@ where
                 "text": text,
                 "tool": tool,
                 "arguments": arguments,
-                "command": command
+                "command": command,
+                "always": always.is_some()
             })
         }
     };
@@ -1625,10 +1628,20 @@ async fn approval_resolve(request: &IpcRequest, state: &State) -> IpcResponse {
         return IpcResponse::fail(request.id, -32602, "approval.resolve.approved is required.");
     };
 
-    match state.pending.lock().await.resolve_local(id, approved) {
-        Some(approved) => {
-            IpcResponse::ok(request.id, json!({"resolved": true, "approved": approved}))
-        }
+    let always = approved && request.params["always"] == true;
+
+    let resolved = match always {
+        true => state.pending.lock().await.resolve_local_lasting(id),
+        false => state.pending.lock().await.resolve_local(id, approved),
+    };
+
+    let saved = always && crate::save_lasting(&state.pending, crate::access::Role::Owner).await;
+
+    match resolved {
+        Some(approved) => IpcResponse::ok(
+            request.id,
+            json!({"resolved": true, "approved": approved, "saved": saved}),
+        ),
 
         None => IpcResponse::fail(
             request.id,

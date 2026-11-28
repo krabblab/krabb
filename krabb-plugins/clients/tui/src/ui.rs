@@ -1489,6 +1489,7 @@ fn command_options(home: &str, has_model: bool) -> Vec<(&'static str, &'static s
             ("/approval", "Show approval policy."),
             ("/approvals", "List pending tool approvals."),
             ("/approve <id>", "Approve a pending tool action."),
+            ("/always <id>", "Approve it and stop asking for the same action here."),
             ("/deny <id>", "Deny a pending tool action."),
         ]);
     }
@@ -1867,9 +1868,10 @@ where
                         || is_task_command
                         || matches!(
                             command,
-                            "/approvals" | "/approve" | "/deny" | "/quit" | "/exit"
+                            "/approvals" | "/approve" | "/always" | "/deny" | "/quit" | "/exit"
                         )
                         || command.starts_with("/approve ")
+                        || command.starts_with("/always ")
                         || command.starts_with("/deny ")
                         || command == "/animation"
                         || command == "/attach"
@@ -1939,9 +1941,11 @@ where
                         line.clone()
                     };
 
-                    let is_approval = matches!(command, "/approvals" | "/approve" | "/deny")
-                        || command.starts_with("/approve ")
-                        || command.starts_with("/deny ");
+                    let is_approval =
+                        matches!(command, "/approvals" | "/approve" | "/always" | "/deny")
+                            || command.starts_with("/approve ")
+                            || command.starts_with("/always ")
+                            || command.starts_with("/deny ");
 
                     if !(is_task_command
                         || busy && ordinary
@@ -2104,8 +2108,10 @@ where
                         return Ok(false);
                     }
 
-                    if let Some(id) =
-                        command.strip_prefix("/approve ").or(command.strip_prefix("/deny "))
+                    if let Some(id) = command
+                        .strip_prefix("/approve ")
+                        .or(command.strip_prefix("/always "))
+                        .or(command.strip_prefix("/deny "))
                     {
                         app.dismissed_approvals.insert(id.trim().to_owned());
                     }

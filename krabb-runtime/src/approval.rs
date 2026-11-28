@@ -268,6 +268,16 @@ impl Gate {
 
         self.complete(id, approved, now)
     }
+
+    /// Approves the local request with ID and keeps it for a lasting rule, as "Always allow".
+    pub fn resolve_local_lasting(&mut self, id: &str) -> Option<bool> {
+        let target = self.pending.get(id)?.target.clone();
+        let resolved = self.resolve_local(id, true)?;
+
+        self.lasting.push(target);
+
+        Some(resolved)
+    }
 }
 
 fn token(key: &[u8; 32], id: &str, pending: &Pending, action: u8) -> io::Result<String> {

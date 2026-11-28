@@ -1548,7 +1548,7 @@ where
                             continue;
                         }
 
-                        if command == "/approvals" || command.starts_with("/approve") || command.starts_with("/deny") {
+                        if command == "/approvals" || command.starts_with("/approve") || command.starts_with("/always") || command.starts_with("/deny") {
                             let message = resolve_turn_approval(
                                 &home,
                                 &session,
@@ -2202,6 +2202,7 @@ fn command_help(home: &str, has_model: bool, daemon: bool) -> String {
             ("/approval", "Show approval policy."),
             ("/approvals", "List pending tool approvals."),
             ("/approve <id>", "Approve a pending tool action."),
+            ("/always <id>", "Approve it and stop asking for the same action here."),
             ("/deny <id>", "Deny a pending tool action."),
         ]);
     }
@@ -2452,16 +2453,20 @@ where
         return format_approvals(&list);
     }
 
-    let (approved, supplied_id) = if command == "/approve" {
-        (true, "")
+    let (approved, always, supplied_id) = if command == "/approve" {
+        (true, false, "")
+    } else if command == "/always" {
+        (true, true, "")
     } else if command == "/deny" {
-        (false, "")
+        (false, false, "")
     } else if let Some(id) = command.strip_prefix("/approve ") {
-        (true, id.trim())
+        (true, false, id.trim())
+    } else if let Some(id) = command.strip_prefix("/always ") {
+        (true, true, id.trim())
     } else if let Some(id) = command.strip_prefix("/deny ") {
-        (false, id.trim())
+        (false, false, id.trim())
     } else {
-        return "Usage: /approve <id> or /deny <id>.\n".into();
+        return "Usage: /approve <id>, /always <id>, or /deny <id>.\n".into();
     };
 
     let Some(items) = list["items"].as_array() else {
@@ -2493,10 +2498,18 @@ where
     let result = host(
         home.to_owned(),
         "approval.resolve".into(),
-        serde_json::json!({"id": id, "approved": approved}),
+        serde_json::json!({"id": id, "approved": approved, "always": always}),
     )
     .await;
     let reply = match result {
+        Ok(value) if value["saved"] == true => {
+            "Approval accepted. Krabb will not ask for this again here.".to_owned()
+        }
+
+        Ok(_) if always => {
+            "Approval accepted once; this action cannot become a lasting rule.".to_owned()
+        }
+
         Ok(_) if approved => "Approval accepted.".to_owned(),
         Ok(_) => "Approval denied.".to_owned(),
         Err(error) => sentence(error.to_string()),
@@ -7264,6 +7277,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn always_approves_and_reports_the_saved_rule() {
+        let mut sequence = 0;
+
+        let response = super::resolve_turn_approval(
+            "/tmp/krabb",
+            "telegram-7",
+            "reservation",
+            "/always",
+            &mut sequence,
+            None,
+            mock_control,
+        )
+        .await;
+
+        assert_eq!(response, "Approval accepted. Krabb will not ask for this again here.\n");
+    }
+
+    #[tokio::test]
     async fn resolves_an_id_specific_approval_from_live_turn_input() {
         let mut sequence = 0;
         let command = super::decode_terminal_input(r#""/approve 0123456789abcdef01234567""#);
@@ -7486,7 +7517,9 @@ mod tests {
                 "text": "Codex models (1):\n  gpt-test - Test model (default)"
             })),
 
-            "approval.resolve" => Ok(json!({"resolved": true, "approved": params["approved"]})),
+            "approval.resolve" => Ok(json!({
+                "resolved": true, "approved": params["approved"], "saved": params["always"]
+            })),
             // The fixture uses 2025-01-02 and 2025-01-03 UTC timestamps in Unix seconds.
             "session.list" => Ok(json!({
                 "items": [{
