@@ -342,10 +342,10 @@ async fn a_found_server_that_stops_is_forgotten_and_the_next_one_found() {
     let found = server::Server::new("auto", &candidates);
     let input = serde_json::to_value(request("qwen3-8b", false, false)).unwrap();
 
-    let (emitter, _events) = emitter();
+    let (first_emitter, _first_events) = emitter();
 
     let failed =
-        handle(&client, Request::call(1, "generate", input.clone()), emitter, &found).await;
+        handle(&client, Request::call(1, "generate", input.clone()), first_emitter, &found).await;
 
     assert!(failed.is_err());
 
