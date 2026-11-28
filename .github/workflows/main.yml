@@ -1,4 +1,7 @@
 name: Main
+# Manual runs get a conventional title; blank keeps GitHub's commit or pull request title.
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && format('ci: check {0}', github.ref_name) || '' }}
 
 on:
   push:

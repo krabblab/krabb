@@ -121,7 +121,7 @@ make build
 This keeps action-flow debugging separate from normal implementation checks.
 
 On GitHub, `main.yml` runs Changes, then Check (formatting, spacing, loops,
-Clippy, documentation, the minimum Rust version, and the Windows GNU target)
+Clippy on the minimum Rust version, documentation, and the Windows GNU target)
 beside Agentskill and Security. Test then runs on six targets, and Build
 (release binaries for six targets) and Integration (browser, computer, and
 sandbox) run after it. Pull requests test only the packages

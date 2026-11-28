@@ -51,8 +51,8 @@ stable plugin bump for a plugin with its own `CHANGELOG.md`.
 ## Release Workflow
 
 ```text
-Plan ─┬─ Build ──────────┬─ Install ─┬─ Publish Plugins ─ Publish Krabb
-      └─ Build Previous ─┴─ Update ──┘
+Plan ─┬─ Build ────┬─ Install ─┬─ Plugins ─ Publish
+      └─ Previous ─┴─ Update ──┘
 ```
 
 - **Plan** confirms that the run covers the head of `main` and that CI passed for it,
@@ -61,7 +61,7 @@ Plan ─┬─ Build ──────────┬─ Install ─┬─ Publ
   neither is new, the run ends here with a notice. When only plugins are new, Krabb is
   built for the drills but not published.
 - **Build** packages Krabb and the plugins to release in one job per target, and writes
-  that target's `SHA256SUMS` line. **Build Previous** packages the same source as
+  that target's `SHA256SUMS` line. **Previous** packages the same source as
   version `0.0.0-previous` for the Update drill. The six targets are listed once, in
   `krabb-scripts/targets.json`.
 - **Install** and **Update** run the drills in `krabb-scripts/drills` on exactly these
@@ -69,11 +69,11 @@ Plan ─┬─ Build ──────────┬─ Install ─┬─ Publ
   index that `krabb-scripts/plugins.py local` writes from the archives, with published
   versions filling in the other plugins, through `KRABB_PLUGIN_INDEX`. Otherwise they
   use the published index.
-- **Publish Plugins** pushes the new plugin versions and rebuilds the index, and
-  **Publish Krabb** then publishes the GitHub Release. Both run only when both drills
+- **Plugins** pushes the new plugin versions and rebuilds the index, and
+  **Publish** then publishes the Krabb GitHub Release. Both run only when both drills
   passed, so nothing is published from a run whose archives fail on any target. Plan
-  also finds an index that misses published versions after a failed run, and Publish
-  Plugins then rebuilds it without building anything.
+  also finds an index that misses published versions after a failed run, and Plugins
+  then rebuilds it without building anything.
 
 ## Dry Runs
 
