@@ -177,7 +177,7 @@ run_final_verification() {
         fi
 
         print_info 'Running complete verification (1/10)...'
-        run_verification_command 'Complete verification' make verify || exit $?
+        run_verification_command 'Complete verification' make gate || exit $?
 
         print_info 'Running Rustdoc check (2/10)...'
         run_verification_command \
