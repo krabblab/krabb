@@ -42,6 +42,8 @@ Repository scripts keep their responsibilities separate and expose `--help`.
 Use `krabb-scripts/metrics.sh` for Rust, script, and test counts; use
 `krabb-scripts/check.sh ARCHIVE` to validate a release archive without
 extracting it.
+`make loops` also runs `krabb-scripts/links.py`, which reports every relative Markdown
+link whose file or heading anchor is missing.
 
 On a Linux host with Docker or Podman available, run
 `krabb-scripts/sandbox.sh target/debug/krabb-plugin-tools` to verify the

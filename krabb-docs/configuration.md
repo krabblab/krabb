@@ -8,7 +8,7 @@ Plugin-owned persistent data is kept separately under
 agent instructions, prompts, and other working files.
 Scheduled tasks are stored under `KRABB_HOME/data/schedules/`, and their
 full run results are stored under `KRABB_HOME/data/schedules/runs/`. Diagnostic
-history is stored under `KRABB_HOME/logs/schedules/`. See [Storage](../krabb-handbook/storage.md)
+history is stored under `KRABB_HOME/logs/schedules/`. See [Storage](storage.md)
 for the complete layout and upgrade behavior.
 
 Read or change settings without opening the TOML file with `krabb config get`

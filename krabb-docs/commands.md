@@ -124,7 +124,7 @@ An unknown command exits with an error that points to `krabb --help`, which also
 commands added by installed plugins.
 
 For the boundary between the core library, runtime, and plugins, see
-[Product Architecture](../krabb-handbook/principles.md#architecture-and-interfaces).
+[Architecture And Interfaces](../krabb-handbook/principles.md#architecture-and-interfaces).
 
 ## Shell Completion
 

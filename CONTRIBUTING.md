@@ -33,6 +33,8 @@ tests use local fixtures and never call paid APIs. Every implementation
 handoff must finish with the configured coverage gates passing; run `make verify`
 at the end of each work turn and resolve coverage failures without lowering
 thresholds.
+See [Development](krabb-handbook/development.md) for formatting, coverage, CI, and
+repository scripts.
 
 ### Interpreting Coverage Results
 

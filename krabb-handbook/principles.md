@@ -29,6 +29,8 @@ with a root license, notice, SPDX metadata, and no CLA/DCO requirement.
 - krabb-plugins contains one independently buildable Rust project per
   official plugin.
 - The core contains no channel, model, database, memory, scheduler, tool,
+  MCP, speech, or TUI implementation. Core-only startup still supports
+  configuration, diagnostics, plugin management, and version reporting.
 - Official plugins include intelligence providers, channels, tools,
   memory and storage, browser and isolated desktop controls, and optional agent
   interoperability through ACP, A2A, and AG-UI.

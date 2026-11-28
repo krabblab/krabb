@@ -16,7 +16,8 @@ Use these guides to install, configure, use, and secure Krabb. The
 11. [Krabfile](krabfile.md) — the portable export and import format.
 12. [Safety](safety.md) — defaults, confinement, and the container sandbox.
 13. [Security](security.md) — trust boundaries, approvals, and operational limits.
-14. [Resources](resources.md) — basic memory and CPU footprint for minimal setups.
-15. [Troubleshooting](troubleshooting.md) — diagnostics and common failures.
-16. [Compatibility](../COMPATIBILITY.md) — basic checklist per operating system and architecture.
-17. [License](license.md) — Apache-2.0 rationale and contribution terms.
+14. [Storage](storage.md) — home layout, ownership, retention, and custom paths.
+15. [Resources](resources.md) — basic memory and CPU footprint for minimal setups.
+16. [Troubleshooting](troubleshooting.md) — diagnostics and common failures.
+17. [Compatibility](../COMPATIBILITY.md) — basic checklist per operating system and architecture.
+18. [License](license.md) — Apache-2.0 rationale and contribution terms.

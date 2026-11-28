@@ -14,6 +14,8 @@ delivery, and verification. [PLAN.md](../PLAN.md) contains only active work, whi
 - [Product Boundary](#product-boundary)
 
 ## Summary
+
+Krabb is a self-hosted Rust agent runtime with a deliberately
 capability-free core. Model providers, channels, persistence, tools,
 memory, scheduling, speech recognition, MCP, and the TUI are independently
 installed process plugins.
@@ -163,8 +165,8 @@ their model is explicitly pinned; their history is preserved.
 
 ## Product Boundary
 
-Browser automation, video, text-to-speech, Telegram webhooks,
-email/calendar/smart-home integrations, hosted multi-tenancy, Claude Code
-delegation, and Claude subscription OAuth are outside the current product
-boundary. They require a proven use case and a design that preserves Krabb’s
+Browser automation and computer control stay experimental plugins. Video,
+text-to-speech, Telegram webhooks, email/calendar/smart-home integrations, hosted
+multi-tenancy, Claude Code delegation, and Claude subscription OAuth are outside
+the current product boundary. They require a proven use case and a design that preserves Krabb’s
 small core before entering the roadmap.

@@ -7,7 +7,7 @@ Use these guides to understand, extend, and release Krabb. The
 2. [Runtime](runtime.md) — events, inference admission, delivery, leases, recovery, and limits.
 3. [Task IPC](ipc.md) — local daemon methods for request recovery and task control.
 4. [Plugin Development](plugins.md) — manifests, sources, permissions, and authoring.
-5. [Storage](storage.md) — home layout, ownership, retention, and migration.
+5. [Home Migrations](migrations.md) — schema steps, the migration journal, and recovery.
 6. [Engineering Principles](principles.md) — architecture, delivery, and verification rules.
 7. [Development](development.md) — formatting, coverage, CI, and repository scripts.
 8. [Engineering Loops](loops.md) — independent review, security hardening, test gaps and flakiness.

@@ -44,7 +44,7 @@ needs its own memory and CPU, described in [Resources](resources.md). See
 `failed to start`, or `ready`, with the step to take next. Keep the daemon in the foreground until
 replies and acknowledgements work, then move it to the
 [background service](#background-service). Configuration, conversations,
-credentials, and plugins live in `KRABB_HOME`; [Storage](../krabb-handbook/storage.md) lists every
+credentials, and plugins live in `KRABB_HOME`; [Storage](storage.md) lists every
 location. If a reply does not arrive, start with
 [Troubleshooting](troubleshooting.md#check-the-installation).
 

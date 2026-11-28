@@ -112,6 +112,13 @@ send one short progress message tailored to the request and the user's language.
 The conversation keeps that message from the agent ahead of its final answer.
 Provider latency alone does not trigger a message.
 
+See [Inference And Background Work](../krabb-handbook/runtime.md#inference-and-background-work)
+for deadlines, admission, and background execution.
+
+Background requests can become durable background tasks under the conversation's
+approval policy, without enabling the scheduler. Each task saves checkpoints and
+continues automatically in bounded steps.
+
 Krabb confirms the handoff only after saving the goal. It posts important milestones, decisions,
 blockers, and completion to the originating client session or channel conversation. Routine waiting
 messages are suppressed. Ask about your tasks or request pause, resume, cancellation, or changes in
@@ -124,6 +131,3 @@ outcomes stay blocked for review. A pause or cancellation of a running task firs
 stopping was requested; a paused state is reached only after the active step settles. Manual pauses
 preserve the saved goal and survive restart. Changing a paused task preserves the pause; changing a
 running task stops its current step and queues continuation with the updated instruction.
-
-See [Inference And Background Work](../krabb-handbook/runtime.md#inference-and-background-work)
-for deadlines, admission, and background execution.

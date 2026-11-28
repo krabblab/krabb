@@ -37,11 +37,8 @@ and scheduled work; a waiting background request runs after at most three
 consecutive conversation turns. A busy single-slot provider still answers one
 request at a time. Task token limits are supported; currency cost limits are not.
 
-Background requests can become durable background tasks under the conversation's
-approval policy, without enabling the scheduler. Each task saves checkpoints and
-continues automatically in bounded steps. Negotiated inference uses the adaptive
-allowance; legacy inference and ordinary tool calls retain their ten-minute
-background limit. Durable external operations can outlive a step. A task can span days;
+For background tasks, negotiated inference uses the adaptive allowance; legacy
+inference and ordinary tool calls retain their ten-minute background limit. Durable external operations can outlive a step. A task can span days;
 there is no overall lifetime deadline. Waiting tasks do not call the intelligence
 provider until their next step is due.
 

@@ -115,7 +115,7 @@ tools need Docker or Podman.
 The [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice,
 backups, and upgrades. To remove Krabb, run the
 [uninstall script](krabb-docs/workflows.md#uninstall); it keeps your data unless you
-purge it. [Storage](krabb-handbook/storage.md) lists where
+purge it. [Storage](krabb-docs/storage.md) lists where
 Krabb keeps its data, and [Troubleshooting](krabb-docs/troubleshooting.md) helps
 when a reply does not arrive.
 
@@ -162,7 +162,7 @@ Common starting points:
 - [Provider Setup](krabb-docs/providers.md)
 - [Configuration](krabb-docs/configuration.md)
 - [Visibility And Worktrees](krabb-docs/sharing.md)
-- [Storage](krabb-handbook/storage.md)
+- [Storage](krabb-docs/storage.md)
 - [Plugin Development](krabb-handbook/plugins.md)
 - [Tools](krabb-docs/tools.md)
 
@@ -176,8 +176,9 @@ lefthook install
 make verify
 ```
 
-See [contributing](CONTRIBUTING.md) for repository conventions. Tests use local
-fixtures and do not call paid provider APIs.
+See [contributing](CONTRIBUTING.md) for repository conventions and
+[development](krabb-handbook/development.md) for formatting, coverage, and CI. Tests use
+local fixtures and do not call paid provider APIs.
 
 ## Support And License
 

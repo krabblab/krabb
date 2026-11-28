@@ -29,7 +29,7 @@ help:
 	@printf '%s\n' '  secloop   Audit and remediate validated security weaknesses'
 	@printf '%s\n' '  testloop  Protect behavioral contracts and repair confirmed flaky tests'
 	@printf '%s\n' '  contribloop  Commit, open a PR, and repair until CI is green'
-	@printf '%s\n' '  loops     Check loop scripts and run deterministic loop fixtures'
+	@printf '%s\n' '  loops     Check loop scripts and Markdown links, then run loop fixtures'
 	@printf '%s\n' '  verify    Run the complete local quality workflow'
 
 install:
@@ -88,6 +88,7 @@ contribloop:
 
 loops:
 	bash krabb-loops/lib/syntax.sh "$(CURDIR)"
+	python3 -B krabb-scripts/links.py
 	python3 -B -m unittest discover -s krabb-loops/tests -p '*.py' -v
 
 verify: fmt loops clippy check test coverage build metrics
