@@ -39,6 +39,8 @@ use tokio::{
 
 use tracing::{debug, error, info, warn};
 
+#[cfg_attr(not(test), allow(dead_code))]
+mod access;
 mod accounting;
 mod agent;
 mod answer;
@@ -1099,6 +1101,10 @@ pub(crate) struct Config {
     shell: bool,
     approval: String,
     tools: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preset: Option<access::Preset>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    roles: BTreeMap<access::Role, access::RoleSetting>,
     #[serde(default)]
     scheduler: SchedulerConfig,
     inference: inference::Config,
@@ -1122,6 +1128,8 @@ impl Default for Config {
             shell: false,
             approval: "prompt".into(),
             tools: false,
+            preset: None,
+            roles: BTreeMap::new(),
             scheduler: SchedulerConfig::default(),
             inference: inference::Config::default(),
             operations: operations::Config::default(),
@@ -1167,6 +1175,10 @@ struct ClientConfig {
     visibility: Option<Vec<sharing::Rule>>,
     #[serde(default)]
     approval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preset: Option<access::Preset>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    roles: BTreeMap<access::Role, access::RoleSetting>,
 }
 
 impl Default for ClientConfig {
@@ -1180,6 +1192,8 @@ impl Default for ClientConfig {
             worktree: false,
             visibility: None,
             approval: None,
+            preset: None,
+            roles: BTreeMap::new(),
         }
     }
 }
@@ -1306,6 +1320,10 @@ struct ChannelConfig {
     tools: bool,
     #[serde(default)]
     shell: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preset: Option<access::Preset>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    roles: BTreeMap<access::Role, access::RoleSetting>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2766,24 +2784,10 @@ fn allowed(policy: &ChannelConfig, event: &serde_json::Value, chat: &str) -> boo
         return false;
     }
 
-    let sender = event_id(&event["sender"]).unwrap_or_default();
-
-    let roles =
-        event["roles"].as_array().into_iter().flatten().filter_map(event_id).collect::<Vec<_>>();
-
     let restricted =
         policy.owner.is_some() || !policy.admin.is_empty() || !policy.member.is_empty();
 
-    !restricted
-        || policy.owner.as_deref() == Some(sender.as_str())
-        || policy
-            .admin
-            .iter()
-            .any(|value| value == &sender || roles.iter().any(|role| role == value))
-        || policy
-            .member
-            .iter()
-            .any(|value| value == &sender || roles.iter().any(|role| role == value))
+    !restricted || access::sender(policy, event).is_some()
 }
 
 fn tools_allowed(
@@ -2792,29 +2796,7 @@ fn tools_allowed(
     chat: &str,
     approvals: bool,
 ) -> bool {
-    if !approvals || !policy.tools || !allowed(policy, event, chat) {
-        return false;
-    }
-
-    if event["private"] != true {
-        return true;
-    }
-
-    let sender = event_id(&event["sender"]).unwrap_or_default();
-
-    let roles =
-        event["roles"].as_array().into_iter().flatten().filter_map(event_id).collect::<Vec<_>>();
-
-    policy.allow.iter().any(|value| value == chat)
-        || policy.owner.as_deref() == Some(sender.as_str())
-        || policy
-            .admin
-            .iter()
-            .any(|value| value == &sender || roles.iter().any(|role| role == value))
-        || policy
-            .member
-            .iter()
-            .any(|value| value == &sender || roles.iter().any(|role| role == value))
+    approvals && schedule_allowed(policy, event, chat)
 }
 
 fn schedule_allowed(policy: &ChannelConfig, event: &serde_json::Value, chat: &str) -> bool {
@@ -2822,25 +2804,9 @@ fn schedule_allowed(policy: &ChannelConfig, event: &serde_json::Value, chat: &st
         return false;
     }
 
-    if event["private"] != true {
-        return true;
-    }
-
-    let sender = event_id(&event["sender"]).unwrap_or_default();
-
-    let roles =
-        event["roles"].as_array().into_iter().flatten().filter_map(event_id).collect::<Vec<_>>();
-
-    policy.allow.iter().any(|value| value == chat)
-        || policy.owner.as_deref() == Some(sender.as_str())
-        || policy
-            .admin
-            .iter()
-            .any(|value| value == &sender || roles.iter().any(|role| role == value))
-        || policy
-            .member
-            .iter()
-            .any(|value| value == &sender || roles.iter().any(|role| role == value))
+    event["private"] != true
+        || policy.allow.iter().any(|value| value == chat)
+        || access::sender(policy, event).is_some()
 }
 
 fn channel_shell_allowed(

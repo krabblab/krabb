@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(missing_docs)]
 
+pub mod access;
 pub mod agent;
 pub mod client;
 pub mod context;

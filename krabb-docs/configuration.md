@@ -36,6 +36,7 @@ attachments are retained in the selected conversation storage. See
 - [Provider And Model Precedence](#provider-and-model-precedence)
 - [Paths](#paths)
 - [Channel Policy](#channel-policy)
+- [Roles And Presets](#roles-and-presets)
 - [Visibility](#visibility)
 - [Worktrees](#worktrees)
 - [Update Policy](#update-policy)
@@ -479,6 +480,27 @@ the daemon's machine; it defaults to `false` and has no effect unless tools are
 enabled and the sender is authorized. Use `approval = "prompt"` or
 `approval = "auto"` to enable channel tools. Scheduled tasks capture these
 effective permissions when created and use them for their later runs.
+
+## Roles And Presets
+
+`config.toml` accepts a global `preset`, per-role defaults in `[roles]`, and the same
+two keys in any channel or client section. Roles are `owner`, `admin`, `member`, and
+`guest`; presets are `chat`, `hardened`, `standard`, and `loose`. A role takes a bare
+preset or a table that may also set `visibility` (`chat`, `integration`, `all`),
+`files` (`folder`, `workspace`, `home`, `system`), and `elevation` (`none`, `packages`,
+`services`, `full`):
+
+```toml
+[roles]
+member = "standard"
+
+[channels.discord.roles]
+admin = { preset = "loose", visibility = "integration" }
+```
+
+Unknown roles, values, and keys fail validation before the daemon starts. These keys
+do not change permissions yet; the channel policy, `tools`, `shell`, and `approval`
+still decide what runs.
 
 ## Visibility
 
