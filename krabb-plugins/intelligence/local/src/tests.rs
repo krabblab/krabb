@@ -334,6 +334,7 @@ async fn a_found_server_that_stops_is_forgotten_and_the_next_one_found() {
 
     let client = reqwest::Client::new();
     let (first, _gone) = krabb_test::http::responses(vec![(200, models())]).await;
+
     let (second, _live) =
         krabb_test::http::responses(vec![(200, models()), (200, reply("From the second."))]).await;
 
@@ -342,6 +343,7 @@ async fn a_found_server_that_stops_is_forgotten_and_the_next_one_found() {
     let input = serde_json::to_value(request("qwen3-8b", false, false)).unwrap();
 
     let (emitter, _events) = emitter();
+
     let failed =
         handle(&client, Request::call(1, "generate", input.clone()), emitter, &found).await;
 

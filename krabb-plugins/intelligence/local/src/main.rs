@@ -100,6 +100,7 @@ async fn handle(
         Err(Error::Failed { failure, .. })
             if matches!(failure.kind, Kind::Invalid | Kind::Cancelled) => {}
         Err(_) => server.forget(),
+
         Ok(_) => {}
     }
 
