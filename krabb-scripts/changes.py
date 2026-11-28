@@ -19,7 +19,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 # Paths that no build, test, or workflow reads.
-INERT_DIRECTORIES = ('krabb-assets/', 'krabb-docs/', '.github/ISSUE_TEMPLATE/')
+INERT_DIRECTORIES = ('krabb-assets/', 'krabb-docs/', 'krabb-handbook/', '.github/ISSUE_TEMPLATE/')
 INERT_ROOT = {'LICENSE', 'NOTICE', 'CITATION.cff'}
 INERT_NAMES = {'README.md', 'AGENTS.md', 'AGENTS.reference.md', 'CHANGELOG.md'}
 

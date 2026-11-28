@@ -38,7 +38,7 @@ What each ✅ needs:
   display; over SSH, use `/attach` instead.
 
 Each file may be up to 4 MiB. Images sent to the model are limited to 4 MiB
-per turn. See [Plugins](plugins.md) for how files are read and bounded.
+per turn. See [Plugins](../krabb-handbook/plugins.md) for how files are read and bounded.
 
 ## Output
 

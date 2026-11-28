@@ -40,6 +40,8 @@ storage; decryption errors prevent plugin launch rather than becoming missing
 process environment. Nonempty environment values override stored settings;
 manifest defaults fill missing settings. The core JSON-RPC protocol is unchanged.
 
+## Architecture Style
+
 Krabb uses a layered, hexagonal host/plugin architecture with a
 microkernel-style core, isolated JSON-RPC plugins, and a client–daemon runtime.
 The Core defines provider-neutral contracts, the Runtime provides host adapters

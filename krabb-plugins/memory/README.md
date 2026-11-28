@@ -62,4 +62,4 @@ context. Worktree conversations use the optional `scoped` wrapper and store thei
 memory beneath `KRABB_HOME/data/workspaces/conversations/<conversation>/memory`; they do not read global memories.
 Existing exact-conversation memories are copied on first scoped use. See
 [Visibility And Worktrees](../../krabb-docs/sharing.md) and the
-[scoped protocol](../../krabb-docs/plugins.md#guarded-storage-operations).
+[scoped protocol](../../krabb-handbook/plugins.md#guarded-storage-operations).

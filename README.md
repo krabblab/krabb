@@ -115,7 +115,7 @@ tools need Docker or Podman.
 The [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice,
 backups, and upgrades. To remove Krabb, run the
 [uninstall script](krabb-docs/workflows.md#uninstall); it keeps your data unless you
-purge it. [Storage](krabb-docs/storage.md) lists where
+purge it. [Storage](krabb-handbook/storage.md) lists where
 Krabb keeps its data, and [Troubleshooting](krabb-docs/troubleshooting.md) helps
 when a reply does not arrive.
 
@@ -154,15 +154,16 @@ sizing figures and what they include.
 
 ## Documentation
 
-Use the [documentation home](krabb-docs/home.md) for the full guide index.
+Use the [documentation home](krabb-docs/README.md) for product guides and the
+[technical handbook](krabb-handbook/README.md) for how Krabb is built.
 Common starting points:
 
 - [First Run](krabb-docs/workflows.md)
 - [Provider Setup](krabb-docs/providers.md)
 - [Configuration](krabb-docs/configuration.md)
 - [Visibility And Worktrees](krabb-docs/sharing.md)
-- [Storage](krabb-docs/storage.md)
-- [Plugin Development](krabb-docs/plugins.md)
+- [Storage](krabb-handbook/storage.md)
+- [Plugin Development](krabb-handbook/plugins.md)
 - [Tools](krabb-docs/tools.md)
 
 ## Development

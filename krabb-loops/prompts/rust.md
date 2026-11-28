@@ -1,7 +1,7 @@
 # Idiomatic Rust
 
 The project's standards live in the repository, not in this prompt: root and applicable
-nested AGENTS.md for conventions, and krabb-docs/architecture.md#test-organization for
+nested AGENTS.md for conventions, and krabb-handbook/architecture.md#test-organization for
 where tests live. Apply them in every review, investigation and implementation, including
 tests. When they are silent, follow the crate's established patterns.
 

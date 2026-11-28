@@ -222,6 +222,8 @@ The original Markdown stays in transcripts and the outbox. Rich-text chunks keep
 styles valid and obey platform limits; streaming drafts update only the first chunk,
 with overflow sent once during final delivery. TUI and CLI formatting remain unchanged.
 
+## Platform Setup
+
 Use the channel guide for installation and Krabb setup. Each guide links to the
 platform's own documentation for creating accounts, apps, permissions, and tokens.
 

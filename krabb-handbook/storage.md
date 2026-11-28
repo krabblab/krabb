@@ -142,7 +142,7 @@ and 30 days; disposable cache files are limited to 256 MiB, 1,000 files, and 30 
 Cleanup preserves subdirectories, links, and transaction files.
 
 Pending input is durable data, so `data/media` is not the disposable `cache/`.
-Conversation media has its own [bounded retention](sharing.md#files-and-attachments).
+Conversation media has its own [bounded retention](../krabb-docs/sharing.md#files-and-attachments).
 Krabb does not automatically delete user workspace files, credentials, or plugins.
 
 ## Upgrades And Custom Paths

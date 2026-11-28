@@ -473,7 +473,7 @@ Orchestrator and consistent everyday operation and recovery guidance.
   onboarding and command-output tests and clean-machine acceptance walkthroughs.
 - Search conversation history across visible sessions from the TUI and CLI.
 - Publish a project website with an install guide, a documentation site built
-  from krabb-docs, and a blog for release notes and technical posts.
+  from krabb-docs and krabb-handbook, and a blog for release notes and technical posts.
 - Audit hardcoded behavior and make it configurable where useful. Keep security
   and resource limits enforced in code, adjustable only within validated ranges.
 
