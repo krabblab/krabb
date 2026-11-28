@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod client;
+pub mod command;
 pub mod context;
 pub mod error;
 pub mod execution;

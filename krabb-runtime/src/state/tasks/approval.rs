@@ -39,9 +39,9 @@ impl Approval {
 
     fn notice(&self, task: &str) -> String {
         format!(
-            "Approval needed before running {}: {}\nNothing runs until you decide.\n\
+            "Approval needed.\n{}\nNothing runs until you decide.\n\
                 Reply `/task approve {task}` or `/task deny {task}` in this conversation.",
-            self.tool, self.text
+            self.text
         )
     }
 }

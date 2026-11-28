@@ -335,6 +335,7 @@ fn approval_request(
     let mut body = json!({
         "chat_id": chat,
         "text": text,
+        "link_preview_options": {"is_disabled": true},
         "reply_markup": {
             "inline_keyboard": [[
                 {"text": "Approve", "callback_data": approve},

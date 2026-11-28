@@ -659,6 +659,8 @@ pub(crate) async fn answer_with_registry(
         specs.push(tasks::input::tool());
     }
 
+    approval::purpose::offer(&mut specs);
+
     let mut handoff = registry.route.handoff.subscribe();
 
     let mut kind = registry.route.kind.subscribe();

@@ -394,6 +394,12 @@ call to an arbitrary provider.
 The legacy `tools` plugin keeps its built-in schemas as a fallback for older
 installed binaries that do not implement `tools/list`.
 
+For each tool that may need approval, the runtime adds an optional `purpose` string to
+the schema the model sees, so the model can say in one line why it wants the call. The
+runtime removes `purpose` before it validates the call, binds the approval, and sends
+the call, so plugins never receive it. A tool that declares its own `purpose` property
+keeps it and gets no host purpose.
+
 Tool methods may return the legacy `{ "text": "..." }` result or normalized
 multimodal content:
 

@@ -205,7 +205,7 @@ for line in sys.stdin:
         if mode in ['approval', 'live-approval']:
             if count == (2 if mode == 'approval' else 1):
                 result = {'text':'','stop':'tool','events':[{'kind':'tool','name':'write',
-                    'args':{'path':'note.txt','text':'orchid-17'}}]}
+                    'args':{'path':'note.txt','text':'orchid-17','purpose':'Save the note'}}]}
             else:
                 messages = json.dumps(request['params']['messages'])
                 written = 'has run once' in messages or 'Written.' in messages

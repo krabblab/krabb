@@ -215,7 +215,15 @@ async fn a_pending_approval_survives_restart_and_runs_the_exact_action_once() {
     assert!(effects(&fixture).is_empty());
 
     assert_eq!(generated(&fixture), 2);
-    assert_eq!(notices_matching(&fixture, "Approval needed before running write"), 1);
+
+    assert_eq!(
+        notices_matching(
+            &fixture,
+            "Approval needed.\nRun the write tool.\nKrabb says: Save the note\nArguments: {\"path\""
+        ),
+        1
+    );
+
     assert_eq!(notices_matching(&fixture, &format!("Reply `/task approve {id}`")), 1);
 
     let path = fixture.context.home.join("data/sessions/index.json");
@@ -286,7 +294,13 @@ async fn a_pending_approval_survives_restart_and_runs_the_exact_action_once() {
         );
     }
 
-    assert_eq!(notices_matching(&fixture, "Approval needed before running write"), 1);
+    assert_eq!(
+        notices_matching(
+            &fixture,
+            "Approval needed.\nRun the write tool.\nKrabb says: Save the note\nArguments: {\"path\""
+        ),
+        1
+    );
 
     provider.stop().await.unwrap();
 }
@@ -620,7 +634,14 @@ async fn a_live_approval_lost_with_its_turn_resumes_from_the_saved_proposal() {
 
     assert!(effects(&fixture).is_empty());
     assert_eq!(generated(&fixture), 1);
-    assert_eq!(notices_matching(&fixture, "Approval needed before running write"), 1);
+
+    assert_eq!(
+        notices_matching(
+            &fixture,
+            "Approval needed.\nRun the write tool.\nKrabb says: Save the note\nArguments: {\"path\""
+        ),
+        1
+    );
 
     reply(&fixture, "approve-live", "approve");
 

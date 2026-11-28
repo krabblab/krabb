@@ -1097,13 +1097,43 @@ fn custom_id(value: &str) -> bool {
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
+/// TEXT with Discord's Markdown characters escaped, so an approval shows exactly what runs.
+fn literal(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+
+    for character in text.chars() {
+        if matches!(
+            character,
+            '\\' | '*' | '_' | '~' | '|' | '`' | '>' | '#' | '-' | '[' | ']' | '<' | '@'
+        ) {
+            shown.push('\\');
+        }
+
+        shown.push(character);
+    }
+
+    shown
+}
+
 fn approval_request(text: &str, approve: &str, deny: &str) -> krabb_core::Result<Value> {
     if approve == deny || !custom_id(approve) || !custom_id(deny) {
         return Err(krabb_core::Error::Denied("Approval callback data is invalid.".into()));
     }
 
+    let content = match literal(text) {
+        content if content.chars().count() <= 2_000 => content,
+        _ if !text.contains("```") && text.chars().count() <= 1_992 => format!("```\n{text}\n```"),
+
+        _ => {
+            return Err(krabb_core::Error::Denied(
+                "The approval does not fit in one Discord message.".into(),
+            ));
+        }
+    };
+
     Ok(json!({
-        "content": text,
+        "content": content,
+        "allowed_mentions": {"parse": []},
         "components": [{
             "type": 1,
             "components": [
@@ -2392,6 +2422,21 @@ mod tests {
 
         assert!(operation("callback", &json!({"id": "invalid"})).is_err());
         assert!(operation("unknown", &json!({})).unwrap().is_none());
+    }
+
+    #[test]
+    fn approvals_show_text_literally_without_mentions_and_fit_one_message() {
+        let body = approval_request("Krabb says: @everyone *now*\nrm -rf ||x||", "a", "d").unwrap();
+
+        assert_eq!(body["content"], "Krabb says: \\@everyone \\*now\\*\nrm \\-rf \\|\\|x\\|\\|");
+        assert_eq!(body["allowed_mentions"], json!({"parse": []}));
+
+        let dashes = "-".repeat(1_500);
+        let fenced = approval_request(&dashes, "a", "d").unwrap();
+
+        assert_eq!(fenced["content"], format!("```\n{dashes}\n```"));
+        assert!(approval_request(&"-".repeat(1_995), "a", "d").is_err());
+        assert!(approval_request(&format!("```{}", "-".repeat(1_100)), "a", "d").is_err());
     }
 
     #[test]

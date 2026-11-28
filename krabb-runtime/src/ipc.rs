@@ -1451,11 +1451,33 @@ async fn stop_terminal_readers(
     let _ = stderr_task.await;
 }
 
+#[cfg(any(windows, test))]
+fn windows_terminal_shell(command: &str) -> tokio::process::Command {
+    let mut process = tokio::process::Command::new("cmd.exe");
+
+    process.args(["/C", command]);
+    process.env("NoDefaultCurrentDirectoryInExePath", "1");
+    process
+}
+
+#[cfg(test)]
+mod windows_terminal_environment {
+    #[test]
+    fn typed_cmd_never_runs_programs_from_the_current_directory() {
+        let process = super::windows_terminal_shell("findstr x");
+
+        let found = process.as_std().get_envs().any(|(name, value)| {
+            name == "NoDefaultCurrentDirectoryInExePath" && value == Some("1".as_ref())
+        });
+
+        assert!(found);
+        assert_eq!(process.as_std().get_program(), "cmd.exe");
+    }
+}
+
 #[cfg(windows)]
 fn terminal_shell(command: &str) -> io::Result<tokio::process::Command> {
-    let mut process = tokio::process::Command::new("cmd.exe");
-    process.args(["/C", command]);
-    Ok(process)
+    Ok(windows_terminal_shell(command))
 }
 
 #[cfg(target_os = "linux")]

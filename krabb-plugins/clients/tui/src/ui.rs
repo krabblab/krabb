@@ -1568,6 +1568,16 @@ fn approval_summary(transcript: &str, id: &str) -> Option<String> {
     let approval_line =
         lines.iter().rposition(|line| *line == format!("Approve: /approve {id}"))?;
 
+    let fact = lines[..approval_line]
+        .iter()
+        .rposition(|line| *line == "Approval needed.")
+        .map(|heading| lines[heading + 1])
+        .filter(|line| !line.starts_with("Tool: ") && !line.starts_with("Approve: "));
+
+    if let Some(fact) = fact {
+        return Some(fact.to_owned());
+    }
+
     lines[..approval_line].iter().rev().take(4).find_map(|line| {
         line.strip_prefix("Command: ")
             .or_else(|| line.strip_prefix("Action: "))
@@ -5912,6 +5922,26 @@ mod tests {
         assert!(!names.iter().any(|command| command.starts_with("/store")));
 
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn approval_picker_shows_the_fact_line_or_an_older_daemon_command() {
+        let current = "System | now\nApproval needed.\nDelete files and folders: build.\n\
+            Command: rm -rf build\nApprove: /approve new\nDeny: /deny new\n";
+
+        assert_eq!(
+            super::approval_summary(current, "new").as_deref(),
+            Some("Delete files and folders: build.")
+        );
+
+        let legacy = "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
+            Approve: /approve old\nDeny: /deny old\n";
+
+        assert_eq!(super::approval_summary(legacy, "old").as_deref(), Some("touch foo"));
+
+        let bare = "Approval needed.\nApprove: /approve bare\n";
+
+        assert_eq!(super::approval_summary(bare, "bare"), None);
     }
 
     #[tokio::test]

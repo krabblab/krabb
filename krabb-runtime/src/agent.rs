@@ -311,6 +311,8 @@ pub(crate) async fn agent_tool_request(
     values.remove("approve");
     values.insert("workspace".into(), serde_json::Value::String(workspace.display().to_string()));
 
+    let purpose = approval::purpose::take(&[], name, &mut args);
+
     let changes = mutating(name, &args);
 
     let approved = match (changes, approval_mode) {
@@ -318,13 +320,11 @@ pub(crate) async fn agent_tool_request(
         (true, ApprovalMode::Auto) => true,
 
         (true, ApprovalMode::Prompt) => {
-            let arguments = match approval_arguments(name, &args) {
-                Ok(arguments) => arguments,
-                Err(error) => return Ok(Response::fail(id, -32000, error.to_string())),
-            };
+            if let Err(error) = approval_arguments(name, &args) {
+                return Ok(Response::fail(id, -32000, error.to_string()));
+            }
 
-            let question =
-                format!("Krabb requests approval to run {name:?} with {arguments}.\nApprove?");
+            let question = format!("{}\nApprove?", approval_text(name, &args, purpose.as_deref()));
 
             if question.len() > APPROVAL_TEXT_LIMIT {
                 return Ok(Response::fail(
