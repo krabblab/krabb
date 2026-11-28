@@ -9,7 +9,7 @@ async fn parse(
 ) -> krabb_core::Result<Option<Response>> {
     let stream = futures_util::stream::iter(chunks);
 
-    crate::stream_body(7, stream, emitter).await
+    krabb_openai::chat::stream_body(crate::PROVIDER, 7, stream, emitter).await
 }
 
 fn fixture() -> contract::Fixture {
@@ -86,7 +86,7 @@ async fn terminal_marker_completes_without_transport_eof() {
         let (output, mut events) = tokio::sync::mpsc::channel(256);
         let mut emitter = Emitter::new(output);
 
-        let response = crate::stream_body(7, stream, &mut emitter)
+        let response = krabb_openai::chat::stream_body(crate::PROVIDER, 7, stream, &mut emitter)
             .now_or_never()
             .expect("terminal marker must finish while the transport is still pending")
             .unwrap()

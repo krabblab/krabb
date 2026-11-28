@@ -1,8 +1,11 @@
-use super::*;
-use krabb_core::types::Message;
 use std::collections::VecDeque;
 
-pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
+use krabb_core::types::{Content, Message, ModelRequest, Role};
+use serde_json::{Value, json};
+
+use super::image;
+
+pub fn messages(provider: &str, input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
     let mut output = Vec::new();
     let mut pending = VecDeque::<(String, String)>::new();
     let mut images = Vec::new();
@@ -12,7 +15,7 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
             finish(&mut output, &mut pending, &mut images);
         }
 
-        let mut value = legacy_messages(std::slice::from_ref(message))?.remove(0);
+        let mut value = legacy_messages(provider, std::slice::from_ref(message))?.remove(0);
 
         if message.role == Role::Assistant {
             let mut calls = Vec::new();
@@ -32,7 +35,7 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
 
             if !calls.is_empty() {
                 let filtered = Message { content, ..message.clone() };
-                value = legacy_messages(&[filtered])?.remove(0);
+                value = legacy_messages(provider, &[filtered])?.remove(0);
                 value["tool_calls"] = json!(calls);
             }
         } else if message.role == Role::Tool {
@@ -44,7 +47,7 @@ pub(super) fn messages(input: &ModelRequest) -> krabb_core::Result<Vec<Value>> {
                 for item in &message.content {
                     if let Content::Image { uri, .. } = item {
                         images
-                            .push(json!({"type": "image_url", "image_url": {"url": image(uri)?}}));
+                            .push(json!({"type": "image_url", "image_url": {"url": image(provider, uri)?}}));
                     }
                 }
 
@@ -94,7 +97,7 @@ fn finish(
     }
 }
 
-fn legacy_messages(input: &[Message]) -> krabb_core::Result<Vec<Value>> {
+fn legacy_messages(provider: &str, input: &[Message]) -> krabb_core::Result<Vec<Value>> {
     input.iter().map(|message| {
         let role = match message.role { Role::System => "system", Role::User => "user", Role::Assistant => "assistant", Role::Tool => "user" };
         let mut parts = Vec::new();
@@ -109,7 +112,7 @@ fn legacy_messages(input: &[Message]) -> krabb_core::Result<Vec<Value>> {
                 Content::Text { text } => parts.push(json!({"type":"text","text":text})),
 
                 Content::Image { uri, .. } if message.role != Role::System => {
-                    parts.push(json!({"type":"image_url","image_url":{"url":image(uri)?}}));
+                    parts.push(json!({"type":"image_url","image_url":{"url":image(provider, uri)?}}));
                 }
 
                 Content::Image { alt, .. } => parts.push(json!({"type":"text","text":alt.as_deref().unwrap_or("[Image attachment.]")})),

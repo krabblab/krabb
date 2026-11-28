@@ -376,6 +376,9 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_OLLAMA_THINK` | Ollama thinking mode: `false` (default), `true`, `auto`, `low`, `medium`, or `high`; model support varies |
 | `KRABB_OLLAMA_CONTEXT_LENGTH` | Ollama context override in tokens; default `auto` leaves allocation to the server/model |
 | `KRABB_OLLAMA_API_KEY` | Ollama cloud API key |
+| `KRABB_LOCAL_URL` | Local server base URL, such as `http://127.0.0.1:8000/v1`; default `auto` finds a running server |
+| `KRABB_LOCAL_KEY` | API key for a local server started with one |
+| `KRABB_LOCAL_CONTEXT_LENGTH` | Local server context in tokens; default `auto` uses the length the server reports |
 | `KRABB_TELEGRAM_TOKEN` | Telegram bot token |
 | `KRABB_DISCORD_TOKEN` | Discord bot token |
 | `KRABB_DISCORD_GATEWAY_URL` | Optional Discord Gateway URL |

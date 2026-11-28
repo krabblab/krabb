@@ -26,6 +26,7 @@ vendor-specific fields inside the plugin process.
 | `gemini` | Gemini Developer API | `KRABB_GEMINI_KEY` or encrypted credentials |
 | `ollama` | Ollama local or cloud API | `KRABB_OLLAMA_HOST`, `KRABB_OLLAMA_API_KEY`, or encrypted credentials |
 | `openrouter` | OpenAI-compatible routed models | `KRABB_OPENROUTER_KEY`, `KRABB_OPENROUTER_MODEL`, or encrypted credentials |
+| `local` | vLLM, llama.cpp, LM Studio, and other OpenAI-compatible servers | `KRABB_LOCAL_URL` (`auto` finds a running server); optional `KRABB_LOCAL_KEY` |
 
 ### Default models
 
@@ -47,6 +48,7 @@ These small/efficient defaults were verified against official catalogs on **2026
 | OpenRouter | `deepseek/deepseek-v4.1-flash` | [OpenRouter model](https://openrouter.ai/deepseek/deepseek-v4.1-flash) |
 | Ollama local / other hosts | `qwen3.5:4b` | [Local model](https://ollama.com/library/qwen3.5:4b) |
 | Ollama Cloud (`https://ollama.com`) | `deepseek-v4.1-flash` | [Live cloud catalog](https://ollama.com/api/tags) |
+| Local server | The first model the server lists | The server's `/v1/models` |
 
 Qwen 3.5 4B is the selected small local Qwen model and must already be installed.
 Qwen 3.6/3.8 have larger local tags; the checked Ollama cloud catalog does not list
@@ -140,6 +142,7 @@ can omit details. They are also refreshed before the retained history fills up.
 | Ollama | Explicit setting, otherwise running model allocation; 4096 fallback | Portable summary |
 | OpenAI / Codex | Documented model-family catalog, with an explicit override | Portable summary; Codex sign-in also has its own harness context management |
 | OpenRouter | Model metadata and native-search endpoint limits | Portable summary |
+| Local server | Explicit setting, otherwise the length the server reports; 4096 fallback | Portable summary |
 
 OpenAI and Codex setup accept `KRABB_OPENAI_CONTEXT_LENGTH` and
 `KRABB_CODEX_CONTEXT_LENGTH`: `auto` uses the catalog, or enter a token count
@@ -180,6 +183,7 @@ separate search service when native search is unavailable.
 | Gemini | Google Search grounding; Gemini 3 can combine it with function tools |
 | OpenRouter | Only endpoints advertising native search, with routing fallback disabled |
 | Ollama | No native chat search; no fallback service |
+| Local server | No native chat search; no fallback service |
 
 Gemini 2 supports grounding when no function tools are supplied; it cannot combine
 both in one request. OpenRouter's default web plugin is disabled to prevent its

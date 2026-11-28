@@ -54,6 +54,7 @@ Semantic Versioning.
 - Allow daemon model requests to use the full five-minute turn budget.
 - Clear saved plugin keys through interactive setup.
 - Switch local and cloud Ollama hosts through interactive setup.
+- Use vLLM, llama.cpp, LM Studio, and other local inference servers with the `local` plugin.
 - Configure Slack conversations through interactive setup.
 - Display rich text and code panels in terminal conversations.
 - Control data visibility between integrations and isolate conversations with worktrees.

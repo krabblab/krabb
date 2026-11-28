@@ -1,6 +1,7 @@
-//! OpenAI-specific integration shared by the OpenAI and Codex providers.
+//! OpenAI API integration shared by the OpenAI, Codex, and local providers.
 #![forbid(unsafe_code)]
 
+pub mod chat;
 pub mod responses;
 
 use krabb_core::context::{Profile, Window};

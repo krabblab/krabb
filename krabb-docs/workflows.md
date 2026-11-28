@@ -36,7 +36,8 @@ To do the same by hand, run `krabb plugin install <intelligence> <channel>`, `kr
 plugin setup <id>`, and `krabb-daemon`. `krabb plugin install` downloads the newest compatible version of each official
 plugin from the plugin index and verifies it. `krabb plugin setup` explains each field and checks values before
 saving them. Choose a hosted provider such as `openai`, `anthropic`, `gemini`, or
-`openrouter` for remote inference, or `ollama` for a local model; local inference
+`openrouter` for remote inference, or `ollama` or `local` (vLLM, llama.cpp, LM Studio, and
+other compatible servers) for a local model; local inference
 needs its own memory and CPU, described in [Resources](resources.md). See
 [Providers](providers.md) for credentials and default models.
 

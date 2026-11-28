@@ -23,6 +23,7 @@ packages=(
     krabb-plugin-gemini
     krabb-plugin-ollama
     krabb-plugin-openrouter
+    krabb-plugin-local
     krabb-plugin-mcp
     krabb-plugin-memory
     krabb-plugin-discord

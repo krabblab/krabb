@@ -18,6 +18,7 @@ members = [
     "krabb-plugins/intelligence/gemini",
     "krabb-plugins/intelligence/ollama",
     "krabb-plugins/intelligence/openrouter",
+    "krabb-plugins/intelligence/local",
     "krabb-plugins/intelligence/openai",
     "krabb-plugins/acp",
     "krabb-plugins/a2a",
