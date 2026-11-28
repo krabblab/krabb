@@ -241,7 +241,13 @@ impl App {
 
                 let end = range.end.min(self.input.len());
 
-                self.input[range.start.min(end)..end].iter().collect()
+                self.input[range.start.min(end)..end]
+                    .iter()
+                    .map(|character| match character {
+                        '\n' => '\n',
+                        character => selection::pasteable(*character),
+                    })
+                    .collect()
             }
 
             None => return,
@@ -460,6 +466,7 @@ mod tests {
             transcript: "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
                 Approve: /approve 0123456789abcdef01234567\nDeny: /deny 0123456789abcdef01234567\n"
                 .into(),
+            issued: [("0123456789abcdef01234567".to_owned(), "touch foo".to_owned())].into(),
             ..App::default()
         }
     }

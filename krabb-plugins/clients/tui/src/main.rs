@@ -169,13 +169,27 @@ enum EngineEvent {
     SystemText(String),
     RequestFailed(String),
     SystemNotice(String),
+    /// An approval the daemon issued: its ID, what it runs in one line, and the notice to show.
+    Approval {
+        id: String,
+        summary: String,
+        notice: String,
+    },
     ControlNotice(String),
-    InputQueued { input: String, receipt: String },
-    InputRejected { input: String, reason: String },
+    InputQueued {
+        input: String,
+        receipt: String,
+    },
+    InputRejected {
+        input: String,
+        reason: String,
+    },
     Progress(String),
     DraftDiscarded,
     AssistantFinished,
-    GenerationFinished { interrupted: bool },
+    GenerationFinished {
+        interrupted: bool,
+    },
 }
 
 type StreamingHost = fn(
@@ -545,7 +559,9 @@ where
             EngineEvent::DraftDiscarded => reply.clear(),
             EngineEvent::ControlNotice(text) => receipt = Some(text),
 
-            EngineEvent::RequestFailed(_) | EngineEvent::SystemNotice(_) => failed = true,
+            EngineEvent::RequestFailed(_)
+            | EngineEvent::SystemNotice(_)
+            | EngineEvent::Approval { .. } => failed = true,
 
             _ => {}
         }
@@ -4794,9 +4810,11 @@ async fn control_as(
                     }
 
                     if let Some(events) = &events {
-                        let _ = events.send(EngineEvent::SystemNotice(format_approval_notice(
-                            id, tool, arguments, command, text,
-                        )));
+                        let summary = single_line(command.unwrap_or(text));
+                        let notice = format_approval_notice(id, tool, arguments, command, text);
+
+                        let _ =
+                            events.send(EngineEvent::Approval { id: id.into(), summary, notice });
                     }
 
                     continue;
@@ -4926,7 +4944,7 @@ fn format_approval_notice(
     details: &str,
 ) -> String {
     let mut message = String::from("Approval needed.");
-    message.push_str(&format!("\nTool: {tool}"));
+    message.push_str(&format!("\nTool: {}", single_line(tool)));
 
     if matches!(tool, "shell_run" | "shell") {
         message.push_str("\nCommand: ");
@@ -5041,8 +5059,6 @@ fn format_approvals(value: &Value) -> String {
     format!("Pending approvals:\n{}\nUse /approve <id> or /deny <id>.\n> ", rows.join("\n"))
 }
 
-/// Indents TEXT and escapes control characters, so it cannot restyle the terminal or end the
-/// listing early with a prompt line.
 /// TEXT on one line, with line breaks, control characters, and invisible reordering marks
 /// escaped, so a value cannot start a line of its own in a notice.
 fn single_line(text: &str) -> String {
@@ -5050,7 +5066,7 @@ fn single_line(text: &str) -> String {
         .map(|character| {
             let hidden = matches!(
                 character,
-                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
             );
 
             if character.is_control() || hidden {
@@ -5062,6 +5078,8 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
+/// Indents TEXT and escapes control characters, so it cannot restyle the terminal or end the
+/// listing early with a prompt line.
 fn reviewable(text: &str) -> String {
     text.lines()
         .map(|line| {
@@ -5071,7 +5089,7 @@ fn reviewable(text: &str) -> String {
                     // Bidirectional and zero-width marks could reorder or hide text.
                     let hidden = matches!(
                         character,
-                        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                        '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
                     );
 
                     if (character.is_control() && character != '\t') || hidden {

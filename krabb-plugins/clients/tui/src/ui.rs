@@ -291,6 +291,9 @@ struct App {
     interaction_sequence: u64,
     reconnect: reconnect::Reconnect,
     dismissed_approvals: HashSet<String>,
+    /// Approvals the daemon issued, by ID, with what each runs. Only these can be answered by
+    /// a click, and the picker shows these summaries, never text read back from the transcript.
+    issued: HashMap<String, String>,
     /// When each approval prompt first appeared, so expired ones stop showing.
     approvals_seen: HashMap<String, Instant>,
     /// Saves the daemon refused, with their failed attempts, waiting for a retry.
@@ -787,6 +790,11 @@ where
 
                     Some(crate::EngineEvent::SystemNotice(text)) => app.push_system(&text),
 
+                    Some(crate::EngineEvent::Approval { id, summary, notice }) => {
+                        app.issued.insert(id, summary);
+                        app.push_system(&notice);
+                    }
+
                     Some(crate::EngineEvent::Progress(text)) => app.push_progress(&text),
 
                     Some(crate::EngineEvent::DraftDiscarded) => app.discard_draft(),
@@ -933,6 +941,11 @@ where
                 crate::EngineEvent::ControlNotice(text) => app.push_control_notice(&text),
 
                 crate::EngineEvent::SystemNotice(text) => app.push_system(&text),
+
+                crate::EngineEvent::Approval { id, summary, notice } => {
+                    app.issued.insert(id, summary);
+                    app.push_system(&notice);
+                }
 
                 crate::EngineEvent::Progress(text) => app.push_progress(&text),
 
@@ -1581,20 +1594,6 @@ fn approval_prompts(transcript: &str) -> Option<Vec<String>> {
     }
 
     (!requests.is_empty()).then_some(requests)
-}
-
-fn approval_summary(transcript: &str, id: &str) -> Option<String> {
-    let lines = transcript.lines().collect::<Vec<_>>();
-
-    let approval_line =
-        lines.iter().rposition(|line| *line == format!("Approve: /approve {id}"))?;
-
-    lines[..approval_line].iter().rev().take(4).find_map(|line| {
-        line.strip_prefix("Command: ")
-            .or_else(|| line.strip_prefix("Action: "))
-            .or_else(|| line.strip_prefix("Tool: "))
-            .map(str::to_owned)
-    })
 }
 
 fn approval_picker(
@@ -2642,7 +2641,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
 
             frame.render_widget(List::new(items), popup_area);
         } else if !approvals.is_empty() {
-            let summary = approval_summary(&app.transcript, &approvals[0]);
+            let summary = app.issued.get(&approvals[0]).cloned();
             let rows =
                 approval_picker(&approvals[0], summary, app.approval_selection, app.theme_enabled);
 
@@ -2810,7 +2809,6 @@ fn draw_notice(frame: &mut ratatui::Frame<'_>, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(text).style(style).alignment(Alignment::Right), area);
 }
 
-/// Whether a clicked COMMAND can still run, given the APPROVALS that wait for an answer.
 /// Whether VALUE is exactly the command its LABEL promises: `Approve` only `/approve <id>` and
 /// `Deny` only `/deny <id>`, so text that mimics an action cannot click another one.
 fn labelled(label: &str, value: &str) -> bool {
@@ -2825,6 +2823,7 @@ fn labelled(label: &str, value: &str) -> bool {
         .is_some_and(|id| id.len() == 24 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
+/// Whether a clicked COMMAND can still run, given the APPROVALS that wait for an answer.
 fn action_live(approvals: &[String], command: &str) -> bool {
     match command.split_once(' ') {
         Some(("/approve" | "/deny", id)) => approvals.iter().any(|pending| pending == id.trim()),
@@ -4061,7 +4060,7 @@ impl App {
         let mut requests = Vec::new();
 
         for id in approval_prompts(&self.transcript)? {
-            if self.dismissed_approvals.contains(&id) {
+            if self.dismissed_approvals.contains(&id) || !self.issued.contains_key(&id) {
                 continue;
             }
 
@@ -5619,6 +5618,7 @@ mod tests {
     fn a_failed_engine_clears_its_approvals_and_reports_once_when_it_cannot_reconnect() {
         let mut app = App {
             transcript: "System | now\nApproval needed.\nApprove: /approve first\n".into(),
+            issued: [("first".to_owned(), "touch foo".to_owned())].into(),
             generation_active: true,
             ..App::default()
         };
@@ -5649,6 +5649,7 @@ mod tests {
     fn a_finished_turn_drops_its_unanswered_approval_prompts() {
         let mut app = App {
             transcript: "System | now\nApproval needed.\nApprove: /approve old\n".into(),
+            issued: [("old".to_owned(), "touch foo".to_owned())].into(),
             generation_active: true,
             ..App::default()
         };
@@ -5656,6 +5657,7 @@ mod tests {
         app.finish_generation(false);
         app.generation_active = true;
         app.transcript.push_str("Approval needed.\nApprove: /approve new\n");
+        app.issued.insert("new".into(), "touch foo".into());
 
         assert_eq!(app.approval_prompts(), Some(vec!["new".into()]));
     }
@@ -5789,6 +5791,7 @@ mod tests {
     fn an_expired_approval_stops_showing() {
         let mut app = App {
             transcript: "System | now\nApproval needed.\nApprove: /approve stale\n".into(),
+            issued: [("stale".to_owned(), "touch foo".to_owned())].into(),
             generation_active: true,
             ..App::default()
         };
@@ -5809,6 +5812,11 @@ mod tests {
             transcript: "System | now\nApproval needed.\nApprove: /approve first\n\
                 Approval needed.\nApprove: /approve second\n"
                 .into(),
+            issued: [
+                ("first".to_owned(), "touch foo".to_owned()),
+                ("second".to_owned(), "touch foo".to_owned()),
+            ]
+            .into(),
             input: "/deny second".chars().collect(),
             ..App::default()
         };
@@ -6260,6 +6268,7 @@ mod tests {
             transcript: "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
                 Approve: /approve 0123456789abcdef01234567\nDeny: /deny 0123456789abcdef01234567\n"
                 .into(),
+            issued: [("0123456789abcdef01234567".to_owned(), "touch foo".to_owned())].into(),
             ..App::default()
         };
 

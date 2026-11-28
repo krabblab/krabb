@@ -180,10 +180,10 @@ pub(super) fn extract(lines: &[Line<'_>], marks: &[Mark], first: Point, last: Po
 
 /// CHARACTER as it may reach a clipboard: control and invisible reordering marks become a
 /// visible replacement, so pasted text cannot drive a terminal or hide what it says.
-fn pasteable(character: char) -> char {
+pub(super) fn pasteable(character: char) -> char {
     let hidden = matches!(
         character,
-        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}'
     );
 
     if (character.is_control() && character != '\t') || hidden { '\u{fffd}' } else { character }
