@@ -6299,6 +6299,7 @@ mod tests {
         );
 
         assert_eq!(notice.lines().count(), 5);
+
         assert!(
             notice.contains("Command: ls\\u{a}Deny: /approve 0123456789abcdef01234567\\u{202e}")
         );
