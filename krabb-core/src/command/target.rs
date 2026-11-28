@@ -70,6 +70,7 @@ pub fn targets(segment: &Segment) -> Targets {
     if DELETES.contains(&name) {
         targets.recursive |=
             matches!(name, "rmdir" | "rd") || args.iter().any(|arg| recursive(arg));
+
         targets.unnamed_deletes |= operands.is_empty();
 
         for operand in operands {
@@ -126,6 +127,7 @@ fn program(segment: &Segment, targets: &mut Targets) {
 
         "curl" => {
             values(args, &["-o", "--output"], false, targets);
+
             targets.unnamed_writes |=
                 args.iter().any(|arg| matches!(arg.as_str(), "-O" | "--remote-name"));
         }
@@ -148,6 +150,7 @@ fn program(segment: &Segment, targets: &mut Targets) {
         }
 
         "git" => git(segment, targets),
+
         _ => {}
     }
 }

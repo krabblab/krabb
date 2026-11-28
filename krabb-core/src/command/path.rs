@@ -122,6 +122,7 @@ pub(super) fn remote_hosts<'a>(program: &str, args: &[&'a str]) -> Vec<&'a str> 
         "ssh" | "sftp" => {
             first().map(|arg| arg.rsplit('@').next().unwrap_or(arg)).into_iter().collect()
         }
+
         "scp" | "rsync" => operands.into_iter().filter_map(remote).collect(),
 
         "ping" | "nc" | "ncat" | "netcat" | "telnet" | "ftp" | "whois" => {

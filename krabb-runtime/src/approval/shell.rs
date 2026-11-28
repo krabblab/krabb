@@ -90,6 +90,7 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
                 Reason::Acts(_, Effect::RunsCode) => reading.opaque |= !read && !scripted(segment),
                 Reason::Acts(_, Effect::DeletesFiles) => reading.unnamed_deletes = true,
                 Reason::Acts(_, effect) => changed(&mut reading, effect),
+
                 _ => {}
             }
         }
