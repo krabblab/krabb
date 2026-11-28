@@ -279,6 +279,7 @@ async fn host_requests_check_list_describe_and_generate() {
     let (base, _server) = krabb_test::http::responses(replies).await;
 
     let call = |id, method: &str, params| Request::call(id, method, params);
+
     let run = |request| {
         let (emitter, _events) = emitter();
 
@@ -306,6 +307,7 @@ async fn host_requests_check_list_describe_and_generate() {
 
     assert!(unknown.to_string().contains("krabb local models"));
     assert!(run(call(6, "other", json!({}))).await.unwrap().is_none());
+
     let note = Request::Note { jsonrpc: "2.0".into(), method: "event".into(), params: json!({}) };
 
     assert!(run(note).await.unwrap().is_none());

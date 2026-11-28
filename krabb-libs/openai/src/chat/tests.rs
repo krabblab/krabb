@@ -75,6 +75,7 @@ fn tool_calls_and_results_pair_up_and_images_need_safe_references() {
     assert!(unanswered[1]["content"].as_str().unwrap().contains("No tool result was recorded"));
     assert!(image(PROVIDER, "https://cdn.test/a.png").is_ok());
     assert!(image(PROVIDER, "data:image/png;base64,AA").is_ok());
+
     assert!(
         image(PROVIDER, "file:///etc/passwd").unwrap_err().to_string().contains("Fixture received")
     );
@@ -85,6 +86,7 @@ async fn streams_assemble_text_and_tools_and_require_their_end() {
     let (mut emitter, mut events) = emitter();
 
     let text = json!({"choices": [{"delta": {"content": "Hello"}}]});
+
     let tool = json!({"choices": [{"delta": {"tool_calls": [{
         "index": 0, "id": "c1", "function": {"name": "read", "arguments": "{\"path\":\"a\"}"}
     }]}}]});
@@ -101,6 +103,7 @@ async fn streams_assemble_text_and_tools_and_require_their_end() {
     let open = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
         format!("data: {text}\n").into_bytes(),
     )]);
+
     let error = stream_body(PROVIDER, 4, open, &mut emitter).await.unwrap_err();
 
     assert!(error.to_string().contains("ended before its completion marker"));
@@ -116,6 +119,7 @@ async fn streams_assemble_text_and_tools_and_require_their_end() {
             .to_string()
             .contains("overloaded")
     );
+
     assert!(stream_line(PROVIDER, refused, &mut seen, &mut pending, &mut calls).is_err());
     assert!(stream_line(PROVIDER, &[0xff], &mut seen, &mut pending, &mut calls).is_err());
 
@@ -159,6 +163,7 @@ async fn replies_parse_text_tools_and_reject_empty_or_oversized_bodies() {
         futures_util::stream::iter(vec![Ok::<_, std::io::Error>(vec![b'x'; BODY_LIMIT + 1])]);
 
     assert!(collect(PROVIDER, large).await.is_err());
+
     assert!(
         collect(PROVIDER, futures_util::stream::iter(vec![Err::<Vec<u8>, _>("cut")]))
             .await
