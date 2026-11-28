@@ -415,9 +415,7 @@ pub(super) fn highlight_input(
         let y = top + (row - offset) as u16;
         let mut column = area.x.saturating_add(PROMPT_WIDTH);
 
-        for index in *start..end {
-            let character = input[index];
-
+        for (index, &character) in input.iter().enumerate().take(end).skip(*start) {
             if character == '\n' {
                 break;
             }

@@ -2928,8 +2928,7 @@ fn input_view(input: &[char], cursor: usize, width: u16) -> InputView {
 }
 
 /// The position in INPUT, laid out around CURSOR in WIDTH columns as `input_view` does, that a
-/// click at
-/// COLUMN after the prompt on ROW reaches: the character there, or the end of the row.
+/// click at COLUMN after the prompt on ROW reaches: the character there, or the end of the row.
 fn input_index(input: &[char], cursor: usize, width: u16, column: u16, row: usize) -> usize {
     let starts = input_view(input, cursor, width).starts;
 
@@ -2937,9 +2936,7 @@ fn input_index(input: &[char], cursor: usize, width: u16, column: u16, row: usiz
     let end = starts.get(row + 1).copied().unwrap_or(input.len());
     let mut reached = 0;
 
-    for index in starts[row]..end {
-        let character = input[index];
-
+    for (index, &character) in input.iter().enumerate().take(end).skip(starts[row]) {
         if character == '\n' {
             return index;
         }
