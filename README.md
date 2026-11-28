@@ -93,10 +93,9 @@ such as Telegram, send your bot a direct message; groups first need an `allow`
 entry in the [channel policy](krabb-docs/configuration.md#channel-policy).
 
 Remote inference sends your conversation to a hosted provider and needs an account
-with a key or sign-in. Local inference runs a model on a server you
-control, such as Ollama, vLLM, llama.cpp, or LM Studio, keeps conversations off hosted services, and needs the memory and CPU
-described in the
-[resource guide](krabb-docs/resources.md).
+with a key or sign-in. Local inference runs a model on a server you control, such as
+Ollama, vLLM, llama.cpp, or LM Studio, keeps conversations off hosted services, and needs
+the memory and CPU described in the [resource guide](krabb-docs/resources.md).
 
 | Provider | Inference | What setup asks for |
 | --- | --- | --- |
@@ -109,9 +108,9 @@ Telegram and Discord need a bot token, Slack needs bot and app tokens, Signal
 needs a registered or linked `signal-cli` account, and WhatsApp needs Meta Cloud
 API credentials and a public HTTPS callback; the
 [channel setup guides](krabb-docs/providers.md#channels) cover each platform.
-Some plugins need software Krabb does not install: local inference needs Ollama or another local server,
-Codex sign-in needs the Codex CLI, Signal needs `signal-cli`, and sandboxed shell
-tools need Docker or Podman.
+Some plugins need software Krabb does not install: local inference needs Ollama or another
+local server, Codex sign-in needs the Codex CLI, Signal needs `signal-cli`, and sandboxed
+shell tools need Docker or Podman.
 
 The [first-run guide](krabb-docs/workflows.md#first-run) covers provider choice,
 backups, and upgrades. To remove Krabb, run the

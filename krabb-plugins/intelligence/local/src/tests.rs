@@ -78,6 +78,8 @@ fn plain_http_is_allowed_only_close_to_this_machine() {
         "http://gpu-box:8000/v1",
         "http://gpu-box.local:8000/v1",
         "http://studio.lan/v1",
+        "http://localhost./v1",
+        "http://gpu-box.local.:8000/v1",
     ] {
         assert!(server::validate(url).is_ok(), "{url}");
     }
@@ -115,7 +117,8 @@ fn models_resolve_contexts_and_list_for_setup() {
     assert_eq!(server::context(None), 4096);
     assert_eq!(server::context(Some(&json!({"context_length": 8192}))), 8192);
     assert_eq!(server::context(Some(&json!({"max_context_length": 16384}))), 16384);
-    assert_eq!(server::context(Some(&json!({"meta": {"n_ctx_train": 131072}}))), 131072);
+    assert_eq!(server::context(Some(&json!({"meta": {"n_ctx_train": 131072}}))), 4096);
+    assert_eq!(server::context(Some(&json!({"max_model_len": 1, "context_length": 8192}))), 8192);
     assert_eq!(server::context(Some(&json!({"max_model_len": 1}))), 4096);
 
     let listing = server::listing("http://127.0.0.1:8000/v1", &entries);
@@ -137,16 +140,18 @@ fn context_length_is_reported_or_configured() {
 
 #[test]
 fn only_a_refusal_that_names_tools_becomes_the_tool_message() {
-    let invalid =
-        || Failure::new(Kind::Invalid).error("The local server rejected: tools unsupported");
+    let invalid = || Failure::new(Kind::Invalid).error("rejected: tools are not supported here");
+    let schema = Failure::new(Kind::Invalid).error("Invalid schema for function in tools");
 
-    assert_eq!(refused(invalid(), true).to_string(), NO_TOOLS);
-    assert_ne!(refused(invalid(), false).to_string(), NO_TOOLS);
+    assert!(refused(invalid(), true).to_string().starts_with(NO_TOOLS));
+    assert!(refused(invalid(), true).to_string().ends_with("tools are not supported here"));
+    assert!(!refused(invalid(), false).to_string().starts_with(NO_TOOLS));
+    assert!(!refused(schema, true).to_string().starts_with(NO_TOOLS));
 
-    let busy = Failure::new(Kind::Transient).error("The local server tool call failed");
+    let busy = Failure::new(Kind::Transient).error("The local server tool_choice failed");
 
-    assert_ne!(refused(busy, true).to_string(), NO_TOOLS);
-    assert_ne!(refused(Error::Denied("tool".into()), true).to_string(), NO_TOOLS);
+    assert!(!refused(busy, true).to_string().starts_with(NO_TOOLS));
+    assert!(!refused(Error::Denied("tool_choice".into()), true).to_string().starts_with(NO_TOOLS));
 }
 
 #[tokio::test]
@@ -156,19 +161,28 @@ async fn discovery_takes_the_first_server_that_answers() {
     let dead = closed().await;
     let candidates = [("vLLM", dead.as_str()), ("LM Studio", live.as_str())];
 
-    let base = server::base(&client, "auto", &candidates, None).await.unwrap();
+    let found = server::Server::new("auto", &candidates);
+    let (base, key) = found.base(&client, Some("secret")).await.unwrap();
 
-    assert_eq!(base, live);
-    assert!(server.await.unwrap()[0].headers.starts_with("GET /models "));
+    assert_eq!((base.as_str(), key), (live.as_str(), None));
+
+    let requests = server.await.unwrap();
+
+    assert!(requests[0].headers.starts_with("GET /models "));
+    assert!(!requests[0].headers.to_ascii_lowercase().contains("authorization"));
+    assert_eq!(found.base(&client, None).await.unwrap().0, live);
 
     let only = [("vLLM", dead.as_str())];
-    let error = server::base(&client, "", &only, None).await.unwrap_err().to_string();
+    let error = server::Server::new("", &only).base(&client, None).await.unwrap_err().to_string();
 
     assert!(error.contains("No local inference server answered") && error.contains("vLLM"));
 
-    let configured = server::base(&client, "http://127.0.0.1:9/v1/", &only, None).await.unwrap();
+    let configured = server::Server::new("http://127.0.0.1:9/v1/", &only);
 
-    assert_eq!(configured, "http://127.0.0.1:9/v1");
+    assert_eq!(
+        configured.base(&client, Some("k")).await.unwrap(),
+        ("http://127.0.0.1:9/v1".to_owned(), Some("k"))
+    );
 }
 
 #[tokio::test]
@@ -246,7 +260,7 @@ async fn a_server_without_tool_calling_says_so() {
         .await
         .unwrap_err();
 
-    assert_eq!(error.to_string(), NO_TOOLS);
+    assert!(error.to_string().starts_with(NO_TOOLS));
 }
 
 #[tokio::test]
@@ -278,12 +292,13 @@ async fn host_requests_check_list_describe_and_generate() {
     let replies = vec![(200, models()), (200, models()), (200, models()), (200, reply("Hi."))];
     let (base, _server) = krabb_test::http::responses(replies).await;
 
+    let configured = server::Server::new(&base, &[]);
     let call = |id, method: &str, params| Request::call(id, method, params);
 
     let run = |request| {
         let (emitter, _events) = emitter();
 
-        handle(&client, request, emitter, &base)
+        handle(&client, request, emitter, &configured)
     };
 
     let checked = run(call(1, "check", json!({}))).await.unwrap().unwrap();

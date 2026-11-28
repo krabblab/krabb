@@ -31,7 +31,11 @@ Any other compatible server, such as LocalAI, Text Generation Inference, or a
 GPU machine on your network, works when you set its address with
 `krabb local setup`, for example `http://192.168.1.20:8000/v1`. Plain HTTP is
 accepted only for this machine, private addresses, and local network names such
-as `gpu-box` or `gpu-box.local`; any other host needs HTTPS.
+as `gpu-box` or `gpu-box.local`; any other host needs HTTPS. A name without a dot is
+trusted as local, so make sure your network's search domain does not send it elsewhere.
+
+When Krabb finds a server on its own, it remembers it until a request fails and never
+sends `KRABB_LOCAL_KEY` there; set `KRABB_LOCAL_URL` to send the key.
 
 ## Setup
 
@@ -40,6 +44,9 @@ as `gpu-box` or `gpu-box.local`; any other host needs HTTPS.
 | `KRABB_LOCAL_URL` | `auto` | The server's base URL, ending in `/v1` |
 | `KRABB_LOCAL_KEY` | none | An API key, only for a server started with one |
 | `KRABB_LOCAL_CONTEXT_LENGTH` | `auto` | Tokens of context; `auto` reads it from the server, else 4096 |
+
+llama.cpp does not report the context it was started with (`-c`), so set
+`KRABB_LOCAL_CONTEXT_LENGTH` to match it.
 
 `krabb local models` lists the models the server offers. The `default` model is
 the first one it lists; choose another with `/model` or `krabb config`.

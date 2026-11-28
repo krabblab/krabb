@@ -32,6 +32,9 @@ async fn plugin_main() -> krabb_core::Result<()> {
         .build()
         .map_err(|error| Error::Denied(format!("Local server client failed: {error}.")))?;
 
+    let configured = std::env::var("KRABB_LOCAL_URL").unwrap_or_default();
+    let server = std::sync::Arc::new(server::Server::new(&configured, server::KNOWN));
+
     serve_events_concurrent(
         Hello {
             formats: vec![],
@@ -47,35 +50,58 @@ async fn plugin_main() -> krabb_core::Result<()> {
         },
         move |request, emitter| {
             let client = client.clone();
-            let configured = std::env::var("KRABB_LOCAL_URL").unwrap_or_default();
+            let server = std::sync::Arc::clone(&server);
 
-            async move { handle(&client, request, emitter, &configured).await }
+            async move { handle(&client, request, emitter, &server).await }
         },
     )
     .await
 }
 
-/// Answers one host request, with CONFIGURED as the server URL setting (`auto` to find one).
+/// Answers one host request for SERVER.
 async fn handle(
     client: &reqwest::Client,
     request: Request,
     mut emitter: Emitter,
-    configured: &str,
+    server: &server::Server,
 ) -> krabb_core::Result<Option<Response>> {
     let (id, method, params) = match request {
         Request::Call { id, method, params, .. } => (id, method, params),
         Request::Note { .. } => return Ok(None),
     };
 
-    let key = credential();
-    let key = key.as_deref();
-    let base = || server::base(client, configured, server::KNOWN, key);
+    let credential = credential();
+    let (base, key) = match method.as_str() {
+        "check" | "command" | "model.info" | "generate" => {
+            server.base(client, credential.as_deref()).await?
+        }
 
-    match method.as_str() {
+        _ => return Ok(None),
+    };
+
+    let result = answer(client, id, &method, params, &base, key, &mut emitter).await;
+
+    if let Err(Error::Failed { failure, .. }) = &result
+        && matches!(failure.kind, Kind::Transient | Kind::TimedOut | Kind::Unknown)
+    {
+        server.forget();
+    }
+
+    result
+}
+
+async fn answer(
+    client: &reqwest::Client,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+    base: &str,
+    key: Option<&str>,
+    emitter: &mut Emitter,
+) -> krabb_core::Result<Option<Response>> {
+    match method {
         "check" => {
-            let base = base().await?;
-
-            server::models(client, &base, key).await?;
+            server::models(client, base, key).await?;
 
             Ok(Some(Response::ok(id, json!({}))))
         }
@@ -87,15 +113,13 @@ async fn handle(
                 ));
             }
 
-            let base = base().await?;
-            let models = server::models(client, &base, key).await?;
+            let models = server::models(client, base, key).await?;
 
-            Ok(Some(Response::ok(id, json!({"text": server::listing(&base, &models)}))))
+            Ok(Some(Response::ok(id, json!({"text": server::listing(base, &models)}))))
         }
 
         "model.info" => {
-            let base = base().await?;
-            let models = server::models(client, &base, key).await?;
+            let models = server::models(client, base, key).await?;
             let model = server::resolve(params["model"].as_str().unwrap_or("default"), &models)?;
             let entry = models.iter().find(|entry| entry["id"] == model.as_str());
 
@@ -108,7 +132,7 @@ async fn handle(
         "generate" => {
             let input: ModelRequest = serde_json::from_value(params)?;
 
-            generate(client, id, input, &base().await?, key, &mut emitter).await
+            generate(client, id, input, base, key, emitter).await
         }
 
         _ => Ok(None),
@@ -131,7 +155,13 @@ async fn generate(
         model => model.to_owned(),
     };
 
-    let body = chat::body(PROVIDER, &input, &model, input.stream)?;
+    let mut body = chat::body(PROVIDER, &input, &model, input.stream)?;
+
+    // Older local servers read only `max_tokens`, so both carry the same budget.
+    if let Some(budget) = body.get("max_completion_tokens").cloned() {
+        body["max_tokens"] = budget;
+    }
+
     let tools = body["tools"].as_array().is_some_and(|tools| !tools.is_empty());
     let api = chat::Api { client, key, base, provider: PROVIDER };
     let emitter = input.stream.then_some(emitter);
@@ -139,15 +169,25 @@ async fn generate(
     api.generate(id, &body, emitter).await.map_err(|error| refused(error, tools))
 }
 
-/// Names a server's refusal of tool calls plainly, since Krabb never emulates them.
+/// Phrases servers use when tool calling is off, as opposed to other tool errors.
+const TOOLS_OFF: &[&str] = &[
+    "enable-auto-tool-choice",
+    "--jinja",
+    "does not support tools",
+    "tool_choice",
+    "tools are not supported",
+];
+
+/// Names a server's refusal of tool calls plainly, since Krabb never emulates them, and keeps
+/// the server's own reason.
 fn refused(error: Error, tools: bool) -> Error {
     match error {
         Error::Failed { message, failure }
             if tools
                 && failure.kind == Kind::Invalid
-                && message.to_ascii_lowercase().contains("tool") =>
+                && TOOLS_OFF.iter().any(|phrase| message.to_ascii_lowercase().contains(phrase)) =>
         {
-            failure.error(NO_TOOLS)
+            failure.error(format!("{NO_TOOLS}\n{message}"))
         }
 
         error => error,

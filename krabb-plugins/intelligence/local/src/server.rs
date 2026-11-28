@@ -23,31 +23,70 @@ const MODELS: usize = 256;
 const FALLBACK_CONTEXT: u64 = 4096;
 const NAMES: &[&str] = &["local", "localhost", "lan", "internal", "home.arpa"];
 
-/// The server's base URL: the CONFIGURED one, or the first of CANDIDATES that answers.
-pub(crate) async fn base(
-    client: &reqwest::Client,
-    configured: &str,
-    candidates: &[(&str, &str)],
-    key: Option<&str>,
-) -> Result<String> {
-    match configured.trim() {
-        "" | "auto" => find(client, candidates, key).await,
-        url => validate(url),
+/// Where requests go: the configured server, or the one found among the usual addresses. A
+/// found server is remembered until a request to it fails, and never receives the API key,
+/// which only a configured address gets.
+pub(crate) struct Server {
+    configured: String,
+    candidates: Vec<(String, String)>,
+    found: std::sync::Mutex<Option<String>>,
+}
+
+impl Server {
+    pub(crate) fn new(configured: &str, candidates: &[(&str, &str)]) -> Self {
+        let candidates =
+            candidates.iter().map(|(name, url)| ((*name).to_owned(), (*url).to_owned())).collect();
+
+        Self { configured: configured.trim().into(), candidates, found: Default::default() }
+    }
+
+    fn automatic(&self) -> bool {
+        matches!(self.configured.as_str(), "" | "auto")
+    }
+
+    /// The base URL, and the KEY to send there: none for a found server.
+    pub(crate) async fn base<'a>(
+        &self,
+        client: &reqwest::Client,
+        key: Option<&'a str>,
+    ) -> Result<(String, Option<&'a str>)> {
+        if !self.automatic() {
+            return Ok((validate(&self.configured)?, key));
+        }
+
+        let known = self
+            .found
+            .lock()
+            .map_err(|_| Error::Denied("Local server state failed.".into()))?
+            .clone();
+
+        let base = match known {
+            Some(base) => base,
+            None => find(client, &self.candidates).await?,
+        };
+
+        *self.found.lock().map_err(|_| Error::Denied("Local server state failed.".into()))? =
+            Some(base.clone());
+
+        Ok((base, None))
+    }
+
+    /// Forgets a found server after a failed request, so the next one looks again.
+    pub(crate) fn forget(&self) {
+        if let Ok(mut found) = self.found.lock() {
+            *found = None;
+        }
     }
 }
 
-async fn find(
-    client: &reqwest::Client,
-    candidates: &[(&str, &str)],
-    key: Option<&str>,
-) -> Result<String> {
+async fn find(client: &reqwest::Client, candidates: &[(String, String)]) -> Result<String> {
     for (_, url) in candidates {
-        if models_within(client, url, key, PROBE).await.is_ok() {
-            return Ok((*url).into());
+        if models_within(client, url, None, PROBE).await.is_ok() {
+            return Ok(url.clone());
         }
     }
 
-    let names: Vec<&str> = candidates.iter().map(|(name, _)| *name).collect();
+    let names: Vec<&str> = candidates.iter().map(|(name, _)| name.as_str()).collect();
 
     Err(Error::Denied(format!(
         "No local inference server answered on the usual ports ({}).\nStart one, or set its \
@@ -103,7 +142,7 @@ fn nearby(host: &str) -> bool {
         };
     }
 
-    let host = host.to_ascii_lowercase();
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
 
     !host.contains('.')
         || NAMES.iter().any(|name| host == *name || host.ends_with(&format!(".{name}")))
@@ -169,13 +208,12 @@ pub(crate) fn context(entry: Option<&Value>) -> u64 {
         &entry["context_length"],
         &entry["max_context_length"],
         &entry["meta"]["n_ctx"],
-        &entry["meta"]["n_ctx_train"],
     ];
 
     reported
         .into_iter()
-        .find_map(Value::as_u64)
-        .filter(|tokens| (2..=u64::from(u32::MAX)).contains(tokens))
+        .filter_map(Value::as_u64)
+        .find(|tokens| (2..=u64::from(u32::MAX)).contains(tokens))
         .unwrap_or(FALLBACK_CONTEXT)
 }
 
