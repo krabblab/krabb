@@ -35,7 +35,7 @@ const fn offer(label: &'static str, id: &'static str) -> Offer {
     Offer { label, key: id, id, defaults: &[] }
 }
 
-const PROVIDERS: [Offer; 7] = [
+const PROVIDERS: [Offer; 8] = [
     offer("OpenAI", "openai"),
     offer("Anthropic", "anthropic"),
     offer("Gemini", "gemini"),
@@ -53,6 +53,7 @@ const PROVIDERS: [Offer; 7] = [
         id: "ollama",
         defaults: &[("KRABB_OLLAMA_HOST", "http://127.0.0.1:11434")],
     },
+    offer("Local Server", "local"),
 ];
 
 /// Places to talk to a Krabb: the terminal client first, then chat channels.

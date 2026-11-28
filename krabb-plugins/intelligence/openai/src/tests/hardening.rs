@@ -1,5 +1,6 @@
 use super::*;
 use krabb_core::types::{Content, Message, ModelRequest, Role};
+use krabb_openai::chat::{messages, stream_body};
 use serde_json::json;
 
 fn history() -> ModelRequest {
@@ -55,7 +56,7 @@ fn history() -> ModelRequest {
 
 #[test]
 fn preserves_parallel_calls_and_matches_repeated_tool_results() {
-    let values = messages(&history()).unwrap();
+    let values = messages(PROVIDER, &history()).unwrap();
 
     assert_eq!(values[0]["tool_calls"][0]["id"], "call_one");
     assert_eq!(values[0]["tool_calls"][1]["function"]["arguments"], r#"{"path":"two"}"#);
@@ -78,7 +79,7 @@ async fn clean_disconnect_before_completion_is_an_error() {
         .to_vec(),
     )]);
 
-    let error = stream_body(1, chunks, &mut emitter).await.unwrap_err();
+    let error = stream_body(PROVIDER, 1, chunks, &mut emitter).await.unwrap_err();
 
     assert!(error.to_string().contains("completion marker"));
 
@@ -98,7 +99,7 @@ async fn provider_error_inside_successful_stream_is_an_error() {
         b"data: {\"error\":{\"message\":\"private upstream detail\"}}\n\ndata: [DONE]\n".to_vec(),
     )]);
 
-    let error = stream_body(1, chunks, &mut emitter).await.unwrap_err().to_string();
+    let error = stream_body(PROVIDER, 1, chunks, &mut emitter).await.unwrap_err().to_string();
 
     assert!(error.contains("error event"));
     assert!(!error.contains("private upstream detail"));
@@ -111,7 +112,9 @@ async fn streamed_tool_id_survives_the_next_request() {
     let frame = json!({"choices": [{"delta": {"tool_calls": [{"index":0,"id":"provider_call","function":{"name":"read","arguments":"{}"}}]}}]});
     let body = format!("data: {frame}\n\ndata: [DONE]\n");
     let chunks = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(body.into_bytes())]);
-    let result = stream_body(1, chunks, &mut emitter).await.unwrap().unwrap().result.unwrap();
+
+    let result =
+        stream_body(PROVIDER, 1, chunks, &mut emitter).await.unwrap().unwrap().result.unwrap();
 
     assert_eq!(result["events"][0]["id"], "provider_call");
 }
@@ -143,7 +146,7 @@ fn interrupted_calls_do_not_capture_results_from_later_turns() {
         input.messages.truncate(retained);
 
         let original = input.clone();
-        let incomplete = messages(&input).unwrap();
+        let incomplete = messages(PROVIDER, &input).unwrap();
 
         assert_eq!(incomplete.last().unwrap()["tool_call_id"], "call_two");
 
@@ -182,7 +185,7 @@ fn interrupted_calls_do_not_capture_results_from_later_turns() {
             },
         ]);
 
-        let values = messages(&input).unwrap();
+        let values = messages(PROVIDER, &input).unwrap();
 
         assert_eq!(values[2]["tool_call_id"], "call_two");
         assert!(values[2]["content"].as_str().unwrap().contains("do not retry automatically"));
@@ -199,7 +202,7 @@ fn unmatched_tool_results_do_not_leave_native_calls_open() {
     input.messages.truncate(2);
     input.messages[1].sender = Some("other_tool".into());
 
-    let values = messages(&input).unwrap();
+    let values = messages(PROVIDER, &input).unwrap();
     let encoded = serde_json::to_string(&values).unwrap();
 
     assert_eq!(encoded.matches("Execution status is unknown").count(), 2);
@@ -214,7 +217,7 @@ async fn an_overloaded_stream_is_transient_and_other_errors_are_final() {
         let mut emitter = Emitter::new(sender);
         let line = format!("data: {{\"error\":{{\"type\":\"{kind}\"}}}}\n");
         let chunks = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(line.into_bytes())]);
-        let error = stream_body(1, chunks, &mut emitter).await.unwrap_err();
+        let error = stream_body(PROVIDER, 1, chunks, &mut emitter).await.unwrap_err();
 
         assert_eq!(
             matches!(

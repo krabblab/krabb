@@ -2,25 +2,16 @@
 
 mod model;
 
-mod history;
-use history::messages;
-
 use krabb_core::{
     plugin::{Emitter, serve_events_concurrent},
-    types::{
-        Capability, Content, Event, Hello, ModelReply, ModelRequest, Protocol, Request, Response,
-        Role,
-    },
+    types::{Capability, Hello, ModelRequest, Protocol, Request, Response},
 };
 
-use futures_util::{Stream, StreamExt};
+use krabb_openai::chat;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use tokio::time::Duration;
 
-const BODY_LIMIT: usize = krabb_core::jsonl::MAX / 2;
-const TOOL_CALLS: usize = 16;
-const TEXT_EVENTS: usize = 256;
+const PROVIDER: &str = "OpenAI";
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -130,22 +121,9 @@ fn validate_base_url(value: &str) -> krabb_core::Result<String> {
 }
 
 fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_json::Value> {
-    let mut body = json!({
-        "model": model::resolve(&input.model, None),
-        "messages": messages(input)?,
-        "stream": stream,
-        "tools": tools(input),
-    });
+    let mut body = chat::body(PROVIDER, input, &model::resolve(&input.model, None), stream)?;
 
     model::configure(&mut body);
-
-    if let Some(generation) = input.generation {
-        body["max_completion_tokens"] = generation.output.into();
-
-        if generation.summary {
-            body["tools"] = json!([]);
-        }
-    }
 
     Ok(body)
 }
@@ -157,29 +135,7 @@ async fn complete(
     key: &str,
     base: &str,
 ) -> krabb_core::Result<Option<Response>> {
-    if input.generation.is_some_and(|value| {
-        value.search || (value.summary && krabb_openai::search(&model::resolve(&input.model, None)))
-    }) {
-        let api = krabb_openai::responses::Api { client, key, base, provider: "openai" };
-
-        return api.generate(id, &input, &model::resolve(&input.model, None), None).await;
-    }
-
-    let response = client
-        .post(format!("{base}/chat/completions"))
-        .bearer_auth(key)
-        .json(&request_body(&input, false)?)
-        .send()
-        .await
-        .map_err(|error| krabb_http::transport(&error, "OpenAI"))?;
-
-    if !response.status().is_success() {
-        return Err(krabb_http::rejected(response, "OpenAI").await);
-    }
-
-    let body = collect(response.bytes_stream()).await?;
-
-    response_body(id, serde_json::from_slice(&body)?)
+    reply(client, id, input, key, base, None).await
 }
 
 async fn stream(
@@ -190,345 +146,32 @@ async fn stream(
     base: &str,
     emitter: &mut Emitter,
 ) -> krabb_core::Result<Option<Response>> {
-    if input.generation.is_some_and(|value| {
-        value.search || (value.summary && krabb_openai::search(&model::resolve(&input.model, None)))
-    }) {
+    reply(client, id, input, key, base, Some(emitter)).await
+}
+
+async fn reply(
+    client: &reqwest::Client,
+    id: u64,
+    input: ModelRequest,
+    key: &str,
+    base: &str,
+    emitter: Option<&mut Emitter>,
+) -> krabb_core::Result<Option<Response>> {
+    let model = model::resolve(&input.model, None);
+
+    if input
+        .generation
+        .is_some_and(|value| value.search || (value.summary && krabb_openai::search(&model)))
+    {
         let api = krabb_openai::responses::Api { client, key, base, provider: "openai" };
 
-        return api.generate(id, &input, &model::resolve(&input.model, None), Some(emitter)).await;
+        return api.generate(id, &input, &model, emitter).await;
     }
 
-    let response = client
-        .post(format!("{base}/chat/completions"))
-        .bearer_auth(key)
-        .json(&request_body(&input, true)?)
-        .send()
-        .await
-        .map_err(|error| krabb_http::transport(&error, "OpenAI"))?;
+    let body = request_body(&input, emitter.is_some())?;
+    let api = chat::Api { client, key: Some(key), base, provider: PROVIDER };
 
-    if !response.status().is_success() {
-        return Err(krabb_http::rejected(response, "OpenAI").await);
-    }
-
-    stream_body(id, response.bytes_stream(), emitter).await
-}
-
-async fn collect<S, C, E>(mut stream: S) -> krabb_core::Result<Vec<u8>>
-where
-    S: Stream<Item = Result<C, E>> + Unpin,
-    C: AsRef<[u8]>,
-    E: std::fmt::Display,
-{
-    let mut bytes = Vec::new();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| {
-            krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
-                .error(format!("OpenAI response failed: {error}."))
-        })?;
-
-        if chunk.as_ref().len() > BODY_LIMIT.saturating_sub(bytes.len()) {
-            return Err(krabb_core::Error::Denied(
-                "OpenAI response exceeded the frame budget.".into(),
-            ));
-        }
-
-        bytes.extend_from_slice(chunk.as_ref());
-    }
-
-    Ok(bytes)
-}
-
-fn image(uri: &str) -> krabb_core::Result<&str> {
-    if uri.starts_with("https://") || uri.starts_with("data:image/") {
-        Ok(uri)
-    } else {
-        Err(krabb_core::Error::Denied("OpenAI received an unsupported image reference.".into()))
-    }
-}
-
-fn tools(input: &ModelRequest) -> Vec<Value> {
-    input
-        .tools
-        .iter()
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.schema,
-                },
-            })
-        })
-        .collect()
-}
-
-async fn stream_body<S, C, E>(
-    id: u64,
-    mut stream: S,
-    emitter: &mut Emitter,
-) -> krabb_core::Result<Option<Response>>
-where
-    S: Stream<Item = Result<C, E>> + Unpin,
-    C: AsRef<[u8]>,
-    E: std::fmt::Display,
-{
-    let mut buffer = Vec::new();
-
-    let mut text = String::new();
-    let mut pending = String::new();
-    let mut calls = BTreeMap::<usize, (String, String, String)>::new();
-    let mut bytes: usize = 0;
-    let mut emitted = 0;
-    let mut complete = false;
-
-    'stream: while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| {
-            krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
-                .error(format!("OpenAI stream failed: {error}."))
-        })?;
-
-        bytes = bytes.saturating_add(chunk.as_ref().len());
-
-        if bytes > BODY_LIMIT {
-            return Err(krabb_core::Error::Denied(
-                "OpenAI stream exceeded the frame budget.".into(),
-            ));
-        }
-
-        buffer.extend_from_slice(chunk.as_ref());
-
-        while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
-            let line = buffer.drain(..=end).collect::<Vec<_>>();
-
-            if stream_line(&line, &mut text, &mut pending, &mut calls)
-                .map_err(|error| interrupted(error, emitted))?
-            {
-                complete = true;
-                buffer.clear();
-                break 'stream;
-            }
-
-            if pending.len() >= 128 {
-                emit(&mut pending, &mut emitted, emitter).await?;
-            }
-        }
-    }
-
-    if !buffer.is_empty() {
-        complete = stream_line(&buffer, &mut text, &mut pending, &mut calls)
-            .map_err(|error| interrupted(error, emitted))?;
-    }
-
-    if !complete {
-        return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(
-            emitted,
-        ))
-        .error("OpenAI stream ended before its completion marker."));
-    }
-
-    emit(&mut pending, &mut emitted, emitter).await?;
-    let events = calls
-        .into_values()
-        .map(|(name, args, call_id)| {
-            let args = if args.is_empty() { json!({}) } else { serde_json::from_str(&args)? };
-
-            if name.is_empty() || !args.is_object() {
-                return Err(krabb_core::Error::Denied(
-                    "OpenAI returned an invalid tool call.".into(),
-                ));
-            }
-
-            Ok(Event::Tool {
-                name,
-                args,
-                id: (!call_id.is_empty()).then_some(call_id),
-                thought_signature: None,
-            })
-        })
-        .collect::<krabb_core::Result<Vec<_>>>()?;
-
-    if text.is_empty() && events.is_empty() {
-        return Err(krabb_core::Error::Denied("OpenAI stream contained no text or tools.".into()));
-    }
-
-    response(
-        id,
-        serde_json::to_value(ModelReply {
-            timing: None,
-            text,
-            stop: "stream".into(),
-            input: None,
-            output: None,
-            context_usage: None,
-            events,
-        })?,
-    )
-}
-
-/// Whether a stream error event reports a busy server rather than a refused request.
-fn overloaded(error: &Value) -> bool {
-    [&error["type"], &error["code"]].into_iter().filter_map(Value::as_str).any(|kind| {
-        kind.contains("overloaded") || kind == "server_error" || kind == "service_unavailable"
-    })
-}
-
-/// A transient failure after text reached the person is uncertain, since a replay repeats it.
-fn interrupted(error: krabb_core::Error, emitted: usize) -> krabb_core::Error {
-    match error {
-        krabb_core::Error::Failed { message, failure }
-            if failure.kind == krabb_core::failure::Kind::Transient =>
-        {
-            krabb_core::failure::Failure::new(krabb_core::failure::Kind::interrupted(emitted))
-                .error(message)
-        }
-
-        error => error,
-    }
-}
-
-fn stream_line(
-    line: &[u8],
-    text: &mut String,
-    pending: &mut String,
-    calls: &mut BTreeMap<usize, (String, String, String)>,
-) -> krabb_core::Result<bool> {
-    let line = std::str::from_utf8(line)
-        .map_err(|_| krabb_core::Error::Denied("OpenAI stream was not UTF-8.".into()))?;
-
-    let Some(data) = line.trim().strip_prefix("data:") else { return Ok(false) };
-
-    let data = data.trim();
-
-    if data == "[DONE]" {
-        return Ok(true);
-    }
-
-    let value: Value = serde_json::from_str(data)?;
-
-    if overloaded(&value["error"]) {
-        return Err(krabb_core::failure::Failure::new(krabb_core::failure::Kind::Transient)
-            .error("OpenAI is overloaded."));
-    }
-
-    if value.get("error").is_some() {
-        return Err(krabb_core::Error::Denied("OpenAI stream returned an error event.".into()));
-    }
-
-    let delta = &value["choices"][0]["delta"];
-
-    if let Some(value) = delta["content"].as_str() {
-        text.push_str(value);
-        pending.push_str(value);
-    }
-
-    if let Some(values) = delta["tool_calls"].as_array() {
-        for value in values {
-            let index = value["index"]
-                .as_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .filter(|value| *value < TOOL_CALLS)
-                .ok_or_else(|| {
-                    krabb_core::Error::Denied("OpenAI stream exceeded the tool-call limit.".into())
-                })?;
-
-            let entry =
-                calls.entry(index).or_insert_with(|| (String::new(), String::new(), String::new()));
-
-            if let Some(id) = value["id"].as_str() {
-                entry.2.push_str(id);
-            }
-
-            if let Some(value) = value["function"]["name"].as_str() {
-                entry.0.push_str(value);
-            }
-
-            if let Some(value) = value["function"]["arguments"].as_str() {
-                entry.1.push_str(value);
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-async fn emit(
-    pending: &mut String,
-    emitted: &mut usize,
-    emitter: &mut Emitter,
-) -> krabb_core::Result<()> {
-    if !pending.is_empty() && *emitted < TEXT_EVENTS {
-        emitter.event(json!({"kind":"text","text":std::mem::take(pending)})).await?;
-        *emitted += 1;
-    }
-
-    pending.clear();
-    Ok(())
-}
-
-fn response_body(id: u64, body: Value) -> krabb_core::Result<Option<Response>> {
-    let choice = body["choices"]
-        .as_array()
-        .and_then(|values| values.first())
-        .ok_or_else(|| krabb_core::Error::Denied("OpenAI response contained no choices.".into()))?;
-
-    let text = choice["message"]["content"].as_str().unwrap_or_default().to_owned();
-    let mut events = Vec::new();
-
-    for value in choice["message"]["tool_calls"].as_array().into_iter().flatten() {
-        let name = value["function"]["name"].as_str().filter(|name| !name.is_empty()).ok_or_else(
-            || krabb_core::Error::Denied("OpenAI returned a tool call without a name.".into()),
-        )?;
-        let args = match value["function"]["arguments"].as_str() {
-            Some(args) => serde_json::from_str(args)?,
-            None => value["function"]["arguments"].clone(),
-        };
-
-        if !args.is_object() || events.len() >= TOOL_CALLS {
-            return Err(krabb_core::Error::Denied(
-                "OpenAI returned invalid or too many tool calls.".into(),
-            ));
-        }
-
-        events.push(Event::Tool {
-            name: name.into(),
-            args,
-            id: value["id"].as_str().map(str::to_owned),
-            thought_signature: None,
-        });
-    }
-
-    if text.is_empty() && events.is_empty() {
-        return Err(krabb_core::Error::Denied(
-            "OpenAI response contained no text or tools.".into(),
-        ));
-    }
-
-    response(
-        id,
-        serde_json::to_value(ModelReply {
-            timing: None,
-            text,
-            stop: choice["finish_reason"].as_str().unwrap_or("stop").into(),
-            input: body["usage"]["prompt_tokens"].as_u64(),
-            output: body["usage"]["completion_tokens"].as_u64(),
-            context_usage: None,
-            events,
-        })?,
-    )
-}
-
-fn response(id: u64, result: Value) -> krabb_core::Result<Option<Response>> {
-    let response = Response::ok(id, result);
-
-    if serde_json::to_vec(&response)?.len().saturating_add(1) > krabb_core::jsonl::MAX {
-        return Err(krabb_core::Error::Denied(
-            "OpenAI response exceeds the protocol frame limit.".into(),
-        ));
-    }
-
-    Ok(Some(response))
+    api.generate(id, &body, emitter).await
 }
 
 fn credential() -> krabb_core::Result<String> {
@@ -551,9 +194,11 @@ fn credential() -> krabb_core::Result<String> {
     };
 
     krabb_file::private(&path)?;
+
     let text = std::fs::read_to_string(path).map_err(|error| {
         krabb_core::Error::Denied(format!("Credentials could not be read: {error}."))
     })?;
+
     let value: Value = serde_json::from_str(&text)
         .map_err(|error| krabb_core::Error::Denied(format!("Credentials are invalid: {error}.")))?;
 
@@ -568,9 +213,11 @@ fn credential() -> krabb_core::Result<String> {
 mod tests {
     mod streaming;
 
-    use super::{
-        BODY_LIMIT, TOOL_CALLS, base_url, collect, credential, generate, image, messages, response,
-        response_body, stream_body, stream_line, tools, validate_base_url,
+    use super::{PROVIDER, base_url, credential, generate, validate_base_url};
+
+    use krabb_openai::chat::{
+        BODY_LIMIT, TOOL_CALLS, collect, image, messages, response, response_body, stream_body,
+        stream_line, tools,
     };
 
     use futures_util::stream;
@@ -623,14 +270,16 @@ mod tests {
     fn builds_messages_tools_and_images() {
         let input = model();
 
-        let values = messages(&input).unwrap();
+        let values = messages(PROVIDER, &input).unwrap();
 
         assert_eq!(values[0], json!({"role":"system","content":"rules"}));
         assert_eq!(values[1]["content"][1]["type"], "image_url");
         assert_eq!(tools(&input).len(), 1);
-        assert!(image("file:///outside").is_err());
-        assert!(image("data:image/png;base64,abc").is_ok());
+        assert!(image(PROVIDER, "file:///outside").is_err());
+        assert!(image(PROVIDER, "data:image/png;base64,abc").is_ok());
+
         let mut tool = input.clone();
+
         tool.messages.push(Message {
             id: "tool".into(),
             session: "session".into(),
@@ -639,9 +288,10 @@ mod tests {
             content: vec![Content::Text { text: "result".into() }],
         });
 
-        assert_eq!(messages(&tool).unwrap().last().unwrap()["role"], "user");
+        assert_eq!(messages(PROVIDER, &tool).unwrap().last().unwrap()["role"], "user");
 
         let mut catalog = input;
+
         catalog.tools = (0..TOOL_CALLS + 2)
             .map(|index| ToolSpec {
                 name: format!("tool-{index}"),
@@ -699,7 +349,7 @@ mod tests {
             },
         ];
 
-        let values = messages(&input).unwrap();
+        let values = messages(PROVIDER, &input).unwrap();
 
         assert_eq!(values[0], json!({"role":"assistant","content":"answer"}));
         assert_eq!(values[1]["content"], "diagram");
@@ -715,7 +365,7 @@ mod tests {
 
         input.messages[2].content[2] = Content::Image { uri: "file:///bad.png".into(), alt: None };
 
-        assert!(messages(&input).is_err());
+        assert!(messages(PROVIDER, &input).is_err());
 
         input.messages[2].content[0] = Content::ToolCall {
             name: "read".into(),
@@ -727,17 +377,22 @@ mod tests {
         input.messages[2].content[2] =
             Content::Image { uri: "https://cdn.example/attachment.png".into(), alt: None };
 
-        assert!(messages(&input).unwrap()[2]["content"].to_string().contains("[Tool call read]"));
+        assert!(
+            messages(PROVIDER, &input).unwrap()[2]["content"]
+                .to_string()
+                .contains("[Tool call read]")
+        );
     }
 
     #[test]
     fn bounds_and_validates_tool_definitions_and_image_references() {
         let mut input = model();
+
         input.tools[0].description = None;
 
         assert_eq!(tools(&input)[0]["function"]["description"], Value::Null);
-        assert!(image("data:text/plain;base64,abc").is_err());
-        assert!(image("https://cdn.example/image.png").is_ok());
+        assert!(image(PROVIDER, "data:text/plain;base64,abc").is_err());
+        assert!(image(PROVIDER, "https://cdn.example/image.png").is_ok());
     }
 
     #[tokio::test]
@@ -779,6 +434,7 @@ mod tests {
     #[test]
     fn validates_provider_configuration_and_protocol_size() {
         assert!(base_url().is_ok());
+
         assert_eq!(
             validate_base_url("http://localhost:8080/v1").unwrap(),
             "http://localhost:8080/v1"
@@ -788,29 +444,34 @@ mod tests {
         assert!(validate_base_url("not a URL").is_err());
         assert!(validate_base_url("http://api.example/v1").is_err());
         assert!(credential().is_err());
-        assert!(response(1, json!({"ok": true})).unwrap().is_some());
-        assert!(response_body(1, json!({"choices": []})).is_err());
+        assert!(response(PROVIDER, 1, json!({"ok": true})).unwrap().is_some());
+        assert!(response_body(PROVIDER, 1, json!({"choices": []})).is_err());
     }
 
     #[test]
     fn parses_complete_and_tool_replies() {
         let response = response_body(
+            PROVIDER,
             1,
             json!({"choices":[{"message":{"content":"done","tool_calls":[{"function":{"name":"read","arguments":"{\"path\":\"note\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}),
         ).unwrap().unwrap();
 
         assert_eq!(response.result.as_ref().unwrap()["text"], "done");
         assert_eq!(response.result.as_ref().unwrap()["events"][0]["name"], "read");
-        assert!(response_body(1, json!({})).is_err());
+        assert!(response_body(PROVIDER, 1, json!({})).is_err());
+
         assert!(response_body(
+            PROVIDER,
             1,
             json!({"choices":[{"message":{"tool_calls":[{"function":{"name":"read","arguments":"not-json"}}]}}]}),
         ).is_err());
 
-        assert!(response_body(1, json!({"choices":[{"message":{}}]})).is_err());
+        assert!(response_body(PROVIDER, 1, json!({"choices":[{"message":{}}]})).is_err());
 
         let default_stop =
-            response_body(2, json!({"choices":[{"message":{"content":"ok"}}]})).unwrap().unwrap();
+            response_body(PROVIDER, 2, json!({"choices":[{"message":{"content":"ok"}}]}))
+                .unwrap()
+                .unwrap();
 
         assert_eq!(default_stop.result.unwrap()["stop"], "stop");
     }
@@ -821,9 +482,16 @@ mod tests {
         let mut pending = String::new();
         let mut calls = std::collections::BTreeMap::new();
 
-        assert!(!stream_line(b"event: ping\n", &mut text, &mut pending, &mut calls).unwrap());
-        assert!(!stream_line(b"data: {}\n", &mut text, &mut pending, &mut calls).unwrap());
+        assert!(
+            !stream_line(PROVIDER, b"event: ping\n", &mut text, &mut pending, &mut calls).unwrap()
+        );
+
+        assert!(
+            !stream_line(PROVIDER, b"data: {}\n", &mut text, &mut pending, &mut calls).unwrap()
+        );
+
         assert!(stream_line(
+            PROVIDER,
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}"#,
             &mut text,
             &mut pending,
@@ -833,13 +501,14 @@ mod tests {
 
         let (output, _) = tokio::sync::mpsc::channel(1);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
+
         let incomplete = stream::iter(vec![Ok::<_, std::io::Error>(
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}
 data: [DONE]
 "#.to_vec(),
         )]);
 
-        assert!(stream_body(3, incomplete, &mut emitter).await.is_err());
+        assert!(stream_body(PROVIDER, 3, incomplete, &mut emitter).await.is_err());
     }
 
     #[tokio::test]
@@ -855,7 +524,7 @@ data: [DONE]
 
             let (output, mut events) = tokio::sync::mpsc::channel(256);
             let mut emitter = krabb_core::plugin::Emitter::new(output);
-            let response = stream_body(2, chunks, &mut emitter).await.unwrap().unwrap();
+            let response = stream_body(PROVIDER, 2, chunks, &mut emitter).await.unwrap().unwrap();
             let expected = fragment.repeat(count);
 
             assert_eq!(response.result.unwrap()["text"], expected);
@@ -892,7 +561,7 @@ data: [DONE]
 
         let (output, mut events) = tokio::sync::mpsc::channel(4);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
-        let response = stream_body(2, chunks, &mut emitter).await.unwrap().unwrap();
+        let response = stream_body(PROVIDER, 2, chunks, &mut emitter).await.unwrap().unwrap();
 
         assert_eq!(response.result.unwrap()["text"], "ok");
         assert_eq!(events.recv().await.unwrap()["params"]["event"]["text"], "ok");
@@ -901,16 +570,24 @@ data: [DONE]
         let mut pending = String::new();
         let mut calls = std::collections::BTreeMap::new();
 
-        assert!(stream_line(b"data: [DONE]\n", &mut text, &mut pending, &mut calls).unwrap());
-        assert!(stream_line(b"data: nope\n", &mut text, &mut pending, &mut calls).is_err());
+        assert!(
+            stream_line(PROVIDER, b"data: [DONE]\n", &mut text, &mut pending, &mut calls).unwrap()
+        );
+
+        assert!(
+            stream_line(PROVIDER, b"data: nope\n", &mut text, &mut pending, &mut calls).is_err()
+        );
+
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(vec![b'x'; BODY_LIMIT + 1])]);
 
-        assert!(collect(chunks).await.is_err());
+        assert!(collect(PROVIDER, chunks).await.is_err());
+
         let mut text = String::new();
         let mut pending = String::new();
         let mut calls = std::collections::BTreeMap::new();
 
         assert!(stream_line(
+            PROVIDER,
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":"{\"path\":\"note\"}"}}]}}]}"#,
             &mut text,
             &mut pending,
@@ -919,16 +596,19 @@ data: [DONE]
         .is_ok());
 
         assert_eq!(calls[&0].0, "read");
+
         let tool_delta = br#"data: {"choices":[{"delta":{"content":"!","tool_calls":[{"index":0,"function":{"name":"File","arguments":"}"}}]}}]}"#;
 
-        assert!(stream_line(tool_delta, &mut text, &mut pending, &mut calls).is_ok());
+        assert!(stream_line(PROVIDER, tool_delta, &mut text, &mut pending, &mut calls).is_ok());
         assert_eq!(text, "!");
         assert_eq!(calls[&0].0, "readFile");
-        assert!(stream_line(b"invalid", &mut text, &mut pending, &mut calls).is_ok());
-        assert!(stream_line(&[0xff], &mut text, &mut pending, &mut calls).is_err());
-        assert!(stream_line(b"data: {", &mut text, &mut pending, &mut calls).is_err());
+        assert!(stream_line(PROVIDER, b"invalid", &mut text, &mut pending, &mut calls).is_ok());
+        assert!(stream_line(PROVIDER, &[0xff], &mut text, &mut pending, &mut calls).is_err());
+        assert!(stream_line(PROVIDER, b"data: {", &mut text, &mut pending, &mut calls).is_err());
+
         assert!(
             stream_line(
+                PROVIDER,
                 br#"data: {"choices":[{"delta":{"tool_calls":[{"index":16}]}}]}"#,
                 &mut text,
                 &mut pending,
@@ -941,16 +621,18 @@ data: [DONE]
         let mut emitter = krabb_core::plugin::Emitter::new(output);
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(b"data: nope\n".to_vec())]);
 
-        assert!(stream_body(2, chunks, &mut emitter).await.is_err());
+        assert!(stream_body(PROVIDER, 2, chunks, &mut emitter).await.is_err());
 
         let (output, _) = tokio::sync::mpsc::channel(4);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
+
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":"{\"path\":\"x\"}"}}]}}]}
 data: [DONE]
 "#.to_vec(),
         )]);
-        let response = stream_body(3, chunks, &mut emitter).await.unwrap().unwrap();
+
+        let response = stream_body(PROVIDER, 3, chunks, &mut emitter).await.unwrap().unwrap();
 
         assert_eq!(response.result.unwrap()["events"][0]["name"], "read");
     }
@@ -962,6 +644,7 @@ data: [DONE]
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
@@ -987,6 +670,7 @@ data: [DONE]
         .unwrap();
 
         assert_eq!(result.result.unwrap()["text"], "done");
+
         server.await.unwrap();
     }
 
@@ -997,6 +681,7 @@ data: [DONE]
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
@@ -1014,7 +699,9 @@ data: [DONE]
         let (output, mut events) = tokio::sync::mpsc::channel(4);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
         let mut input = model();
+
         input.stream = true;
+
         let response = super::stream(
             &reqwest::Client::new(),
             1,
@@ -1029,6 +716,7 @@ data: [DONE]
 
         assert_eq!(response.result.unwrap()["text"], "ok");
         assert_eq!(events.recv().await.unwrap()["params"]["event"]["text"], "ok");
+
         server.await.unwrap();
     }
 
@@ -1039,6 +727,7 @@ data: [DONE]
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -1064,18 +753,24 @@ data: [DONE]
         let (output, _) = tokio::sync::mpsc::channel(1);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
         let mut input = model();
+
         input.stream = true;
 
         assert!(super::stream(&client, 2, input, "key", &base, &mut emitter).await.is_err());
 
-        assert!(collect(stream::iter(vec![Err::<Vec<u8>, _>("broken")])).await.is_err());
-        assert!(response(1, json!({"payload": "x".repeat(krabb_core::jsonl::MAX)})).is_err());
+        assert!(collect(PROVIDER, stream::iter(vec![Err::<Vec<u8>, _>("broken")])).await.is_err());
+
+        assert!(
+            response(PROVIDER, 1, json!({"payload": "x".repeat(krabb_core::jsonl::MAX)})).is_err()
+        );
+
         server.await.unwrap();
     }
 
     #[test]
     fn renders_non_image_content_and_rejects_invalid_configuration() {
         let mut input = model();
+
         input.messages[1].content = vec![
             Content::Image {
                 uri: "https://cdn.example/image.png".into(),
@@ -1089,7 +784,7 @@ data: [DONE]
             },
         ];
 
-        let values = messages(&input).unwrap();
+        let values = messages(PROVIDER, &input).unwrap();
 
         assert_eq!(values[1]["content"][0]["type"], "image_url");
         assert_eq!(values[1]["content"][1]["text"], "[Tool call read]: {\"path\":\"README.md\"}");

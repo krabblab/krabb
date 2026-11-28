@@ -1,0 +1,39 @@
+id = "local"
+version = "0.1.0-rc.1"
+capabilities = ["model", "vision", "context"]
+permissions = ["network"]
+secrets = ["KRABB_LOCAL_KEY"]
+check = true
+
+[[settings]]
+name = "KRABB_LOCAL_URL"
+default = "auto"
+
+[[settings]]
+name = "KRABB_LOCAL_CONTEXT_LENGTH"
+default = "auto"
+
+[[commands]]
+name = "local"
+description = "List the models the local inference server offers."
+interactive = false
+
+[protocol]
+major = 0
+minor = 2
+
+[setup.KRABB_LOCAL_URL]
+label = "Server"
+help = "Press Enter to find a running server, or enter its address, such as http://127.0.0.1:8000/v1."
+accept = ["auto"]
+kind = "url"
+
+[setup.KRABB_LOCAL_KEY]
+label = "API key"
+help = "Only for a server started with an API key, and sent only to an address you set; press Enter to skip it."
+
+[setup.KRABB_LOCAL_CONTEXT_LENGTH]
+label = "Context length"
+help = "Tokens of context the server was started with, or auto to read it from the server."
+kind = "integer"
+accept = ["auto"]

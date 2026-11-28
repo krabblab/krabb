@@ -32,6 +32,7 @@ plugins and do not have separate manual checks.
 | Codex      | [x]    |
 | Discord    | [x]    |
 | Gemini     | [x]    |
+| Local      | [ ]    |
 | Memory     | [x]    |
 | Ollama     | [x]    |
 | OpenAI     | [x]    |
