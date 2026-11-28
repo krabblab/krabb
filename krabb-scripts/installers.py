@@ -55,6 +55,7 @@ def write(version, directory, root=ROOT):
         raise Failure(f"Version '{version}' is not a valid release version.")
 
     directory.mkdir(parents=True, exist_ok=True)
+
     sums = []
 
     for name in STAMPS:

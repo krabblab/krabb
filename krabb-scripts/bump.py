@@ -272,6 +272,7 @@ def pin(path, version):
     text = re.sub(rf"KRABB_VERSION={release}\b", f'KRABB_VERSION={version}', text)
     text = re.sub(rf"KRABB_VERSION = '{release}'", f"KRABB_VERSION = '{version}'", text)
     text = re.sub(rf'releases/download/v{release}/', f'releases/download/v{version}/', text)
+
     path.write_text(text)
 
 

@@ -187,8 +187,10 @@ class Installers(unittest.TestCase):
         result = self.run_installer('core', script=copies / INSTALLER.name, KRABB_VERSION='9.9.9')
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
         self.assertIn("[INFO] KRABB_VERSION=9.9.9 overrides this installer's release 1.2.3.",
                       result.stdout)
+
         self.assertIn(f'Downloading {newer}.', result.stdout)
 
     def test_release_copies_are_covered_by_their_checksums(self):
