@@ -86,9 +86,11 @@ async fn generate(
 
     let request = ModelRequest { model, ..input };
 
-    let emitter = request.stream.then_some(&mut emitter);
-
-    generate_with(client, id, request, &key, &base, emitter).await
+    if request.stream {
+        stream(client, id, request, &key, &base, &mut emitter).await
+    } else {
+        complete(client, id, request, &key, &base).await
+    }
 }
 
 fn base_url() -> krabb_core::Result<String> {
@@ -126,7 +128,28 @@ fn request_body(input: &ModelRequest, stream: bool) -> krabb_core::Result<serde_
     Ok(body)
 }
 
-async fn generate_with(
+async fn complete(
+    client: &reqwest::Client,
+    id: u64,
+    input: ModelRequest,
+    key: &str,
+    base: &str,
+) -> krabb_core::Result<Option<Response>> {
+    reply(client, id, input, key, base, None).await
+}
+
+async fn stream(
+    client: &reqwest::Client,
+    id: u64,
+    input: ModelRequest,
+    key: &str,
+    base: &str,
+    emitter: &mut Emitter,
+) -> krabb_core::Result<Option<Response>> {
+    reply(client, id, input, key, base, Some(emitter)).await
+}
+
+async fn reply(
     client: &reqwest::Client,
     id: u64,
     input: ModelRequest,

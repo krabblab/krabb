@@ -2198,6 +2198,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "krabb-plugin-local"
+version = "0.1.0-rc.1"
+dependencies = [
+ "krabb-core",
+ "krabb-file",
+ "krabb-http",
+ "krabb-log",
+ "krabb-openai",
+ "krabb-test",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "krabb-plugin-mcp"
 version = "0.1.0-rc.4"
 dependencies = [

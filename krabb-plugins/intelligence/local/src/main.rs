@@ -11,7 +11,7 @@ use krabb_core::{
 };
 
 use krabb_openai::chat;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::time::Duration;
 
 const PROVIDER: &str = "The local server";
