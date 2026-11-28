@@ -96,12 +96,14 @@ async fn handle(
 
     let result = answer(client, id, &method, params, &base, key, &mut emitter).await;
 
-    match &result {
-        Err(Error::Failed { failure, .. })
-            if matches!(failure.kind, Kind::Invalid | Kind::Cancelled) => {}
-        Err(_) => server.forget(),
+    // A refused or cancelled request says nothing about the server, so it stays remembered.
+    let refused = matches!(
+        &result,
+        Err(Error::Failed { failure, .. }) if matches!(failure.kind, Kind::Invalid | Kind::Cancelled)
+    );
 
-        Ok(_) => {}
+    if result.is_err() && !refused {
+        server.forget();
     }
 
     result
