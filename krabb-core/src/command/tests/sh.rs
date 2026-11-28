@@ -643,6 +643,13 @@ fn patterns_and_name_lists_that_reach_other_files_ask() {
             ("file -f names", Unknown, &format!("`file list` {LIST}")),
             ("file -z x.gz", Unknown, "`file -z` runs other programs"),
             ("sha256sum a.txt", ReadOnly, "`sha256sum` only reads"),
+            ("wc {--files0-from=list,}", Unknown, "a wildcard could pass options to `wc`"),
+            ("md5sum {-c,sums}", Unknown, "a wildcard could pass options to `md5sum`"),
+            ("ls file{1..3}.txt", ReadOnly, "`ls` only reads"),
+            ("cat {a..c}", ReadOnly, "`cat` only reads"),
+            ("cat my-{a,b}.txt", ReadOnly, "`cat` only reads"),
+            ("wc {,}-c x", Unknown, "a wildcard could pass options to `wc`"),
+            ("cat {..,x}/y", Unknown, "the pattern `{..,x}/y` could reach outside the workspace"),
             ("cat a\u{a0}b", Unknown, "the command has an unusual space character"),
         ],
     );

@@ -144,12 +144,16 @@ pub fn device(word: &str) -> bool {
 /// Whether WORD's last component is a name Windows reserves for a device in every folder.
 pub fn reserved(word: &str) -> bool {
     let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
-    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(':').to_ascii_lowercase();
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches([':', ' ']);
+    let stem = stem.to_ascii_lowercase();
 
     let numbered = |prefix: &str| {
-        stem.strip_prefix(prefix).is_some_and(|digit| {
-            matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-        })
+        let mut digits = stem.strip_prefix(prefix).unwrap_or_default().chars();
+
+        matches!(
+            (digits.next(), digits.next()),
+            (Some(digit), None) if digit.is_ascii_digit() || "¹²³".contains(digit)
+        )
     };
 
     matches!(stem.as_str(), "con" | "prn" | "aux" | "conin$" | "conout$" | "clock$")
