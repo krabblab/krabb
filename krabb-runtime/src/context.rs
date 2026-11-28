@@ -71,7 +71,6 @@ pub(super) struct Setup<'a> {
     pub model: &'a str,
     pub approval: ApprovalMode,
     pub tools: bool,
-    pub shell: bool,
     pub schedules: bool,
     pub scheduler: bool,
     pub memory: bool,
@@ -89,29 +88,33 @@ const ADJUST: &str = "When the person explicitly asks you to change tools, shell
                       each change. Restart only when they ask to apply it now.\n";
 
 impl Setup<'_> {
-    /// Agents have no settings section of their own, so they get no note.
-    pub(super) fn message(&self, session: &str) -> Option<Message> {
-        let key = match self.source {
-            sharing::Principal::Channel(id) => format!("channels.{id}"),
-            sharing::Principal::Client(id) => format!("clients.{id}"),
-            sharing::Principal::Agent(_) => return None,
-        };
+    /// Agents have no settings section of their own.
+    pub(super) fn section(&self) -> Option<String> {
+        match self.source {
+            sharing::Principal::Channel(id) => Some(format!("channels.{id}")),
+            sharing::Principal::Client(id) => Some(format!("clients.{id}")),
+            sharing::Principal::Agent(_) => None,
+        }
+    }
 
-        let approval = match self.approval {
-            ApprovalMode::Off => "off",
-            ApprovalMode::Auto => "auto",
-            ApprovalMode::Prompt => "prompt",
-        };
+    /// The first unmet requirement for shell, which the permission summary reports.
+    pub(super) fn shell_fix(&self) -> Option<String> {
+        self.section().and_then(|key| self.shell_blocker(&key))
+    }
+
+    /// Agents have no settings section of their own, so they get no note. Approval and shell
+    /// appear only in the permission summary, so the two notes cannot disagree.
+    pub(super) fn message(&self, session: &str) -> Option<Message> {
+        let key = self.section()?;
 
         let text = format!(
             "Your setup in this conversation, from the host's effective configuration.\n\
-             When a capability is off, tell the person why and give them the fix below; do not \
-             guess other causes. Only the owner can change these settings.\n\
+             When a capability is off, tell the person why and give them the fix below or in \
+             the permission summary; do not guess other causes. Only the owner can change these \
+             settings.\n\
              - Settings section: [{key}] in Krabb's config.toml.\n\
              - Model: {model} from the {provider} provider.\n\
-             - Approval mode: {approval}, set by `approval` in that section or at the top level.\n\
              - Workspace tools: {tools}\n\
-             - Shell: {shell}\n\
              - Schedules: {schedules}\n\
              - Memory: {memory}\n\
              - Installed plugins: {plugins}.\n\
@@ -122,7 +125,6 @@ impl Setup<'_> {
             model = self.model,
             provider = self.provider,
             tools = status(self.tools, self.tools_blocker(&key)),
-            shell = status(self.shell, self.shell_blocker(&key)),
             schedules = status(self.schedules, self.schedules_blocker(&key)),
             memory = status(self.memory, self.memory_blocker(&key)),
             plugins = self.plugin_list(),
@@ -387,7 +389,6 @@ mod tests {
             model: "gpt-6-luna",
             approval: ApprovalMode::Prompt,
             tools: false,
-            shell: false,
             schedules: false,
             scheduler: true,
             memory: false,
@@ -411,7 +412,7 @@ mod tests {
         assert_eq!(message.role, Role::System);
         assert!(text.contains("- Settings section: [channels.telegram] in Krabb's config.toml."));
         assert!(text.contains("- Model: gpt-6-luna from the codex provider."));
-        assert!(text.contains("- Approval mode: prompt,"));
+        assert!(!text.contains("- Approval mode:") && !text.contains("- Shell:"));
         assert!(text.contains("- Installed plugins: codex (model); scheduler (scheduler)."));
         assert!(!text.contains("discord") && !text.contains("[clients."));
 
@@ -438,7 +439,7 @@ mod tests {
 
         assert!(text.contains(&format!("- Workspace tools: off, because {tools_fix}")));
         assert!(text.contains(&format!("- Schedules: off, because {tools_fix}")));
-        assert!(text.contains("- Shell: off, because it needs workspace tools, which are off."));
+        assert_eq!(setup.shell_fix().unwrap(), "it needs workspace tools, which are off.");
 
         assert!(text.contains(
             "- Memory: off, because no memory plugin is installed. Fix: \
@@ -460,12 +461,22 @@ mod tests {
             "- Workspace tools: off, because [channels.telegram] does not allow this sender."
         ));
 
-        let text = render(&Setup { tools: true, grants: granted, ..setup });
+        let shell = Setup { tools: true, grants: granted, ..setup }.shell_fix().unwrap();
 
-        assert!(text.contains(
-            "- Shell: off, because `shell` is off in [channels.telegram]. Fix: \
+        assert_eq!(
+            shell,
+            "`shell` is off in [channels.telegram]. Fix: \
              `krabb config set channels.telegram.shell=true --force`."
-        ));
+        );
+
+        let shell = Grants { shell: true, ..granted };
+
+        assert!(Setup { tools: true, grants: shell, ..setup }.shell_fix().is_none());
+        assert!(Setup { tools: true, isolated: true, ..setup }.shell_fix().is_some());
+
+        let agent = sharing::Principal::Agent("peer".into());
+
+        assert!(Setup { source: &agent, ..setup }.shell_fix().is_none());
     }
 
     #[test]
