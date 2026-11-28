@@ -6,6 +6,7 @@ use crate::command::{Dialect, classify};
 const GIT: &str = "`git` can run programs the repository configures";
 const SUBSTITUTION: &str = "the command runs a command substitution";
 const VARIABLE: &str = "an argument comes from a variable";
+const OUTSIDE_KEY: &str = "the command reaches `~/.ssh/id_rsa` outside the workspace";
 
 #[test]
 fn plain_inspection_commands_are_read_only() {
@@ -13,10 +14,10 @@ fn plain_inspection_commands_are_read_only() {
         Sh,
         &[
             ("ls", ReadOnly, "`ls` only reads"),
-            ("ls -la /tmp", ReadOnly, "`ls` only reads"),
+            ("ls -la src", ReadOnly, "`ls` only reads"),
             ("cat README.md", ReadOnly, "`cat` only reads"),
             ("head -n 20 src/main.rs", ReadOnly, "`head` only reads"),
-            ("tail -f log.txt", ReadOnly, "`tail` only reads"),
+            ("tail -n 5 log.txt", ReadOnly, "`tail` only reads"),
             ("wc -l a b c", ReadOnly, "`wc` only reads"),
             ("file image.png", ReadOnly, "`file` only reads"),
             ("xxd image.png", ReadOnly, "`xxd` only reads"),
@@ -36,8 +37,6 @@ fn plain_inspection_commands_are_read_only() {
             ("date --date=yesterday +%s", ReadOnly, "`date` only reads"),
             ("date -d tomorrow", ReadOnly, "`date` only reads"),
             ("date -Iseconds", ReadOnly, "`date` only reads"),
-            ("env", ReadOnly, "`env` only reads"),
-            ("printenv PATH", ReadOnly, "`printenv` only reads"),
             ("command -v cargo", ReadOnly, "`command` only reads"),
             ("grep -rn 'fn main' src", ReadOnly, "`grep` only reads"),
             ("rg -n --hidden TODO", ReadOnly, "`rg` only reads"),
@@ -48,7 +47,7 @@ fn plain_inspection_commands_are_read_only() {
             ("sort -k o names.txt", ReadOnly, "`sort` only reads"),
             ("uniq -c names.txt", ReadOnly, "`uniq` only reads"),
             ("uniq -f 1 names.txt", ReadOnly, "`uniq` only reads"),
-            ("cut -d: -f1 /etc/passwd", ReadOnly, "`cut` only reads"),
+            ("cut -d: -f1 data.txt", ReadOnly, "`cut` only reads"),
             ("tr a-z A-Z", ReadOnly, "`tr` only reads"),
             ("column -t -s, data.csv", ReadOnly, "`column` only reads"),
             ("diff -u a b", ReadOnly, "`diff` only reads"),
@@ -59,7 +58,6 @@ fn plain_inspection_commands_are_read_only() {
             ("ls {a,b}", ReadOnly, "`ls` only reads"),
             ("cat \"my file.txt\" 'other file'", ReadOnly, "`cat` only reads"),
             ("echo a=b", ReadOnly, "`echo` only reads"),
-            ("ls ~/projects", ReadOnly, "`ls` only reads"),
             ("cat < input.txt", ReadOnly, "`cat` only reads"),
             ("  ls  \n", ReadOnly, "`ls` only reads"),
             ("echo $", ReadOnly, "`echo` only reads"),
@@ -226,7 +224,7 @@ fn substitutions_and_shell_syntax_are_not_read_only() {
             ("X=1", Unknown, "a part of the command names no program"),
             ("env X=1 ls", Unknown, "the command sets a variable for the program"),
             ("env -i ls", Unknown, "`env` runs a command with a changed environment"),
-            ("env -S 'rm x'", Unknown, "`env` runs a command with a changed environment"),
+            ("env -S 'rm x'", Deletes, "`env` runs a command with a changed environment"),
             ("eval ls", Unknown, "`eval` runs arbitrary code"),
             ("source ./x", Unknown, "`source` runs arbitrary code"),
             ("ls | sh", Unknown, "`sh` runs arbitrary code"),
@@ -477,4 +475,112 @@ fn empty_and_oversized_commands_are_unknown() {
     let piped = vec!["cat a"; 500].join(" | ");
 
     assert!(classify(&piped, Dialect::Sh).is_read_only());
+}
+
+#[test]
+fn only_a_single_digit_names_a_redirected_stream() {
+    check(
+        Sh,
+        &[
+            ("uniq in 12>/dev/null", Writes, "`uniq` writes a file"),
+            ("uniq in 12>/dev/null", Writes, "the command has an unusual redirection"),
+            ("xxd in \"*\">/dev/null", Writes, "`xxd` writes a file"),
+            ("xxd in \\*>/dev/null", Writes, "`xxd` writes a file"),
+            ("date 11281200>/dev/null", Writes, "`date` sets the clock"),
+            ("ls 2>/dev/null", ReadOnly, "`ls` only reads"),
+        ],
+    );
+}
+
+#[test]
+fn secrets_and_paths_outside_the_workspace_are_not_read_only() {
+    check(
+        Sh,
+        &[
+            ("printenv", Unknown, "`printenv` can show secrets from the environment"),
+            ("printenv TOKEN", Unknown, "`printenv` can show secrets from the environment"),
+            ("env", Unknown, "`env` can show secrets from the environment"),
+            ("cat ~/.ssh/id_rsa", Unknown, OUTSIDE_KEY),
+            ("ls ~", Unknown, "the command reaches `~` outside the workspace"),
+            ("cat /etc/passwd", Unknown, "the command reaches `/etc/passwd` outside the workspace"),
+            ("cat ../secret", Unknown, "the command reaches `../secret` outside the workspace"),
+            ("cat src/../../x", Unknown, "the command reaches `src/../../x` outside the workspace"),
+            (
+                "cat /proc/self/environ",
+                Unknown,
+                "the command reaches `/proc/self/environ` outside the workspace",
+            ),
+            ("cat < /etc/shadow", Unknown, "the command reaches `/etc/shadow` outside the workspace"),
+            ("grep -f/etc/x y", Unknown, "the command reaches `/etc/x` outside the workspace"),
+            ("grep --file=/etc/x y", Unknown, "the command reaches `/etc/x` outside the workspace"),
+            ("find / -name x", Unknown, "the command reaches `/` outside the workspace"),
+            ("cat ./src/main.rs", ReadOnly, "`cat` only reads"),
+        ],
+    );
+}
+
+#[test]
+fn wrappers_keep_step_with_abbreviated_and_clustered_options() {
+    for command in [
+        "nice --adj 5 sudo rm x",
+        "timeout --sig KILL 5 sudo rm x",
+        "env --chd / sudo rm x",
+        "sudo -Eu root rm x",
+        "sudo -k rm x",
+        "doas -a style rm x",
+        "ls | xargs --max-args 1 sudo rm",
+        "run0 rm x",
+        "nice --bogus sudo rm x",
+        "ls | xargs -p sudo rm",
+        "stdbuf -oL sudo rm x",
+    ] {
+        let verdict = classify(command, Dialect::Sh);
+
+        assert_eq!(verdict.kind, Deletes, "{command}: {:?}", verdict.reasons);
+        assert!(verdict.elevated, "{command}");
+    }
+
+    check(
+        Sh,
+        &[
+            ("env -S'rm x'", Deletes, "`rm` deletes files"),
+            ("env -iS 'rm x'", Deletes, "`rm` deletes files"),
+            ("env --split-string='rm x'", Deletes, "`rm` deletes files"),
+            ("env --split='rm x'", Deletes, "`rm` deletes files"),
+            ("stdbuf -oL rm x", Deletes, "`rm` deletes files"),
+            ("ionice -c3 rm x", Deletes, "`rm` deletes files"),
+            ("setsid -f rm x", Deletes, "`rm` deletes files"),
+            ("flock lock rm x", Deletes, "`rm` deletes files"),
+            ("flock lock rm x", Deletes, "`flock` writes a file"),
+            ("flock lock -c 'rm x'", Deletes, "`rm` deletes files"),
+            ("chrt -f 10 rm x", Deletes, "`rm` deletes files"),
+            ("taskset -c 0 rm x", Deletes, "`rm` deletes files"),
+            ("unbuffer rm x", Deletes, "`rm` deletes files"),
+            ("busybox rm x", Deletes, "`rm` deletes files"),
+            ("nice --bogus rm x", Deletes, "`nice --bogus` is not on the read-only list"),
+            ("sudoedit hosts", Writes, "`sudoedit` runs with admin rights"),
+            ("stdbuf -oL ls", ReadOnly, "`ls` only reads"),
+            ("busybox ls", ReadOnly, "`ls` only reads"),
+            ("env - ls", Unknown, "`env` runs a command with a changed environment"),
+        ],
+    );
+}
+
+#[test]
+fn devices_are_found_by_component_and_followers_never_finish() {
+    check(
+        Sh,
+        &[
+            ("cat /./dev/sda", Unknown, "the command opens the device `/./dev/sda`"),
+            ("cat //dev/sda", Unknown, "the command opens the device `//dev/sda`"),
+            ("grep --file=/dev/sda x", Unknown, "the command opens the device `/dev/sda`"),
+            ("cat /dev/null", ReadOnly, "`cat` only reads"),
+            ("tail -f log", Unknown, "`tail -f` keeps running until it is stopped"),
+            ("tail -fn 5 log", Unknown, "`tail -f` keeps running until it is stopped"),
+            ("tail -n 5 -F log", Unknown, "`tail -f` keeps running until it is stopped"),
+            ("tail --follow=name log", Unknown, "`tail -f` keeps running until it is stopped"),
+            ("tail -n f log", ReadOnly, "`tail` only reads"),
+            ("tail *", Unknown, "a wildcard could pass options to `tail`"),
+        ],
+    );
 }

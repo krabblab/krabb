@@ -1,13 +1,12 @@
 use super::Findings;
 use crate::command::lex::Word;
-use crate::command::option::{cluster, long, takes_value};
+use crate::command::option::{Spec, cluster, long, takes_value, walk};
 use crate::command::reason::Effect;
 
 const INERT: &[&str] = &[
     "ls",
     "cat",
     "head",
-    "tail",
     "wc",
     "stat",
     "du",
@@ -18,7 +17,6 @@ const INERT: &[&str] = &[
     "echo",
     "which",
     "uname",
-    "printenv",
     "grep",
     "egrep",
     "fgrep",
@@ -76,20 +74,24 @@ const DATE_LONG: &[&str] = &[
     "resolution",
 ];
 
-const XARGS_VALUES: &[&str] = &["-n", "-L", "-I", "-d", "-P", "-s", "-E", "-a"];
+const XARGS: Spec<'static> = Spec {
+    flags: "0rtx",
+    values: "nLIdPsEa",
+    long_flags: &["null", "no-run-if-empty", "verbose", "exit", "replace", "eof"],
+    long_values: &[
+        "max-args",
+        "max-lines",
+        "delimiter",
+        "max-procs",
+        "max-chars",
+        "arg-file",
+        "process-slot-var",
+    ],
+};
 
-const XARGS_FLAGS: &[&str] = &["-0", "-r", "-t", "-x", "--null", "--no-run-if-empty", "--verbose"];
-
-const XARGS_LONG: &[&str] = &[
-    "--max-args=",
-    "--max-lines=",
-    "--replace=",
-    "--delimiter=",
-    "--max-procs=",
-    "--max-chars=",
-    "--eof=",
-    "--arg-file=",
-];
+pub(super) fn deletes(name: &str) -> bool {
+    DELETES.contains(&name)
+}
 
 pub(super) fn inert(name: &str) -> bool {
     INERT.contains(&name)
@@ -129,7 +131,10 @@ pub(super) fn evaluate(name: &str, args: &[&str], found: &mut Findings) -> bool 
 
         "printf" => Effect::Reads,
         "date" => return date(args, found),
-        "env" if args.is_empty() => Effect::Reads,
+        "env" if args.is_empty() => Effect::ShowsEnvironment,
+        "printenv" => Effect::ShowsEnvironment,
+        "tail" if follows(args) => return flagged(found, "tail -f", Effect::Waits),
+        "tail" => Effect::Reads,
         "env" => Effect::ChangesEnvironment,
         "command" if args.iter().any(|arg| matches!(*arg, "-v" | "-V")) => Effect::Reads,
         "xargs" => return xargs(args, found),
@@ -330,36 +335,23 @@ fn date(args: &[&str], found: &mut Findings) -> bool {
 }
 
 pub(in crate::command) fn xargs_command<S: AsRef<str>>(args: &[S]) -> Result<usize, String> {
-    let mut index = 0;
+    let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
 
-    while let Some(arg) = args.get(index).map(AsRef::as_ref) {
-        if arg == "--" {
-            return Ok(index + 1);
-        }
-
-        if !arg.starts_with('-') {
-            break;
-        }
-
-        index += 1;
-
-        if XARGS_VALUES.contains(&arg) {
-            index += 1;
-        } else if !(XARGS_FLAGS.contains(&arg)
-            || XARGS_LONG.iter().any(|option| arg.starts_with(option))
-            || XARGS_VALUES.iter().any(|option| arg.starts_with(option)))
-        {
-            return Err(arg.to_owned());
-        }
-    }
-
-    Ok(index)
+    walk(&args, &XARGS).map(|walk| walk.end)
 }
 
 fn xargs(args: &[&str], found: &mut Findings) -> bool {
     let start = match xargs_command(args) {
         Ok(start) => start,
-        Err(option) => return flagged(found, &format!("xargs {option}"), Effect::Unlisted),
+        Err(option) => {
+            for arg in args {
+                if let Some(reason) = super::dangerous(arg.rsplit('/').next().unwrap_or(arg)) {
+                    found.push(reason);
+                }
+            }
+
+            return flagged(found, &format!("xargs {option}"), Effect::Unlisted);
+        }
     };
 
     match args.get(start) {
@@ -369,4 +361,14 @@ fn xargs(args: &[&str], found: &mut Findings) -> bool {
     }
 
     true
+}
+
+fn follows(args: &[&str]) -> bool {
+    args.iter().take_while(|arg| **arg != "--").any(|arg| {
+        long(arg, "follow")
+            || arg.starts_with('+') && arg.ends_with('f')
+            || cluster(arg).is_some_and(|flags| {
+                flags.chars().take_while(|c| !"cns".contains(*c)).any(|c| matches!(c, 'f' | 'F'))
+            })
+    })
 }

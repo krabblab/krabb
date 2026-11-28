@@ -85,7 +85,7 @@ pub(in crate::command) fn lex(input: &str) -> Lexed {
             _ => {
                 let (word, end) = word(&chars, index, &mut lexed);
 
-                lexed.word(word, chars.get(end));
+                lexed.word(word, chars.get(end), true);
                 index = end;
             }
         }

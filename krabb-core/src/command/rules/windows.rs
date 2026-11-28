@@ -9,6 +9,10 @@ const WRITES: &[&str] = &[
     "icacls", "takeown",
 ];
 
+pub(super) fn deletes(name: &str) -> bool {
+    DELETES.contains(&name)
+}
+
 pub(super) fn evaluate(name: &str, args: &[&str], found: &mut Findings) -> bool {
     let effect = if READS.contains(&name) {
         Effect::Reads

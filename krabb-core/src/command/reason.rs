@@ -58,6 +58,8 @@ pub enum Effect {
     SetsVariable,
     ChangesEnvironment,
     ReceivesOptions,
+    ShowsEnvironment,
+    Waits,
     Unlisted,
 }
 
@@ -78,6 +80,7 @@ pub enum Reason {
     Host(String),
     Device(String),
     Drive(String),
+    Outside(String),
 }
 
 impl Effect {
@@ -175,6 +178,8 @@ impl fmt::Display for Effect {
             Self::SetsVariable => "sets a variable",
             Self::ChangesEnvironment => "runs a command with a changed environment",
             Self::ReceivesOptions => "could receive options from its input",
+            Self::ShowsEnvironment => "can show secrets from the environment",
+            Self::Waits => "keeps running until it is stopped",
             Self::Unlisted => "is not on the read-only list",
         })
     }
@@ -209,6 +214,10 @@ impl fmt::Display for Reason {
 
             Self::Device(device) => write!(formatter, "the command opens the device `{device}`"),
             Self::Drive(drive) => write!(formatter, "the command reaches the `{drive}` drive"),
+
+            Self::Outside(path) => {
+                write!(formatter, "the command reaches `{path}` outside the workspace")
+            }
         }
     }
 }

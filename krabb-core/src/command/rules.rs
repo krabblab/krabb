@@ -4,11 +4,13 @@ mod windows;
 
 use super::lex::Word;
 use super::package::{self, Packages};
-use super::parse::{Nested, Segment};
+use super::parse::{self, Nested, Segment};
 use super::reason::{Effect, Hazard, Reason};
+use super::option::{cluster, long};
 use super::{Dialect, git, path};
 
-const ELEVATORS: &[&str] = &["sudo", "doas", "su", "runas", "pkexec", "gsudo"];
+const ELEVATORS: &[&str] =
+    &["sudo", "doas", "su", "runas", "pkexec", "gsudo", "run0", "sudoedit"];
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
 const SCRIPTS: &[&str] = &["npm", "pnpm", "yarn", "bun"];
 
@@ -223,7 +225,7 @@ fn portable(name: &str, args: &[&str], found: &mut Findings) -> bool {
     } else if ELEVATORS.contains(&name) {
         found.push(Reason::Elevated(name.to_owned()));
 
-        if args.iter().any(|arg| matches!(*arg, "-e" | "--edit")) {
+        if name == "sudoedit" || args.iter().any(|arg| matches!(*arg, "-e" | "--edit")) {
             found.acts(format!("{name} -e"), Effect::ChangesFiles);
         } else if name == "su" && !args.iter().any(|arg| matches!(*arg, "-c" | "--command")) {
             found.acts(name, Effect::RunsCode);
@@ -258,10 +260,54 @@ fn portable(name: &str, args: &[&str], found: &mut Findings) -> bool {
     true
 }
 
-fn location(dialect: Dialect, text: &str, found: &mut Findings) {
-    let value = text.split_once(':').filter(|_| text.starts_with('-')).map_or(text, |(_, v)| v);
+pub(super) fn dangerous(name: &str) -> Option<Reason> {
+    if ELEVATORS.contains(&name) {
+        Some(Reason::Elevated(name.to_owned()))
+    } else if unix::deletes(name) || windows::deletes(name) || name == "remove-item" {
+        Some(Reason::Acts(name.to_owned(), Effect::DeletesFiles))
+    } else {
+        None
+    }
+}
 
-    for candidate in [text, value] {
+fn candidates(dialect: Dialect, text: &str) -> Vec<&str> {
+    let windows = dialect != Dialect::Sh;
+    let switch = text.starts_with('-') || windows && text.starts_with('/');
+    let mut found = Vec::new();
+
+    let name = text.split_once(':').map_or(text, |(name, _)| name);
+
+    if !(windows && parse::switch(name, true)) {
+        found.push(text);
+    }
+
+    if let Some((_, value)) = text.split_once('=') {
+        found.push(value);
+    }
+
+    if switch && let Some((_, value)) = text.split_once(':') {
+        found.push(value);
+    }
+
+    if text.starts_with('-') && let Some(at) = text.find(['/', '\\', '~']) {
+        found.push(&text[at..]);
+    }
+
+    if windows {
+        let parts: Vec<&str> = found.iter().flat_map(|word| word.split([',', ';'])).collect();
+
+        found.extend(parts);
+    }
+
+    found
+}
+
+fn location(dialect: Dialect, text: &str, found: &mut Findings) {
+    for candidate in candidates(dialect, text) {
+        if path::outside(candidate, dialect != Dialect::Sh) {
+            found.push(Reason::Outside(candidate.to_owned()));
+        }
+
         if let Some(host) = path::host(candidate) {
             found.push(Reason::Host(host.to_owned()));
         } else if candidate.contains("://") {
@@ -302,6 +348,13 @@ pub(super) fn nested(segment: &Segment) -> Vec<Nested> {
             .position(|arg| matches!(arg.as_str(), "-c" | "--command"))
             .and_then(|at| args.get(at + 1))
             .map(|text| Nested::Text(text.clone(), Dialect::Sh, true)),
+
+        "env" if segment.dialect == Dialect::Sh => split_string(args),
+
+        "flock" if segment.dialect == Dialect::Sh => args
+            .iter()
+            .position(|arg| arg == "-c" || long(arg, "command"))
+            .map(|at| Nested::Text(after(at), Dialect::Sh, false)),
 
         "eval" if segment.dialect == Dialect::Sh => {
             Some(Nested::Text(args.join(" "), Dialect::Sh, false))
@@ -354,4 +407,27 @@ pub(super) fn nested(segment: &Segment) -> Vec<Nested> {
 
         _ => Vec::new(),
     }
+}
+
+fn split_string(args: &[String]) -> Option<Nested> {
+    for (at, arg) in args.iter().enumerate() {
+        let rest = args[at + 1..].join(" ");
+
+        let text = if let Some(flags) = cluster(arg)
+            && let Some(start) = flags.find('S')
+        {
+            format!("{} {rest}", &flags[start + 1..])
+        } else if long(arg, "split-string") {
+            match arg.split_once('=') {
+                Some((_, value)) => format!("{value} {rest}"),
+                None => rest,
+            }
+        } else {
+            continue;
+        };
+
+        return Some(Nested::Text(format!("env {text}"), Dialect::Sh, false));
+    }
+
+    None
 }

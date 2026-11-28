@@ -1,5 +1,6 @@
 use crate::command::{
-    Action, Dialect, Hazard, Os, classify, device, host, parse, share_host, system, url_host,
+    Action, Dialect, Hazard, Os, classify, device, host, outside, parse, share_host, system,
+    url_host,
 };
 
 #[test]
@@ -183,4 +184,38 @@ fn every_reason_reads_as_a_sentence() {
             assert!(text.starts_with(|c: char| c.is_lowercase() || c == '`'), "{command}: {text}");
         }
     }
+}
+
+#[test]
+fn outside_and_device_paths_are_judged_by_component() {
+    for (path, windows) in [
+        ("~", false),
+        ("..", false),
+        ("src/../..", false),
+        ("/etc", false),
+        ("C:x", true),
+        ("\\\\server\\s", true),
+        ("..\\x", true),
+    ] {
+        assert!(outside(path, windows), "{path}");
+    }
+
+    for (path, windows) in
+        [("src", false), ("./a/b", false), ("/dev/null", false), ("C:x", false), ("a..b", true)]
+    {
+        assert!(!outside(path, windows), "{path}");
+    }
+
+    for path in ["/./dev/sda", "//dev/tcp/h/1", "\\\\?\\GLOBALROOT\\x", "\\??\\C:\\x"] {
+        assert!(device(path), "{path}");
+    }
+
+    for path in ["/dev/../dev/null", "/dev", "\\\\?\\C:\\x", "\\\\?\\UNC\\h\\s"] {
+        assert!(!device(path), "{path}");
+    }
+
+    let parsed = parse("uniq in 12>/dev/null", Dialect::Sh);
+
+    assert_eq!(parsed.segments[0].args, ["in", "12"]);
+    assert!(parsed.hazards.contains(&Hazard::Redirection));
 }

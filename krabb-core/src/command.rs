@@ -15,7 +15,7 @@ use std::cmp::Reverse;
 
 pub use package::{Action, Packages};
 pub use parse::{Parse, Segment, parse};
-pub use path::{Os, device, host, share_host, system, url_host};
+pub use path::{Os, device, host, outside, share_host, system, url_host};
 pub use reason::{Effect, Hazard, Reason};
 
 const REASONS: usize = 8;
