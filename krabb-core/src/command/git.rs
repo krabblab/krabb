@@ -1,12 +1,34 @@
-use super::syntax::long;
-use super::{Kind, Verdict};
+use super::option::{cluster, long, takes_value};
+use super::reason::Effect;
+use super::rules::Findings;
 
-const GLOBAL: &[&str] =
-    &["--no-pager", "-P", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects"];
+const GLOBAL_VALUES: &[&str] =
+    &["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"];
 
-const READS: &[&str] = &["status", "rev-parse", "ls-files", "blame"];
-const DIFFS: &[&str] = &["log", "show", "diff"];
+const RUNS: &[&str] = &["-c", "--config-env", "--exec-path"];
+const DIFFS: &[&str] = &["log", "show", "diff", "whatchanged"];
 const DELETES: &[&str] = &["clean", "rm"];
+const NETWORK: &[&str] = &["clone", "fetch", "pull", "push", "ls-remote", "submodule", "remote"];
+
+const CONFIG_READS: &[&str] =
+    &["--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l", "get", "list"];
+
+const DIFF_SHORT_VALUES: &[&str] = &["-n", "-S", "-G", "-O", "-L"];
+
+const DIFF_LONG_VALUES: &[&str] = &[
+    "author",
+    "committer",
+    "grep",
+    "since",
+    "until",
+    "after",
+    "before",
+    "skip",
+    "max-count",
+    "encoding",
+    "date",
+    "diff-algorithm",
+];
 
 const WRITES: &[&str] = &[
     "add",
@@ -14,24 +36,18 @@ const WRITES: &[&str] = &[
     "apply",
     "checkout",
     "cherry-pick",
-    "clone",
     "commit",
-    "config",
-    "fetch",
     "gc",
     "init",
     "merge",
     "mv",
     "notes",
     "prune",
-    "pull",
-    "push",
     "rebase",
     "reset",
     "restore",
     "revert",
     "stash",
-    "submodule",
     "switch",
     "tag",
     "update-index",
@@ -65,71 +81,69 @@ const SHOWS: &[&str] = &[
     "--omit-empty",
 ];
 
-pub(super) fn classify(args: &[&str]) -> Verdict {
-    let mut rest = args;
+pub(super) fn evaluate(args: &[&str], found: &mut Findings) {
+    found.acts("git", Effect::RunsConfigured);
 
-    loop {
-        match rest {
-            ["-C", _, tail @ ..] => rest = tail,
-            [flag, tail @ ..] if GLOBAL.contains(flag) => rest = tail,
+    let mut index = 0;
 
-            [flag, ..] if flag.starts_with('-') => {
-                return Verdict::new(
-                    Kind::Unknown,
-                    format!("`git {flag}` can change what git runs"),
-                );
-            }
+    while let Some(&arg) = args.get(index).filter(|arg| arg.starts_with('-')) {
+        let name = arg.split_once('=').map_or(arg, |(name, _)| name);
 
-            _ => break,
+        if RUNS.contains(&name) {
+            found.acts(format!("git {name}"), Effect::RunsPrograms);
         }
+
+        index += 1 + usize::from(GLOBAL_VALUES.contains(&arg));
     }
 
-    let Some((&command, args)) = rest.split_first() else {
-        return Verdict::new(Kind::Unknown, "`git` needs a subcommand");
+    let Some(&command) = args.get(index) else {
+        return;
     };
 
-    if READS.contains(&command) {
-        return reads(command);
-    }
+    let args = args.get(index + 1..).unwrap_or_default();
 
     if DIFFS.contains(&command) {
-        return diff(command, args);
-    }
+        diff(command, args, found);
+    } else if command == "branch" {
+        branch(args, found);
+    } else if command == "config" {
+        if !args.iter().any(|arg| CONFIG_READS.contains(arg)) {
+            found.acts("git config", Effect::ChangesConfiguration);
+        }
+    } else if DELETES.contains(&command) {
+        found.acts(format!("git {command}"), Effect::DeletesFiles);
+    } else if NETWORK.contains(&command) {
+        found.acts(format!("git {command}"), Effect::UsesNetwork);
 
-    if command == "branch" {
-        return branch(args);
+        if command != "ls-remote" {
+            found.acts(format!("git {command}"), Effect::ChangesRepository);
+        }
+    } else if WRITES.contains(&command) {
+        found.acts(format!("git {command}"), Effect::ChangesRepository);
     }
-
-    if DELETES.contains(&command) {
-        return Verdict::new(Kind::Deletes, format!("`git {command}` deletes files"));
-    }
-
-    if WRITES.contains(&command) {
-        return Verdict::new(Kind::Writes, format!("`git {command}` changes the repository"));
-    }
-
-    Verdict::new(Kind::Unknown, format!("`git {command}` is not known to be read-only"))
 }
 
-fn reads(command: &str) -> Verdict {
-    Verdict::new(Kind::ReadOnly, format!("`git {command}` only reads"))
-}
+fn diff(command: &str, args: &[&str], found: &mut Findings) {
+    let mut index = 0;
 
-fn diff(command: &str, args: &[&str]) -> Verdict {
-    for arg in args.iter().take_while(|arg| **arg != "--") {
+    while let Some(&arg) = args.get(index) {
+        index += 1;
+
+        if arg == "--" {
+            break;
+        }
+
         if long(arg, "output") {
-            return Verdict::new(Kind::Writes, format!("`git {command} --output` writes a file"));
+            found.acts(format!("git {command} --output"), Effect::WritesFile);
+        } else if long(arg, "ext-diff") {
+            found.acts(format!("git {command} --ext-diff"), Effect::RunsPrograms);
         }
 
-        if long(arg, "ext-diff") {
-            return Verdict::new(Kind::Unknown, "`--ext-diff` runs an external program");
-        }
+        index += usize::from(takes_value(arg, DIFF_SHORT_VALUES, DIFF_LONG_VALUES));
     }
-
-    reads(command)
 }
 
-fn branch(args: &[&str]) -> Verdict {
+fn branch(args: &[&str], found: &mut Findings) {
     let mut listing = false;
     let mut names = false;
 
@@ -138,19 +152,23 @@ fn branch(args: &[&str]) -> Verdict {
             let option = format!("--{}", option.split_once('=').map_or(option, |(name, _)| name));
 
             if option == "--delete" {
-                return Verdict::new(Kind::Deletes, "`git branch --delete` deletes branches");
+                found.acts("git branch --delete", Effect::DeletesBranches);
+                return;
             } else if LISTS.contains(&option.as_str()) {
                 listing = true;
             } else if !SHOWS.contains(&option.as_str()) {
-                return Verdict::new(Kind::Writes, format!("`git branch {arg}` changes branches"));
+                found.acts(format!("git branch {option}"), Effect::ChangesBranches);
+                return;
             }
-        } else if let Some(flags) = arg.strip_prefix('-') {
+        } else if let Some(flags) = cluster(arg) {
             if flags.contains(['d', 'D']) {
-                return Verdict::new(Kind::Deletes, "`git branch -d` deletes branches");
+                found.acts("git branch -d", Effect::DeletesBranches);
+                return;
             }
 
-            if flags.is_empty() || !flags.chars().all(|flag| "alrvi".contains(flag)) {
-                return Verdict::new(Kind::Writes, format!("`git branch {arg}` changes branches"));
+            if !flags.chars().all(|flag| "alrvi".contains(flag)) {
+                found.acts(format!("git branch {arg}"), Effect::ChangesBranches);
+                return;
             }
 
             listing |= flags.contains(['a', 'l', 'r']);
@@ -160,8 +178,6 @@ fn branch(args: &[&str]) -> Verdict {
     }
 
     if names && !listing {
-        return Verdict::new(Kind::Writes, "`git branch <name>` creates a branch");
+        found.acts("git branch", Effect::CreatesBranch);
     }
-
-    reads("branch")
 }
