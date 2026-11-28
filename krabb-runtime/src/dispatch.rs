@@ -645,21 +645,19 @@ pub(crate) async fn execute_tool_with_registry(
         sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
     }
 
-    let gate = {
+    let grant = {
         let store = sessions.lock().map_err(|_| state::POISONED)?;
         let source = registry.source.clone().unwrap_or_else(|| sharing::principal(channel));
-        let grant = access::turn(&plugins.config, source, channel, store.sessions.get(session));
 
-        access::gate(&plugins.config, &grant, name, &args, approval_mode)
-            .map(|verdict| (verdict, grant.preset, grant.role))
+        access::turn(&plugins.config, source, channel, store.sessions.get(session))
     };
 
+    let gate = access::gate(&plugins.config, &grant, name, &args, approval_mode)
+        .map(|verdict| (verdict, grant.preset, grant.role));
+
     let asks = match gate {
-        Some((access::Verdict::Deny, preset, _)) => {
-            return Ok(ToolResult::text(format!(
-                "The {preset} preset does not allow `{name}` here, so nothing ran. The owner can \
-                 change this conversation's preset with `krabb config set`."
-            )));
+        Some((access::Verdict::Deny, ..)) => {
+            return Ok(ToolResult::text(access::refusal(&grant, name, &args)));
         }
 
         Some((verdict, ..)) => verdict == access::Verdict::Ask,

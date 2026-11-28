@@ -629,3 +629,58 @@ fn only_the_requesters_role_or_a_higher_one_approves() {
     assert!(!approves(Role::Guest, Some(Role::Member)));
     assert!(approves(Role::Guest, None));
 }
+
+#[test]
+fn admin_commands_need_their_level_and_always_ask_within_it() {
+    let shell = |command: &str| json!({"command": command});
+
+    assert_eq!(needs("sudo apt install htop"), Some(Elevation::Packages));
+    assert_eq!(needs("sudo systemctl restart nginx"), Some(Elevation::Services));
+    assert_eq!(needs("sudo rm -rf /var/cache/x"), Some(Elevation::Full));
+    assert_eq!(needs("ls -la"), None);
+    assert_eq!(needs("apt list --installed"), None);
+
+    let expected = if superuser() { Some(Elevation::Packages) } else { None };
+
+    assert_eq!(needs("apt install htop"), expected);
+
+    let presets = config("preset = 'standard'");
+    let owner = resolve(&presets, &remote(krabb_core::client::TUI));
+    let install = shell("sudo apt install htop");
+
+    assert_eq!(owner.elevation, Elevation::None);
+    assert_eq!(
+        gate(&presets, &owner, "shell_run", &install, ApprovalMode::Auto),
+        Some(Verdict::Deny)
+    );
+
+    let refusal = refusal(&owner, "shell_run", &install);
+
+    assert!(
+        refusal.contains("`packages` admin level") && refusal.ends_with("`sudo apt install htop`")
+    );
+
+    let packages = Grant { elevation: Elevation::Packages, ..owner };
+    let loose = Grant { preset: Preset::Loose, elevation: Elevation::Full, ..owner };
+
+    assert_eq!(
+        gate(&presets, &packages, "shell_run", &install, ApprovalMode::Auto),
+        Some(Verdict::Ask)
+    );
+    assert_eq!(
+        gate(&presets, &loose, "shell_run", &install, ApprovalMode::Auto),
+        Some(Verdict::Ask)
+    );
+
+    let services = shell("sudo systemctl restart nginx");
+
+    assert_eq!(
+        gate(&presets, &packages, "shell_run", &services, ApprovalMode::Auto),
+        Some(Verdict::Deny)
+    );
+    assert_eq!(
+        gate(&presets, &loose, "shell_run", &services, ApprovalMode::Auto),
+        Some(Verdict::Ask)
+    );
+    assert!(refusal(&owner, "file_read", &json!({})).starts_with("The standard preset"));
+}

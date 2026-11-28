@@ -252,8 +252,13 @@ pub(crate) fn gate(
         return None;
     }
 
+    let above = name == "shell_run"
+        && needs(args["command"].as_str().unwrap_or_default())
+            .is_some_and(|level| level > grant.elevation);
+
     match verdict(grant, name, args) {
         Verdict::Deny => Some(Verdict::Deny),
+        _ if above => Some(Verdict::Deny),
         _ if mode == ApprovalMode::Off && answer::mutating(name, args) => Some(Verdict::Deny),
         verdict => Some(verdict),
     }
@@ -285,6 +290,64 @@ pub(crate) fn action(name: &str, args: &serde_json::Value) -> Action {
         name if !answer::mutating(name, args) => Action::Read,
         _ => Action::Shell,
     }
+}
+
+/// Why the gate refused a tool call, with the one thing the owner can do instead.
+pub(crate) fn refusal(grant: &Grant, name: &str, args: &serde_json::Value) -> String {
+    let command = args["command"].as_str().unwrap_or_default();
+
+    match needs(command).filter(|level| name == "shell_run" && *level > grant.elevation) {
+        Some(level) => format!(
+            "This command needs the `{level}` admin level, and the {role} role has `{elevation}`, \
+             so nothing ran. The owner can run it: `{command}`",
+            role = grant.role,
+            elevation = grant.elevation,
+        ),
+
+        None => format!(
+            "The {preset} preset does not allow `{name}` here, so nothing ran. The owner can \
+             change this conversation's preset with `krabb config set`.",
+            preset = grant.preset,
+        ),
+    }
+}
+
+/// The admin level COMMAND needs, or none when it runs with the user's own rights: system
+/// package changes need `packages`, service changes `services`, and any other elevated
+/// command `full`. When Krabb itself runs as root, package and service commands need their
+/// level without `sudo` too.
+pub(crate) fn needs(command: &str) -> Option<Elevation> {
+    use krabb_core::command::{Action as Change, Kind, classify};
+
+    let verdict = classify(command, dialect());
+
+    let system = verdict
+        .packages
+        .as_ref()
+        .is_some_and(|packages| packages.system && packages.action != Change::Query);
+
+    if !(verdict.elevated || superuser()) {
+        return None;
+    }
+
+    if system {
+        Some(Elevation::Packages)
+    } else if verdict.kind == Kind::Services {
+        Some(Elevation::Services)
+    } else if verdict.elevated {
+        Some(Elevation::Full)
+    } else {
+        None
+    }
+}
+
+/// Whether the daemon runs with admin rights already.
+fn superuser() -> bool {
+    #[cfg(unix)]
+    return rustix::process::geteuid().is_root();
+
+    #[cfg(not(unix))]
+    false
 }
 
 fn shell(command: &str) -> Action {
