@@ -4856,7 +4856,17 @@ async fn control_as(
                     let final_text = value["text"].as_str().unwrap_or(&streamed);
 
                     if let Some(events) = &events {
-                        let suffix = final_reply_suffix(&streamed, final_text);
+                        let mut suffix = final_reply_suffix(&streamed, final_text);
+
+                        // Streamed text the reply does not continue was a draft, as when a
+                        // provider sends its plan after the tool call that should end it.
+                        if !system_output
+                            && !streamed.is_empty()
+                            && krabb_core::types::continuation(&streamed, final_text).is_none()
+                        {
+                            let _ = events.send(EngineEvent::DraftDiscarded);
+                            suffix = final_text.to_owned();
+                        }
 
                         if !suffix.is_empty() {
                             let event = if system_output {
@@ -8211,8 +8221,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn separates_tool_progress_and_preserves_a_nonstreamed_final_answer() {
+    /// Streams RESULTS from a fixture daemon through a TUI answer, returning its events.
+    async fn streamed_events(results: Vec<serde_json::Value>) -> Vec<super::EngineEvent> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         let root = std::env::temp_dir().join(format!(
@@ -8242,14 +8252,11 @@ mod tests {
 
             assert_eq!(request["params"][krabb_core::execution::ENVELOPE], true);
 
-            for result in [
-                json!({"event":krabb_core::execution::ENVELOPE, "budget":{"total_millis":900_000}}),
-                json!({"event":"text", "text":"I'll check that."}),
-                json!({"event":"tool", "name":"file_read"}),
-                json!({"event":"tool", "name":"file_read"}),
-                json!({"event":"system", "progress":true, "text":"I'll check the file."}),
-                json!({"done":true, "text":"Here is the complete answer."}),
-            ] {
+            let envelope = json!({
+                "event": krabb_core::execution::ENVELOPE, "budget": {"total_millis": 900_000}
+            });
+
+            for result in std::iter::once(envelope).chain(results) {
                 let frame = json!({"jsonrpc":"2.0", "id":1, "result":result});
                 socket.get_mut().write_all(format!("{frame}\n").as_bytes()).await.unwrap();
             }
@@ -8267,27 +8274,72 @@ mod tests {
         .unwrap_or_else(|_| panic!("stream control failed"));
 
         server.await.unwrap();
-
-        assert_eq!(
-            receiver.recv().await,
-            Some(super::EngineEvent::AssistantText("I'll check that.".into()))
-        );
-
-        assert_eq!(receiver.recv().await, Some(super::EngineEvent::DraftDiscarded));
-
-        assert_eq!(
-            receiver.recv().await,
-            Some(super::EngineEvent::Progress("I'll check the file.".into()))
-        );
-
-        assert_eq!(
-            receiver.recv().await,
-            Some(super::EngineEvent::AssistantText("Here is the complete answer.".into()))
-        );
-
-        assert!(receiver.try_recv().is_err());
-
         std::fs::remove_dir_all(root).unwrap();
+
+        let mut received = Vec::new();
+
+        while let Ok(event) = receiver.try_recv() {
+            received.push(event);
+        }
+
+        received
+    }
+
+    #[tokio::test]
+    async fn separates_tool_progress_and_preserves_a_nonstreamed_final_answer() {
+        let events = streamed_events(vec![
+            json!({"event":"text", "text":"I'll check that."}),
+            json!({"event":"tool", "name":"file_read"}),
+            json!({"event":"tool", "name":"file_read"}),
+            json!({"event":"system", "progress":true, "text":"I'll check the file."}),
+            json!({"done":true, "text":"Here is the complete answer."}),
+        ])
+        .await;
+
+        assert_eq!(
+            events,
+            [
+                super::EngineEvent::AssistantText("I'll check that.".into()),
+                super::EngineEvent::DraftDiscarded,
+                super::EngineEvent::Progress("I'll check the file.".into()),
+                super::EngineEvent::AssistantText("Here is the complete answer.".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_streamed_after_its_tool_call_gives_way_to_the_reply() {
+        let events = streamed_events(vec![
+            json!({"event":"tool", "name":"route"}),
+            json!({"event":"system", "progress":true, "text":"I'll check the news."}),
+            json!({"event":"text", "text":"I'll check the news."}),
+            json!({"done":true, "text":"Here are the headlines."}),
+        ])
+        .await;
+
+        assert_eq!(
+            events,
+            [
+                super::EngineEvent::Progress("I'll check the news.".into()),
+                super::EngineEvent::AssistantText("I'll check the news.".into()),
+                super::EngineEvent::DraftDiscarded,
+                super::EngineEvent::AssistantText("Here are the headlines.".into()),
+            ]
+        );
+
+        let events = streamed_events(vec![
+            json!({"event":"text", "text":"Here are "}),
+            json!({"done":true, "text":"Here are the headlines."}),
+        ])
+        .await;
+
+        assert_eq!(
+            events,
+            [
+                super::EngineEvent::AssistantText("Here are ".into()),
+                super::EngineEvent::AssistantText("the headlines.".into()),
+            ]
+        );
     }
 
     #[tokio::test]
