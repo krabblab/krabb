@@ -4,8 +4,8 @@ set -euo pipefail
 usage() {
     printf '%s\n' 'Usage: krabb-scripts/precommit.sh [BASE]'
     printf '%s\n' 'Run the fast local gate on what changed since BASE (default: origin/main):'
-    printf '%s\n' 'formatting, spacing of changed files, then Clippy and unit tests of the'
-    printf '%s\n' 'affected packages. CI and `make gate` run the full checks.'
+    printf '%s\n' 'formatting, spacing of changed files, then Clippy and tests of the affected'
+    printf '%s\n' "packages. CI and 'make gate' run the full checks."
 }
 
 if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then
@@ -40,5 +40,7 @@ printf '[INFO] Checking %s\n' "$selection"
 # shellcheck disable=SC2086
 CARGO_BUILD_JOBS=$jobs cargo clippy $selection --all-targets --locked -- -D warnings
 
+# Cargo has no flag for unit tests only that works for packages without a library, so this
+# runs every test of the affected packages.
 # shellcheck disable=SC2086
-CARGO_BUILD_JOBS=$jobs cargo test $selection --lib --bins --locked
+CARGO_BUILD_JOBS=$jobs cargo test $selection --locked

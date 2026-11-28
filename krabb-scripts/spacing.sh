@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     printf '%s\n' 'Usage: krabb-scripts/spacing.sh [--check] [--changed BASE]'
     printf '%s\n' 'Add or check code spacing in Rust, JavaScript, and Python files.'
-    printf '%s\n' 'With --changed, only files changed since BASE, including uncommitted and new ones.'
+    printf '%s\n' 'With --changed, only files changed since BASE, uncommitted and new ones too.'
 }
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -36,11 +36,16 @@ while (($# > 0)); do
     esac
 done
 
+# Resolved here, outside the process substitutions below, so an unknown BASE fails the run
+# instead of quietly checking no files.
+fork=
+
+if [[ -n "$base" ]]; then
+    fork=$(git -C "$repo_root" merge-base "$base" HEAD)
+fi
+
 # Lists files changed since BASE's merge base: committed, staged, unstaged, and untracked.
 changed_files() {
-    local fork
-    fork=$(git -C "$repo_root" merge-base "$base" HEAD)
-
     {
         git -C "$repo_root" diff --name-only --diff-filter=d -z "$fork"
         git -C "$repo_root" ls-files --others --exclude-standard -z
@@ -408,7 +413,9 @@ format_file() {
 rust_files() {
     if [[ -n "$base" ]]; then
         while IFS= read -r -d '' relative; do
-            [[ "$relative" == *.rs && -f "$repo_root/$relative" ]] && printf '%s\0' "$repo_root/$relative"
+            if [[ "$relative" == *.rs && -f "$repo_root/$relative" ]]; then
+                printf '%s\0' "$repo_root/$relative"
+            fi
         done < <(changed_files)
 
         return

@@ -15,7 +15,7 @@ help:
 	@printf '%s\n' '  all       Build the workspace, then install the CLI and daemon (default)'
 	@printf '%s\n' '  install   Install the krabb and krabb-daemon binaries only'
 	@printf '%s\n' '  hooks     Install Lefthook git hooks'
-	@printf '%s\n' '  precommit Fast gate on changes since BASE: format, spacing, Clippy, unit tests'
+	@printf '%s\n' '  precommit Fast gate on changes since BASE: format, spacing, Clippy, tests'
 	@printf '%s\n' '  fmt       Check Rust, JavaScript, and Python formatting and spacing'
 	@printf '%s\n' '  spacing   Apply code block spacing'
 	@printf '%s\n' '  clippy    Run Clippy with warnings denied'

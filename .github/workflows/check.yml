@@ -78,10 +78,16 @@ jobs:
       # The container's toolchain is the minimum supported Rust version, so Clippy also
       # proves that the selected packages build with it.
       - name: Run Clippy
-        run: CARGO_BUILD_JOBS=4 cargo clippy ${{ inputs.cargo || '--workspace' }} --all-targets --locked -- -D warnings
+        env:
+          SELECTION: ${{ inputs.cargo || '--workspace' }}
+
+        run: CARGO_BUILD_JOBS=4 cargo clippy $SELECTION --all-targets --locked -- -D warnings
 
       - name: Check Documentation
-        run: RUSTDOCFLAGS='-D warnings' cargo doc ${{ inputs.cargo || '--workspace' }} --no-deps --locked
+        env:
+          SELECTION: ${{ inputs.cargo || '--workspace' }}
+
+        run: RUSTDOCFLAGS='-D warnings' cargo doc $SELECTION --no-deps --locked
 
       - name: Report Metrics
         run: bash krabb-scripts/metrics.sh
@@ -112,11 +118,13 @@ jobs:
       - name: Install Rust Components
         run: rustup component add rustfmt
 
+      # The container runs as root on a checkout the runner owns, so Git needs this to read it.
       - name: Check Formatting
         env:
           BASE: ${{ inputs.base }}
 
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cargo fmt --all --check
           bash krabb-scripts/spacing.sh --check ${BASE:+--changed "$BASE"}
 
@@ -178,7 +186,8 @@ jobs:
 
         run: |
           rustup target add x86_64-pc-windows-gnu
-          cargo check ${{ inputs.cargo || '--workspace' }} --all-targets --target x86_64-pc-windows-gnu --locked
+          cargo check $SELECTION --all-targets --target x86_64-pc-windows-gnu --locked
 
         env:
           CARGO_BUILD_JOBS: 4
+          SELECTION: ${{ inputs.cargo || '--workspace' }}

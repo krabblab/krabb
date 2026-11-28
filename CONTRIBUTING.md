@@ -29,12 +29,13 @@ in one change across `Cargo.toml`, CI, and these guides.
 
 `make precommit` is the local gate, and Lefthook runs it before each commit. It
 checks formatting and the spacing of files changed since `origin/main` (set
-`BASE=` for another base), then runs Clippy and unit tests for the packages those
+`BASE=` for another base), then runs Clippy and the tests of the packages those
 changes affect. It takes seconds for documentation and minutes for most code.
 
 CI is the full gate: pull requests run formatting, Clippy, documentation, the
-Windows GNU check, every test, coverage, builds, and integration on all six
-targets, limited to the packages a change affects; `main` runs everything.
+Windows GNU check, tests and coverage on all six targets, builds, and the
+browser, computer, and sandbox integration checks, limited to the packages and
+files a change affects; `main` runs everything.
 `make gate` runs the same checks locally on one machine, for a deep check before
 a release or when CI is unavailable. Provider tests use local fixtures and never
 call paid APIs. Resolve coverage failures without lowering thresholds.
