@@ -112,6 +112,7 @@ async fn streamed_tool_id_survives_the_next_request() {
     let frame = json!({"choices": [{"delta": {"tool_calls": [{"index":0,"id":"provider_call","function":{"name":"read","arguments":"{}"}}]}}]});
     let body = format!("data: {frame}\n\ndata: [DONE]\n");
     let chunks = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(body.into_bytes())]);
+
     let result =
         stream_body(PROVIDER, 1, chunks, &mut emitter).await.unwrap().unwrap().result.unwrap();
 

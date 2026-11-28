@@ -194,9 +194,11 @@ fn credential() -> krabb_core::Result<String> {
     };
 
     krabb_file::private(&path)?;
+
     let text = std::fs::read_to_string(path).map_err(|error| {
         krabb_core::Error::Denied(format!("Credentials could not be read: {error}."))
     })?;
+
     let value: Value = serde_json::from_str(&text)
         .map_err(|error| krabb_core::Error::Denied(format!("Credentials are invalid: {error}.")))?;
 
@@ -275,7 +277,9 @@ mod tests {
         assert_eq!(tools(&input).len(), 1);
         assert!(image(PROVIDER, "file:///outside").is_err());
         assert!(image(PROVIDER, "data:image/png;base64,abc").is_ok());
+
         let mut tool = input.clone();
+
         tool.messages.push(Message {
             id: "tool".into(),
             session: "session".into(),
@@ -287,6 +291,7 @@ mod tests {
         assert_eq!(messages(PROVIDER, &tool).unwrap().last().unwrap()["role"], "user");
 
         let mut catalog = input;
+
         catalog.tools = (0..TOOL_CALLS + 2)
             .map(|index| ToolSpec {
                 name: format!("tool-{index}"),
@@ -382,6 +387,7 @@ mod tests {
     #[test]
     fn bounds_and_validates_tool_definitions_and_image_references() {
         let mut input = model();
+
         input.tools[0].description = None;
 
         assert_eq!(tools(&input)[0]["function"]["description"], Value::Null);
@@ -428,6 +434,7 @@ mod tests {
     #[test]
     fn validates_provider_configuration_and_protocol_size() {
         assert!(base_url().is_ok());
+
         assert_eq!(
             validate_base_url("http://localhost:8080/v1").unwrap(),
             "http://localhost:8080/v1"
@@ -452,6 +459,7 @@ mod tests {
         assert_eq!(response.result.as_ref().unwrap()["text"], "done");
         assert_eq!(response.result.as_ref().unwrap()["events"][0]["name"], "read");
         assert!(response_body(PROVIDER, 1, json!({})).is_err());
+
         assert!(response_body(
             PROVIDER,
             1,
@@ -477,9 +485,11 @@ mod tests {
         assert!(
             !stream_line(PROVIDER, b"event: ping\n", &mut text, &mut pending, &mut calls).unwrap()
         );
+
         assert!(
             !stream_line(PROVIDER, b"data: {}\n", &mut text, &mut pending, &mut calls).unwrap()
         );
+
         assert!(stream_line(
             PROVIDER,
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}"#,
@@ -491,6 +501,7 @@ mod tests {
 
         let (output, _) = tokio::sync::mpsc::channel(1);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
+
         let incomplete = stream::iter(vec![Ok::<_, std::io::Error>(
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}
 data: [DONE]
@@ -562,12 +573,15 @@ data: [DONE]
         assert!(
             stream_line(PROVIDER, b"data: [DONE]\n", &mut text, &mut pending, &mut calls).unwrap()
         );
+
         assert!(
             stream_line(PROVIDER, b"data: nope\n", &mut text, &mut pending, &mut calls).is_err()
         );
+
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(vec![b'x'; BODY_LIMIT + 1])]);
 
         assert!(collect(PROVIDER, chunks).await.is_err());
+
         let mut text = String::new();
         let mut pending = String::new();
         let mut calls = std::collections::BTreeMap::new();
@@ -582,6 +596,7 @@ data: [DONE]
         .is_ok());
 
         assert_eq!(calls[&0].0, "read");
+
         let tool_delta = br#"data: {"choices":[{"delta":{"content":"!","tool_calls":[{"index":0,"function":{"name":"File","arguments":"}"}}]}}]}"#;
 
         assert!(stream_line(PROVIDER, tool_delta, &mut text, &mut pending, &mut calls).is_ok());
@@ -590,6 +605,7 @@ data: [DONE]
         assert!(stream_line(PROVIDER, b"invalid", &mut text, &mut pending, &mut calls).is_ok());
         assert!(stream_line(PROVIDER, &[0xff], &mut text, &mut pending, &mut calls).is_err());
         assert!(stream_line(PROVIDER, b"data: {", &mut text, &mut pending, &mut calls).is_err());
+
         assert!(
             stream_line(
                 PROVIDER,
@@ -609,11 +625,13 @@ data: [DONE]
 
         let (output, _) = tokio::sync::mpsc::channel(4);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
+
         let chunks = stream::iter(vec![Ok::<_, std::io::Error>(
             br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":"{\"path\":\"x\"}"}}]}}]}
 data: [DONE]
 "#.to_vec(),
         )]);
+
         let response = stream_body(PROVIDER, 3, chunks, &mut emitter).await.unwrap().unwrap();
 
         assert_eq!(response.result.unwrap()["events"][0]["name"], "read");
@@ -626,6 +644,7 @@ data: [DONE]
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
@@ -651,6 +670,7 @@ data: [DONE]
         .unwrap();
 
         assert_eq!(result.result.unwrap()["text"], "done");
+
         server.await.unwrap();
     }
 
@@ -661,6 +681,7 @@ data: [DONE]
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0_u8; 4096];
@@ -678,7 +699,9 @@ data: [DONE]
         let (output, mut events) = tokio::sync::mpsc::channel(4);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
         let mut input = model();
+
         input.stream = true;
+
         let response = super::stream(
             &reqwest::Client::new(),
             1,
@@ -693,6 +716,7 @@ data: [DONE]
 
         assert_eq!(response.result.unwrap()["text"], "ok");
         assert_eq!(events.recv().await.unwrap()["params"]["event"]["text"], "ok");
+
         server.await.unwrap();
     }
 
@@ -703,6 +727,7 @@ data: [DONE]
         };
 
         let address = listener.local_addr().unwrap();
+
         let server = tokio::spawn(async move {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -728,20 +753,24 @@ data: [DONE]
         let (output, _) = tokio::sync::mpsc::channel(1);
         let mut emitter = krabb_core::plugin::Emitter::new(output);
         let mut input = model();
+
         input.stream = true;
 
         assert!(super::stream(&client, 2, input, "key", &base, &mut emitter).await.is_err());
 
         assert!(collect(PROVIDER, stream::iter(vec![Err::<Vec<u8>, _>("broken")])).await.is_err());
+
         assert!(
             response(PROVIDER, 1, json!({"payload": "x".repeat(krabb_core::jsonl::MAX)})).is_err()
         );
+
         server.await.unwrap();
     }
 
     #[test]
     fn renders_non_image_content_and_rejects_invalid_configuration() {
         let mut input = model();
+
         input.messages[1].content = vec![
             Content::Image {
                 uri: "https://cdn.example/image.png".into(),

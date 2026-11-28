@@ -24,7 +24,9 @@ pub fn messages(provider: &str, input: &ModelRequest) -> krabb_core::Result<Vec<
             for item in &message.content {
                 if let Content::ToolCall { name, args, id, .. } = item {
                     let id = id.clone().unwrap_or_else(|| format!("call_{index}_{}", calls.len()));
+
                     pending.push_back((name.clone(), id.clone()));
+
                     calls.push(json!({"id": id, "type": "function", "function": {
                         "name": name, "arguments": args.to_string()
                     }}));
@@ -35,6 +37,7 @@ pub fn messages(provider: &str, input: &ModelRequest) -> krabb_core::Result<Vec<
 
             if !calls.is_empty() {
                 let filtered = Message { content, ..message.clone() };
+
                 value = legacy_messages(provider, &[filtered])?.remove(0);
                 value["tool_calls"] = json!(calls);
             }
@@ -64,6 +67,7 @@ pub fn messages(provider: &str, input: &ModelRequest) -> krabb_core::Result<Vec<
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+
                 value = json!({"role": "tool", "tool_call_id": id, "content": text});
             } else {
                 finish(&mut output, &mut pending, &mut images);

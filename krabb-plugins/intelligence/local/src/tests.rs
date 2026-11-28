@@ -55,6 +55,7 @@ fn reply(text: &str) -> String {
 /// A loopback port nothing listens on.
 async fn closed() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
     let address = listener.local_addr().unwrap();
 
     drop(listener);
@@ -173,8 +174,10 @@ async fn discovery_takes_the_first_server_that_answers() {
 #[tokio::test]
 async fn a_default_model_uses_the_first_listed_one_without_a_key() {
     let client = reqwest::Client::new();
+
     let (base, server) =
         krabb_test::http::responses(vec![(200, models()), (200, reply("Hi there."))]).await;
+
     let (mut emitter, _events) = emitter();
 
     let response =
@@ -232,8 +235,10 @@ async fn streamed_replies_reach_the_person_as_they_arrive() {
 #[tokio::test]
 async fn a_server_without_tool_calling_says_so() {
     let client = reqwest::Client::new();
+
     let refusal =
         json!({"error": {"message": "\"auto\" tool choice requires --enable-auto-tool-choice"}});
+
     let (base, _server) = krabb_test::http::responses(vec![(400, refusal.to_string())]).await;
     let (mut emitter, _events) = emitter();
 
@@ -247,8 +252,10 @@ async fn a_server_without_tool_calling_says_so() {
 #[tokio::test]
 async fn missing_models_and_unreachable_servers_fail_plainly() {
     let client = reqwest::Client::new();
+
     let (base, _server) =
         krabb_test::http::responses(vec![(200, json!({"data": []}).to_string())]).await;
+
     let (mut emitter, _events) = emitter();
 
     let error = generate(&client, 8, request("default", false, false), &base, None, &mut emitter)
