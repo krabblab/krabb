@@ -461,3 +461,41 @@ fn the_service_of_another_home_stays_as_it_is() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn the_preset_flag_answers_its_step_and_names_must_be_known() {
+    let flagged = plan(&args(&["--preset", "loose"]), false).unwrap();
+
+    assert_eq!(flagged, [Step::Preset]);
+    assert!(plan(&args(&["preset"]), false).is_ok());
+
+    let unknown = plan(&args(&["--preset", "yolo"]), true).unwrap_err();
+
+    assert!(unknown.starts_with("Unknown preset yolo, so use one of standard"));
+    assert_eq!(PRESETS[0].0, crate::access::Preset::Standard);
+    assert!(PRESETS.iter().all(|(_, line)| line.len() <= 100));
+}
+
+#[test]
+fn the_preset_step_saves_standard_or_the_flag_and_keeps_a_chosen_one() {
+    let root = crate::tests::test_root("onboard-preset");
+    let mut guide = guide(root.clone());
+
+    guide.home().unwrap();
+    guide.preset(None).unwrap();
+
+    let saved = || crate::load_config_at(&root).unwrap().preset;
+
+    assert_eq!(saved(), Some(crate::access::Preset::Standard));
+
+    guide.preset(Some("hardened")).unwrap();
+
+    assert_eq!(saved(), Some(crate::access::Preset::Hardened));
+
+    guide.interactive = true;
+    guide.preset(None).unwrap();
+
+    assert_eq!(saved(), Some(crate::access::Preset::Hardened));
+
+    let _ = std::fs::remove_dir_all(root);
+}
