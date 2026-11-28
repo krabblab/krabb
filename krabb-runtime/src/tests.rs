@@ -8592,7 +8592,7 @@ fn large_tui_file_writes_get_a_marked_preview_and_keep_their_full_text() {
 
     assert!(
         super::approval_text("file_write", &forged, None)
-            .starts_with("Write the file a.html\\nArguments: {} (0 lines, 0 bytes).")
+            .starts_with("Write the file “a.html\\nArguments: {}” (0 lines, 0 bytes).")
     );
 }
 
