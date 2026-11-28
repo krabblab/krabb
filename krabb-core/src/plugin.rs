@@ -29,7 +29,7 @@ use crate::{
 const FRAME: usize = jsonl::MAX;
 /// Launch retries while a just-written plugin binary is still open for writing elsewhere,
 /// such as in a process forked during the write.
-const BUSY_RETRIES: u32 = 10;
+const BUSY_RETRIES: u32 = 100;
 const BUSY_DELAY: Duration = Duration::from_millis(20);
 const NOTES: usize = 256;
 const OUTPUT: usize = 32;
