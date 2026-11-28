@@ -79,7 +79,16 @@ const WRAPPERS: &[Wrapper] = &[
         spec: Spec {
             flags: "nwdsk",
             values: "ui",
-            long_flags: &["new", "wait", "direct", "system", "ti", "loadprofile", "help", "version"],
+            long_flags: &[
+                "new",
+                "wait",
+                "direct",
+                "system",
+                "ti",
+                "loadprofile",
+                "help",
+                "version",
+            ],
             long_values: &["user", "integrity"],
         },
         alone: HELP,
@@ -400,6 +409,7 @@ fn notes(name: &str, args: &[&str], walk: &Walk, unwrap: &mut Unwrap) {
 
         "nohup" => unwrap.notes.push(Reason::Acts("nohup".into(), Effect::WritesFile)),
         "flock" => unwrap.notes.push(Reason::Acts("flock".into(), Effect::WritesFile)),
+
         _ => {}
     }
 }

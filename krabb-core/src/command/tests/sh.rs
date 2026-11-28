@@ -510,7 +510,11 @@ fn secrets_and_paths_outside_the_workspace_are_not_read_only() {
                 Unknown,
                 "the command reaches `/proc/self/environ` outside the workspace",
             ),
-            ("cat < /etc/shadow", Unknown, "the command reaches `/etc/shadow` outside the workspace"),
+            (
+                "cat < /etc/shadow",
+                Unknown,
+                "the command reaches `/etc/shadow` outside the workspace",
+            ),
             ("grep -f/etc/x y", Unknown, "the command reaches `/etc/x` outside the workspace"),
             ("grep --file=/etc/x y", Unknown, "the command reaches `/etc/x` outside the workspace"),
             ("find / -name x", Unknown, "the command reaches `/` outside the workspace"),

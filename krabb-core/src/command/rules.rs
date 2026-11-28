@@ -3,14 +3,13 @@ mod unix;
 mod windows;
 
 use super::lex::Word;
+use super::option::{cluster, long};
 use super::package::{self, Packages};
 use super::parse::{self, Nested, Segment};
 use super::reason::{Effect, Hazard, Reason};
-use super::option::{cluster, long};
 use super::{Dialect, git, path};
 
-const ELEVATORS: &[&str] =
-    &["sudo", "doas", "su", "runas", "pkexec", "gsudo", "run0", "sudoedit"];
+const ELEVATORS: &[&str] = &["sudo", "doas", "su", "runas", "pkexec", "gsudo", "run0", "sudoedit"];
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
 const SCRIPTS: &[&str] = &["npm", "pnpm", "yarn", "bun"];
 
@@ -289,7 +288,9 @@ fn candidates(dialect: Dialect, text: &str) -> Vec<&str> {
         found.push(value);
     }
 
-    if text.starts_with('-') && let Some(at) = text.find(['/', '\\', '~']) {
+    if text.starts_with('-')
+        && let Some(at) = text.find(['/', '\\', '~'])
+    {
         found.push(&text[at..]);
     }
 

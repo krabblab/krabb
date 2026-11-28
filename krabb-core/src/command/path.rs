@@ -94,6 +94,7 @@ pub fn device(word: &str) -> bool {
 
 pub fn outside(word: &str, windows: bool) -> bool {
     let separators: &[char] = if windows { &['/', '\\'] } else { &['/'] };
+
     let parent = word.split(separators).any(|part| part == "..");
     let rooted = word.starts_with(separators) && !harmless(word);
     let bytes = word.as_bytes();

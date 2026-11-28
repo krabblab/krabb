@@ -343,6 +343,7 @@ pub(in crate::command) fn xargs_command<S: AsRef<str>>(args: &[S]) -> Result<usi
 fn xargs(args: &[&str], found: &mut Findings) -> bool {
     let start = match xargs_command(args) {
         Ok(start) => start,
+
         Err(option) => {
             for arg in args {
                 if let Some(reason) = super::dangerous(arg.rsplit('/').next().unwrap_or(arg)) {

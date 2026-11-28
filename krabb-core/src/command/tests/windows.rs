@@ -67,7 +67,11 @@ fn cmd_commands_are_classified() {
                 Unknown,
                 "the command opens the device `\\\\.\\PhysicalDrive0`",
             ),
-            ("type \\\\?\\C:\\x", Unknown, "the command reaches `\\\\?\\C:\\x` outside the workspace"),
+            (
+                "type \\\\?\\C:\\x",
+                Unknown,
+                "the command reaches `\\\\?\\C:\\x` outside the workspace",
+            ),
             ("start x", Unknown, "`start` is not on the read-only list"),
         ],
     );
@@ -175,9 +179,17 @@ fn windows_lists_switch_values_and_namespaces_are_checked() {
             ("findstr /G:list.txt x", ReadOnly, "`findstr` only reads"),
             ("dir x,\\\\host\\s", Unknown, HOST),
             ("dir x;\\\\host\\s", Unknown, HOST),
-            ("type C:\\Users\\me\\x", Unknown, "the command reaches `C:\\Users\\me\\x` outside the workspace"),
+            (
+                "type C:\\Users\\me\\x",
+                Unknown,
+                "the command reaches `C:\\Users\\me\\x` outside the workspace",
+            ),
             ("type D:x", Unknown, "the command reaches `D:x` outside the workspace"),
-            ("type \\Windows\\x", Unknown, "the command reaches `\\Windows\\x` outside the workspace"),
+            (
+                "type \\Windows\\x",
+                Unknown,
+                "the command reaches `\\Windows\\x` outside the workspace",
+            ),
             ("type %USERPROFILE%\\x", Unknown, "the command expands an environment variable"),
             (
                 "type \\\\?\\GLOBALROOT\\Device\\x",
