@@ -327,3 +327,28 @@ async fn host_requests_check_list_describe_and_generate() {
 
     assert!(run(note).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn a_found_server_that_stops_is_forgotten_and_the_next_one_found() {
+    use krabb_core::types::Request;
+
+    let client = reqwest::Client::new();
+    let (first, _gone) = krabb_test::http::responses(vec![(200, models())]).await;
+    let (second, _live) =
+        krabb_test::http::responses(vec![(200, models()), (200, reply("From the second."))]).await;
+
+    let candidates = [("first", first.as_str()), ("second", second.as_str())];
+    let found = server::Server::new("auto", &candidates);
+    let input = serde_json::to_value(request("qwen3-8b", false, false)).unwrap();
+
+    let (emitter, _events) = emitter();
+    let failed =
+        handle(&client, Request::call(1, "generate", input.clone()), emitter, &found).await;
+
+    assert!(failed.is_err());
+
+    let (emitter, _events) = emitter();
+    let answer = handle(&client, Request::call(2, "generate", input), emitter, &found).await;
+
+    assert_eq!(answer.unwrap().unwrap().result.unwrap()["text"], "From the second.");
+}

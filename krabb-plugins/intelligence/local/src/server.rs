@@ -40,7 +40,7 @@ impl Server {
         Self { configured: configured.trim().into(), candidates, found: Default::default() }
     }
 
-    fn automatic(&self) -> bool {
+    pub(crate) fn automatic(&self) -> bool {
         matches!(self.configured.as_str(), "" | "auto")
     }
 
@@ -54,28 +54,22 @@ impl Server {
             return Ok((validate(&self.configured)?, key));
         }
 
-        let known = self
-            .found
-            .lock()
-            .map_err(|_| Error::Denied("Local server state failed.".into()))?
-            .clone();
+        let known = self.found.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
 
-        let base = match known {
-            Some(base) => base,
-            None => find(client, &self.candidates).await?,
-        };
+        if let Some(base) = known {
+            return Ok((base, None));
+        }
 
-        *self.found.lock().map_err(|_| Error::Denied("Local server state failed.".into()))? =
-            Some(base.clone());
+        let base = find(client, &self.candidates).await?;
+
+        *self.found.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(base.clone());
 
         Ok((base, None))
     }
 
     /// Forgets a found server after a failed request, so the next one looks again.
     pub(crate) fn forget(&self) {
-        if let Ok(mut found) = self.found.lock() {
-            *found = None;
-        }
+        *self.found.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 
@@ -222,6 +216,7 @@ pub(crate) fn listing(base: &str, models: &[Value]) -> String {
     let lines: Vec<String> = models
         .iter()
         .filter_map(|model| model["id"].as_str())
+        .filter(|id| !id.chars().any(char::is_control))
         .map(|id| format!("  {id} - {id}"))
         .collect();
 

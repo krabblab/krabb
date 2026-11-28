@@ -117,7 +117,8 @@ host. Saved host changes reload the plugin
 without reinstalling the service; remove any existing host environment override
 first. See the [Ollama guide](../krabb-plugins/intelligence/ollama/README.md).
 
-`krabb local setup` collects the server address: press Enter to keep `auto`, which finds
+`krabb local models` lists the models the server offers. `krabb local setup` collects the
+server address: press Enter to keep `auto`, which finds
 a server running on its usual port, or enter an address such as
 `http://127.0.0.1:8000/v1`. See the
 [local server guide](../krabb-plugins/intelligence/local/README.md).

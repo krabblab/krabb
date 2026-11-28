@@ -70,7 +70,22 @@ async fn handle(
         Request::Note { .. } => return Ok(None),
     };
 
+    if method == "command" && params["args"] != json!(["models"]) {
+        return Err(Error::Denied(
+            "Unknown local command.\nList the models with `krabb local models`.".into(),
+        ));
+    }
+
     let credential = credential();
+
+    if method == "check" && server.automatic() && credential.is_some() {
+        return Err(Error::Denied(
+            "A key is sent only to an address you set, so a found server never gets it.\nSet the \
+             server address with `krabb local setup`, or clear the key."
+                .into(),
+        ));
+    }
+
     let (base, key) = match method.as_str() {
         "check" | "command" | "model.info" | "generate" => {
             server.base(client, credential.as_deref()).await?
@@ -81,10 +96,11 @@ async fn handle(
 
     let result = answer(client, id, &method, params, &base, key, &mut emitter).await;
 
-    if let Err(Error::Failed { failure, .. }) = &result
-        && matches!(failure.kind, Kind::Transient | Kind::TimedOut | Kind::Unknown)
-    {
-        server.forget();
+    match &result {
+        Err(Error::Failed { failure, .. })
+            if matches!(failure.kind, Kind::Invalid | Kind::Cancelled) => {}
+        Err(_) => server.forget(),
+        Ok(_) => {}
     }
 
     result
@@ -183,9 +199,7 @@ const TOOLS_OFF: &[&str] = &[
 fn refused(error: Error, tools: bool) -> Error {
     match error {
         Error::Failed { message, failure }
-            if tools
-                && failure.kind == Kind::Invalid
-                && TOOLS_OFF.iter().any(|phrase| message.to_ascii_lowercase().contains(phrase)) =>
+            if tools && failure.kind == Kind::Invalid && tools_off(&message) =>
         {
             failure.error(format!("{NO_TOOLS}\n{message}"))
         }
@@ -214,6 +228,12 @@ fn profile(configured: &str, reported: u64) -> krabb_core::Result<Profile> {
     window.input()?;
 
     Ok(Profile { execution: None, window: Some(window), compact: false, search: false })
+}
+
+fn tools_off(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+
+    TOOLS_OFF.iter().any(|phrase| message.contains(phrase))
 }
 
 fn credential() -> Option<String> {
