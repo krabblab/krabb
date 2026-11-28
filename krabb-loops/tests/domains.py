@@ -50,7 +50,7 @@ class Domains(unittest.TestCase):
         self.assertEqual(modes, ['read-only', 'workspace-write', 'read-only', 'read-only'])
         self.assertIn(['audit'], self.calls('cargo'))
         self.assertIn(['deny', 'check'], self.calls('cargo'))
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
     def test_unproven_security_concern_never_reaches_worker(self):
         result = self.run_domain('sec', [report('sec', proven=False)])
@@ -85,7 +85,7 @@ class Domains(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum('workspace-write' in args for args in self.calls('codex')), 1)
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
         prompts = [json.loads(line)[1] for line in
                    (self.fixture / 'prompts.jsonl').read_text().splitlines()]
@@ -120,13 +120,13 @@ class Domains(unittest.TestCase):
 
         self.assertEqual(result.returncode, 73)
         self.assertEqual(sum('workspace-write' in args for args in self.calls('codex')), 4)
-        self.assertNotIn(['verify'], self.calls('make'))
+        self.assertNotIn(['gate'], self.calls('make'))
 
     def test_security_findings_and_limitations_reach_worker_together(self):
         value = json.loads(report('sec'))
 
         value['limitations'] = [
-            'Read-only reviewer could not run Rust regressions or make verify.',
+            'Read-only reviewer could not run Rust regressions or make gate.',
             'Inspect scheduling intent and choose a compatible mitigation, not risk acceptance.',
             'Use a disposable Git fixture to investigate worktree cleanup hooks.']
 
@@ -149,7 +149,7 @@ class Domains(unittest.TestCase):
         self.assertIn('Full verification passed', prompts[3])
         self.assertIn('latest-verification.log', prompts[3])
         self.assertNotIn('$review_file', prompts[1])
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
     def test_local_test_investigation_runs_without_claiming_a_proven_defect(self):
         value = json.dumps({'findings': [], 'limitations': [
@@ -160,7 +160,7 @@ class Domains(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum('workspace-write' in args for args in self.calls('codex')), 1)
         self.assertEqual((self.root / 'source.txt').read_text(), 'original\n')
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
     def test_limitation_resets_clean_streak_and_requires_new_final_gates(self):
         value = json.dumps({'findings': [], 'limitations': ['Check the fixture cleanup contract.']})
@@ -173,7 +173,7 @@ class Domains(unittest.TestCase):
         self.assertEqual(modes, ['read-only', 'read-only', 'workspace-write',
                                  'read-only', 'read-only'])
 
-        self.assertEqual(self.calls('make').count(['verify']), 2)
+        self.assertEqual(self.calls('make').count(['gate']), 2)
 
     def test_review_loop_uses_the_same_investigation_handoff(self):
         value = json.dumps({'findings': [], 'limitations': ['Reproduce a cleanup race locally.']})

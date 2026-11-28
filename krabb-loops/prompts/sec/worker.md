@@ -15,7 +15,7 @@ Tests must use controlled local fixtures/disposable state/isolated processes. Do
 probe external infrastructure, production systems or real accounts, build uncontrolled
 exploits, create persistence or use destructive payloads. Use bounded workloads.
 
-Run the narrowest relevant tests if permitted. The host runs make verify, clippy,
+Run the narrowest relevant tests if permitted. The host runs make gate, clippy,
 cargo deny check and cargo audit before convergence. Distinguish advisory database
 or network unavailability from vulnerabilities; do not conceal either.
 
