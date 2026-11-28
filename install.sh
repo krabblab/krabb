@@ -131,6 +131,10 @@ script=https://raw.githubusercontent.com/krabblab/krabb/main/install.sh
 stamp=''
 requested=${KRABB_VERSION:-$stamp}
 
+if [ -n "$stamp" ] && [ -n "${KRABB_VERSION:-}" ] && [ "${KRABB_VERSION#v}" != "$stamp" ]; then
+    info "KRABB_VERSION=$KRABB_VERSION overrides this installer's release $stamp."
+fi
+
 if [ -n "$requested" ]; then
     version=${requested#v}
     valid_version "$version"

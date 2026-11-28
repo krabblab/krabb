@@ -43,17 +43,17 @@ irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 ```
 
 > [!NOTE]
-> Until Krabb 0.1.0 is released, install the release candidate with the installer
-> attached to it, which installs that release:
+> Until Krabb 0.1.0 is released, install the release candidate. Set `KRABB_VERSION` after
+> the pipe so it reaches `sh`, or export it first:
 >
 > ```sh
-> curl -fsSL https://github.com/krabblab/krabb/releases/download/v0.1.0-rc.6/install.sh | sh
+> curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/install.sh | KRABB_VERSION=0.1.0-rc.5 sh
 > ```
 >
-> In PowerShell:
+> In PowerShell, set it in the same window first:
 >
 > ```powershell
-> irm https://github.com/krabblab/krabb/releases/download/v0.1.0-rc.6/install.ps1 | iex
+> $env:KRABB_VERSION = '0.1.0-rc.5'; irm https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1 | iex
 > ```
 
 The installer puts `krabb` and `krabb-daemon` in `~/.local/bin`, or

@@ -282,6 +282,11 @@ curl -fsSL https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.sh | 
 irm https://raw.githubusercontent.com/krabblab/krabb/main/uninstall.ps1 | iex
 ```
 
+Each release with attached installers also attaches its uninstallers, so you can run the
+one from your release instead, such as
+`https://github.com/krabblab/krabb/releases/download/v<version>/uninstall.sh` or
+`uninstall.ps1`. The commands above use the scripts on `main` until 0.1.0.
+
 To leave nothing of Krabb on the machine, purge it. Purging also deletes `KRABB_HOME`,
 the key Krabb saved in the OS keyring for its credentials, and the files Krabb created
 at custom `KRABB_DB`, `KRABB_MEMORY`, `KRABB_CREDENTIALS`, and `KRABB_CREDENTIALS_KEY`

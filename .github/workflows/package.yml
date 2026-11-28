@@ -19,6 +19,12 @@ on:
         type: string
         default: ""
 
+      installers:
+        description: "Upload the release installers when core is built."
+        required: false
+        type: boolean
+        default: true
+
     outputs:
       targets:
         description: "The release targets as a JSON array, for drill matrices."
@@ -43,6 +49,12 @@ on:
         required: false
         type: string
         default: ""
+
+      installers:
+        description: "Upload the release installers when core is built."
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -73,7 +85,7 @@ jobs:
   # The installers a release attaches, stamped with its version, and their SHA256SUMS lines.
   installers:
     name: Installers
-    if: contains(format(' {0} ', inputs.names), ' core ')
+    if: inputs.installers && contains(format(' {0} ', inputs.names), ' core ')
     runs-on: ubuntu-latest
 
     steps:

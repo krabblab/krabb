@@ -51,7 +51,7 @@ def stamp(text, name, version):
 def write(version, directory, root=ROOT):
     """Writes the stamped installers and their SHA256SUMS into DIRECTORY."""
 
-    if not VERSION.match(version):
+    if not VERSION.fullmatch(version):
         raise Failure(f"Version '{version}' is not a valid release version.")
 
     directory.mkdir(parents=True, exist_ok=True)

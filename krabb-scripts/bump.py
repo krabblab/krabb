@@ -268,7 +268,7 @@ def pin(path, version):
         return
 
     text = path.read_text()
-    release = r'\d+\.\d+\.\d+(?:-rc\.\d+)?'
+    release = r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?'
     text = re.sub(rf"KRABB_VERSION={release}\b", f'KRABB_VERSION={version}', text)
     text = re.sub(rf"KRABB_VERSION = '{release}'", f"KRABB_VERSION = '{version}'", text)
     text = re.sub(rf'releases/download/v{release}/', f'releases/download/v{version}/', text)

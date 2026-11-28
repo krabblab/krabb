@@ -49,6 +49,7 @@ jobs:
     with:
       names: core
       artifact: krabb-update-candidate
+      installers: false
 
   previous:
     name: Package Previous

@@ -174,13 +174,21 @@ class Installers(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f'Downloading {archive.name}.', result.stdout)
+        self.assertNotIn('overrides', result.stdout)
 
         for name, content in payload.items():
             self.assertEqual((self.bin / name).read_bytes(), content)
 
+        result = self.run_installer('core', script=copies / INSTALLER.name, KRABB_VERSION='v1.2.3')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('overrides', result.stdout)
+
         result = self.run_installer('core', script=copies / INSTALLER.name, KRABB_VERSION='9.9.9')
 
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("[INFO] KRABB_VERSION=9.9.9 overrides this installer's release 1.2.3.",
+                      result.stdout)
         self.assertIn(f'Downloading {newer}.', result.stdout)
 
     def test_release_copies_are_covered_by_their_checksums(self):
@@ -212,7 +220,7 @@ class Installers(unittest.TestCase):
                 self.assertEqual(content, source.replace(blank.encode(),
                                                          stamped.format('4.5.6-rc.7').encode()))
 
-        for version in ['latest', "1.0.0'; rm -rf ~; '"]:
+        for version in ['latest', "1.0.0'; rm -rf ~; '", '1.0.0\n']:
             with self.subTest(version=version), self.assertRaises(attached.Failure):
                 attached.write(version, self.root / 'rejected')
 

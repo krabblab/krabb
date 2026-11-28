@@ -75,6 +75,10 @@ $invalid = "is not valid. Use a version such as 0.1.0 or 0.1.0-rc.1."
 $stamp = ""
 $requested = if ($env:KRABB_VERSION) { $env:KRABB_VERSION } else { $stamp }
 
+if ($stamp -and $env:KRABB_VERSION -and ($env:KRABB_VERSION -replace '^v', '') -ne $stamp) {
+    Write-Install "KRABB_VERSION=$env:KRABB_VERSION overrides this installer's release $stamp."
+}
+
 if ($requested) {
     $version = $requested -replace '^v', ''
     if ($version -notmatch $pattern) { Stop-Install "Version '$version' $invalid" }

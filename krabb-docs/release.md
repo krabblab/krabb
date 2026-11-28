@@ -105,11 +105,14 @@ that release, and the one on `main` takes the newest stable release; `KRABB_VERS
 names another for either. Installers verify checksums before activation. Krabb does
 not publish crates.
 
-`make bump` keeps the README's pre-release commands on the bumped version. Once 0.1.0
-is published, point the README's commands at
-`https://github.com/krabblab/krabb/releases/latest/download/` and remove its
-pre-release note; `releases/latest` ignores pre-releases, so it cannot serve them
-before then.
+`make bump` keeps the README's pre-release commands on the bumped version, whether they
+set `KRABB_VERSION` for the installer on `main` or fetch
+`releases/download/vX.Y.Z-rc.N/install.sh`. Releases published before this change have
+no attached installers, so the README switches to the release-download form with the
+bump of the first release that has them. Once 0.1.0 is published, point the README's
+commands at `https://github.com/krabblab/krabb/releases/latest/download/` and remove its
+pre-release note; `releases/latest` ignores pre-releases, so it cannot serve them before
+then.
 
 ## Plugin Releases
 
