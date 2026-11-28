@@ -25,7 +25,7 @@ safe local check or repository decision needed to resolve it. Unproven suspicion
 here, never in proven findings. They prevent clean convergence until independently resolved.
 Non-blocking validated findings remain visible without forcing a worker pass.
 
-You are deliberately read-only. Do not run builds, write fixtures, or run make verify.
+You are deliberately read-only. Do not run builds, write fixtures, or run make gate.
 The worker can create local fixtures and the host runs verification with write access.
 Not running these checks yourself, or not having host results on the first cycle, is
 expected and MUST NOT be reported as a limitation. Request a specific reproduction

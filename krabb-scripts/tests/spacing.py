@@ -116,6 +116,67 @@ finish();
         self.assertEqual(formatted, expected)
         self.assertEqual(ENGINE.format_javascript(formatted), formatted)
 
+    def test_changed_mode_checks_only_files_changed_since_the_base(self):
+        crowded = (
+            "fn crowded() {\n    let a = 1;\n    if a == 1 {\n        go();\n    }\n"
+            "    done();\n}\n"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="krabb spacing ") as directory:
+            root = Path(directory)
+            scripts = root / "krabb-scripts"
+
+            scripts.mkdir()
+
+            for name in ("spacing.sh", "spacing.py"):
+                shutil.copyfile(SCRIPTS / name, scripts / name)
+
+            def git(*arguments):
+                subprocess.run(
+                    ["git", "-C", str(root), *arguments], check=True, capture_output=True
+                )
+
+            git("init", "-q")
+            git("config", "user.email", "fixture@example.com")
+            git("config", "user.name", "Fixture")
+
+            (root / "old.rs").write_text(crowded)
+
+            git("add", ".")
+            git("commit", "-q", "-m", "base")
+
+            command = ["bash", str(scripts / "spacing.sh"), "--check", "--changed", "HEAD"]
+            unchanged = subprocess.run(command, capture_output=True, text=True, timeout=30)
+
+            self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
+
+            (root / "new file.rs").write_text(crowded)
+
+            added = subprocess.run(command, capture_output=True, text=True, timeout=30)
+
+            self.assertEqual(added.returncode, 1, added.stderr)
+            self.assertIn("new file.rs", added.stderr)
+            self.assertNotIn("old.rs", added.stderr)
+
+            missing = subprocess.run(
+                command[:-1] + ["no-such-base"], capture_output=True, text=True, timeout=30
+            )
+
+            self.assertNotEqual(missing.returncode, 0)
+
+    def test_named_candidates_skip_ignored_missing_and_other_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            for name in ("a.py", "b.mjs", "c.txt", "target/d.py"):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text("")
+
+            names = ["a.py", "b.mjs", "c.txt", "target/d.py", "gone.py"]
+
+            self.assertEqual(ENGINE.candidates(root, names), [root / "a.py", root / "b.mjs"])
+            self.assertEqual(len(ENGINE.candidates(root, [])), 2)
+
     def test_check_mode_rust_literals_and_idempotence(self):
         source = '''fn check() {
     let root = fixture();

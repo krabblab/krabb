@@ -1,4 +1,6 @@
 name: Install
+run-name: >-
+  ${{ format('test(install): drill installers on {0}', github.ref_name) }}
 
 # Builds Krabb from the commit this run is on, installs it the way the README does, and walks
 # the first-run flow on every target. Choose the branch or tag under "Use workflow from" to
