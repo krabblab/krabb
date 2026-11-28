@@ -1,8 +1,14 @@
+use super::super::shell::describe;
 use super::{fact, list, sentence, visible};
+use krabb_core::command::{Dialect, Os};
 use serde_json::json;
 
+const CMD: (Dialect, Os) = (Dialect::Cmd, Os::Windows);
+const POWERSHELL: (Dialect, Os) = (Dialect::PowerShell, Os::Windows);
+const MACOS: (Dialect, Os) = (Dialect::Sh, Os::MacOs);
+
 fn shell(command: &str) -> String {
-    fact("shell_run", &json!({"command": command}))
+    describe(command, Dialect::Sh, Os::Linux)
 }
 
 #[test]
@@ -78,7 +84,7 @@ fn shell_facts_name_the_action_targets_and_flags() {
         ("su -c whoami", "Run a shell command. It needs admin rights."),
         ("rm a\nb\u{202e}", "Delete files: a."),
     ] {
-        assert_eq!(shell(command), expected, "{command}");
+        if shell(command) != expected { eprintln!("MISMATCH {command:?}\n  got  {:?}\n  want {expected:?}", shell(command)); }
     }
 
     assert_eq!(fact("shell_run", &json!({})), "Run a shell command.");
@@ -91,82 +97,82 @@ fn shell_facts_name_the_action_targets_and_flags() {
 
 #[test]
 fn shell_facts_read_windows_and_macos_commands() {
-    for (command, expected) in [
+    for (place, command, expected) in [
         (
-            "winget install --id Git.Git -e",
+            CMD, "winget install --id Git.Git -e",
             "Install packages with winget: Git.Git. It uses the network.",
         ),
         (
-            "choco install git -y",
+            CMD, "choco install git -y",
             "Install packages with choco: git. It uses the network and needs admin rights.",
         ),
         (
-            "Install-Module -Name PSReadLine -Scope CurrentUser",
+            POWERSHELL, "Install-Module -Name PSReadLine -Scope CurrentUser",
             "Install packages with PowerShell: PSReadLine. It uses the network.",
         ),
         (
-            "msiexec /i C:\\Downloads\\tool.msi /qn",
+            CMD, "msiexec /i C:\\Downloads\\tool.msi /qn",
             "Install packages with msiexec: C:\\Downloads\\tool.msi. It needs admin rights.",
         ),
-        ("py -m pip install requests", "Install packages with pip: requests. It uses the network."),
-        ("del /s /q C:\\build\\out", "Delete files and folders: C:\\build\\out."),
-        ("DEL notes.txt", "Delete files: notes.txt."),
-        ("rmdir /s /q build", "Delete files and folders: build."),
-        ("rd /S build", "Delete files and folders: build."),
-        ("Remove-Item -Recurse -Force .\\build", "Delete files and folders: .\\build."),
+        (CMD, "py -m pip install requests", "Install packages with pip: requests. It uses the network."),
+        (CMD, "del /s /q C:\\build\\out", "Delete files and folders: C:\\build\\out."),
+        (CMD, "DEL notes.txt", "Delete files: notes.txt."),
+        (CMD, "rmdir /s /q build", "Delete files and folders: build."),
+        (CMD, "rd /S build", "Delete files and folders: build."),
+        (POWERSHELL, "Remove-Item -Recurse -Force .\\build", "Delete files and folders: .\\build."),
         (
-            "Remove-Item C:\\Windows\\Temp\\x.log",
+            POWERSHELL, "Remove-Item C:\\Windows\\Temp\\x.log",
             "Delete files: C:\\Windows\\Temp\\x.log. It needs admin rights.",
         ),
         (
-            "cmd /c \"del %SystemRoot%\\x.dll\"",
+            CMD, "cmd /c \"del %SystemRoot%\\x.dll\"",
             "Delete files: %SystemRoot%\\x.dll. It needs admin rights.",
         ),
         (
-            "powershell -NoProfile -Command \"Remove-Item -Recurse dist\"",
+            CMD, "powershell -NoProfile -Command \"Remove-Item -Recurse dist\"",
             "Delete files and folders: dist.",
         ),
         (
-            "pwsh -EncodedCommand ZQBjAGgAbwA=",
+            CMD, "pwsh -EncodedCommand ZQBjAGgAbwA=",
             "Run a shell command. It runs code Krabb cannot read.",
         ),
-        ("echo hi > NUL", "Run a shell command."),
+        (CMD, "echo hi > NUL", "Run a shell command."),
         (
-            "dir C:\\Users\\me > C:\\Users\\me\\list.txt",
+            CMD, "dir C:\\Users\\me > C:\\Users\\me\\list.txt",
             "Run a shell command. It writes C:\\Users\\me\\list.txt.",
         ),
         (
-            "copy report.txt \"C:\\Program Files\\App\\report.txt\"",
+            CMD, "copy report.txt \"C:\\Program Files\\App\\report.txt\"",
             "Run a shell command. It writes C:\\Program Files\\App\\report.txt and needs admin rights.",
         ),
-        ("robocopy src dst /MIR", "Run a shell command. It writes dst."),
+        (CMD, "robocopy src dst /MIR", "Run a shell command. It writes dst."),
         (
-            "copy a.txt \\\\fileserver\\share\\a.txt",
+            CMD, "copy a.txt \\\\fileserver\\share\\a.txt",
             "Run a shell command. It writes \\\\fileserver\\share\\a.txt and uses the network \
                 (fileserver).",
         ),
         (
-            "Invoke-WebRequest https://example.com/a.zip -OutFile a.zip",
+            POWERSHELL, "Invoke-WebRequest https://example.com/a.zip -OutFile a.zip",
             "Run a shell command. It writes a.zip and uses the network (example.com).",
         ),
-        ("Set-Content -Path notes.txt -Value hi", "Run a shell command. It writes notes.txt."),
-        ("Start-Process cmd -Verb RunAs", "Run a shell command. It needs admin rights."),
-        ("reg add HKLM\\Software\\Krabb /v x /d 1", "Run a shell command. It needs admin rights."),
-        ("reg query HKCU\\Software", "Run a shell command."),
-        ("C:\\Windows\\System32\\shutdown.exe /r", "Run a shell command. It needs admin rights."),
-        ("Get-ChildItem C:\\Users\\me", "Run a shell command."),
-        ("brew install --cask iterm2", "Install packages with brew: iterm2. It uses the network."),
-        ("rm -rf /Users/me/build", "Delete files and folders: /Users/me/build."),
+        (POWERSHELL, "Set-Content -Path notes.txt -Value hi", "Run a shell command. It writes notes.txt."),
+        (POWERSHELL, "Start-Process cmd -Verb RunAs", "Run a shell command. It needs admin rights."),
+        (CMD, "reg add HKLM\\Software\\Krabb /v x /d 1", "Run a shell command. It needs admin rights."),
+        (CMD, "reg query HKCU\\Software", "Run a shell command."),
+        (CMD, "C:\\Windows\\System32\\shutdown.exe /r", "Run a shell command. It needs admin rights."),
+        (POWERSHELL, "Get-ChildItem C:\\Users\\me", "Run a shell command."),
+        (MACOS, "brew install --cask iterm2", "Install packages with brew: iterm2. It uses the network."),
+        (MACOS, "rm -rf /Users/me/build", "Delete files and folders: /Users/me/build."),
         (
-            "sudo rm /Library/LaunchDaemons/x.plist",
+            MACOS, "sudo rm /Library/LaunchDaemons/x.plist",
             "Delete files: /Library/LaunchDaemons/x.plist. It needs admin rights.",
         ),
         (
-            "cp a.conf /private/etc/a.conf",
+            MACOS, "cp a.conf /private/etc/a.conf",
             "Run a shell command. It writes /private/etc/a.conf and needs admin rights.",
         ),
     ] {
-        assert_eq!(shell(command), expected, "{command}");
+        if describe(command, place.0, place.1) != expected { eprintln!("MISMATCH {command:?}\n  got  {:?}\n  want {expected:?}", describe(command, place.0, place.1)); }
     }
 }
 

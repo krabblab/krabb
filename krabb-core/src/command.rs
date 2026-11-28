@@ -1,3 +1,4 @@
+mod admin;
 mod git;
 mod lex;
 mod option;
@@ -6,6 +7,7 @@ mod parse;
 mod path;
 mod reason;
 mod rules;
+mod target;
 mod wrapper;
 
 #[cfg(test)]
@@ -13,10 +15,12 @@ mod tests;
 
 use std::cmp::Reverse;
 
+pub use admin::administers;
 pub use package::{Action, Packages};
 pub use parse::{Parse, Segment, parse};
-pub use path::{Os, device, host, share_host, system, url_host};
+pub use path::{Os, device, host, remote, share_host, system, url_host};
 pub use reason::{Effect, Hazard, Reason};
+pub use target::{Targets, targets};
 
 const REASONS: usize = 8;
 

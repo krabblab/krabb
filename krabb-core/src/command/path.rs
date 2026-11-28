@@ -84,6 +84,52 @@ pub fn share_host(word: &str) -> Option<&str> {
     (!host.is_empty()).then_some(host)
 }
 
+/// The host of an ssh or scp style remote location such as `user@host:path`.
+pub fn remote(word: &str) -> Option<&str> {
+    if let Some(host) = url_host(word) {
+        return Some(host);
+    }
+
+    let drive = word.as_bytes().get(1) == Some(&b':')
+        && word.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+
+    if drive || word.starts_with(['-', '/', '.', '~', '\\']) {
+        return None;
+    }
+
+    let (host, _) = word.split_once(':')?;
+    let host = host.rsplit('@').next()?;
+
+    (!host.is_empty() && !host.contains(['/', '\\', '=', ' '])).then_some(host)
+}
+
+/// The hosts PROGRAM reaches when it runs with ARGS, beyond URLs and shares in them.
+pub(super) fn remote_hosts<'a>(program: &str, args: &[&'a str]) -> Vec<&'a str> {
+    let operands: Vec<&str> = args.iter().copied().filter(|arg| !arg.starts_with('-')).collect();
+
+    let first = || {
+        let valued = ["-p", "-P", "-i", "-l", "-o", "-F", "-J", "-b", "-c", "-W", "-w", "-s", "-t"];
+        let mut index = 0;
+
+        while let Some(arg) = args.get(index).filter(|arg| arg.starts_with('-')) {
+            index += 1 + usize::from(valued.contains(arg));
+        }
+
+        args.get(index).copied()
+    };
+
+    match program {
+        "ssh" | "sftp" => first().map(|arg| arg.rsplit('@').next().unwrap_or(arg)).into_iter().collect(),
+        "scp" | "rsync" => operands.into_iter().filter_map(remote).collect(),
+
+        "ping" | "nc" | "ncat" | "netcat" | "telnet" | "ftp" | "whois" => {
+            first().filter(|host| url_host(host).is_none()).into_iter().collect()
+        }
+
+        _ => Vec::new(),
+    }
+}
+
 pub fn device(word: &str) -> bool {
     let unix = word.starts_with("/dev/") && !HARMLESS_DEVICES.contains(&word);
     let windows = word.starts_with("\\\\.\\") || word.starts_with("//./");

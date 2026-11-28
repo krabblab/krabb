@@ -251,6 +251,10 @@ fn portable(name: &str, args: &[&str], found: &mut Findings) -> bool {
         found.acts(name, Effect::RunsCode);
     } else if NETWORK.contains(&name) {
         found.acts(name, Effect::UsesNetwork);
+
+        for host in path::remote_hosts(name, args) {
+            found.push(Reason::Host(host.to_owned()));
+        }
     } else {
         return false;
     }
