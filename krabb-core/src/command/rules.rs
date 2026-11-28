@@ -197,6 +197,11 @@ fn program(segment: &Segment, head: &Word, found: &mut Findings) {
         found.push(Reason::ProgramPath(head.text.clone()));
     }
 
+    if name == "findstr" && args.iter().any(|arg| listed(arg)) {
+        found.acts(name, Effect::ReadsNamed);
+        return;
+    }
+
     let handled = match segment.dialect {
         Dialect::Sh => unix::evaluate(name, &args, found),
         Dialect::Cmd => windows::evaluate(name, &args, found),
@@ -214,7 +219,7 @@ fn program(segment: &Segment, head: &Word, found: &mut Findings) {
     let inert = segment.dialect == Dialect::Sh && unix::inert(name);
 
     for word in segment.words.iter().filter(|word| word.glob) {
-        if !inert {
+        if !inert || braced_option(&word.text) {
             found.push(Reason::Wildcard(name.to_owned()));
         } else if reaching(&word.text) {
             found.push(Reason::Pattern(word.text.clone()));
@@ -269,20 +274,50 @@ fn portable(name: &str, args: &[&str], found: &mut Findings) -> bool {
 fn reaching(text: &str) -> bool {
     let mut depth = 0;
     let mut outer = String::new();
-    let mut inner = false;
+    let mut groups = vec![String::new()];
 
     for character in text.chars() {
         match character {
-            '{' => depth += 1,
+            '{' => {
+                depth += 1;
+                groups.push(String::new());
+            }
+
             '}' if depth > 0 => depth -= 1,
-            _ if depth > 0 => inner |= matches!(character, '/' | '.' | '~'),
+            _ if depth > 0 => groups.last_mut().expect("a brace group").push(character),
             _ => outer.push(character),
         }
     }
 
+    let inner = groups
+        .iter()
+        .any(|group| group.contains(['/', '~']) || group.contains('.') && !sequence(group));
+
     let dotted = |part: &str| part.starts_with('.') && part.contains(['*', '?', '[']);
 
     inner || path::outside(&outer, false) || text.split('/').any(dotted)
+}
+
+/// Whether GROUP is a brace sequence such as `1..3` or `a..z`, which expands to plain names.
+fn sequence(group: &str) -> bool {
+    let parts: Vec<&str> = group.split("..").collect();
+    let plain = |part: &&str| !part.is_empty() && part.chars().all(char::is_alphanumeric);
+
+    (2..=3).contains(&parts.len()) && parts.iter().all(plain)
+}
+
+/// Whether a brace word could expand to an option, such as `{--files0-from=list,}` or
+/// `{,}-c`: an alternative starts with a dash, or the word starts with braces and has one.
+fn braced_option(text: &str) -> bool {
+    text.contains("{-") || text.contains(",-") || text.starts_with('{') && text.contains('-')
+}
+
+/// Whether a `findstr` switch reads the files to search from a list, including in a combined
+/// switch such as `/sf:list`.
+fn listed(arg: &str) -> bool {
+    let lowered = arg.to_ascii_lowercase();
+
+    lowered.starts_with(['/', '-']) && lowered.contains("f:")
 }
 
 pub(super) fn dangerous(name: &str) -> Option<Reason> {
