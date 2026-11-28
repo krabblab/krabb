@@ -173,6 +173,21 @@ and the model is told why.
 The official `telegram` and `discord` plugins can prompt without the flag, because their
 older versions showed approvals before it existed.
 
+Declare a channel's typing indicator in a `[typing]` table so the host can show typing in
+bursts with pauses, like a person writing:
+
+```toml
+[typing]
+lifetime = 5
+stop = false
+```
+
+`lifetime` is how many seconds, from 1 to 300, the platform keeps the indicator after one
+`typing` call. Set `stop = true` when the plugin clears the indicator for a `typing` call that
+carries `"stop": true`. Without a stop, pauses outlast the lifetime so the indicator visibly
+disappears; when that would exceed the longest human-like pause, typing stays steady. A channel
+without the table keeps the steady four-second refresh, and older plugins never receive `stop`.
+
 Declare each external program the plugin runs, which Krabb cannot install for it, in a
 `[[requires]]` entry:
 
@@ -351,7 +366,9 @@ The host also supplies `message` (the incoming event ID as a string) and
 `private` (whether the conversation is a DM). These additive fields let plugins
 reference the incoming message or distinguish individual and group recipients;
 older handlers may ignore them.
-The host refreshes it while waiting for the first streamed reply. Unsupported
+The host shows it in bursts of 4 to 15 seconds with irregular pauses, refreshing within each
+burst before the declared lifetime ends. Typing never pauses in the first six seconds of a turn
+or within four seconds after reply text arrives, and reply text ends a pause. Unsupported
 methods, failures, and a two-second timeout disable this hint for the current
 turn; they never fail or replay the turn.
 Discord and Signal support typing in direct and group conversations. WhatsApp

@@ -35,8 +35,9 @@ conversation. Typed commands such as `/status` also work. See
 ## Messages And Media
 
 While a reply is being prepared, the plugin uses Discord's native typing
-indicator in the destination DM, channel, or thread. Indicator failures do not
-prevent the reply.
+indicator in the destination DM, channel, or thread. Typing comes in bursts
+with pauses of twelve to eighteen seconds, longer than Discord's ten-second
+indicator. Indicator failures do not prevent the reply.
 
 The plugin receives `MESSAGE_CREATE` events through the Gateway, answers
 heartbeats, ignores bot authors, normalizes text and attachments, and sends replies through the REST
@@ -44,7 +45,7 @@ API. Gateway session state is persisted under `KRABB_HOME` and advances only
 after the host acknowledges an accepted event. Outgoing text is split at
 Discord's message limit; `edit` updates the first existing message and sends
 any remaining chunks to the same channel or thread. The host sends separate progress
-for tool work and slow turns, keeps typing active until completion, and delivers
+for tool work and slow turns, shows typing until completion, and delivers
 final answers as fresh messages so completion can trigger a notification. Progress
 failures do not block final delivery.
 `KRABB_DISCORD_GATEWAY_URL` and `KRABB_DISCORD_INTENTS` are optional

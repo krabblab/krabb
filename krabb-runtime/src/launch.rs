@@ -231,6 +231,7 @@ impl Verified {
 
         process.image = Some(image);
         process.approvals = manifest.approvals;
+        process.typing = manifest.typing;
 
         if let Some(stderr) = process.take_stderr() {
             capture_plugin_stderr(expected.clone(), stderr);

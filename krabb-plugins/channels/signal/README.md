@@ -189,7 +189,8 @@ only if you also want to delete the account itself.
 
 While a reply is being prepared, the plugin calls `signal-cli sendTyping` for
 the individual or group recipient. This requires a `signal-cli` version that
-supports that command. Indicator failures do not prevent the reply.
+supports that command. Typing comes in bursts; each pause clears the indicator
+with `sendTyping --stop`. Indicator failures do not prevent the reply.
 
 Text, images, stickers (signal-cli 0.13 or newer), voice, and files are normalized through the
 channel boundary; files are read as

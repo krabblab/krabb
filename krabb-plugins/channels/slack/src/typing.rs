@@ -22,11 +22,13 @@ pub(super) async fn send(
         return Ok(json!(false));
     };
 
+    let status = if params["stop"] == true { "" } else { "is typing..." };
+
     api_at(
         client,
         token,
         "assistant.threads.setStatus",
-        json!({"channel_id": chat, "thread_ts": thread, "status": "is typing..."}),
+        json!({"channel_id": chat, "thread_ts": thread, "status": status}),
         base,
     )
     .await?;
@@ -101,6 +103,15 @@ mod tests {
                 json!({"channel_id":"D123", "thread_ts":"123.456", "status":"is typing..."})
             );
         }
+
+        let (base, server) = endpoint(r#"{"ok":true}"#).await;
+        let params = json!({"chat":"D123", "thread":"123.456", "stop": true});
+
+        assert_eq!(send(&client, "fixture", &params, &base).await.unwrap(), json!(true));
+
+        let (_, request) = server.await.unwrap();
+
+        assert_eq!(request, json!({"channel_id":"D123", "thread_ts":"123.456", "status":""}));
 
         for params in [
             json!({}),

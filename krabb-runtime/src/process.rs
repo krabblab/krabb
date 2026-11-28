@@ -282,6 +282,8 @@ pub(crate) struct Process {
     pub image: Option<super::updates::Image>,
     /// Whether the manifest declares that this channel shows approval prompts.
     pub approvals: bool,
+    /// How long the channel's typing indicator lasts, when its manifest declares it.
+    pub typing: Option<super::typing::Indicator>,
     /// The plugin whose stderr is logged, again after every restart.
     pub diagnostics: Option<String>,
 }
@@ -299,6 +301,7 @@ impl From<CoreProcess> for Process {
             context: super::compaction::Context::default(),
             image: None,
             approvals: false,
+            typing: None,
             diagnostics: None,
         }
     }
@@ -508,6 +511,7 @@ impl Process {
             context: super::compaction::Context::default(),
             image: None,
             approvals: false,
+            typing: None,
             diagnostics: None,
         })
     }

@@ -45,14 +45,15 @@ pub(crate) enum Typing {
     Failed,
 }
 
-/// Shows a typing indicator; a failed attempt is retried on the next tick because the channel
-/// can be busy with intake, while an unsupported one stops the indicator for the turn.
+/// Shows or, with `stop`, clears a typing indicator; a failed attempt is retried on the next beat
+/// because the channel can be busy with intake, while an unsupported one stops it for the turn.
 pub(crate) async fn indicate_typing(
     channel: &Live,
     channel_id: &str,
     chat: &str,
     thread: Option<&str>,
     event: &serde_json::Value,
+    stop: bool,
     call: &mut u64,
 ) -> Typing {
     let Ok(mut params) = send_params(channel_id, "", chat, "", thread) else {
@@ -69,6 +70,10 @@ pub(crate) async fn indicate_typing(
         }
 
         params.insert("private".into(), serde_json::json!(event["private"] == true));
+
+        if stop {
+            params.insert("stop".into(), serde_json::json!(true));
+        }
     }
 
     let request = Request::call(*call, "typing", params);

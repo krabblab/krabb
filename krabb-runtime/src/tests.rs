@@ -4356,6 +4356,7 @@ fn validates_manifests_and_environment() {
         setup: BTreeMap::new(),
         check: false,
         approvals: false,
+        typing: None,
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),
@@ -4431,6 +4432,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             approvals: false,
+            typing: None,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4480,6 +4482,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             approvals: false,
+            typing: None,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4504,6 +4507,7 @@ fn validates_manifests_and_environment() {
             setup: BTreeMap::new(),
             check: false,
             approvals: false,
+            typing: None,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -4538,6 +4542,7 @@ fn plugins_keep_the_windows_system_directories_needed_for_networking() {
             setup: BTreeMap::new(),
             check: false,
             approvals: false,
+            typing: None,
             commands: Vec::new(),
             state: None,
             requires: Vec::new(),
@@ -5957,6 +5962,59 @@ fn update_modes_are_explicit() {
 }
 
 #[test]
+fn manifests_declare_typing_indicators_compatibly() {
+    let older: Manifest = toml::from_str(
+        "id = \"telegram\"\nversion = \"0.1.0\"\ncapabilities = [\"channel\"]\n\
+         [protocol]\nmajor = 0\nminor = 2\n",
+    )
+    .unwrap();
+
+    assert_eq!(older.typing, None);
+    assert!(older.validate().is_ok());
+    assert!(!toml::to_string(&older).unwrap().contains("typing"));
+
+    let declared: Manifest = toml::from_str(
+        "id = \"slack\"\nversion = \"0.1.0\"\ncapabilities = [\"channel\"]\n\
+         [protocol]\nmajor = 0\nminor = 2\n[typing]\nlifetime = 120\nstop = true\n",
+    )
+    .unwrap();
+
+    assert_eq!(declared.typing, Some(crate::typing::Indicator { lifetime: 120, stop: true }));
+    assert!(declared.validate().is_ok());
+
+    let parsed: Manifest = toml::from_str(&toml::to_string(&declared).unwrap()).unwrap();
+
+    assert_eq!(parsed.typing, declared.typing);
+
+    let mut invalid = declared.clone();
+
+    invalid.typing = Some(crate::typing::Indicator { lifetime: 0, stop: false });
+
+    assert!(invalid.validate().unwrap_err().contains("typing lifetime"));
+
+    invalid.typing = declared.typing;
+    invalid.capabilities = vec!["model".into()];
+
+    assert!(invalid.validate().unwrap_err().contains("Only channel plugins"));
+
+    let channels = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krabb-plugins/channels");
+
+    for (id, lifetime, stop) in [
+        ("telegram", 5, false),
+        ("discord", 10, false),
+        ("slack", 120, true),
+        ("signal", 15, true),
+        ("whatsapp", 25, false),
+    ] {
+        let text = fs::read_to_string(channels.join(id).join("krabb-plugin.toml")).unwrap();
+        let manifest: Manifest = toml::from_str(&text).unwrap();
+
+        assert_eq!(manifest.typing, Some(crate::typing::Indicator { lifetime, stop }), "{id}");
+        assert!(manifest.validate().is_ok(), "{id}");
+    }
+}
+
+#[test]
 fn manifest_round_trips() {
     let value = Manifest {
         id: "echo".into(),
@@ -5969,6 +6027,7 @@ fn manifest_round_trips() {
         setup: BTreeMap::new(),
         check: false,
         approvals: false,
+        typing: None,
         commands: Vec::new(),
         state: None,
         requires: Vec::new(),

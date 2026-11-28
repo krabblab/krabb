@@ -137,6 +137,7 @@ mod status;
 mod storage;
 pub(crate) mod terminal;
 mod turns;
+mod typing;
 mod updates;
 mod upgrade;
 mod worktree;
@@ -361,6 +362,7 @@ impl Plugins {
 pub(crate) struct Live {
     hello: Hello,
     approvals: bool,
+    typing: Option<typing::Indicator>,
     process: Arc<AsyncMutex<Option<Process>>>,
     turns: Arc<turns::Turns>,
     restart_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -414,6 +416,7 @@ impl Live {
         Self {
             hello: process.hello.clone(),
             approvals: process.approvals,
+            typing: process.typing,
             process: Arc::new(AsyncMutex::new(Some(process))),
             turns: Arc::default(),
             restart_generation: Arc::default(),
@@ -421,10 +424,11 @@ impl Live {
     }
 
     /// The same slot under a new version, so callers holding this one reach the new process.
-    fn successor(&self, hello: Hello, approvals: bool) -> Self {
+    fn successor(&self, hello: Hello, approvals: bool, typing: Option<typing::Indicator>) -> Self {
         Self {
             hello,
             approvals,
+            typing,
             process: Arc::clone(&self.process),
             turns: Arc::clone(&self.turns),
             restart_generation: Arc::clone(&self.restart_generation),
@@ -1330,6 +1334,9 @@ struct Manifest {
     /// Whether a channel plugin shows `approval` prompts and reports their `callback`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     approvals: bool,
+    /// How long a channel's typing indicator lasts and whether the channel can clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    typing: Option<typing::Indicator>,
     #[serde(default)]
     commands: Vec<CommandSpec>,
     /// The schema of the plugin's saved state and the older ones it migrates when it starts.
@@ -1371,6 +1378,14 @@ impl Manifest {
 
         if let Some(state) = &self.state {
             state.validate()?;
+        }
+
+        if let Some(typing) = &self.typing {
+            if !self.capabilities.iter().any(|capability| capability == "channel") {
+                return Err("Only channel plugins declare a typing indicator.".into());
+            }
+
+            typing.validate()?;
         }
 
         let mut capabilities = self.capabilities.clone();

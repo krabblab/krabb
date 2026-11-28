@@ -9,6 +9,10 @@ check = true
 major = 0
 minor = 2
 
+[typing]
+lifetime = 15
+stop = true
+
 [setup.KRABB_SIGNAL_ACCOUNT]
 label = "Bot account"
 help = "The linked bot account's phone number with + and country code, or its account ID."

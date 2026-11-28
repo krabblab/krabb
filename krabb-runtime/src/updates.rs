@@ -280,6 +280,7 @@ async fn replace_with_commit(
 
     let hello = candidate.hello.clone();
     let approvals = candidate.approvals;
+    let typing = candidate.typing;
     let previous = slot.replace(candidate);
 
     if let Err(error) = replacement.promote(&root, &id, &mut commit) {
@@ -296,7 +297,7 @@ async fn replace_with_commit(
 
     live.restart_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let successor = live.successor(hello, approvals);
+    let successor = live.successor(hello, approvals, typing);
 
     drop(slot);
     plugins.insert(successor).await;

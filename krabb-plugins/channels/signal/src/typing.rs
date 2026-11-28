@@ -19,6 +19,10 @@ pub(super) async fn send(
     let mut args = prefix.to_vec();
     args.extend(["-a".into(), account.into(), "sendTyping".into()]);
 
+    if params["stop"] == true {
+        args.push("--stop".into());
+    }
+
     if params["private"] == false {
         args.extend(["--group-id".into(), chat.into()]);
     } else {
@@ -55,6 +59,21 @@ mod tests {
                 json!(true)
             );
         }
+
+        let script = "import sys; assert sys.argv[1:] == ['-a', '+100', 'sendTyping', '--stop', \
+                      '--', '+200']; print('{}')";
+
+        assert_eq!(
+            send(
+                "+100",
+                &json!({"chat": "+200", "private": true, "stop": true}),
+                "python3",
+                &["-c".into(), script.into()],
+            )
+            .await
+            .unwrap(),
+            json!(true)
+        );
 
         assert!(
             send(

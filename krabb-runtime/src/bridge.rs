@@ -1098,12 +1098,12 @@ pub(crate) async fn bridge_with_media(
                 );
                 tokio::pin!(answer);
                 let mut output = StreamOutput::new();
-                let mut typing = true;
-                let mut activity = tokio::time::interval_at(
-                    tokio::time::Instant::now() + Duration::from_millis(500),
-                    Duration::from_secs(4),
-                );
-                activity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut indicating = true;
+                let started = tokio::time::Instant::now();
+                let mut rhythm =
+                    typing::Rhythm::new(channel.typing, getrandom::u64().unwrap_or_default());
+                let activity = tokio::time::sleep_until(started + typing::FIRST);
+                tokio::pin!(activity);
                 let mut ticker = tokio::time::interval_at(
                     tokio::time::Instant::now() + std::time::Duration::from_millis(500),
                     std::time::Duration::from_millis(500),
@@ -1136,6 +1136,12 @@ pub(crate) async fn bridge_with_media(
                                 }
 
                                 notice => {
+                                    if matches!(notice, StreamNotice::Text(_))
+                                        && rhythm.write(started.elapsed())
+                                    {
+                                        activity.as_mut().reset(tokio::time::Instant::now());
+                                    }
+
                                     output.apply(notice);
 
                                     if output.ready()
@@ -1160,18 +1166,24 @@ pub(crate) async fn bridge_with_media(
                             }
                         }
 
-                        _ = activity.tick() => {
-                            if !typing {
+                        _ = &mut activity, if indicating => {
+                            let (beat, next) = rhythm.beat(started.elapsed());
+
+                            activity.as_mut().reset(started + next);
+
+                            if beat == typing::Beat::Rest {
                                 continue;
                             }
+
+                            let clear = beat == typing::Beat::Stop;
 
                             // `answer` observes the cancellation and settles its task; dropping it
                             // here could abandon a running action before its outcome is recorded.
                             tokio::select! {
                                 biased;
-                                _ = stop.notified() => typing = false,
-                                _ = turn_cancel.cancelled() => typing = false,
-                                outcome = indicate_typing(&channel, channel_id, &chat, thread.as_deref(), &event, &mut stream_call) => typing = outcome != Typing::Unsupported,
+                                _ = stop.notified() => indicating = false,
+                                _ = turn_cancel.cancelled() => indicating = false,
+                                outcome = indicate_typing(&channel, channel_id, &chat, thread.as_deref(), &event, clear, &mut stream_call) => indicating = outcome != Typing::Unsupported,
                             }
                         }
                     }

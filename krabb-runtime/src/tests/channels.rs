@@ -760,8 +760,16 @@ for line in sys.stdin:
         let mut call = 7;
 
         assert_eq!(
-            crate::indicate_typing(&channel, "telegram", "invalid", None, &json!({}), &mut call)
-                .await,
+            crate::indicate_typing(
+                &channel,
+                "telegram",
+                "invalid",
+                None,
+                &json!({}),
+                false,
+                &mut call
+            )
+            .await,
             crate::Typing::Unsupported
         );
 
@@ -769,12 +777,48 @@ for line in sys.stdin:
 
         let outcome = tokio::time::timeout(
             Duration::from_secs(3),
-            crate::indicate_typing(&channel, "telegram", "7", None, &json!({}), &mut call),
+            crate::indicate_typing(&channel, "telegram", "7", None, &json!({}), false, &mut call),
         )
         .await;
 
         assert_eq!(outcome.unwrap(), expected, "{name}");
         assert_eq!(call, 8);
+
+        channel.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn typing_asks_for_a_stop_only_when_clearing() {
+    let script = r#"
+import json, sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+
+    if 'id' not in request: continue
+    method = request['method']
+
+    if method == 'hello':
+        result = {'protocol': {'major':0, 'minor':2}, 'id':'fixture', 'version':'0.1.0', 'capabilities':['channel']}
+    elif method == 'typing':
+        result = request['params'].get('stop', False) == (sys.argv[1] == 'stop')
+    else:
+        result = {}
+
+    print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
+    if method == 'shutdown': break
+"#;
+
+    for (mode, stop) in [("stop", true), ("show", false)] {
+        let channel =
+            Live::new(Process::start_with("python3", ["-u", "-c", script, mode]).await.unwrap());
+
+        assert_eq!(
+            crate::indicate_typing(&channel, "slack", "D1", Some("1.2"), &json!({}), stop, &mut 7)
+                .await,
+            crate::Typing::Shown
+        );
 
         channel.stop().await.unwrap();
     }
@@ -1303,6 +1347,7 @@ for line in sys.stdin:
                 chat,
                 Some("456"),
                 &json!({"id":"incoming","private":private}),
+                false,
                 &mut 7
             )
             .await,

@@ -21,6 +21,7 @@ fn fixture(id: &str, variables: &[&str], commands: Vec<krabb_core::types::Comman
         setup: BTreeMap::new(),
         check: false,
         approvals: false,
+        typing: None,
         commands: commands.clone(),
         state: None,
         requires: Vec::new(),

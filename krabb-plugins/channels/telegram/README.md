@@ -72,7 +72,8 @@ edit, allowing final overflow delivery to continue without replaying the edit.
 Outgoing text is split at Telegram's message limit. An `edit` updates the first
 message and sends any remaining chunks in the same topic.
 While working, Krabb sends a best-effort typing indicator to the same chat and
-topic every four seconds until the turn ends. Tool work and slow turns receive a
+topic in bursts with pauses of seven to thirteen seconds, longer than Telegram's
+five-second indicator, until the turn ends. Tool work and slow turns receive a
 separate progress message. Completed answers arrive as fresh messages, split at the
 message limit, so completion can trigger a notification. Typing or progress failures
 do not block the final answer.

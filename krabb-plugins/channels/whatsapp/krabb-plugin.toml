@@ -19,6 +19,9 @@ default = "127.0.0.1:8787"
 major = 0
 minor = 2
 
+[typing]
+lifetime = 25
+
 [setup.KRABB_WHATSAPP_TOKEN]
 label = "Access token"
 help = "The access token for your Meta app, since temporary test tokens expire."

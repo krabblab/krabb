@@ -10,6 +10,9 @@ approvals = true
 major = 0
 minor = 2
 
+[typing]
+lifetime = 10
+
 [setup.KRABB_DISCORD_TOKEN]
 label = "Bot token"
 help = "In the Developer Portal, open your application's Bot page and reset or copy the token."

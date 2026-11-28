@@ -12,6 +12,10 @@ name = "KRABB_SLACK_CHANNELS"
 major = 0
 minor = 2
 
+[typing]
+lifetime = 120
+stop = true
+
 [setup.KRABB_SLACK_BOT_TOKEN]
 label = "Bot token"
 help = "The xoxb- token under OAuth & Permissions after installing the app."

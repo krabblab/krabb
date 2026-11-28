@@ -47,6 +47,8 @@ still take precedence. Other channels, including Telegram, can remain configured
 
 While a reply is being prepared, the plugin sends WhatsApp's native typing
 indicator using the incoming message ID. This also marks that message as read.
+WhatsApp keeps the indicator for 25 seconds and cannot clear it, so a visible
+pause would look idle; Krabb refreshes it steadily instead of in bursts.
 Indicator failures do not prevent the reply.
 
 Inbound text, images, stickers, voice messages, videos, and documents are
