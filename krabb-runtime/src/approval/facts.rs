@@ -176,7 +176,7 @@ pub(crate) fn clipped(text: &str, limit: usize) -> String {
 fn word(text: &str) -> String {
     let shown = clipped(text, WORD_LIMIT);
 
-    if shown.chars().all(|character| character.is_ascii_graphic()) {
+    if text.chars().all(|character| character.is_ascii_graphic()) {
         return shown;
     }
 
