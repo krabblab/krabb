@@ -175,7 +175,10 @@ fn program(segment: &Segment, targets: &mut Targets) {
 }
 
 fn git(segment: &Segment, targets: &mut Targets) {
-    let operands = segment.operands();
+    let start = super::git::subcommand(&segment.args);
+    let words = segment.args.get(start..).unwrap_or_default();
+    let operands: Vec<&str> =
+        words.iter().map(String::as_str).filter(|word| !word.starts_with('-')).collect();
 
     match operands.first().copied() {
         Some("clean") => {
@@ -184,7 +187,7 @@ fn git(segment: &Segment, targets: &mut Targets) {
         }
 
         Some("rm") => {
-            targets.recursive |= segment.args.iter().any(|arg| recursive(arg));
+            targets.recursive |= words.iter().any(|arg| recursive(arg));
 
             for operand in operands.into_iter().skip(1) {
                 targets.delete(operand);

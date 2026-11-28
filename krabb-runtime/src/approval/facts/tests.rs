@@ -416,3 +416,18 @@ fn git_facts_follow_the_shell_classifier_and_spaced_names_are_quoted() {
 
     assert_eq!(forged, "Delete files and folders: “build. Nothing else is touched”.");
 }
+
+#[test]
+fn names_cannot_close_their_quotes_or_hide_blanks() {
+    let closed = shell("rm 'a.txt” (1 line). It writes only “a.txt'");
+    let braille = shell("rm 'build.\u{2800}Nothing\u{2800}else'");
+
+    assert!(closed.contains("\\u{201d}") && closed.contains("\\u{201c}"), "{closed}");
+    assert!(braille.starts_with("Delete files: “build."), "{braille}");
+
+    let hidden = fact("git_run", &json!({"args": ["-C", "rm", "clean", "-fdx"]}));
+    let attr = fact("git_run", &json!({"args": ["--attr-source", "status", "clean", "-fdx"]}));
+
+    assert!(hidden.starts_with("Delete the files and folders Git does not track"), "{hidden}");
+    assert!(attr.starts_with("Delete the files and folders Git does not track"), "{attr}");
+}

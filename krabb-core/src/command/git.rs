@@ -2,8 +2,28 @@ use super::option::{cluster, long, takes_value};
 use super::reason::Effect;
 use super::rules::Findings;
 
-const GLOBAL_VALUES: &[&str] =
-    &["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"];
+const GLOBAL_VALUES: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--attr-source",
+    "--config-env",
+    "--super-prefix",
+];
+
+/// Where the subcommand starts in ARGS, after Git's own options and their values.
+pub(super) fn subcommand<S: AsRef<str>>(args: &[S]) -> usize {
+    let mut index = 0;
+
+    while let Some(arg) = args.get(index).map(AsRef::as_ref).filter(|arg| arg.starts_with('-')) {
+        index += 1 + usize::from(GLOBAL_VALUES.contains(&arg));
+    }
+
+    index
+}
 
 const RUNS: &[&str] = &["-c", "--config-env", "--exec-path"];
 const DIFFS: &[&str] = &["log", "show", "diff", "whatchanged"];
@@ -84,16 +104,14 @@ const SHOWS: &[&str] = &[
 pub(super) fn evaluate(args: &[&str], found: &mut Findings) {
     found.acts("git", Effect::RunsConfigured);
 
-    let mut index = 0;
+    let index = subcommand(args);
 
-    while let Some(&arg) = args.get(index).filter(|arg| arg.starts_with('-')) {
-        let name = arg.split_once('=').map_or(arg, |(name, _)| name);
+    for arg in &args[..index] {
+        let name = arg.split_once('=').map_or(*arg, |(name, _)| name);
 
         if RUNS.contains(&name) {
             found.acts(format!("git {name}"), Effect::RunsPrograms);
         }
-
-        index += 1 + usize::from(GLOBAL_VALUES.contains(&arg));
     }
 
     let Some(&command) = args.get(index) else {

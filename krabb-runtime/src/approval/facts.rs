@@ -176,7 +176,13 @@ pub(crate) fn clipped(text: &str, limit: usize) -> String {
 fn word(text: &str) -> String {
     let shown = clipped(text, WORD_LIMIT);
 
-    if shown.contains(char::is_whitespace) { format!("“{shown}”") } else { shown }
+    if shown.chars().all(|character| character.is_ascii_graphic()) {
+        return shown;
+    }
+
+    let shown = shown.replace('“', "\\u{201c}").replace('”', "\\u{201d}");
+
+    format!("“{shown}”")
 }
 
 fn text(value: &Value) -> String {
@@ -198,17 +204,17 @@ fn capitalized(word: &str) -> String {
 
 fn schedule(args: &Value) -> String {
     let destination = if let Some(destinations) = args["context"].get("destinations") {
-        format!("outbound destinations {destinations}")
+        format!("outbound destinations {}", visible(&destinations.to_string()))
     } else {
         args["context"].get("message_destination").filter(|value| !value.is_null()).map_or_else(
             || "no outbound message destination".into(),
             |value| {
                 format!(
                     "outbound messages to channel {}, chat {}, private {}, thread {}",
-                    value["channel"].as_str().unwrap_or("invalid"),
-                    value["chat"].as_str().unwrap_or("invalid"),
+                    word(value["channel"].as_str().unwrap_or("invalid")),
+                    word(value["chat"].as_str().unwrap_or("invalid")),
                     value["private"].as_bool().unwrap_or(false),
-                    value["thread"].as_str().unwrap_or("none"),
+                    word(value["thread"].as_str().unwrap_or("none")),
                 )
             },
         )
