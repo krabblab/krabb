@@ -244,6 +244,11 @@ fn hidden_paths_providers_and_devices_ask() {
             ("gc temp:\\x", Unknown, "the command reaches the `temp` drive"),
             ("sort --output=x y", Unknown, "`sort` is not on the read-only list"),
             ("gc con", Unknown, "the command opens the device `con`"),
+            (
+                "findstr /f:list.txt secret",
+                Unknown,
+                "`findstr` reads files named in its input or a list",
+            ),
         ],
     );
 
@@ -256,6 +261,12 @@ fn hidden_paths_providers_and_devices_ask() {
             ("type con", Unknown, "the command opens the device `con`"),
             ("type sub\\aux.txt", Unknown, "the command opens the device `sub\\aux.txt`"),
             ("type console.txt", ReadOnly, "`type` only reads"),
+            ("type \"con \"", Unknown, "the command opens the device `con `"),
+            ("type COM¹", Unknown, "the command opens the device `COM¹`"),
+            ("type lpt0", Unknown, "the command opens the device `lpt0`"),
+            ("type com10", ReadOnly, "`type` only reads"),
+            ("findstr -f:list x", Unknown, "`findstr` reads files named in its input or a list"),
+            ("findstr /sf:list x", Unknown, "`findstr` reads files named in its input or a list"),
         ],
     );
 }
