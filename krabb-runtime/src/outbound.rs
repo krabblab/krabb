@@ -421,7 +421,10 @@ pub(crate) async fn handle_callback(
             }
         });
 
+    let saved = save_lasting(approvals, approver).await;
+
     let message = match decision {
+        Some(true) if saved => "Approval accepted. Krabb will not ask for this again here.",
         Some(true) => "Approval accepted.",
         Some(false) => "The request was denied.",
         None => "This approval is invalid or expired.",
@@ -443,6 +446,50 @@ pub(crate) async fn handle_callback(
 
     commit_event(channel, sessions, channel_id, &id, commit_offset, offset, gateway_sequence, call)
         .await
+}
+
+/// Saves a rule for each request APPROVER answered with "Always allow", when their role may
+/// save it, and says whether one was saved. A rule that cannot be saved leaves a one-off
+/// approval.
+pub(crate) async fn save_lasting(
+    approvals: &Arc<AsyncMutex<approval::Gate>>,
+    approver: access::Role,
+) -> bool {
+    let mut gate = approvals.lock().await;
+    let mut saved = false;
+
+    for target in gate.lasting() {
+        let config = match load_config_at(&home()) {
+            Ok(config) => config,
+            Err(error) => {
+                warn!(error = %diagnostic(sentence(error.to_string())), "Approval rule was not saved.");
+                continue;
+            }
+        };
+
+        let scope = access::rules::scope(&target.source, &target.chat);
+
+        let Some(rule) = access::rules::Rule::new(&scope, &target.tool, &target.args, approver)
+            .filter(|_| access::rules::may_save(&config, approver, &target.tool, &target.args))
+        else {
+            continue;
+        };
+
+        match access::rules::save(&home(), &rule) {
+            Ok(()) => {
+                info!(rule = %rule.id, %scope, "Saved an always-allow rule.");
+                gate.rules.retain(|known| known.id != rule.id);
+                gate.rules.push(rule);
+                saved = true;
+            }
+
+            Err(error) => {
+                warn!(error = %diagnostic(sentence(error.to_string())), "Approval rule was not saved.");
+            }
+        }
+    }
+
+    saved
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -763,6 +810,7 @@ pub(crate) async fn wait_approval(
     text: &str,
     approve: &str,
     deny: &str,
+    always: Option<&str>,
     approvals: &Arc<AsyncMutex<approval::Gate>>,
     call: &mut u64,
     deadline: tokio::time::Instant,
@@ -773,7 +821,7 @@ pub(crate) async fn wait_approval(
         return Ok(());
     };
 
-    let params = approval_params(channel_id, chat, thread, text, approve, deny)?;
+    let params = approval_params(channel_id, chat, thread, text, approve, deny, always)?;
     let sent = channel.call(Request::call(*call, "approval", params)).await;
 
     *call = (*call).saturating_add(1);

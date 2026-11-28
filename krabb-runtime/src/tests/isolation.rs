@@ -249,6 +249,7 @@ async fn local_resolution_wakes_a_pending_approval() {
             "write a note",
             &challenge.approve,
             &challenge.deny,
+            None,
             &gate,
             &mut 1,
             tokio::time::Instant::now() + Duration::from_secs(10),

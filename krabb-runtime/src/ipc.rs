@@ -4233,6 +4233,7 @@ done"##;
                 text: "Krabb requests approval to run this shell command: rm foo.".into(),
                 approve: "approval-id.signature".into(),
                 deny: "deny-id.signature".into(),
+                always: None,
                 deadline: tokio::time::Instant::now(),
             },
         )

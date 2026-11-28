@@ -243,6 +243,7 @@ pub(crate) fn turn(
 /// Under a preset, its verdict, narrowed by an approval mode of `off`.
 pub(crate) fn gate(
     config: &Config,
+    saved: &[rules::Rule],
     grant: &Grant,
     scope: &str,
     name: &str,
@@ -261,7 +262,7 @@ pub(crate) fn gate(
         Verdict::Deny => Some(Verdict::Deny),
         _ if above => Some(Verdict::Deny),
         _ if mode == ApprovalMode::Off && answer::mutating(name, args) => Some(Verdict::Deny),
-        Verdict::Ask if rules::allowed(config, scope, name, args) => Some(Verdict::Run),
+        Verdict::Ask if rules::allowed(config, saved, scope, name, args) => Some(Verdict::Run),
         verdict => Some(verdict),
     }
 }

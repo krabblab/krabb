@@ -16,6 +16,8 @@ pub(crate) enum StreamNotice {
         text: String,
         approve: String,
         deny: String,
+        /// The "Always allow" token, offered only under a preset.
+        always: Option<String>,
         deadline: tokio::time::Instant,
     },
 }

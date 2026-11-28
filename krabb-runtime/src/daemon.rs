@@ -81,7 +81,7 @@ pub(crate) async fn serve_inner(
     reclaim_worktrees(root, &loaded);
     storage::prune(root, &workspace);
     let sessions = Arc::new(Mutex::new(loaded));
-    let pending = Arc::new(AsyncMutex::new(approval::Gate::new()?));
+    let pending = Arc::new(AsyncMutex::new(approval::Gate::with_rules(config.rules.clone())?));
     let token = ipc::token()?;
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();

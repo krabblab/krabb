@@ -562,15 +562,24 @@ fn the_gate_follows_the_preset_and_an_approval_mode_of_off_narrows_it() {
     let owner = resolve(&presets, &remote(krabb_core::client::TUI));
     let write = json!({"path": "a", "content": "b"});
 
-    assert_eq!(gate(&legacy, &owner, "tui", "file_write", &write, ApprovalMode::Prompt), None);
+    assert_eq!(gate(&legacy, &[], &owner, "tui", "file_write", &write, ApprovalMode::Prompt), None);
     assert_eq!(owner.preset, Preset::Standard);
 
-    let run = gate(&presets, &owner, "tui", "file_write", &write, ApprovalMode::Prompt);
-    let ask =
-        gate(&presets, &owner, "tui", "shell_run", &json!({"command": "rm x"}), ApprovalMode::Auto);
-    let off = gate(&presets, &owner, "tui", "file_write", &write, ApprovalMode::Off);
-    let read = gate(&presets, &owner, "tui", "file_read", &json!({"path": "a"}), ApprovalMode::Off);
-    let settings = gate(&presets, &owner, "tui", settings::TOOL, &json!({}), ApprovalMode::Auto);
+    let run = gate(&presets, &[], &owner, "tui", "file_write", &write, ApprovalMode::Prompt);
+    let ask = gate(
+        &presets,
+        &[],
+        &owner,
+        "tui",
+        "shell_run",
+        &json!({"command": "rm x"}),
+        ApprovalMode::Auto,
+    );
+    let off = gate(&presets, &[], &owner, "tui", "file_write", &write, ApprovalMode::Off);
+    let read =
+        gate(&presets, &[], &owner, "tui", "file_read", &json!({"path": "a"}), ApprovalMode::Off);
+    let settings =
+        gate(&presets, &[], &owner, "tui", settings::TOOL, &json!({}), ApprovalMode::Auto);
 
     assert_eq!(run, Some(Verdict::Run));
     assert_eq!(ask, Some(Verdict::Ask));
@@ -581,7 +590,7 @@ fn the_gate_follows_the_preset_and_an_approval_mode_of_off_narrows_it() {
     let guest = Grant { preset: Preset::Chat, ..owner };
 
     assert_eq!(
-        gate(&presets, &guest, "tui", "file_read", &json!({}), ApprovalMode::Auto),
+        gate(&presets, &[], &guest, "tui", "file_read", &json!({}), ApprovalMode::Auto),
         Some(Verdict::Deny)
     );
 }
@@ -651,7 +660,7 @@ fn admin_commands_need_their_level_and_always_ask_within_it() {
 
     assert_eq!(owner.elevation, Elevation::None);
     assert_eq!(
-        gate(&presets, &owner, "tui", "shell_run", &install, ApprovalMode::Auto),
+        gate(&presets, &[], &owner, "tui", "shell_run", &install, ApprovalMode::Auto),
         Some(Verdict::Deny)
     );
 
@@ -665,22 +674,22 @@ fn admin_commands_need_their_level_and_always_ask_within_it() {
     let loose = Grant { preset: Preset::Loose, elevation: Elevation::Full, ..owner };
 
     assert_eq!(
-        gate(&presets, &packages, "tui", "shell_run", &install, ApprovalMode::Auto),
+        gate(&presets, &[], &packages, "tui", "shell_run", &install, ApprovalMode::Auto),
         Some(Verdict::Ask)
     );
     assert_eq!(
-        gate(&presets, &loose, "tui", "shell_run", &install, ApprovalMode::Auto),
+        gate(&presets, &[], &loose, "tui", "shell_run", &install, ApprovalMode::Auto),
         Some(Verdict::Ask)
     );
 
     let services = shell("sudo systemctl restart nginx");
 
     assert_eq!(
-        gate(&presets, &packages, "tui", "shell_run", &services, ApprovalMode::Auto),
+        gate(&presets, &[], &packages, "tui", "shell_run", &services, ApprovalMode::Auto),
         Some(Verdict::Deny)
     );
     assert_eq!(
-        gate(&presets, &loose, "tui", "shell_run", &services, ApprovalMode::Auto),
+        gate(&presets, &[], &loose, "tui", "shell_run", &services, ApprovalMode::Auto),
         Some(Verdict::Ask)
     );
     assert!(refusal(&owner, "file_read", &json!({})).starts_with("The standard preset"));

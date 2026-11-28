@@ -483,7 +483,8 @@ for line in sys.stdin:
 
                     if channel != "tui" {
                         let params =
-                            approval_params(channel, "7", None, &text, &approve, &deny).unwrap();
+                            approval_params(channel, "7", None, &text, &approve, &deny, None)
+                                .unwrap();
                         assert_eq!(params["text"], text);
                     }
 

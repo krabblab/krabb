@@ -58,11 +58,11 @@ fn admin_rules_need_a_role_whose_level_covers_them() {
 
     saved.rules.push(Rule::new("tui", "shell_run", &install, Role::Admin).unwrap());
 
-    assert!(allowed(&saved, "tui", "shell_run", &install));
+    assert!(allowed(&saved, &saved.rules, "tui", "shell_run", &install));
 
     saved.roles.clear();
 
-    assert!(!allowed(&saved, "tui", "shell_run", &install));
+    assert!(!allowed(&saved, &saved.rules, "tui", "shell_run", &install));
 }
 
 #[test]

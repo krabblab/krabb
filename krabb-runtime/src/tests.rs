@@ -8640,19 +8640,27 @@ fn prepares_approval_text_and_channel_requests() {
     );
 
     let telegram =
-        super::approval_params("telegram", "7", Some("9"), "Approve?", "allow", "deny").unwrap();
+        super::approval_params("telegram", "7", Some("9"), "Approve?", "allow", "deny", None)
+            .unwrap();
 
     assert_eq!(telegram["chat"], 7);
     assert_eq!(telegram["thread"], "9");
-    assert!(super::approval_params("telegram", "bad", None, "Approve?", "a", "d").is_err());
+    assert!(super::approval_params("telegram", "bad", None, "Approve?", "a", "d", None).is_err());
 
-    let discord =
-        super::approval_params("discord", "channel", Some("thread"), "Approve?", "allow", "deny")
-            .unwrap();
+    let discord = super::approval_params(
+        "discord",
+        "channel",
+        Some("thread"),
+        "Approve?",
+        "allow",
+        "deny",
+        None,
+    )
+    .unwrap();
 
     assert_eq!(discord["channel"], "channel");
     assert!(discord.get("thread").is_none());
-    assert!(super::approval_params("other", "room", None, "Approve?", "a", "d").is_err());
+    assert!(super::approval_params("other", "room", None, "Approve?", "a", "d", None).is_err());
 }
 
 #[cfg(unix)]

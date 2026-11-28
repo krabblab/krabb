@@ -654,7 +654,8 @@ pub(crate) async fn execute_tool_with_registry(
 
     let source = registry.source.clone().unwrap_or_else(|| sharing::principal(channel));
     let scope = access::rules::scope(&source, chat);
-    let gate = access::gate(&plugins.config, &grant, &scope, name, &args, approval_mode)
+    let saved = approvals.lock().await.rules.clone();
+    let gate = access::gate(&plugins.config, &saved, &grant, &scope, name, &args, approval_mode)
         .map(|verdict| (verdict, grant.preset, grant.role));
 
     let asks = match gate {
@@ -1129,6 +1130,7 @@ pub(crate) async fn execute_tool_with_registry(
                         text,
                         approve: challenge.approve.clone(),
                         deny: challenge.deny,
+                        always: gate.map(|_| challenge.always),
                         deadline,
                     })
                     .await
@@ -1727,6 +1729,7 @@ pub(crate) fn approval_params(
     text: &str,
     approve: &str,
     deny: &str,
+    always: Option<&str>,
 ) -> krabb_core::Result<serde_json::Value> {
     let mut params = match channel {
         "telegram" => serde_json::json!({
@@ -1756,6 +1759,10 @@ pub(crate) fn approval_params(
         && let Some(thread) = thread
     {
         params["thread"] = serde_json::Value::String(thread.into());
+    }
+
+    if let Some(always) = always {
+        params["always"] = serde_json::Value::String(always.into());
     }
 
     Ok(params)

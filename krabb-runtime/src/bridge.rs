@@ -1116,7 +1116,7 @@ pub(crate) async fn bridge_with_media(
 
                         Some(notice) = stream_rx.recv() => {
                             match notice {
-                                StreamNotice::Approval { chat: approval_chat, thread: approval_thread, text, approve, deny, deadline, .. } => {
+                                StreamNotice::Approval { chat: approval_chat, thread: approval_thread, text, approve, deny, always, deadline, .. } => {
                                     if let Err(error) = wait_approval(
                                         &channel,
                                         channel_id,
@@ -1125,6 +1125,7 @@ pub(crate) async fn bridge_with_media(
                                         &text,
                                         &approve,
                                         &deny,
+                                        always.as_deref(),
                                         &approvals,
                                         &mut stream_call,
                                         deadline,

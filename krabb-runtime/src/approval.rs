@@ -34,6 +34,8 @@ pub(crate) struct Target {
 pub(crate) struct Challenge {
     pub approve: String,
     pub deny: String,
+    /// Approves and saves a lasting rule; a channel shows it only under a preset.
+    pub always: String,
     pub answer: oneshot::Receiver<bool>,
 }
 
@@ -56,13 +58,23 @@ pub(crate) struct Gate {
     key: [u8; 32],
     pending: BTreeMap<String, Pending>,
     decisions: Vec<(Target, Option<String>, bool, u64)>,
+    /// The "Always allow" rules in force, loaded at start and added to as people save them.
+    pub rules: Vec<crate::access::rules::Rule>,
+    /// Requests answered with "Always allow" whose rule the caller still has to save.
+    lasting: Vec<Target>,
 }
 
 impl Gate {
     pub fn new() -> io::Result<Self> {
         let mut key = [0_u8; 32];
         getrandom::fill(&mut key).map_err(io::Error::other)?;
-        Ok(Self { key, pending: BTreeMap::new(), decisions: Vec::new() })
+        Ok(Self {
+            key,
+            pending: BTreeMap::new(),
+            decisions: Vec::new(),
+            rules: Vec::new(),
+            lasting: Vec::new(),
+        })
     }
 
     #[cfg(test)]
@@ -96,8 +108,9 @@ impl Gate {
         let pending = Pending { target, workspace, expires, answer, completion };
         let approve = token(&self.key, &id, &pending, b'a')?;
         let deny = token(&self.key, &id, &pending, b'd')?;
+        let always = token(&self.key, &id, &pending, b'l')?;
         self.pending.insert(id, pending);
-        Ok(Challenge { approve, deny, answer: receiver })
+        Ok(Challenge { approve, deny, always, answer: receiver })
     }
 
     #[cfg(test)]
@@ -155,7 +168,21 @@ impl Gate {
             return None;
         }
 
-        self.complete(id, action == b'a', now)
+        if action == b'l' {
+            self.lasting.push(pending.target.clone());
+        }
+
+        self.complete(id, action != b'd', now)
+    }
+
+    /// A gate that starts with the saved RULES in force.
+    pub fn with_rules(rules: Vec<crate::access::rules::Rule>) -> io::Result<Self> {
+        Ok(Self { rules, ..Self::new()? })
+    }
+
+    /// Takes the requests answered with "Always allow" since the last call.
+    pub fn lasting(&mut self) -> Vec<Target> {
+        std::mem::take(&mut self.lasting)
     }
 
     fn complete(&mut self, id: &str, approved: bool, now: u64) -> Option<bool> {
@@ -286,6 +313,7 @@ fn decode(value: &str) -> Option<(&str, u8, [u8; MAC_BYTES])> {
     let action = match action {
         "a" => b'a',
         "d" => b'd',
+        "l" => b'l',
         _ => return None,
     };
 

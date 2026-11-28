@@ -114,8 +114,14 @@ pub(crate) fn scope(source: &crate::sharing::Principal, chat: &str) -> String {
 
 /// Whether a saved rule lets TOOL with ARGS run unasked in SCOPE. A rule for an admin command
 /// counts only while the role that saved it still has the level the command needs.
-pub(crate) fn allowed(config: &Config, scope: &str, tool: &str, args: &serde_json::Value) -> bool {
-    config.rules.iter().any(|rule| {
+pub(crate) fn allowed(
+    config: &Config,
+    saved: &[Rule],
+    scope: &str,
+    tool: &str,
+    args: &serde_json::Value,
+) -> bool {
+    saved.iter().any(|rule| {
         rule.allows(scope, tool, args)
             && super::needs(args["command"].as_str().unwrap_or_default())
                 .is_none_or(|level| level <= elevation(config, rule.saved_by))
