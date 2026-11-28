@@ -5997,6 +5997,14 @@ fn manifests_declare_typing_indicators_compatibly() {
 
     assert!(invalid.validate().unwrap_err().contains("Only channel plugins"));
 
+    assert!(
+        toml::from_str::<Manifest>(
+            "id = \"slack\"\nversion = \"0.1.0\"\ncapabilities = [\"channel\"]\n\
+             [protocol]\nmajor = 0\nminor = 2\n[typing]\nlifetime = 120\nstops = true\n",
+        )
+        .is_err()
+    );
+
     let channels = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krabb-plugins/channels");
 
     for (id, lifetime, stop) in [

@@ -164,8 +164,9 @@ their model is explicitly pinned; their history is preserved.
 - Telegram uses long polling by default; Discord uses Gateway. Support DMs,
   allowlisted Telegram topics, Discord channels/threads, mention-only groups,
   owner/admin/member roles, and signed expiring approvals.
-- Show separate progress for tool work and slow turns, show typing in bursts like a person writing, and send
-  final answers as fresh channel-safe chunks with completion notifications.
+- Show separate progress for tool work and slow turns, show typing in bursts like a
+  person writing, and send final answers as fresh channel-safe chunks with completion
+  notifications.
   Terminal clients stream answers with separate tool status and inline approvals.
 - Accept text, images, safe text/code files, and voice. Gate media by model
   support and limits. Delete raw voice after transcription and expire other

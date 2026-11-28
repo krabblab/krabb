@@ -38,7 +38,7 @@ pub(crate) fn send_params(
     Ok(value)
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Typing {
     Shown,
     Unsupported,

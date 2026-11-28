@@ -4,10 +4,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// When the first indicator appears after a turn starts.
-pub(crate) const FIRST: Duration = Duration::from_millis(500);
+/// How long after a turn starts the first indicator appears.
+pub(crate) const DELAY: Duration = Duration::from_millis(500);
 
 const REFRESH: Duration = Duration::from_secs(4);
+const REFRESH_LONGEST: Duration = Duration::from_secs(30);
+const SHORT_LIFETIME: Duration = Duration::from_secs(6);
 const OPENING: Duration = Duration::from_secs(6);
 const CLOSING: Duration = Duration::from_secs(4);
 const BURST_SHORTEST: Duration = Duration::from_secs(4);
@@ -16,10 +18,13 @@ const PAUSE_SPAN: Duration = Duration::from_secs(6);
 const PAUSE_STOPPED: Duration = Duration::from_secs(2);
 const PAUSE_VISIBLE: Duration = Duration::from_secs(2);
 const PAUSE_LONGEST: Duration = Duration::from_secs(20);
+const RETRY: Duration = Duration::from_secs(1);
+const LIFETIME_SHORTEST: u64 = 3;
 const LIFETIME_LONGEST: u64 = 300;
 
 /// How long a channel's typing indicator stays visible and whether the channel can clear it.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Indicator {
     /// Seconds the platform keeps the indicator after one `typing` call.
     pub(crate) lifetime: u64,
@@ -30,17 +35,25 @@ pub(crate) struct Indicator {
 
 impl Indicator {
     pub(crate) fn validate(&self) -> Result<(), String> {
-        if !(1..=LIFETIME_LONGEST).contains(&self.lifetime) {
+        if !(LIFETIME_SHORTEST..=LIFETIME_LONGEST).contains(&self.lifetime) {
             return Err(format!(
-                "The typing lifetime must be between 1 and {LIFETIME_LONGEST} seconds."
+                "The typing lifetime must be between {LIFETIME_SHORTEST} and {LIFETIME_LONGEST} \
+                 seconds."
             ));
         }
 
         Ok(())
     }
 
+    /// How often typing is refreshed: a second before short indicators expire, two before others.
     fn refresh(&self) -> Duration {
-        REFRESH.min(Duration::from_secs(self.lifetime.saturating_sub(1).max(1)))
+        let lifetime = Duration::from_secs(self.lifetime.max(LIFETIME_SHORTEST));
+
+        if lifetime <= SHORT_LIFETIME {
+            return REFRESH.min(lifetime - Duration::from_secs(1));
+        }
+
+        REFRESH_LONGEST.min(lifetime - Duration::from_secs(2))
     }
 
     /// The shortest and longest pause; none when a pause outlasting the indicator would look idle.
@@ -71,6 +84,14 @@ enum Phase {
     Pause(Duration),
 }
 
+/// Whether a pause still owes the channel a stop after one failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Retry {
+    Unused,
+    Due,
+    Spent,
+}
+
 /// A seeded schedule of typing bursts and pauses, measured from the start of a turn.
 pub(crate) struct Rhythm {
     pauses: Option<(Duration, Duration)>,
@@ -78,7 +99,9 @@ pub(crate) struct Rhythm {
     refresh: Duration,
     random: Random,
     phase: Phase,
-    hold: Duration,
+    hold: Option<Duration>,
+    retry: Retry,
+    showing: bool,
 }
 
 impl Rhythm {
@@ -93,52 +116,106 @@ impl Rhythm {
             refresh: indicator.map_or(REFRESH, |indicator| indicator.refresh()),
             random,
             phase: Phase::Burst(burst),
-            hold: OPENING,
+            hold: None,
+            retry: Retry::Unused,
+            showing: false,
         }
     }
 
     /// What to do at `now` and when to wake next, both measured from the turn's start.
     pub(crate) fn beat(&mut self, now: Duration) -> (Beat, Duration) {
         let Some((shortest, longest)) = self.pauses else {
+            self.showing = true;
+
             return (Beat::Show, now + self.refresh);
         };
 
         match self.phase {
+            Phase::Pause(end) if now < end && self.retry == Retry::Due => {
+                self.retry = Retry::Spent;
+                self.showing = false;
+
+                (Beat::Stop, end)
+            }
+
             Phase::Pause(end) if now < end => (Beat::Rest, end),
 
             Phase::Pause(_) => {
                 let end = now + self.random.between(BURST_SHORTEST, BURST_LONGEST);
 
                 self.phase = Phase::Burst(end);
+                self.showing = true;
 
                 (Beat::Show, (now + self.refresh).min(end))
             }
 
-            Phase::Burst(end) if now < end.max(self.hold) => {
-                (Beat::Show, (now + self.refresh).min(end.max(self.hold)))
-            }
+            Phase::Burst(end) => {
+                let until = self.hold.map_or(Duration::MAX, |hold| end.max(hold));
 
-            Phase::Burst(_) => {
+                if now < until {
+                    self.showing = true;
+
+                    return (Beat::Show, (now + self.refresh).min(until));
+                }
+
                 let end = now + self.random.between(shortest, longest);
 
                 self.phase = Phase::Pause(end);
+                self.retry = Retry::Unused;
 
-                (if self.stop { Beat::Stop } else { Beat::Rest }, end)
+                if !self.stop {
+                    return (Beat::Rest, end);
+                }
+
+                self.showing = false;
+
+                (Beat::Stop, end)
             }
         }
     }
 
-    /// Reply text arrived, so typing holds until the reply is out; true when a pause ended.
-    pub(crate) fn write(&mut self, now: Duration) -> bool {
-        self.hold = self.hold.max(now + CLOSING);
+    /// Reply text arrived, so pauses may start and typing holds until the reply is out; true when
+    /// a pause ended.
+    pub(crate) fn reply(&mut self, now: Duration) -> bool {
+        let hold = OPENING.max(now + CLOSING);
+
+        self.hold = Some(self.hold.map_or(hold, |held| held.max(hold)));
 
         if !matches!(self.phase, Phase::Pause(_)) {
             return false;
         }
 
-        self.phase = Phase::Burst(now + self.random.between(BURST_SHORTEST, BURST_LONGEST));
+        self.resume(now);
 
         true
+    }
+
+    /// Starts a fresh burst at `now`, such as when a tool resumes after an approval.
+    pub(crate) fn resume(&mut self, now: Duration) {
+        self.phase = Phase::Burst(now + self.random.between(BURST_SHORTEST, BURST_LONGEST));
+        self.retry = Retry::Unused;
+    }
+
+    /// A stop failed; the wake that retries it once during this pause, if any.
+    pub(crate) fn missed(&mut self, now: Duration) -> Option<Duration> {
+        self.showing = true;
+
+        let Phase::Pause(end) = self.phase else {
+            return None;
+        };
+
+        if self.retry != Retry::Unused {
+            return None;
+        }
+
+        self.retry = Retry::Due;
+
+        Some((now + RETRY).min(end))
+    }
+
+    /// Whether a stop would clear an indicator the channel may still show.
+    pub(crate) fn clears(&self) -> bool {
+        self.stop && self.showing
     }
 }
 
@@ -182,8 +259,10 @@ mod tests {
 
     fn schedule(indicator: Option<Indicator>, seed: u64, turn: Duration) -> Vec<(Beat, Duration)> {
         let mut rhythm = Rhythm::new(indicator, seed);
-        let mut now = FIRST;
+        let mut now = DELAY;
         let mut beats = Vec::new();
+
+        rhythm.reply(DELAY);
 
         while now < turn {
             let (beat, next) = rhythm.beat(now);
@@ -308,7 +387,9 @@ mod tests {
     fn reply_text_ends_a_pause_and_holds_typing() {
         for seed in 0..64 {
             let mut rhythm = Rhythm::new(Some(TELEGRAM), seed);
-            let mut now = FIRST;
+            let mut now = DELAY;
+
+            rhythm.reply(DELAY);
 
             let pause = loop {
                 let (beat, next) = rhythm.beat(now);
@@ -323,8 +404,8 @@ mod tests {
             let written = now + Duration::from_secs(1);
 
             assert!(written < pause);
-            assert!(rhythm.write(written));
-            assert!(!rhythm.write(written));
+            assert!(rhythm.reply(written));
+            assert!(!rhythm.reply(written));
 
             let mut now = written;
 
@@ -340,21 +421,130 @@ mod tests {
     }
 
     #[test]
-    fn channels_declare_their_indicator_lifetime() {
-        assert_eq!(TELEGRAM.refresh(), Duration::from_secs(4));
+    fn lifetimes_set_the_refresh_and_pause_bounds() {
+        for (indicator, refresh) in [
+            (Indicator { lifetime: 3, stop: false }, 2),
+            (TELEGRAM, 4),
+            (Indicator { lifetime: 6, stop: false }, 4),
+            (DISCORD, 8),
+            (SIGNAL, 13),
+            (WHATSAPP, 23),
+            (SLACK, 30),
+        ] {
+            assert_eq!(indicator.refresh(), Duration::from_secs(refresh), "{indicator:?}");
+        }
 
-        assert_eq!(Indicator { lifetime: 2, stop: false }.refresh(), Duration::from_secs(1));
         assert_eq!(TELEGRAM.pauses().unwrap().0, Duration::from_secs(7));
+
         assert_eq!(DISCORD.pauses().unwrap().0, Duration::from_secs(12));
         assert_eq!(SLACK.pauses().unwrap().0, Duration::from_secs(2));
         assert_eq!(WHATSAPP.pauses(), None);
 
-        for lifetime in [1, 5, LIFETIME_LONGEST] {
+        for lifetime in [LIFETIME_SHORTEST, 5, LIFETIME_LONGEST] {
             assert!(Indicator { lifetime, stop: false }.validate().is_ok());
         }
 
-        for lifetime in [0, LIFETIME_LONGEST + 1] {
+        for lifetime in [0, LIFETIME_SHORTEST - 1, LIFETIME_LONGEST + 1] {
             assert!(Indicator { lifetime, stop: true }.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn turns_without_reply_text_never_pause() {
+        for indicator in [TELEGRAM, DISCORD, SLACK, SIGNAL] {
+            let mut rhythm = Rhythm::new(Some(indicator), 5);
+            let mut now = DELAY;
+
+            while now < Duration::from_secs(300) {
+                let (beat, next) = rhythm.beat(now);
+
+                assert_eq!(beat, Beat::Show, "{indicator:?}");
+                assert!(next - now <= indicator.refresh());
+
+                now = next;
+            }
+        }
+    }
+
+    #[test]
+    fn resuming_starts_a_full_burst() {
+        for seed in 0..64 {
+            let mut rhythm = Rhythm::new(Some(SIGNAL), seed);
+            let mut now = DELAY;
+
+            rhythm.reply(DELAY);
+
+            loop {
+                let (beat, next) = rhythm.beat(now);
+
+                if beat == Beat::Stop {
+                    break;
+                }
+
+                now = next;
+            }
+
+            assert!(!rhythm.clears());
+
+            rhythm.resume(now);
+
+            let (beat, _) = rhythm.beat(now);
+
+            assert_eq!(beat, Beat::Show);
+            assert!(rhythm.clears());
+
+            let mut later = now;
+
+            while later < now + BURST_SHORTEST {
+                let (beat, next) = rhythm.beat(later);
+
+                assert_eq!(beat, Beat::Show, "{seed}");
+
+                later = next;
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_stop_is_retried_once() {
+        let mut rhythm = Rhythm::new(Some(SLACK), 2);
+        let mut now = DELAY;
+
+        assert_eq!(rhythm.missed(now), None);
+
+        rhythm.reply(DELAY);
+
+        let end = loop {
+            let (beat, next) = rhythm.beat(now);
+
+            if beat == Beat::Stop {
+                break next;
+            }
+
+            now = next;
+        };
+
+        let retry = rhythm.missed(now).unwrap();
+
+        assert_eq!(retry, now + RETRY);
+        assert!(rhythm.clears());
+        assert_eq!(rhythm.beat(retry), (Beat::Stop, end));
+        assert!(!rhythm.clears());
+        assert_eq!(rhythm.missed(retry), None);
+        assert_eq!(rhythm.beat(retry + RETRY / 2), (Beat::Rest, end));
+        assert_eq!(rhythm.beat(end).0, Beat::Show);
+    }
+
+    #[test]
+    fn only_stoppable_indicators_are_cleared() {
+        for (indicator, clears) in [(Some(SLACK), true), (Some(TELEGRAM), false), (None, false)] {
+            let mut rhythm = Rhythm::new(indicator, 4);
+
+            assert!(!rhythm.clears());
+
+            rhythm.beat(DELAY);
+
+            assert_eq!(rhythm.clears(), clears, "{indicator:?}");
         }
     }
 
@@ -369,7 +559,7 @@ mod tests {
     fn channels_without_a_declaration_keep_the_steady_refresh() {
         let mut rhythm = Rhythm::new(None, 9);
 
-        assert!(!rhythm.write(Duration::from_secs(1)));
+        assert!(!rhythm.reply(Duration::from_secs(1)));
 
         let beats = schedule(None, 9, Duration::from_secs(60));
 
@@ -377,7 +567,7 @@ mod tests {
 
         for (index, (beat, at)) in beats.iter().enumerate() {
             assert_eq!(*beat, Beat::Show);
-            assert_eq!(*at, FIRST + REFRESH * u32::try_from(index).unwrap());
+            assert_eq!(*at, DELAY + REFRESH * u32::try_from(index).unwrap());
         }
     }
 }

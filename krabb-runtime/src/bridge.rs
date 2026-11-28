@@ -1102,7 +1102,7 @@ pub(crate) async fn bridge_with_media(
                 let started = tokio::time::Instant::now();
                 let mut rhythm =
                     typing::Rhythm::new(channel.typing, getrandom::u64().unwrap_or_default());
-                let activity = tokio::time::sleep_until(started + typing::FIRST);
+                let activity = tokio::time::sleep_until(started + typing::DELAY);
                 tokio::pin!(activity);
                 let mut ticker = tokio::time::interval_at(
                     tokio::time::Instant::now() + std::time::Duration::from_millis(500),
@@ -1133,11 +1133,14 @@ pub(crate) async fn bridge_with_media(
                                         approvals.lock().await.cancel(&approve);
                                         warn!(error = %diagnostic(sentence(error.to_string())), "Inline approval failed.");
                                     }
+
+                                    rhythm.resume(started.elapsed());
+                                    activity.as_mut().reset(tokio::time::Instant::now());
                                 }
 
                                 notice => {
                                     if matches!(notice, StreamNotice::Text(_))
-                                        && rhythm.write(started.elapsed())
+                                        && rhythm.reply(started.elapsed())
                                     {
                                         activity.as_mut().reset(tokio::time::Instant::now());
                                     }
@@ -1179,15 +1182,37 @@ pub(crate) async fn bridge_with_media(
 
                             // `answer` observes the cancellation and settles its task; dropping it
                             // here could abandon a running action before its outcome is recorded.
-                            tokio::select! {
+                            let outcome = tokio::select! {
                                 biased;
-                                _ = stop.notified() => indicating = false,
-                                _ = turn_cancel.cancelled() => indicating = false,
-                                outcome = indicate_typing(&channel, channel_id, &chat, thread.as_deref(), &event, clear, &mut stream_call) => indicating = outcome != Typing::Unsupported,
+                                _ = stop.notified() => None,
+                                _ = turn_cancel.cancelled() => None,
+                                outcome = indicate_typing(&channel, channel_id, &chat, thread.as_deref(), &event, clear, &mut stream_call) => Some(outcome),
+                            };
+
+                            indicating = outcome.is_some_and(|outcome| outcome != Typing::Unsupported);
+
+                            if clear
+                                && outcome == Some(Typing::Failed)
+                                && let Some(retry) = rhythm.missed(started.elapsed())
+                            {
+                                activity.as_mut().reset(started + retry);
                             }
                         }
                     }
                 };
+
+                if rhythm.clears() && (turn_cancel.requested() || stop.is_signaled()) {
+                    indicate_typing(
+                        &channel,
+                        channel_id,
+                        &chat,
+                        thread.as_deref(),
+                        &event,
+                        true,
+                        &mut stream_call,
+                    )
+                    .await;
+                }
 
                 offset = channels::intake::finish(intake, &sessions, channel_id).await?;
 

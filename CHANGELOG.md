@@ -57,8 +57,7 @@ Semantic Versioning.
 - Configure Slack conversations through interactive setup.
 - Display rich text and code panels in terminal conversations.
 - Control data visibility between integrations and isolate conversations with worktrees.
-- Show typing feedback on Discord, WhatsApp, Signal, and supported Slack threads.
-- Show typing in bursts and pauses, like a person writing.
+- Show typing in human-like bursts on Telegram, Discord, WhatsApp, Signal, and Slack threads.
 - Isolate Git test fixtures from inherited hook and worktree settings so pre-commit
   checks cannot overwrite the contributor's branch, index, or Git configuration.
 - Preserve supported rich formatting in channels, including streamed edits and scheduled messages.

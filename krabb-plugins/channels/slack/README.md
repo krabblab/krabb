@@ -197,8 +197,8 @@ Slack requires an app configured for its assistant or agent messaging experience
 and access to that method (`chat:write`, or the legacy `assistant:write` scope).
 The supplied minimal DM manifest does not configure that experience; creating an
 ordinary message thread alone does not guarantee typing status is available.
-Typing comes in bursts; each pause clears the status, and Slack also clears it on
-reply or after its two-minute timeout. Unsupported contexts and API failures do not
+Typing comes in bursts with pauses of two to eight seconds; each pause clears the
+status, and Slack also clears it on reply or after its two-minute timeout. Unsupported contexts and API failures do not
 prevent replies.
 
 ## Troubleshooting

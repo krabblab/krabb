@@ -325,10 +325,11 @@ notifications are published atomically with their transcript and delivery record
 answer and command APIs accept an explicit configured `client` identity, defaulting to TUI for older
 clients; a command uses that client's shell setting. Completion requires a checkpoint confirming the
 entire goal. Progress uses its own durable delivery record; a failed progress send cannot block the
-final answer. Where supported, typing comes in bursts with irregular pauses until the turn ends. Final answers use fresh messages
-and adapter chunking, preserving completion notifications. Terminal clients retain streamed text and
-separate contextual progress from the final answer. Provider-independent research guidance requires
-checking the exact supplied URL and reporting actual tool results.
+final answer. Where supported, typing comes in bursts with irregular pauses until the turn ends.
+Final answers use fresh messages and adapter chunking, preserving completion notifications.
+Terminal clients retain streamed text and separate contextual progress from the final answer.
+Provider-independent research guidance requires checking the exact supplied URL and reporting
+actual tool results.
 
 The host starts each turn with its built-in charter and a description of itself, then
 reads `KRABB_HOME/data/system/KRAB.md` and `KLAW.md` as bounded system context, followed

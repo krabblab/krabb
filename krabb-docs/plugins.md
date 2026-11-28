@@ -182,11 +182,13 @@ lifetime = 5
 stop = false
 ```
 
-`lifetime` is how many seconds, from 1 to 300, the platform keeps the indicator after one
-`typing` call. Set `stop = true` when the plugin clears the indicator for a `typing` call that
-carries `"stop": true`. Without a stop, pauses outlast the lifetime so the indicator visibly
-disappears; when that would exceed the longest human-like pause, typing stays steady. A channel
-without the table keeps the steady four-second refresh, and older plugins never receive `stop`.
+`lifetime` is how many seconds, from 3 to 300, the platform keeps the indicator after one
+`typing` call. The host refreshes a second before indicators of up to six seconds expire, at most
+every four seconds, and two seconds before longer ones expire, at most every 30 seconds. Set
+`stop = true` when the plugin clears the indicator for a `typing` call that carries
+`"stop": true`. Without a stop, pauses outlast the lifetime so the indicator visibly disappears;
+when that would exceed the longest human-like pause, typing stays steady. A channel without the
+table keeps the steady four-second refresh, and older plugins never receive `stop`.
 
 Declare each external program the plugin runs, which Krabb cannot install for it, in a
 `[[requires]]` entry:
@@ -365,12 +367,15 @@ fields as `send`, without text or a delivery ID, and return `true` on success.
 The host also supplies `message` (the incoming event ID as a string) and
 `private` (whether the conversation is a DM). These additive fields let plugins
 reference the incoming message or distinguish individual and group recipients;
-older handlers may ignore them.
+older handlers may ignore them. For a channel that declares `stop = true` in `[typing]`, the
+host adds `stop` (`true`) when the plugin should clear the indicator instead of showing it.
 The host shows it in bursts of 4 to 15 seconds with irregular pauses, refreshing within each
-burst before the declared lifetime ends. Typing never pauses in the first six seconds of a turn
-or within four seconds after reply text arrives, and reply text ends a pause. Unsupported
-methods, failures, and a two-second timeout disable this hint for the current
-turn; they never fail or replay the turn.
+burst before the declared lifetime ends. Typing never pauses in the first six seconds of a turn,
+before the first reply text, or within four seconds after reply text arrives; reply text and an
+answered approval end a pause. A pause clears a stoppable indicator, retrying a failed stop once,
+and a cancelled or interrupted turn clears it too. Unsupported methods disable this hint for the
+current turn, while failures and the two-second timeout wait for the next beat; they never fail
+or replay the turn.
 Discord and Signal support typing in direct and group conversations. WhatsApp
 typing also marks the incoming message as read. Slack supports assistant status
 in DM threads when the app has access to that API; ordinary channels and
