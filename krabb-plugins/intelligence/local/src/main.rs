@@ -47,16 +47,20 @@ async fn plugin_main() -> krabb_core::Result<()> {
         },
         move |request, emitter| {
             let client = client.clone();
-            async move { handle(&client, request, emitter).await }
+            let configured = std::env::var("KRABB_LOCAL_URL").unwrap_or_default();
+
+            async move { handle(&client, request, emitter, &configured).await }
         },
     )
     .await
 }
 
+/// Answers one host request, with CONFIGURED as the server URL setting (`auto` to find one).
 async fn handle(
     client: &reqwest::Client,
     request: Request,
     mut emitter: Emitter,
+    configured: &str,
 ) -> krabb_core::Result<Option<Response>> {
     let (id, method, params) = match request {
         Request::Call { id, method, params, .. } => (id, method, params),
@@ -65,8 +69,7 @@ async fn handle(
 
     let key = credential();
     let key = key.as_deref();
-    let configured = std::env::var("KRABB_LOCAL_URL").unwrap_or_default();
-    let base = || server::base(client, &configured, server::KNOWN, key);
+    let base = || server::base(client, configured, server::KNOWN, key);
 
     match method.as_str() {
         "check" => {

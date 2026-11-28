@@ -385,3 +385,6 @@ pub fn response(provider: &str, id: u64, result: Value) -> Result<Option<Respons
 
     Ok(Some(response))
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,4 +1,4 @@
-use super::{NO_TOOLS, generate, profile, refused, server};
+use super::{NO_TOOLS, generate, handle, profile, refused, server};
 
 use krabb_core::{
     Error,
@@ -268,4 +268,45 @@ async fn missing_models_and_unreachable_servers_fail_plainly() {
     let error = server::models(&client, &dead, None).await.unwrap_err();
 
     assert!(matches!(error, Error::Failed { .. }));
+}
+
+#[tokio::test]
+async fn host_requests_check_list_describe_and_generate() {
+    use krabb_core::types::Request;
+
+    let client = reqwest::Client::new();
+    let replies = vec![(200, models()), (200, models()), (200, models()), (200, reply("Hi."))];
+    let (base, _server) = krabb_test::http::responses(replies).await;
+
+    let call = |id, method: &str, params| Request::call(id, method, params);
+    let run = |request| {
+        let (emitter, _events) = emitter();
+
+        handle(&client, request, emitter, &base)
+    };
+
+    let checked = run(call(1, "check", json!({}))).await.unwrap().unwrap();
+
+    assert_eq!(checked.result.unwrap(), json!({}));
+
+    let listed = run(call(2, "command", json!({"args": ["models"]}))).await.unwrap().unwrap();
+
+    assert!(listed.result.unwrap()["text"].as_str().unwrap().contains("  qwen3-8b - qwen3-8b"));
+
+    let info = run(call(3, "model.info", json!({"model": "default"}))).await.unwrap().unwrap();
+
+    assert_eq!(info.result.unwrap()["window"]["tokens"], 32768);
+
+    let input = serde_json::to_value(request("qwen3-8b", false, false)).unwrap();
+    let answer = run(call(4, "generate", input)).await.unwrap().unwrap();
+
+    assert_eq!(answer.result.unwrap()["text"], "Hi.");
+
+    let unknown = run(call(5, "command", json!({"args": ["dance"]}))).await.unwrap_err();
+
+    assert!(unknown.to_string().contains("krabb local models"));
+    assert!(run(call(6, "other", json!({}))).await.unwrap().is_none());
+    let note = Request::Note { jsonrpc: "2.0".into(), method: "event".into(), params: json!({}) };
+
+    assert!(run(note).await.unwrap().is_none());
 }
