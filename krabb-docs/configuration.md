@@ -520,6 +520,14 @@ shell commands. Under a preset, `tools = false` or `shell = false` in a channel 
 still turns that capability off, and `approval = "off"` still blocks every change. Actions
 that run without asking are logged.
 
+Commands that need admin rights always ask, and only within the role's `elevation`:
+`packages` allows system package changes such as `sudo apt install`, `services` also
+allows service changes such as `sudo systemctl restart`, and `full` allows any `sudo`
+command. A preset implies `none`, except `loose`, which implies `packages`. A command
+above the level does not run; Krabb replies with the exact command for the owner to run.
+When Krabb itself runs as root, package and service commands need their level without
+`sudo` too.
+
 ## Visibility
 
 `visibility` is a list of outgoing grants, configurable globally or per channel/client:
