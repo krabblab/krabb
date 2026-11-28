@@ -21,7 +21,7 @@ struct Reading {
     network: bool,
     admin: bool,
     opaque: bool,
-    unknown: bool,
+    configured: bool,
     device: bool,
     outside: Vec<String>,
     unchecked: bool,
@@ -92,11 +92,9 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
                 Reason::Acts(_, Effect::UsesNetwork) => reading.network = true,
                 Reason::Acts(_, Effect::RunsCode) => reading.opaque |= !read && !scripted(segment),
 
-                Reason::Acts(_, Effect::RunsPrograms | Effect::RunsConfigured) => {
-                    reading.opaque |= !read;
-                }
-
-                Reason::Acts(_, Effect::Unlisted) => reading.unknown |= !read,
+                Reason::Acts(_, Effect::RunsPrograms) => reading.opaque |= !read,
+                Reason::Acts(_, Effect::RunsConfigured) => reading.configured = true,
+                Reason::ProgramPath(_) => reading.opaque = true,
 
                 Reason::Device(_) => {
                     reading.device = true;
@@ -201,8 +199,12 @@ fn flags(reading: &Reading, packages: bool) -> Vec<String> {
         flags.push("uses the network".into());
     }
 
-    if !reading.outside.is_empty() {
-        flags.push(format!("reaches {} outside the workspace", list(&reading.outside)));
+    let named = |path: &String| reading.writes.contains(path) || reading.deletes.contains(path);
+    let outside: Vec<String> =
+        reading.outside.iter().filter(|path| !named(path)).cloned().collect();
+
+    if !outside.is_empty() {
+        flags.push(format!("reaches {} outside the workspace", list(&outside)));
     }
 
     if reading.device {
@@ -215,8 +217,8 @@ fn flags(reading: &Reading, packages: bool) -> Vec<String> {
 
     if reading.opaque {
         flags.push("runs code Krabb cannot read".into());
-    } else if reading.unknown {
-        flags.push("runs a program Krabb does not know".into());
+    } else if reading.configured {
+        flags.push("may run repository-configured programs".into());
     } else if reading.unchecked {
         flags.push("has parts Krabb cannot check".into());
     }

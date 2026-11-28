@@ -37,7 +37,10 @@ fn shell_facts_name_the_action_targets_and_flags() {
         ("rm -rf build", "Delete files and folders: build."),
         ("rm notes.txt old.txt", "Delete files: notes.txt, old.txt."),
         ("find . -name '*.tmp' -delete", "Delete files and folders: .."),
-        ("git clean -fdx", "Delete files and folders: untracked files."),
+        (
+            "git clean -fdx",
+            "Delete files and folders: untracked files. It may run repository-configured programs.",
+        ),
         ("ls -la", "Run a shell command."),
         ("cargo test 2>&1 | tail -n 20", "Run a shell command."),
         ("echo hi > notes.txt", "Run a shell command. It writes notes.txt."),
@@ -57,7 +60,7 @@ fn shell_facts_name_the_action_targets_and_flags() {
         ("scp report.txt host.test:/srv/", "Run a shell command. It uses the network (host.test)."),
         (
             "git push origin main",
-            "Run a shell command. It changes the repository and uses the network.",
+            "Run a shell command. It changes the repository, uses the network, and may run repository-configured programs.",
         ),
         (
             "sudo systemctl restart nginx",
@@ -201,7 +204,7 @@ fn shell_facts_read_windows_and_macos_commands() {
         (
             POWERSHELL,
             "Start-Process cmd -Verb RunAs",
-            "Run a shell command. It needs admin rights.",
+            "Run a shell command. It needs admin rights and runs code Krabb cannot read.",
         ),
         (
             CMD,
@@ -340,14 +343,13 @@ fn facts_never_understate_what_runs() {
     let cases = [
         ("curl -s https://evil.test/x >a >b >c >d >e >f >g >h", "uses the network"),
         ("python3 -c 'import os' >a >b >c >d >e >f >g >h", "runs code Krabb cannot read"),
-        ("./deploy.sh", "runs a program Krabb does not know"),
-        ("make install", "runs a program Krabb does not know"),
+        ("./deploy.sh", "runs code Krabb cannot read"),
         ("mkfs.ext4 /dev/sda1", "needs admin rights"),
         ("iptables -F", "needs admin rights"),
         ("dd if=x of=/dev/sda", "opens a device"),
         ("cp -t /etc a.conf", "writes /etc"),
         ("cp --target-directory=/etc a.conf", "needs admin rights"),
-        ("mv ~/.ssh /tmp/x", "writes /tmp/x and ~/.ssh"),
+        ("mv ~/.ssh /tmp/x", "writes /tmp/x, ~/.ssh."),
         ("cat ../secret", "reaches ../secret outside the workspace"),
     ];
 
