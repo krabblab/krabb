@@ -91,6 +91,7 @@ pub(crate) fn status_with(
         "channels": channels,
         "plugins": installed,
         "plugin_states": states,
+        "capabilities": composition::summary(&config.plugins, &lock),
         "recovery": upgrade::recovery(root),
         "recovered": upgrade::outcome(root),
     }))
@@ -357,6 +358,17 @@ pub(crate) fn status_text(value: &serde_json::Value, installed: usize) -> String
         (format!("Channels: {}", capability_text(&value["channels"])), Vec::new()),
         (format!("Plugins: {installed} installed"), plugins),
     ];
+
+    let capabilities = value["capabilities"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(composition::line)
+        .collect::<Vec<_>>();
+
+    if !capabilities.is_empty() {
+        parts.push(("Capabilities".into(), capabilities));
+    }
 
     if let Some(from) = value["recovery"]["from"].as_str() {
         let state =

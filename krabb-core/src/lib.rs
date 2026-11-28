@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod client;
+pub mod composition;
 pub mod context;
 pub mod error;
 pub mod execution;
@@ -19,6 +20,7 @@ pub mod slash;
 pub mod task;
 pub mod types;
 
+pub use composition::Composition;
 pub use error::{Error, Result};
 pub use types::{Capability, Content, Event, Message, Role};
 

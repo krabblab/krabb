@@ -21,11 +21,8 @@ pub(crate) async fn tool_with_registry(
     let source = registry.source.clone().unwrap_or_else(|| origin::principal(memory_scope));
 
     if name == "data_query" {
-        let plugin = plugins
-            .get("sqlite")
-            .await
-            .filter(|plugin| plugin.supports(Capability::Store))
-            .ok_or("The SQLite data capability is not installed.")?;
+        let (store, plugin) =
+            plugins.find(Capability::Store).await.ok_or("The data capability is not installed.")?;
 
         let serde_json::Value::Object(values) = &mut args else {
             return Err("Data tool arguments must be an object.".into());
@@ -53,7 +50,7 @@ pub(crate) async fn tool_with_registry(
             Ok(response) => response,
 
             Err(error) => {
-                *failed_tool = Some("sqlite".into());
+                *failed_tool = Some(store);
                 return Err(error.into());
             }
         };
@@ -70,10 +67,11 @@ pub(crate) async fn tool_with_registry(
     if let Some(action) = name.strip_prefix("schedule_")
         && action != "propose"
     {
-        let (plugin_id, plugin) = plugins
-            .find(Capability::Scheduler)
-            .await
-            .ok_or("The scheduler plugin is not installed.")?;
+        let (plugin_id, plugin) = match args["id"].as_u64() {
+            Some(schedule) => schedules::owners::owner(plugins, schedule).await,
+            None => plugins.find(Capability::Scheduler).await,
+        }
+        .ok_or("The scheduler plugin is not installed.")?;
         let (method, params) = match action {
             "list" => ("list", args.clone()),
             "cancel" => ("remove", serde_json::json!({"id": args["id"]})),
@@ -96,24 +94,29 @@ pub(crate) async fn tool_with_registry(
             (method, params)
         };
 
-        let response = match registry
-            .cleanup
-            .call(Arc::clone(&plugin.process), Request::call(id, request_method, params))
-            .await
-        {
-            Ok(response) => response,
+        let value =
+            if method == "list" && !plugins.members(&Capability::Scheduler).await.also.is_empty() {
+                schedules::owners::list(plugins, id, request_method, params).await?
+            } else {
+                let response = match registry
+                    .cleanup
+                    .call(Arc::clone(&plugin.process), Request::call(id, request_method, params))
+                    .await
+                {
+                    Ok(response) => response,
 
-            Err(error) => {
-                *failed_tool = Some(plugin_id);
-                return Err(error.into());
-            }
-        };
+                    Err(error) => {
+                        *failed_tool = Some(plugin_id);
+                        return Err(error.into());
+                    }
+                };
 
-        if let Some(error) = response.error {
-            return Err(error.message.into());
-        }
+                if let Some(error) = response.error {
+                    return Err(error.message.into());
+                }
 
-        let value = response.result.ok_or("Scheduler returned no result.")?;
+                response.result.ok_or("Scheduler returned no result.")?
+            };
 
         return Ok(ToolResult::text(match method {
             "list" => format_schedule_list(&value),
@@ -319,8 +322,7 @@ pub(crate) async fn tool_with_registry(
     }
 
     if let Some(method) = name.strip_prefix("memory_") {
-        let (id_plugin, plugin) =
-            plugins.find(Capability::Memory).await.ok_or("The memory plugin is not installed.")?;
+        let members = plugins.members(&Capability::Memory).await;
         let mut params = args;
 
         let serde_json::Value::Object(values) = &mut params else {
@@ -343,9 +345,12 @@ pub(crate) async fn tool_with_registry(
             values.insert("approved".into(), serde_json::Value::Bool(approve));
         }
 
+        let (id_plugin, plugin) =
+            members.primary.clone().ok_or("The memory plugin is not installed.")?;
+
         let response = match registry
             .cleanup
-            .call(Arc::clone(&plugin.process), scoped_request(id, method, params, isolated))
+            .call(Arc::clone(&plugin.process), scoped_request(id, method, params.clone(), isolated))
             .await
         {
             Ok(response) => response,
@@ -360,22 +365,39 @@ pub(crate) async fn tool_with_registry(
             return Err(error.message.into());
         }
 
-        let value = response
-            .result
-            .map(|mut value| {
-                if let Some(items) = value["items"].as_array_mut() {
-                    items.retain(|entry| {
-                        entry["scope"]
-                            .as_str()
-                            .is_some_and(|scope| sharing::visible(&policy, scope))
-                    });
-                }
+        let mut value =
+            response.result.ok_or_else(|| "The memory plugin returned no result.".to_owned())?;
 
-                clip(value.to_string(), TEXT_LIMIT)
-            })
-            .ok_or_else(|| "The memory plugin returned no result.".to_owned())?;
+        // Searches read every memory plugin; writes stay with the primary.
+        if method == "search" {
+            for (source, plugin) in &members.also {
+                let request = scoped_request(id, method, params.clone(), isolated);
 
-        return Ok(ToolResult::text(value));
+                let Ok(Some(result)) = registry
+                    .cleanup
+                    .call(Arc::clone(&plugin.process), request)
+                    .await
+                    .map(|response| response.result)
+                else {
+                    warn!(plugin = %source, "An additional memory plugin did not answer a search.");
+                    continue;
+                };
+
+                let items = result["items"].as_array().into_iter().flatten();
+                let found =
+                    items.map(|entry| sourced(entry.clone(), Some(source.as_str()))).collect();
+
+                merge_items(&mut value, found);
+            }
+        }
+
+        if let Some(items) = value["items"].as_array_mut() {
+            items.retain(|entry| {
+                entry["scope"].as_str().is_some_and(|scope| sharing::visible(&policy, scope))
+            });
+        }
+
+        return Ok(ToolResult::text(clip(value.to_string(), TEXT_LIMIT)));
     }
 
     let id_plugin =

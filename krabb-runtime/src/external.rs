@@ -9,15 +9,58 @@ pub(crate) async fn external_command(
     external_command_at(args, json, home()).await
 }
 
+/// The plugin a capability command reaches: the one `--plugin` names, or the primary.
+fn command_plugin(
+    root: &Path,
+    capability: &Capability,
+    name: &str,
+    target: Option<String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let lock = load_lock_at(root)?;
+    let kind = capability.name();
+
+    let plugin = match target {
+        Some(id) => id,
+
+        None => {
+            let config = load_config_at(root)?;
+
+            composition::installed(capability, &config.plugins, &lock)
+                .primary
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "The primary {kind} plugin is not installed.\nSelect one with `krabb \
+                         plugin use <id> --for {kind}`."
+                    )
+                })?
+        }
+    };
+
+    let entry =
+        lock.plugins.get(&plugin).ok_or_else(|| format!("Plugin {plugin} is not installed."))?;
+
+    if !entry.capabilities.iter().any(|declared| declared == kind) {
+        return Err(format!("Plugin {plugin} does not provide {kind}.").into());
+    }
+
+    if !entry.commands.iter().any(|command| command.name == name) {
+        return Err(format!("Plugin {plugin} has no {name} command.").into());
+    }
+
+    Ok(plugin)
+}
+
 pub(crate) async fn external_command_at(
     args: Vec<String>,
     json: bool,
     root: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Some(name) = args.first() else {
+    let Some(name) = args.first().cloned() else {
         return Err("A plugin command is required.".into());
     };
 
+    let name = &name;
     let commands = available_commands(&root)?;
     let Some(owners) = commands.get(name) else {
         return Err(format!(
@@ -38,14 +81,25 @@ pub(crate) async fn external_command_at(
         return setup::command(&args[1..], id, &root, json).await;
     }
 
+    let mut args = args;
+
     let plugin = if owner.starts_with(RUNTIME_COMMAND_OWNER) {
         match name.as_str() {
             "session" => return session_command(&args[1..], &root, json).await,
             "delivery" => return delivery_command(&args[1..], &root, json).await,
             "schedule" => return schedule_command(&args[1..], &root, json).await,
-            "memory" | "tui" => name.clone(),
-            "data" => "sqlite".into(),
-            _ => return Err(format!("Unknown native command {name}.").into()),
+            "tui" => name.clone(),
+
+            name => {
+                let capability = capability_command(name)
+                    .ok_or_else(|| format!("Unknown native command {name}."))?;
+                let (rest, target) = composition::target(&args[1..])?;
+                let plugin = command_plugin(&root, &capability, name, target)?;
+
+                args.truncate(1);
+                args.extend(rest);
+                plugin
+            }
         }
     } else {
         owner

@@ -7,6 +7,10 @@ pub(crate) async fn schedule_command(
     root: &Path,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (args, target) = composition::target(args)?;
+    let args = args.as_slice();
+    let plugin = target.as_deref();
+
     let Some(action) = args.first().map(String::as_str) else {
         println!("{}", style_cli_help(schedule_help()));
         return Ok(());
@@ -56,7 +60,7 @@ pub(crate) async fn schedule_command(
             return Err("Choose --raw or --json, not both.".into());
         }
 
-        let id = resolve_schedule_id(root, selector).await?;
+        let id = resolve_schedule_id(root, plugin, selector).await?;
         let path = schedule_log_path(root, id)?;
 
         if raw {
@@ -136,7 +140,7 @@ pub(crate) async fn schedule_command(
         params["activate"] = serde_json::json!(true);
         let workspace_tools_enabled = params["context"]["tools"] == true;
         let shell_enabled = workspace_tools_enabled && params["context"]["shell"] == true;
-        let value = schedule_call(root, "add", params).await?;
+        let value = schedule_call(root, plugin, "add", params).await?;
         info!(schedule = id, "Scheduled task activated.");
 
         if json {
@@ -187,9 +191,10 @@ pub(crate) async fn schedule_command(
             .get(1)
             .ok_or("Usage: krabb schedule update <id-or-name> --to <destination>... | --clear.")?;
         let destinations = schedules::update(&args[2..])?;
-        let id = resolve_schedule_id(root, selector).await?;
+        let id = resolve_schedule_id(root, plugin, selector).await?;
         let value = schedule_call(
             root,
+            plugin,
             "update",
             serde_json::json!({
                 "id": id, "destinations": destinations, "approved": true
@@ -213,7 +218,7 @@ pub(crate) async fn schedule_command(
             return Err("Usage: krabb schedule list [PAGE].".into());
         }
 
-        let value = schedule_call(root, "list", serde_json::json!({"page": page})).await?;
+        let value = schedule_call(root, plugin, "list", serde_json::json!({"page": page})).await?;
         info!("Schedule list displayed.");
 
         if json {
@@ -232,9 +237,9 @@ pub(crate) async fn schedule_command(
             return Err(schedule_usage(action).into());
         }
 
-        let id = resolve_schedule_id(root, selector).await?;
-        let name = resolve_schedule_name(root, id).await?;
-        let value = schedule_call(root, action, serde_json::json!({"id": id})).await?;
+        let id = resolve_schedule_id(root, plugin, selector).await?;
+        let name = resolve_schedule_name(root, plugin, id).await?;
+        let value = schedule_call(root, plugin, action, serde_json::json!({"id": id})).await?;
         info!(schedule = id, action, "Scheduled task execution requested.");
 
         if json {
@@ -258,13 +263,14 @@ pub(crate) async fn schedule_command(
         return Err(schedule_usage(action).into());
     }
 
-    let id = resolve_schedule_id(root, selector).await?;
-    let name = resolve_schedule_name(root, id).await?;
+    let id = resolve_schedule_id(root, plugin, selector).await?;
+    let name = resolve_schedule_name(root, plugin, id).await?;
 
     if action == "approve" {
         let mut page = 1;
         let task = loop {
-            let value = schedule_call(root, "list", serde_json::json!({"page": page})).await?;
+            let value =
+                schedule_call(root, plugin, "list", serde_json::json!({"page": page})).await?;
             let pages = value["pages"].as_u64().unwrap_or(1);
 
             if let Some(task) = value["items"]
@@ -339,7 +345,7 @@ pub(crate) async fn schedule_command(
         _ => return Err(schedule_usage(action).into()),
     };
 
-    let value = schedule_call(root, method, serde_json::json!({"id": id})).await?;
+    let value = schedule_call(root, plugin, method, serde_json::json!({"id": id})).await?;
     info!(schedule = id, action, "Scheduled task updated.");
 
     if json {
@@ -406,6 +412,7 @@ Options:
   --message-chat <ID>       Recipient or TUI session ID (use tui-default for the default chat)
   --message-kind <KIND>     Recipient type: private or group (use group for tui)
   --message-thread <ID>     Optional message thread
+  --plugin <ID>             Send the action to this scheduler instead of the primary
 
 History options:
   --raw                     Print the original JSONL history
@@ -819,16 +826,18 @@ pub(crate) fn requested_tui_destination(instruction: &str) -> Option<AuthorizedD
 
 pub(crate) async fn schedule_call(
     root: &Path,
+    plugin: Option<&str>,
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-    ipc::call(
-        root,
-        "capability.call",
-        serde_json::json!({"service": "scheduler", "method": method, "params": params}),
-    )
-    .await
-    .map_err(|error| {
+    let mut request =
+        serde_json::json!({"service": "scheduler", "method": method, "params": params});
+
+    if let Some(plugin) = plugin {
+        request["plugin"] = plugin.into();
+    }
+
+    ipc::call(root, "capability.call", request).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::ConnectionRefused
             || error.kind() == std::io::ErrorKind::NotFound
         {
@@ -842,6 +851,7 @@ pub(crate) async fn schedule_call(
 
 pub(crate) async fn resolve_schedule_id(
     root: &Path,
+    plugin: Option<&str>,
     selector: &str,
 ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(id) = selector.parse::<u64>() {
@@ -851,7 +861,7 @@ pub(crate) async fn resolve_schedule_id(
     let mut page = 1;
 
     loop {
-        let value = schedule_call(root, "list", serde_json::json!({"page": page})).await?;
+        let value = schedule_call(root, plugin, "list", serde_json::json!({"page": page})).await?;
         let items =
             value["items"].as_array().ok_or("The scheduler returned an invalid task list.")?;
 
@@ -869,12 +879,13 @@ pub(crate) async fn resolve_schedule_id(
 
 pub(crate) async fn resolve_schedule_name(
     root: &Path,
+    plugin: Option<&str>,
     id: u64,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut page = 1;
 
     loop {
-        let value = schedule_call(root, "list", serde_json::json!({"page": page})).await?;
+        let value = schedule_call(root, plugin, "list", serde_json::json!({"page": page})).await?;
         let items =
             value["items"].as_array().ok_or("The scheduler returned an invalid task list.")?;
 
@@ -974,11 +985,13 @@ pub(crate) fn format_schedule_list(value: &serde_json::Value) -> String {
                 ));
             }
 
-            Some(format_tree_entry(
-                &format!("{id} | {} | {status}", item["name"].as_str().unwrap_or("Scheduled task")),
-                &details,
-                index + 1 == items.len(),
-            ))
+            let name = item["name"].as_str().unwrap_or("Scheduled task");
+            let title = match item["scheduler"].as_str() {
+                Some(scheduler) => format!("{id} | {name} | {status} | {scheduler}"),
+                None => format!("{id} | {name} | {status}"),
+            };
+
+            Some(format_tree_entry(&title, &details, index + 1 == items.len()))
         })
         .collect::<Vec<_>>();
 

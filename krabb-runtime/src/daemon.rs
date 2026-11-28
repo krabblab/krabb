@@ -161,7 +161,7 @@ pub(crate) async fn serve_inner(
 
     info!(channel = channel_id, model = model_id, "Daemon is running on local IPC.");
 
-    let scheduler_task = tokio::spawn(run_scheduler(
+    let scheduler_task = tokio::spawn(schedules::execution::supervise(
         plugins.clone(),
         Arc::clone(&sessions),
         Arc::clone(&stop),

@@ -12,6 +12,8 @@ use another language if they implement the JSON-RPC 2.0 protocol.
 - [Requests](#requests)
 - [Authoring](#authoring)
 - [Create A Custom Plugin](#create-a-custom-plugin)
+- [Plugin Composition](#plugin-composition)
+  - [New Capabilities](#new-capabilities)
 - [Install And Update Lifecycle](#install-and-update-lifecycle)
   - [Official Plugin Index](#official-plugin-index)
 - [Agent Interoperability](#agent-interoperability)
@@ -542,6 +544,84 @@ operator’s machine. Review permissions, secrets, and source revisions before
 installing a custom plugin. The repository’s planned `krabb-plugins/template`
 starter will provide a complete Rust example; until then, use this guide and
 the existing plugins as protocol references.
+
+## Plugin Composition
+
+Krabb fixes how plugins that declare the same capability combine. A plugin
+declares capabilities in its manifest and handshake but cannot change their
+composition.
+
+| Composition | Capabilities | Behavior |
+| --- | --- | --- |
+| `stack` | `channel`, `tool`, `mcp`, `client`, `resource`, `agent` | Every installed plugin contributes at once. |
+| `select` | `model`, `context`, `vision` | Each conversation uses one model plugin, chosen by the [model selection](configuration.md#provider-and-model-precedence); `context` and `vision` are features of that plugin. |
+| `primary` | `memory`, `store`, `scheduler`, `speech`, `runner` | One primary plugin takes writes and commands. |
+
+With one plugin for a primary capability there is nothing to configure. Without
+a selection the first plugin by ID serves, as before composition existed.
+Installing a second plugin for a primary capability never takes over: Krabb
+saves the current one as the primary and prints how to select the new one.
+
+```sh
+krabb plugin check zep --for memory
+krabb plugin use zep --for memory
+krabb plugin use cron --for scheduler --also
+```
+
+`plugin check <id> --for <capability>` runs read-only conformance probes for
+the protocol methods Krabb calls on that capability, such as memory `index`,
+`search`, and `list`, or scheduler `list` and `due`, and fails when a method is
+missing or answers in the wrong shape. Run it before selecting a plugin.
+`plugin use` saves the selection in [`[plugins.<capability>]`](configuration.md#plugin-selection)
+and applies it to a running daemon; a daemon that refuses it keeps the previous
+configuration. Configured plugins must be installed and declare the
+capability. Uninstalling a plugin drops it from the selection.
+
+The runtime resolves memory, store, scheduler, speech, and runner through the
+primary everywhere. `krabb memory`, `krabb data`, `krabb schedule`, and the TUI
+`/memory`, `/data`, and `/schedule` commands follow it; add `--plugin <id>` to
+reach another installed plugin of that capability. A plugin of the same
+capability may provide the `memory` or `data` command, and the selection picks
+which one answers. A configured primary that is unavailable leaves the
+capability unavailable; Krabb never substitutes another plugin.
+
+Memory and scheduler plugins combine. `also` adds plugins next to the primary:
+
+- Memory reads, the context index, `memory_search`, and IPC `search` and
+  `index`, merge the primary's entries with every additional plugin's, each
+  marked with its source. The index stays within the usual context bound.
+  Writes go to the primary unless a command names another with `--plugin`.
+- Each schedule belongs to the scheduler that holds it. Each scheduler runs its
+  own schedules, lists merge with a scheduler column, and pause, resume, run,
+  retry, update, and cancel reach the owner. New schedules go to the primary.
+
+Roles, visibility, presets, and approvals apply to every plugin the same way.
+Store, speech, and runner have one provider, so `also` is refused for them.
+
+Switching the primary keeps data where it is. For memory and scheduler, the
+previous primary stays as an additional plugin, so its memories stay readable
+and its schedules keep running; undo with `krabb plugin use <previous> --for
+<capability>`. Speech and runner hold no data. A store holds Krabb data that
+the store protocol cannot export, so Krabb refuses to switch it and names the
+next step instead.
+
+### New Capabilities
+
+New ideas grow in three levels:
+
+1. **Tools.** A plugin exposes a new idea, such as a classifier, as tools with
+   no host change: declare the `tool` capability and answer `tools` and
+   `execute` as described in [Tool Discovery And Results](#tool-discovery-and-results).
+   For example, a `classify_text` tool takes text and returns labels. Tools
+   stack, follow the approval policy, and need no selection.
+2. **Custom capabilities.** A plugin will declare a namespaced capability of
+   its own, which other plugins and the host can discover and call. This level
+   is planned and tracked in issue #387.
+3. **Promotion.** When a custom capability is widely used, Krabb can promote it
+   to a system capability: the host adds it to the composition table, defines its
+   protocol methods, conformance probes, and export or import, and integrates it
+   with roles, visibility, and approvals. Promotion is a Krabb release with a
+   protocol minor version, so existing plugins keep working.
 
 ## Install And Update Lifecycle
 

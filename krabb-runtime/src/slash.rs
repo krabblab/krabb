@@ -887,16 +887,11 @@ async fn model(
 
 /// Lists the scheduler's work; only local clients reach it, so the whole list is theirs.
 async fn schedule(host: &Host<'_>) -> Result<String, PluginError> {
-    let Some((_, plugin)) = host.plugins.find(Capability::Scheduler).await else {
-        return Ok("Schedules are unavailable right now.".into());
-    };
+    let params = serde_json::json!({"page": 1});
 
-    let response =
-        plugin.call(Request::call(host.call, "list", serde_json::json!({"page": 1}))).await?;
-
-    Ok(match (response.result, response.error) {
-        (Some(value), None) => clip(format_schedule_list(&value), 3500),
-        _ => "Schedules are unavailable right now.".into(),
+    Ok(match schedules::owners::list(host.plugins, host.call, "list", params).await {
+        Ok(value) => clip(format_schedule_list(&value), 3500),
+        Err(_) => "Schedules are unavailable right now.".into(),
     })
 }
 

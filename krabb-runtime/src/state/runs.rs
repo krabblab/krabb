@@ -25,6 +25,9 @@ pub struct Run {
     pub result: String,
     pub targets: BTreeMap<String, Target>,
     pub reported: bool,
+    /// The scheduler that ran it; runs saved before composition belong to the primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<String>,
 }
 
 impl Run {

@@ -51,6 +51,10 @@ mod controls;
 #[path = "tests/selection.rs"]
 mod selection_tests;
 
+#[cfg(all(test, unix))]
+#[path = "tests/composition.rs"]
+mod composition_tests;
+
 pub fn token() -> io::Result<String> {
     let mut bytes = [0_u8; 32];
 
@@ -1663,12 +1667,48 @@ async fn capability_call(request: &IpcRequest, state: &State) -> IpcResponse {
         );
     }
 
-    let Some((_, plugin)) = state.plugins.find(capability).await else {
-        return IpcResponse::fail(
-            request.id,
-            -32000,
-            "The requested capability plugin is not loaded.",
-        );
+    let target = match request.params.get("plugin") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(id)) => Some(id.as_str()),
+
+        Some(_) => {
+            return IpcResponse::fail(request.id, -32602, "capability.call.plugin must be an ID.");
+        }
+    };
+
+    let plugins = &state.plugins;
+    let members = plugins.members(&capability).await;
+    let merged = target.is_none() && !members.also.is_empty();
+
+    if merged && service == "scheduler" && method == "list" {
+        return match crate::schedules::owners::list(plugins, request.id, "list", params.clone())
+            .await
+        {
+            Ok(value) => IpcResponse::ok(request.id, value),
+            Err(error) => IpcResponse::fail(request.id, -32000, error),
+        };
+    }
+
+    let chosen = match target {
+        Some(id) => plugins.named(&capability, id).await.map(|plugin| (id.to_owned(), plugin)),
+
+        None if merged && service == "scheduler" && method != "add" => {
+            match params["id"].as_u64() {
+                Some(id) => crate::schedules::owners::owner(plugins, id).await,
+                None => members.primary.clone(),
+            }
+            .ok_or_else(|| "The requested capability plugin is not loaded.".into())
+        }
+
+        None => members
+            .primary
+            .clone()
+            .ok_or_else(|| "The requested capability plugin is not loaded.".into()),
+    };
+
+    let plugin = match chosen {
+        Ok((_, plugin)) => plugin,
+        Err(error) => return IpcResponse::fail(request.id, -32000, error),
     };
 
     let result = match plugin.call(Request::call(request.id, method, params.clone())).await {
@@ -1686,6 +1726,25 @@ async fn capability_call(request: &IpcRequest, state: &State) -> IpcResponse {
 
         Err(error) => return IpcResponse::fail(request.id, -32000, error.to_string()),
     };
+
+    let mut result = result;
+
+    // Memory reads also search every additional memory plugin, each entry naming its source.
+    if merged && service == "memory" && matches!(method, "index" | "search") {
+        for (source, plugin) in &members.also {
+            let request = Request::call(request.id, method, params.clone());
+
+            let Ok(Some(found)) = plugin.call(request).await.map(|response| response.result) else {
+                continue;
+            };
+
+            let items = found["items"].as_array().into_iter().flatten();
+            let items =
+                items.map(|entry| crate::sourced(entry.clone(), Some(source.as_str()))).collect();
+
+            crate::merge_items(&mut result, items);
+        }
+    }
 
     if serde_json::to_vec(&result).map_or(true, |value| value.len().saturating_add(1024) > FRAME) {
         return IpcResponse::fail(
@@ -2084,6 +2143,21 @@ fn dispatch(request: &IpcRequest, state: &State) -> io::Result<IpcResponse> {
             let policy = super::selection::Policy::new(&config);
 
             *state.plugins.selection.lock().map_err(lock)? = Some(policy);
+            json!({"applied": true})
+        }
+
+        "config.plugins.reload" => {
+            let config =
+                super::load_config_at(&state.home).map_err(|error| invalid(&error.to_string()))?;
+            config.validate().map_err(|error| invalid(&error))?;
+
+            let installed =
+                super::load_lock_at(&state.home).map_err(|error| invalid(&error.to_string()))?;
+            super::composition::validate_installed(&config.plugins, &installed)
+                .map_err(|error| invalid(&error))?;
+
+            *state.plugins.composition.lock().map_err(lock)? = Some(config.plugins);
+            state.plugins.changed.notify_waiters();
             json!({"applied": true})
         }
 

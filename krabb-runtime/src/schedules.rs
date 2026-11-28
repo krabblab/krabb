@@ -1,6 +1,7 @@
 pub(crate) mod command;
 mod destinations;
 pub(crate) mod execution;
+pub(crate) mod owners;
 mod runs;
 pub(super) use destinations::{destination, parse, schema, update};
 pub(super) use runs::{destinations, publish};
@@ -111,10 +112,22 @@ pub async fn reconcile(
     stop: &Stop,
     call: &mut u64,
 ) {
+    let Some((scheduler_id, scheduler)) = plugins.find(Capability::Scheduler).await else {
+        return;
+    };
+
+    let primary = plugins.members(&Capability::Scheduler).await.primary.map(|(id, _)| id);
+
     let pending: Vec<_> = match sessions.lock() {
-        Ok(store) => {
-            store.runs.values().filter(|run| !run.reported).map(|run| (run.job, run.id)).collect()
-        }
+        Ok(store) => store
+            .runs
+            .values()
+            .filter(|run| !run.reported)
+            .filter(|run| {
+                run.scheduler.as_ref().or(primary.as_ref()).is_some_and(|id| *id == scheduler_id)
+            })
+            .map(|run| (run.job, run.id))
+            .collect(),
 
         Err(_) => return,
     };
@@ -122,10 +135,6 @@ pub async fn reconcile(
     if pending.is_empty() {
         return;
     }
-
-    let Some((_, scheduler)) = plugins.find(Capability::Scheduler).await else {
-        return;
-    };
 
     let start = (*call as usize) % pending.len();
 

@@ -28,7 +28,7 @@ pub(crate) async fn run_scheduler(
 
     loop {
         let lifecycle = Arc::new(Arc::clone(&plugins.lifecycle).read_owned().await);
-        let Some((scheduler_id, scheduler)) = plugins.find(Capability::Scheduler).await else {
+        let Some((scheduler_id, scheduler)) = claimable(&plugins).await else {
             drop(lifecycle);
             tokio::select! {
                 _ = stop.notified() => return,
@@ -158,7 +158,7 @@ pub(crate) async fn run_scheduler(
         let mut claimed_work = false;
 
         while workers.len() < SCHEDULE_CONCURRENCY {
-            let Some((scheduler_id, scheduler)) = plugins.find(Capability::Scheduler).await else {
+            let Some((scheduler_id, scheduler)) = claimable(&plugins).await else {
                 break;
             };
 
@@ -228,10 +228,11 @@ pub(crate) async fn run_scheduler(
                 }
             };
 
-            let Some(task) = task else {
+            let Some(mut task) = task else {
                 break;
             };
 
+            task["scheduler"] = scheduler_id.as_str().into();
             claimed_work = true;
             let task_id = task["id"].as_u64().unwrap_or_default();
 
@@ -330,6 +331,70 @@ pub(crate) async fn run_scheduler(
             }
         }
     }
+}
+
+/// The scheduler this loop claims from: the primary, or for an owned loop its scheduler
+/// while it still serves. An owned loop that stops serving keeps finishing what it claimed.
+async fn claimable(plugins: &Plugins) -> Option<(String, Arc<Live>)> {
+    let (id, scheduler) = plugins.find(Capability::Scheduler).await?;
+
+    if plugins.owner.is_some() && !plugins.serves(&Capability::Scheduler, &id).await {
+        return None;
+    }
+
+    Some((id, scheduler))
+}
+
+/// Runs one schedule loop per scheduler that serves, so each claims and finishes its own
+/// schedules. Loops start as schedulers join and idle once they stop serving.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn supervise(
+    plugins: Plugins,
+    sessions: Arc<Mutex<state::Store>>,
+    stop: Arc<Stop>,
+    home_root: PathBuf,
+    config: Config,
+    configured_workspace: PathBuf,
+    media_root: PathBuf,
+    default_provider: String,
+    default_model: String,
+    approvals: Arc<AsyncMutex<approval::Gate>>,
+) {
+    let mut loops = tokio::task::JoinSet::new();
+    let mut started = BTreeSet::new();
+
+    loop {
+        let changed = plugins.changed.notified();
+        let members = plugins.members(&Capability::Scheduler).await;
+
+        for (id, _) in members.all() {
+            if !started.insert(id.clone()) {
+                continue;
+            }
+
+            info!(plugin = %id, "Schedule loop started.");
+            loops.spawn(run_scheduler(
+                plugins.owned_by(id),
+                Arc::clone(&sessions),
+                Arc::clone(&stop),
+                home_root.clone(),
+                config.clone(),
+                configured_workspace.clone(),
+                media_root.clone(),
+                default_provider.clone(),
+                default_model.clone(),
+                Arc::clone(&approvals),
+            ));
+        }
+
+        tokio::select! {
+            _ = stop.notified() => break,
+
+            _ = changed => {}
+        }
+    }
+
+    while loops.join_next().await.is_some() {}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -618,7 +683,8 @@ pub(crate) async fn process_pending_schedule_reports(
 
         after = Some(next_after);
 
-        for report in reports {
+        for mut report in reports {
+            report["scheduler"] = scheduler_id.as_str().into();
             let task_id = report["id"].as_u64().unwrap_or_default();
             let run_id = report["run_id"].as_u64();
             let finish = &report["finish"];

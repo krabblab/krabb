@@ -11,7 +11,17 @@ pub(crate) async fn plugin(
             setup::run(options, &home(), json).await?;
         }
 
-        PluginCommand::Check(args) => setup::check::command(&home(), &args.id, json).await?,
+        PluginCommand::Check(args) => match args.capability {
+            Some(capability) => {
+                composition::check_command(&home(), &args.id, &capability, json).await?
+            }
+
+            None => setup::check::command(&home(), &args.id, json).await?,
+        },
+
+        PluginCommand::Use(args) => {
+            composition::use_command(&home(), &args.id, &args.capability, args.also, json).await?
+        }
 
         PluginCommand::List(output) => {
             let root = home();
@@ -86,6 +96,14 @@ pub(crate) async fn plugin(
                 match pin.and_then(|_| link(source, linked)) {
                     Ok(manifest) => {
                         drop(spinner);
+
+                        match composition::hold(&root, &manifest.id).await {
+                            Ok(held) => notices.extend(held),
+
+                            Err(error) => {
+                                warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "The current plugin selection could not be kept.");
+                            }
+                        }
 
                         if let Some(notice) =
                             pinned.and_then(|version| index::notice(&root, &id, &version))
@@ -267,6 +285,10 @@ pub(crate) async fn plugin(
 
                 match uninstall_plugin_at(&root, id, name.force).await {
                     Ok(outcome) => {
+                        if let Err(error) = composition::forget(&root, id).await {
+                            warn!(plugin = %id, error = %diagnostic(sentence(error.to_string())), "The removed plugin could not be dropped from the plugin selection.");
+                        }
+
                         let version = outcome["version"]
                             .as_str()
                             .map(|version| format!("@v{version}"))

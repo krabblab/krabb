@@ -50,6 +50,7 @@ mod choice;
 mod cli;
 mod clients;
 mod compaction;
+mod composition;
 mod context;
 #[cfg(test)]
 mod context_tests;
@@ -291,6 +292,10 @@ impl Cancellation {
 pub(crate) struct Plugins {
     config: Arc<Config>,
     selection: Arc<Mutex<Option<selection::Policy>>>,
+    /// The `[plugins]` table after a reload, which replaces the one in `config`.
+    composition: Arc<Mutex<Option<composition::Table>>>,
+    /// The scheduler a schedule loop serves, so its tasks finish where they were claimed.
+    owner: Option<Arc<str>>,
     items: Arc<RwLock<BTreeMap<String, Arc<Live>>>>,
     detached: Arc<RwLock<BTreeSet<String>>>,
     /// Why each plugin that the daemon could not start failed, redacted and bounded.
@@ -328,6 +333,8 @@ impl Default for Plugins {
         Self {
             config: Arc::new(Config::default()),
             selection: Arc::new(Mutex::new(None)),
+            composition: Arc::new(Mutex::new(None)),
+            owner: None,
             items: Arc::new(RwLock::new(BTreeMap::new())),
             detached: Arc::new(RwLock::new(BTreeSet::new())),
             failures: Arc::new(RwLock::new(BTreeMap::new())),
@@ -507,6 +514,10 @@ impl Plugins {
     }
 
     async fn find(&self, capability: Capability) -> Option<(String, Arc<Live>)> {
+        if capability.composition() == krabb_core::Composition::Primary {
+            return self.primary(capability).await;
+        }
+
         self.items
             .read()
             .await
@@ -1110,6 +1121,8 @@ pub(crate) struct Config {
     visibility: Vec<sharing::Rule>,
     #[serde(default)]
     clients: BTreeMap<String, ClientConfig>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    plugins: composition::Table,
 }
 
 impl Default for Config {
@@ -1128,6 +1141,7 @@ impl Default for Config {
             channels: BTreeMap::new(),
             visibility: Vec::new(),
             clients: BTreeMap::new(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -1206,6 +1220,7 @@ impl Config {
         self.inference.validate()?;
         self.operations.validate()?;
         selection::validate(self.provider.as_deref(), self.model.as_deref())?;
+        composition::validate(&self.plugins)?;
 
         for (id, channel) in &self.channels {
             if !valid(id) {
@@ -2197,23 +2212,22 @@ async fn append_installed_memory_context(
     scope: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let lock = load_lock_at(root)?;
-    let memory = lock
-        .plugins
-        .iter()
-        .find(|(_, entry)| entry.capabilities.iter().any(|capability| capability == "memory"));
-
-    let Some((id, _)) = memory else {
-        return Ok(());
-    };
-
     let config = load_config_at(root)?;
+    let members = composition::installed(&Capability::Memory, &config.plugins, &lock);
+
+    if members.all().next().is_none() {
+        return Ok(());
+    }
 
     config
         .validate()
         .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
 
-    let plugins = Plugins::default();
-    load_plugin(root, id, Some(Capability::Memory), false, &config, &plugins).await?;
+    let plugins = Plugins { config: Arc::new(config.clone()), ..Plugins::default() };
+
+    for id in members.all() {
+        load_plugin(root, id, Some(Capability::Memory), false, &config, &plugins).await?;
+    }
 
     let mut call = 1;
     append_memory_context(&plugins, messages, scope, &mut call).await;
@@ -3418,9 +3432,10 @@ fn list_at(
     let plugin_root = root.join("plugins");
     let mut rows = Vec::new();
 
-    let states = load_lock_at(root)
-        .map(|lock| status::plugin_states(root, &lock, runtime))
-        .unwrap_or_default();
+    let lock = load_lock_at(root).unwrap_or_default();
+    let states = status::plugin_states(root, &lock, runtime);
+    let table = load_config_at(root).map(|config| config.plugins).unwrap_or_default();
+    let capabilities = composition::summary(&table, &lock);
 
     if plugin_root.exists() {
         for entry in std::fs::read_dir(&plugin_root)? {
@@ -3449,12 +3464,17 @@ fn list_at(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "items": rows,
+                "capabilities": capabilities,
             }))?
         );
     } else if rows.is_empty() {
         println!("{NO_PLUGINS}");
     } else {
         println!("{}", format_plugin_list(&rows, page)?);
+
+        let lines = capabilities.iter().map(composition::line).collect::<Vec<_>>();
+
+        println!("\nCapabilities\n{}", format_tree_list(&lines));
     }
 
     Ok(())

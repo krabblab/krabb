@@ -158,6 +158,7 @@ pub(crate) fn publish(
         result: digest,
         targets: BTreeMap::new(),
         reported: !tracked,
+        scheduler: task["scheduler"].as_str().map(str::to_owned),
     };
 
     let mut deliveries = Vec::new();

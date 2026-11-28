@@ -420,22 +420,7 @@ pub(crate) async fn unload_plugin(
 }
 
 pub(crate) fn capability_name(capability: &Capability) -> &'static str {
-    match capability {
-        Capability::Model => "model",
-        Capability::Context => "context",
-        Capability::Vision => "vision",
-        Capability::Channel => "channel",
-        Capability::Store => "store",
-        Capability::Memory => "memory",
-        Capability::Scheduler => "scheduler",
-        Capability::Tool => "tool",
-        Capability::Mcp => "mcp",
-        Capability::Speech => "speech",
-        Capability::Client => "client",
-        Capability::Resource => "resource",
-        Capability::Agent => "agent",
-        Capability::Runner => "runner",
-    }
+    capability.name()
 }
 
 pub(crate) fn native_command(name: &str) -> bool {
@@ -466,20 +451,41 @@ pub(crate) fn native_command(name: &str) -> bool {
     )
 }
 
-pub(crate) fn krabb_owned_plugin_command(name: &str, owner: &str) -> bool {
-    matches!((name, owner), ("memory", "memory") | ("tui", "tui") | ("data", "sqlite"))
+/// The capability whose selected primary serves a Krabb command: `krabb memory` and
+/// `krabb data` reach the primary memory and store plugins.
+pub(crate) fn capability_command(name: &str) -> Option<Capability> {
+    match name {
+        "memory" => Some(Capability::Memory),
+        "data" => Some(Capability::Store),
+        _ => None,
+    }
+}
+
+pub(crate) fn krabb_owned_plugin_command(name: &str, owner: &str, capabilities: &[String]) -> bool {
+    match capability_command(name) {
+        Some(capability) => capabilities.iter().any(|declared| declared == capability.name()),
+        None => (name, owner) == ("tui", "tui"),
+    }
 }
 
 pub(crate) fn validate_commands(
     root: &Path,
     id: &str,
+    capabilities: &[String],
     commands: &[CommandSpec],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for command in commands {
-        if native_command(&command.name) && !krabb_owned_plugin_command(&command.name, id) {
+        let owned = krabb_owned_plugin_command(&command.name, id, capabilities);
+
+        if native_command(&command.name) && !owned {
             return Err(
                 format!("Plugin {id} command {} is reserved by Krabb.", command.name).into()
             );
+        }
+
+        // Plugins of one capability share its command, and the selection picks which serves.
+        if owned && capability_command(&command.name).is_some() {
+            continue;
         }
 
         for (other_id, entry) in &load_lock_at(root)?.plugins {
@@ -520,7 +526,7 @@ pub(crate) fn available_commands(
         }
 
         for command in &entry.commands {
-            let krabb_owned = krabb_owned_plugin_command(&command.name, id);
+            let krabb_owned = krabb_owned_plugin_command(&command.name, id, &entry.capabilities);
 
             if krabb_owned && binary_at(id, root).is_none() {
                 continue;
@@ -532,10 +538,11 @@ pub(crate) fn available_commands(
                 id.clone()
             };
 
-            commands
-                .entry(command.name.clone())
-                .or_insert_with(Vec::new)
-                .push((owner, command.clone()));
+            let owners = commands.entry(command.name.clone()).or_insert_with(Vec::new);
+
+            if !owners.iter().any(|(existing, _)| *existing == owner) {
+                owners.push((owner, command.clone()));
+            }
         }
     }
 

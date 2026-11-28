@@ -383,9 +383,7 @@ pub(crate) async fn answer_with_registry(
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let memory_plugin = plugins.find(Capability::Memory).await;
 
-    if plugins.get("sqlite").await.is_some_and(|plugin| plugin.supports(Capability::Store))
-        && tools_enabled
-    {
+    if tools_enabled && plugins.find(Capability::Store).await.is_some() {
         registry.specs.extend(data_tools());
     }
 

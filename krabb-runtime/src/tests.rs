@@ -6069,6 +6069,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
         super::validate_commands(
             &root,
             "second",
+            &[],
             &[CommandSpec {
                 name: "login".into(),
                 description: "Log in.".into(),
@@ -6082,6 +6083,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
         super::validate_commands(
             &root,
             "third-party",
+            &[],
             &[CommandSpec {
                 name: "memory".into(),
                 description: "Shadow Krabb memory.".into(),
@@ -6095,6 +6097,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
         super::validate_commands(
             &root,
             "sqlite",
+            &["store".to_owned()],
             &[CommandSpec {
                 name: "data".into(),
                 description: "Manage structured SQLite data.".into(),
@@ -6107,7 +6110,22 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
     assert!(
         super::validate_commands(
             &root,
+            "zep",
+            &["memory".to_owned()],
+            &[CommandSpec {
+                name: "memory".into(),
+                description: "Search and manage memories.".into(),
+                interactive: false,
+            }]
+        )
+        .is_ok()
+    );
+
+    assert!(
+        super::validate_commands(
+            &root,
             "memory",
+            &["memory".to_owned()],
             &[CommandSpec {
                 name: "memory".into(),
                 description: "Search and manage memories.".into(),
@@ -6121,6 +6139,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
         super::validate_commands(
             &root,
             "tui",
+            &["client".to_owned()],
             &[CommandSpec {
                 name: "tui".into(),
                 description: "Open the terminal interface.".into(),
@@ -6134,6 +6153,7 @@ fn plugin_commands_reserve_native_names_and_detect_duplicates() {
         super::validate_commands(
             &root,
             "second",
+            &[],
             &[CommandSpec {
                 name: "status".into(),
                 description: "Shadow status.".into(),
@@ -6415,6 +6435,7 @@ fn krabb_owned_plugin_commands_are_conditional_native_commands() {
         super::validate_commands(
             &root,
             "third-party",
+            &[],
             &[CommandSpec {
                 name: "memory".into(),
                 description: "Shadow memory.".into(),
@@ -6428,6 +6449,7 @@ fn krabb_owned_plugin_commands_are_conditional_native_commands() {
         super::validate_commands(
             &root,
             "third-party",
+            &[],
             &[CommandSpec {
                 name: "data".into(),
                 description: "Shadow SQLite data.".into(),

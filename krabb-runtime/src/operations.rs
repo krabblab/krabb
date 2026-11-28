@@ -2,7 +2,6 @@ use super::*;
 use krabb_core::operation::{self, Query, Receipt, Spec, Start};
 use state::TaskStatus;
 
-pub(crate) const RUNNER: &str = "runner";
 const DECLARATIONS: usize = 16;
 const DECLARATION_BYTES: usize = 64 * 1024;
 
@@ -67,11 +66,9 @@ pub(crate) struct Catalog {
 }
 
 pub(crate) async fn discover(plugins: &Plugins) -> Result<BTreeMap<String, Offer>, PluginError> {
-    let Some(plugin) = plugins.get(RUNNER).await else { return Ok(BTreeMap::new()) };
-
-    if !plugin.supports(Capability::Runner) {
+    let Some((runner, plugin)) = plugins.find(Capability::Runner).await else {
         return Ok(BTreeMap::new());
-    }
+    };
 
     let generation = plugin.restart_generation();
 
@@ -91,7 +88,7 @@ pub(crate) async fn discover(plugins: &Plugins) -> Result<BTreeMap<String, Offer
 
     let Ok(Ok(response)) = response else { return Ok(BTreeMap::new()) };
 
-    let offers = offers(response, &plugin, generation);
+    let offers = offers(response, &runner, &plugin, generation);
 
     *plugins.operations.lock().map_err(|_| "Operation lock is poisoned.")? =
         Some(Catalog { instance: Arc::downgrade(&plugin), generation, offers: offers.clone() });
@@ -99,7 +96,12 @@ pub(crate) async fn discover(plugins: &Plugins) -> Result<BTreeMap<String, Offer
     Ok(offers)
 }
 
-fn offers(response: Response, plugin: &Arc<Live>, generation: u64) -> BTreeMap<String, Offer> {
+fn offers(
+    response: Response,
+    runner: &str,
+    plugin: &Arc<Live>,
+    generation: u64,
+) -> BTreeMap<String, Offer> {
     let mut offers = BTreeMap::new();
 
     if response.error.is_some() {
@@ -126,7 +128,7 @@ fn offers(response: Response, plugin: &Arc<Live>, generation: u64) -> BTreeMap<S
 
     for spec in specs {
         let offer =
-            Offer { plugin: RUNNER.into(), spec, instance: Arc::downgrade(plugin), generation };
+            Offer { plugin: runner.into(), spec, instance: Arc::downgrade(plugin), generation };
         let tool = offer.tool();
 
         if offer.spec.validate().is_err()

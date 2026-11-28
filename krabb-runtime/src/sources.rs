@@ -118,7 +118,7 @@ pub(crate) fn link_recorded(
         return Err(error.into());
     }
 
-    validate_commands(home_root, &source.id, &manifest.commands)?;
+    validate_commands(home_root, &source.id, &manifest.capabilities, &manifest.commands)?;
 
     updates::state::check(home_root, load_lock_at(home_root)?.plugins.get(&source.id), &manifest)?;
 

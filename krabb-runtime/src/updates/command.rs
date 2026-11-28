@@ -587,7 +587,7 @@ pub(crate) fn inspect_update(
         return Err(error.into());
     }
 
-    validate_commands(home_root, id, &manifest.commands)?;
+    validate_commands(home_root, id, &manifest.capabilities, &manifest.commands)?;
     super::state::check(home_root, Some(entry), &manifest)?;
 
     let name = plugin_name(id);
@@ -739,7 +739,7 @@ pub(crate) fn check_update_candidate(
         return Err(format!("Saved update preview for {id} is invalid.").into());
     }
 
-    validate_commands(home_root, id, &manifest.commands)?;
+    validate_commands(home_root, id, &manifest.capabilities, &manifest.commands)?;
 
     if !candidate.binary.is_file() {
         return Err(
@@ -806,7 +806,7 @@ pub(crate) fn prepare_update(
         return Err(error.into());
     }
 
-    validate_commands(home_root, id, &manifest.commands)?;
+    validate_commands(home_root, id, &manifest.capabilities, &manifest.commands)?;
     super::state::check(home_root, Some(entry), &manifest)?;
 
     let name = plugin_name(id);

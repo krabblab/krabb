@@ -24,6 +24,7 @@ Semantic Versioning.
 - Revoke a plugin's secrets and grants on uninstall.
 - Guide setup prompts and test the connection after saving.
 - Rerun a plugin's connection test with `krabb plugin check`.
+- Choose which plugin serves memory, data, schedules, or speech with `krabb plugin use`.
 - Use shared slash commands in every channel and client.
 - Compact a conversation with `/compact` and answer again in chat channels with `/again`.
 - Show context use in `/status` and let Krabb explain how it works.

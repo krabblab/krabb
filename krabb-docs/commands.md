@@ -21,7 +21,8 @@ krabb update --rollback [-y|--yes] [--json]
 krabb completion <bash|fish|powershell|zsh>
 krabb plugin list [<page>] [--json]
 krabb plugin setup <id> [--no-activate] [--json]
-krabb plugin check <id> [--json]
+krabb plugin check <id> [--for <capability>] [--json]
+krabb plugin use <id> --for <capability> [--also] [--json]
 krabb <id> setup [--no-activate] [--json]
 krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [--unstable] [-y|--yes] [--json]
 krabb plugin versions <id> [--json]
@@ -29,7 +30,7 @@ krabb plugin update [-y|--yes] [--json]
 krabb plugin uninstall <id>... [-y|--yes] [--force] [--json]
 krabb plugin detach <id> [--json]
 krabb plugin attach <id> [--json]
-krabb memory <status|search|list|show|remember|edit|forget|audit|converge|learning|help> [arguments...]
+krabb memory <status|search|list|show|remember|edit|forget|audit|converge|learning|help> [--plugin <id>] [arguments...]
 krabb session new <id> [--model <name>] [--json]
 krabb session list [<page>] [--json]
 krabb session show <id> [--json]
@@ -445,6 +446,8 @@ an update.
 
 ```sh
 krabb plugin list [page]
+krabb plugin check <id> --for <capability>
+krabb plugin use <id> --for <capability> [--also]
 krabb plugin install <id>[@<version>|@latest]... [--source <path-or-url>] [--revision <rev>] [--link] [--unstable]
 krabb plugin versions <id>
 krabb plugin update
@@ -481,6 +484,13 @@ the current application log file. Update previews also show the failure reason.
 `plugin list` shows each plugin's state from `krabb status`, with the reason a
 plugin failed to start and its next step, plus credential setup commands. A plugin
 whose binary is gone is `missing`; with no daemon to ask, the TUI shows `installed`.
+
+`plugin list` and `krabb status` also show each capability's composition,
+primary, and additional plugins. `plugin use <id> --for <capability>` selects
+the primary plugin for a `primary` capability, and `--also` adds a memory or
+scheduler plugin next to it. `plugin check <id> --for <capability>` runs that
+capability's read-only conformance probes; without `--for` it runs the plugin's
+connection test. See [Plugin Composition](plugins.md#plugin-composition).
 
 `plugin update` previews changes, then replaces changed plugins after
 confirmation, including reviewed changes to capabilities, permissions, secret names,
@@ -543,14 +553,16 @@ client. Worktrees exclude all visibility grants. See
 ## Memory
 
 The memory plugin provides `krabb memory status|search|list|show|remember|edit|forget|audit|converge|learning`.
-Use `krabb memory help` for syntax. Learning defaults to `guided`; autonomous
+Use `krabb memory help` for syntax. `krabb memory` reaches the primary memory
+plugin; `--plugin <id>` reaches another installed memory plugin. Learning defaults to `guided`; autonomous
 learning is opt-in. See the
 [Memory plugin guide](../krabb-plugins/memory/README.md) for scopes and record
 behavior.
 
 ## Structured Data
 
-When SQLite is installed, `krabb data` exposes commands to create and inspect
+When SQLite is installed, `krabb data` reaches the primary store plugin, or the
+one `--plugin <id>` names, and exposes commands to create and inspect
 logical databases and tables, and insert, query, update, and delete structured
 records. The TUI offers the same operations through `/data`; those commands
 share the active TUI session's data with the agent. CLI data uses a separate
@@ -599,6 +611,9 @@ messages from entering the queue. JSON mode requires `--yes` for cleanup.
 ## Scheduling
 
 The scheduler plugin adds `krabb schedule add|list|history|update|run|retry|pause|resume|remove`.
+New schedules go to the primary scheduler. With additional schedulers, `list`
+merges every scheduler's schedules and names the owner, and controls reach the
+owner. `--plugin <id>` sends any action to one scheduler.
 Explicit CLI additions authorize immediate activation. Model-generated scheduling
 proposals follow the turn's approval policy before activation; `off` blocks them.
 Agent schedule tools use the conversation's `schedules` scope: own tasks by default,

@@ -155,8 +155,10 @@ pub(crate) struct KrabfileImport {
 pub(crate) enum PluginCommand {
     #[command(about = "Securely configure an installed plugin's secrets and settings.")]
     Setup(setup::Options),
-    #[command(about = "Test an installed plugin's connection with its saved settings.")]
-    Check(Id),
+    #[command(about = "Test an installed plugin's connection, or its conformance with --for.")]
+    Check(PluginCheck),
+    #[command(about = "Select the primary plugin for a capability, or add one with --also.")]
+    Use(PluginUse),
     #[command(about = "List installed plugins.")]
     List(ListOutput),
     #[command(visible_alias = "add", about = "Install and activate one or more plugins.")]
@@ -178,6 +180,28 @@ pub(crate) enum PluginCommand {
         about = "Uninstall one or more plugins."
     )]
     Remove(PluginUninstall),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PluginCheck {
+    #[arg(help = "Identifier.")]
+    pub(crate) id: String,
+    #[arg(
+        long = "for",
+        value_name = "CAPABILITY",
+        help = "Run the conformance suite for a capability."
+    )]
+    pub(crate) capability: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PluginUse {
+    #[arg(help = "Identifier.")]
+    pub(crate) id: String,
+    #[arg(long = "for", value_name = "CAPABILITY", help = "Capability the plugin serves.")]
+    pub(crate) capability: String,
+    #[arg(long, help = "Add the plugin next to the primary instead of replacing it.")]
+    pub(crate) also: bool,
 }
 
 #[derive(Debug, Subcommand)]

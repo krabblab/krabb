@@ -38,6 +38,7 @@ attachments are retained in the selected conversation storage. See
 - [Channel Policy](#channel-policy)
 - [Visibility](#visibility)
 - [Worktrees](#worktrees)
+- [Plugin Selection](#plugin-selection)
 - [Update Policy](#update-policy)
 - [State And Recovery](#state-and-recovery)
 - [Troubleshooting](#troubleshooting)
@@ -521,6 +522,30 @@ that enforce their boundary. `--force` restarts the daemon; otherwise restart it
 `krabb worktree disable discord --force` returns to the plain workspace while
 preserving private files and data. For clients, add `--client`. See the
 [worktree guide](sharing.md#worktrees) for capability and retention details.
+
+## Plugin Selection
+
+`[plugins.<capability>]` selects plugins for a capability whose composition is
+`primary`: `memory`, `store`, `scheduler`, `speech`, or `runner`. With one plugin,
+or with no table, nothing needs configuring and the first plugin by ID serves.
+
+```toml
+[plugins.memory]
+primary = "zep"
+also = ["memory"]
+
+[plugins.scheduler]
+primary = "scheduler"
+```
+
+- `primary` is the plugin that takes writes and commands.
+- `also` lists up to eight additional plugins. Only `memory` and `scheduler`
+  accept it: memory reads merge, and each schedule stays with its scheduler.
+
+Krabb rejects other capabilities, repeated IDs, and plugins that are not
+installed or do not declare the capability. `krabb plugin use <id> --for
+<capability> [--also]` edits this table, keeps the rest of the file, and applies
+it to a running daemon. See [Plugin Composition](plugins.md#plugin-composition).
 
 ## Update Policy
 

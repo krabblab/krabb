@@ -411,6 +411,8 @@ pub(crate) fn scoped_request(
     }
 }
 
+/// Reads every memory plugin: the primary's entries come first, and each additional plugin's
+/// entries carry their source. The rendered index stays within the usual context bound.
 pub(crate) async fn append_conversation_memory(
     plugins: &Plugins,
     messages: &mut Vec<Message>,
@@ -419,9 +421,7 @@ pub(crate) async fn append_conversation_memory(
     workspace: Option<&Path>,
     call: &mut u64,
 ) {
-    let Some((_, memory)) = plugins.find(Capability::Memory).await else {
-        return;
-    };
+    let members = plugins.members(&Capability::Memory).await;
 
     let params = sharing::params(
         &plugins.config,
@@ -431,24 +431,60 @@ pub(crate) async fn append_conversation_memory(
         sharing::Data::Memory,
     );
 
-    let response = memory.call(scoped_request(*call, "index", params.clone(), workspace)).await;
+    let mut entries = Vec::new();
+    let mut learning = None;
+    let mut answered = false;
 
-    *call = call.saturating_add(1);
+    for (id, memory) in members.all() {
+        let response = memory.call(scoped_request(*call, "index", params.clone(), workspace)).await;
 
-    if let Ok(response) = response
-        && let Some(result) = response.result
-    {
-        let entries = result["items"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|entry| {
-                entry["scope"].as_str().is_some_and(|scope| sharing::visible(&params, scope))
-            })
-            .cloned()
-            .collect();
-        append_memory_entries(messages, entries, result["learning"].as_str().unwrap_or("guided"));
+        *call = call.saturating_add(1);
+
+        let Some(result) = response.ok().and_then(|response| response.result) else {
+            continue;
+        };
+
+        let additional = members.primary.as_ref().is_none_or(|(primary, _)| primary != id);
+
+        if !additional {
+            learning = result["learning"].as_str().map(str::to_owned);
+        }
+
+        answered = true;
+        entries.extend(
+            result["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|entry| {
+                    entry["scope"].as_str().is_some_and(|scope| sharing::visible(&params, scope))
+                })
+                .map(|entry| sourced(entry.clone(), additional.then_some(id.as_str()))),
+        );
     }
+
+    if answered {
+        append_memory_entries(messages, entries, learning.as_deref().unwrap_or("guided"));
+    }
+}
+
+/// Appends items from another plugin to a result's `items`.
+pub(crate) fn merge_items(value: &mut Value, items: Vec<Value>) {
+    if let Value::Object(values) = value {
+        match values.entry("items").or_insert_with(|| Value::Array(Vec::new())) {
+            Value::Array(existing) => existing.extend(items),
+            other => *other = Value::Array(items),
+        }
+    }
+}
+
+/// Marks an entry from an additional memory plugin with the plugin it came from.
+pub(crate) fn sourced(mut entry: Value, source: Option<&str>) -> Value {
+    if let (Some(source), Value::Object(values)) = (source, &mut entry) {
+        values.insert("source".into(), source.into());
+    }
+
+    entry
 }
 
 pub(crate) async fn append_memory_context(
@@ -470,32 +506,39 @@ pub(crate) async fn append_memory_context_scopes(
     scopes: &[&str],
     call: &mut u64,
 ) {
-    let Some((_, memory)) = plugins.find(Capability::Memory).await else {
+    let members = plugins.members(&Capability::Memory).await;
+
+    if members.all().next().is_none() {
         return;
-    };
+    }
 
     let mut entries = Vec::new();
     let mut learning = "guided".to_owned();
 
-    for scope in scopes {
-        let response =
-            memory.call(Request::call(*call, "index", serde_json::json!({"scope": scope}))).await;
-        *call = call.saturating_add(1);
+    for (id, memory) in members.all() {
+        let additional = members.primary.as_ref().is_none_or(|(primary, _)| primary != id);
 
-        let Ok(response) = response else {
-            continue;
-        };
+        for scope in scopes {
+            let response = memory
+                .call(Request::call(*call, "index", serde_json::json!({"scope": scope})))
+                .await;
+            *call = call.saturating_add(1);
 
-        let Some(result) = response.result else {
-            continue;
-        };
+            let Some(result) = response.ok().and_then(|response| response.result) else {
+                continue;
+            };
 
-        if let Some(value) = result["learning"].as_str() {
-            learning = value.to_owned();
-        }
+            if !additional && let Some(value) = result["learning"].as_str() {
+                learning = value.to_owned();
+            }
 
-        if let Some(items) = result["items"].as_array() {
-            entries.extend(items.iter().cloned());
+            if let Some(items) = result["items"].as_array() {
+                entries.extend(
+                    items
+                        .iter()
+                        .map(|entry| sourced(entry.clone(), additional.then_some(id.as_str()))),
+                );
+            }
         }
     }
 
@@ -525,16 +568,20 @@ pub(crate) fn append_memory_entries(
         let key = entry["key"].as_str().unwrap_or_default();
         let summary = entry["summary"].as_str().unwrap_or_default();
         let entry_scope = entry["scope"].as_str();
+        let source = entry["source"].as_str();
 
         if let Some(entry_scope) = entry_scope
-            && !seen.insert((entry_scope.to_owned(), key.to_owned()))
+            && !seen.insert((source.map(str::to_owned), entry_scope.to_owned(), key.to_owned()))
         {
             continue;
         }
 
         let scope = if entry_scope == Some("global") { "global" } else { "conversation" };
 
-        let line = format!("- [{scope}] {key}: {summary}\n");
+        let line = match source {
+            Some(source) => format!("- [{scope}] {key}: {summary} (from {source})\n"),
+            None => format!("- [{scope}] {key}: {summary}\n"),
+        };
 
         if text.len().saturating_add(line.len()) > 8 * 1024 {
             break;
