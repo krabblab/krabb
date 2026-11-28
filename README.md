@@ -167,12 +167,12 @@ Common starting points:
 
 ## Development
 
-Use Rust 1.96 or newer and Cargo. Run the complete local checks before opening
-a pull request:
+Use Rust 1.96 or newer and Cargo. Run the fast local gate before opening a pull
+request; CI then runs the full checks on every target:
 
 ```sh
 lefthook install
-make verify
+make precommit
 ```
 
 See [contributing](CONTRIBUTING.md) for repository conventions. Tests use local
