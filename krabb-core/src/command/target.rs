@@ -77,10 +77,27 @@ pub fn targets(segment: &Segment) -> Targets {
             targets.delete(operand);
         }
     } else if WRITES_LAST.contains(&name) {
-        let local = operands.last().filter(|operand| super::path::remote(operand).is_none());
+        let directory = args.iter().enumerate().find_map(|(at, arg)| {
+            arg.strip_prefix("--target-directory=")
+                .or_else(|| (arg == "-t").then(|| args.get(at + 1).map(String::as_str)).flatten())
+        });
+
+        let last = operands.last().copied();
+        let local = directory.or(last).filter(|operand| super::path::remote(operand).is_none());
 
         if let Some(operand) = local {
             targets.write(operand);
+        }
+
+        if matches!(
+            name,
+            "mv" | "move" | "move-item" | "mi" | "ren" | "rename" | "rename-item" | "rni"
+        ) {
+            let sources = operands.iter().filter(|operand| Some(**operand) != local);
+
+            for source in sources {
+                targets.write(source);
+            }
         }
     } else if WRITES_FIRST.contains(&name) {
         match operands.first() {

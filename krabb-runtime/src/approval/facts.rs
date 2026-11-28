@@ -96,23 +96,36 @@ pub(crate) fn summary(fact: String, purpose: Option<&str>) -> String {
     }
 }
 
+/// Whether CHARACTER is a format or separator character that a reader cannot see, which
+/// could hide text, reorder it, or start a new line: Unicode's Cf, Zl, and Zp characters.
+fn invisible(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e007f}'
+    )
+}
+
 /// TEXT with control characters and invisible marks escaped, so it stays on one line and
 /// cannot hide or reorder what surrounds it.
 pub(crate) fn visible(text: &str) -> String {
     let mut shown = String::with_capacity(text.len());
 
     for character in text.chars() {
-        let hidden = matches!(
-            character,
-            '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-        );
-
         match character {
             '\n' => shown.push_str("\\n"),
             '\r' => shown.push_str("\\r"),
             '\t' => shown.push_str("\\t"),
 
-            character if character.is_control() || hidden => {
+            character if character.is_control() || invisible(character) => {
                 shown.push_str(&format!("\\u{{{:04x}}}", u32::from(character)));
             }
 
@@ -210,9 +223,20 @@ fn patch(text: &str) -> String {
     let mut files = Vec::new();
     let mut deletes = Vec::new();
     let mut previous = None;
+    let mut current: Option<String> = None;
 
     for line in text.lines() {
-        if let Some(path) = line.strip_prefix("--- ") {
+        if let Some(header) = line.strip_prefix("diff --git ") {
+            current = header.split(' ').next().map(|path| path.trim_start_matches("a/").to_owned());
+        } else if line.starts_with("deleted file mode") {
+            deletes.extend(current.clone());
+            files.extend(current.clone());
+        } else if let Some(path) = line.strip_prefix("rename from ") {
+            deletes.push(path.into());
+            files.push(path.into());
+        } else if let Some(path) = line.strip_prefix("rename to ") {
+            files.push(path.into());
+        } else if let Some(path) = line.strip_prefix("--- ") {
             previous = Some(patch_path(path));
         } else if let Some(path) = line.strip_prefix("+++ ") {
             let path = patch_path(path);
@@ -232,6 +256,7 @@ fn patch(text: &str) -> String {
     }
 
     files.dedup();
+    deletes.dedup();
 
     let bytes = format!("{} {}", text.len(), if text.len() == 1 { "byte" } else { "bytes" });
 
@@ -268,8 +293,10 @@ fn git(args: &Value) -> String {
         .unwrap_or_default();
 
     let mut index = 0;
+    let mut configured = false;
 
     while let Some(word) = words.get(index).filter(|word| word.starts_with('-')) {
+        configured |= *word == "-c" || word.starts_with("--config");
         index += 1 + usize::from(matches!(*word, "-C" | "-c"));
     }
 
@@ -277,14 +304,30 @@ fn git(args: &Value) -> String {
         return sentence("Run a Git command", &["may run repository-configured programs".into()]);
     };
 
+    let operands: Vec<&str> =
+        words[index + 1..].iter().copied().filter(|word| !word.starts_with('-')).collect();
+
     let mut flags = Vec::new();
 
-    if matches!(*command, "clone" | "fetch" | "pull" | "push" | "ls-remote" | "submodule") {
+    if *command == "rm" && !operands.is_empty() {
+        flags.push(format!(
+            "deletes {}",
+            list(&operands.iter().map(|path| (*path).to_owned()).collect::<Vec<_>>())
+        ));
+    }
+
+    if matches!(*command, "clone" | "fetch" | "pull" | "push" | "ls-remote" | "submodule")
+        || *command == "remote" && operands.first().is_some_and(|action| *action == "update")
+    {
         flags.push("uses the network".into());
     }
 
     if *command == "clean" {
         flags.push("deletes untracked files".into());
+    }
+
+    if configured {
+        flags.push("sets its own configuration, which can run any program".into());
     }
 
     flags.push("may run repository-configured programs".into());

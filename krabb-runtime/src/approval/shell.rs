@@ -21,6 +21,9 @@ struct Reading {
     network: bool,
     admin: bool,
     opaque: bool,
+    unknown: bool,
+    device: bool,
+    outside: Vec<String>,
     unchecked: bool,
 }
 
@@ -51,7 +54,7 @@ fn place() -> (Dialect, Os) {
 /// The fact line for COMMAND read in DIALECT on OS.
 pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
     let parse = command::parse(command, dialect);
-    let verdict = parse.verdict();
+    let verdict = parse.findings();
 
     let mut reading = Reading {
         admin: verdict.elevated,
@@ -60,7 +63,7 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
     };
 
     for (index, segment) in parse.segments.iter().enumerate() {
-        let single = Parse { segments: vec![segment.clone()], hazards: Vec::new() }.verdict();
+        let single = Parse { segments: vec![segment.clone()], hazards: Vec::new() }.findings();
         let read = parse.segments.get(index + 1).is_some_and(|next| next.depth > segment.depth);
         let targets = command::targets(segment);
 
@@ -88,6 +91,19 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
 
                 Reason::Acts(_, Effect::UsesNetwork) => reading.network = true,
                 Reason::Acts(_, Effect::RunsCode) => reading.opaque |= !read && !scripted(segment),
+
+                Reason::Acts(_, Effect::RunsPrograms | Effect::RunsConfigured) => {
+                    reading.opaque |= !read;
+                }
+
+                Reason::Acts(_, Effect::Unlisted) => reading.unknown |= !read,
+
+                Reason::Device(_) => {
+                    reading.device = true;
+                    reading.admin = true;
+                }
+
+                Reason::Outside(path) => push(&mut reading.outside, path),
                 Reason::Acts(_, Effect::DeletesFiles) => reading.unnamed_deletes = true,
                 Reason::Acts(_, effect) => changed(&mut reading, effect),
 
@@ -185,12 +201,22 @@ fn flags(reading: &Reading, packages: bool) -> Vec<String> {
         flags.push("uses the network".into());
     }
 
+    if !reading.outside.is_empty() {
+        flags.push(format!("reaches {} outside the workspace", list(&reading.outside)));
+    }
+
+    if reading.device {
+        flags.push("opens a device".into());
+    }
+
     if reading.admin {
         flags.push("needs admin rights".into());
     }
 
     if reading.opaque {
         flags.push("runs code Krabb cannot read".into());
+    } else if reading.unknown {
+        flags.push("runs a program Krabb does not know".into());
     } else if reading.unchecked {
         flags.push("has parts Krabb cannot check".into());
     }

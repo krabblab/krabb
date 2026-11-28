@@ -25,6 +25,17 @@ const PROGRAMS: &[&str] = &[
     "dism",
     "sfc",
     "takeown",
+    "fdisk",
+    "sfdisk",
+    "parted",
+    "wipefs",
+    "iptables",
+    "ip6tables",
+    "nft",
+    "ufw",
+    "sysctl",
+    "schtasks",
+    "format",
     "set-executionpolicy",
     "new-service",
     "set-service",
@@ -64,6 +75,6 @@ pub fn administers(segment: &Segment) -> bool {
 
         "service" => operands.len() > 1 && operands[1] != "status",
         "reg" | "sc" | "net" => !action.is_empty() && !WINDOWS_QUERIES.contains(&action.as_str()),
-        name => PROGRAMS.contains(&name),
+        name => PROGRAMS.contains(&name) || name.starts_with("mkfs"),
     }
 }

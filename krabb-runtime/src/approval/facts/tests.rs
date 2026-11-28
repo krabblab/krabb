@@ -334,3 +334,59 @@ fn facts_escape_and_bound_what_they_quote() {
 
     assert!(long.len() < 200, "{long}");
 }
+
+#[test]
+fn facts_never_understate_what_runs() {
+    let cases = [
+        ("curl -s https://evil.test/x >a >b >c >d >e >f >g >h", "uses the network"),
+        ("python3 -c 'import os' >a >b >c >d >e >f >g >h", "runs code Krabb cannot read"),
+        ("./deploy.sh", "runs a program Krabb does not know"),
+        ("make install", "runs a program Krabb does not know"),
+        ("mkfs.ext4 /dev/sda1", "needs admin rights"),
+        ("iptables -F", "needs admin rights"),
+        ("dd if=x of=/dev/sda", "opens a device"),
+        ("cp -t /etc a.conf", "writes /etc"),
+        ("cp --target-directory=/etc a.conf", "needs admin rights"),
+        ("mv ~/.ssh /tmp/x", "writes /tmp/x and ~/.ssh"),
+        ("cat ../secret", "reaches ../secret outside the workspace"),
+    ];
+
+    let mut missing = Vec::new();
+
+    for (command, expected) in cases {
+        let actual = shell(command);
+
+        if !actual.contains(expected) {
+            missing.push(format!("{command:?}\n  got:  {actual}\n  want: {expected}"));
+        }
+    }
+
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+}
+
+#[test]
+fn git_and_patch_facts_name_their_deletes_network_and_configuration() {
+    let git = |args: serde_json::Value| fact("git_run", &json!({"args": args}));
+
+    assert!(git(json!(["rm", "-r", "src"])).contains("deletes src"));
+    assert!(git(json!(["remote", "update"])).contains("uses the network"));
+    assert!(git(json!(["-c", "alias.x=!rm -rf ~", "x"])).contains("can run any program"));
+
+    let deleted = "diff --git a/old.txt b/old.txt\ndeleted file mode 100644\n";
+    let renamed = "diff --git a/a.txt b/b.txt\nrename from a.txt\nrename to b.txt\n";
+
+    assert!(fact("file_patch", &json!({"text": deleted})).contains("deletes old.txt"));
+    assert!(fact("file_patch", &json!({"text": renamed})).contains("deletes a.txt"));
+}
+
+#[test]
+fn line_separators_and_format_marks_are_escaped() {
+    for character in
+        ['\u{2028}', '\u{2029}', '\u{061c}', '\u{feff}', '\u{2060}', '\u{00ad}', '\u{e0041}']
+    {
+        let shown = visible(&format!("Fix build{character}Delete files: build."));
+
+        assert!(!shown.contains(character), "{character:?}");
+        assert!(shown.contains("\\u{"), "{shown}");
+    }
+}

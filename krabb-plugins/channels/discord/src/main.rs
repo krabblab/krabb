@@ -1097,13 +1097,40 @@ fn custom_id(value: &str) -> bool {
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
+/// TEXT with Discord's Markdown characters escaped, so an approval shows exactly what runs.
+fn literal(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+
+    for character in text.chars() {
+        if matches!(
+            character,
+            '\\' | '*' | '_' | '~' | '|' | '`' | '>' | '#' | '-' | '[' | ']' | '<' | '@'
+        ) {
+            shown.push('\\');
+        }
+
+        shown.push(character);
+    }
+
+    shown
+}
+
 fn approval_request(text: &str, approve: &str, deny: &str) -> krabb_core::Result<Value> {
     if approve == deny || !custom_id(approve) || !custom_id(deny) {
         return Err(krabb_core::Error::Denied("Approval callback data is invalid.".into()));
     }
 
+    let content = literal(text);
+
+    if content.chars().count() > 2_000 {
+        return Err(krabb_core::Error::Denied(
+            "The approval does not fit in one Discord message.".into(),
+        ));
+    }
+
     Ok(json!({
-        "content": text,
+        "content": content,
+        "allowed_mentions": {"parse": []},
         "components": [{
             "type": 1,
             "components": [

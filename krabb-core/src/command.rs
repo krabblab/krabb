@@ -60,7 +60,16 @@ pub fn classify(command: &str, dialect: Dialect) -> Verdict {
 }
 
 impl Parse {
+    /// The verdict with its strongest reasons, at most a few, for people to read.
     pub fn verdict(&self) -> Verdict {
+        let mut verdict = self.findings();
+
+        verdict.reasons.truncate(REASONS);
+        verdict
+    }
+
+    /// The verdict with every reason, strongest first, for callers that describe the command.
+    pub fn findings(&self) -> Verdict {
         let mut found = rules::Findings::default();
 
         for hazard in &self.hazards {
@@ -78,7 +87,6 @@ impl Parse {
             || reasons.iter().any(|reason| matches!(reason, Reason::Elevated(_)));
 
         reasons.sort_by_key(|reason| (reason.kind().is_some(), Reverse(reason.kind())));
-        reasons.truncate(REASONS);
 
         Verdict { kind, elevated, reasons, packages: found.packages }
     }
