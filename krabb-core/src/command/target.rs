@@ -184,6 +184,8 @@ fn git(segment: &Segment, targets: &mut Targets) {
         }
 
         Some("rm") => {
+            targets.recursive |= segment.args.iter().any(|arg| recursive(arg));
+
             for operand in operands.into_iter().skip(1) {
                 targets.delete(operand);
             }

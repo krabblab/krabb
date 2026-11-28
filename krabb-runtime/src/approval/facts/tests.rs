@@ -378,7 +378,9 @@ fn facts_never_understate_what_runs() {
 fn git_and_patch_facts_name_their_deletes_network_and_configuration() {
     let git = |args: serde_json::Value| fact("git_run", &json!({"args": args}));
 
-    assert!(git(json!(["rm", "-r", "src"])).starts_with("Delete files and folders: src."));
+    let removed = git(json!(["rm", "-r", "src"]));
+
+    assert!(removed.starts_with("Delete files and folders: src."), "{removed}");
     assert!(git(json!(["remote", "update"])).contains("uses the network"));
     assert!(git(json!(["-c", "alias.x=!rm -rf ~", "x"])).contains("can run any program"));
 

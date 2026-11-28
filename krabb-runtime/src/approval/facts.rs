@@ -307,9 +307,23 @@ fn git(args: &Value) -> String {
         krabb_core::command::Os::Linux,
     );
 
-    match fact.strip_prefix("Run a shell command") {
+    let fact = match fact.strip_prefix("Run a shell command") {
         Some(rest) => format!("Run a Git command{rest}"),
         None => fact,
+    };
+
+    let configured = words.iter().take_while(|word| word.starts_with('-')).any(|word| {
+        matches!(*word, "-c" | "--exec-path")
+            || word.starts_with("--config")
+            || word.starts_with("--exec-path=")
+    });
+
+    match configured {
+        true => fact.replace(
+            "may run repository-configured programs",
+            "sets its own configuration, which can run any program",
+        ),
+        false => fact,
     }
 }
 

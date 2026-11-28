@@ -8600,9 +8600,11 @@ fn large_tui_file_writes_get_a_marked_preview_and_keep_their_full_text() {
 fn prepares_approval_text_and_channel_requests() {
     let text = |name: &str, args: serde_json::Value| super::approval_text(name, &args, None);
 
+    let steer = text("task_steer", serde_json::json!({"id":"task-1", "instruction":"Use v2."}));
+
     assert!(
-        text("task_steer", serde_json::json!({"id":"task-1", "instruction":"Use v2."}))
-            .starts_with("Steer the task task-1 with the instruction: “Use v2.”\n")
+        steer.starts_with("Steer the task task-1 with the instruction: “Use v2.”.\n"),
+        "{steer}"
     );
 
     assert!(
@@ -8619,8 +8621,8 @@ fn prepares_approval_text_and_channel_requests() {
 
     assert_eq!(
         text("git_run", serde_json::json!({"args": ["-C", "repo", "push", "origin"]})),
-        "Run the Git command push. It uses the network and may run repository-configured \
-            programs.\nArguments: {\"args\":[\"-C\",\"repo\",\"push\",\"origin\"]}"
+        "Run a Git command. It changes the repository, uses the network, and may run \
+            repository-configured programs.\nArguments: {\"args\":[\"-C\",\"repo\",\"push\",\"origin\"]}"
     );
 
     assert_eq!(text("file_read", serde_json::json!({})), "Run the file_read tool.\nArguments: {}");
