@@ -139,8 +139,11 @@ their model is explicitly pinned; their history is preserved.
 - TUI supports chat, sessions, model/workspace switching, approvals, schedules,
   memory, plugin health, and streamed activity. Session transcripts retain
   displayed TUI command exchanges alongside model turns.
-  Typed shell commands support Linux and Windows with descendant containment. Commands and
-  manual compaction retain exclusive session ownership until execution and cleanup finish.
+  Typed shell commands run on the host on Linux, macOS, and Windows without Krabb's
+  credential variables. Linux and Windows contain every descendant; on macOS and other
+  non-Linux Unix, a descendant that starts its own session or process group survives
+  cancellation, and setuid programs keep their privileges. Commands and manual compaction
+  retain exclusive session ownership until execution and cleanup finish.
   Automatic compaction shares the model turn's deadline and retires failed requests before
   generation resumes. Stream failures finalize turns after cleanup; approval history writes
   remain available while uninstall waits for active turns.
@@ -200,11 +203,10 @@ their model is explicitly pinned; their history is preserved.
   worktrees, and optional shell. Shell is disabled by default and each
   command requires approval. Display complete arguments and reject requests exceeding
   the [approval limits](configuration.md).
-  Docker/Podman isolation is optional on Linux and Windows
-  and required on other Unix hosts for shell containment. Containers are local-only,
+  Docker/Podman isolation is optional and takes precedence over the host shell on every
+  platform. Containers are local-only,
   networkless, read-only-root, and limited to a writable active workspace.
-  Direct Git and Git-backed patches share host shell descendant containment on Linux
-  and Windows; other platforms require Git execution through the sandboxed shell.
+  Direct Git and Git-backed patches share host shell descendant containment.
   All conversations default to isolated scopes in ordinary folders. Worktrees are opt-in
   through guided Git setup, including owner DMs and TUI sessions.
 - Codex signs in with a personal ChatGPT account through its

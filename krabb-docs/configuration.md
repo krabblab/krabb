@@ -167,8 +167,7 @@ The default update mode is `prompt`, approval is `prompt`, shell execution is
 disabled, and visibility exports nothing by default. Conversations use the plain
 workspace with ownership filtering; Git worktrees are an explicit opt-in.
 
-On Linux and Windows, approved shell commands run directly on the host unless a container
-sandbox is configured. macOS and other Unix hosts require the sandbox for shell containment.
+Approved shell commands run directly on the host unless a container sandbox is configured.
 Set `KRABB_SANDBOX_RUNTIME` to `docker` or `podman`
 and `KRABB_SANDBOX_IMAGE` to an image already present in the local runtime.
 Krabb does not pull images. The sandbox disables networking, makes its root
@@ -404,7 +403,7 @@ All Krabb configuration variables use the `KRABB_` prefix:
 | `KRABB_A2A_RPC_ORIGIN` | Explicit trusted RPC origin when different from the configured agent card origin |
 | `KRABB_A2A_TOKEN` | Optional bearer token bound to the configured A2A origin or explicit RPC mapping |
 | `KRABB_AG_UI_LISTEN` | Loopback AG-UI address; defaults to `127.0.0.1:8787` |
-| `KRABB_SANDBOX_RUNTIME` | `docker`, `podman`, or `off`; shell sandbox required on macOS and other non-Linux Unix hosts |
+| `KRABB_SANDBOX_RUNTIME` | `docker`, `podman`, or `off`; optional shell sandbox that takes precedence over the host shell |
 | `KRABB_SANDBOX_IMAGE` | Locally available image used by the shell sandbox |
 
 Without `KRABB_MODEL`, new host and TUI sessions select `default`. Each intelligence

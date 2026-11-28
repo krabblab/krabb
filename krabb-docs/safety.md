@@ -63,9 +63,7 @@ commands away from the host filesystem and network. Set
 `KRABB_SANDBOX_IMAGE` to an image already available locally. Krabb mounts
 only the active workspace writable, uses a read-only container root, drops
 Linux capabilities, disables networking, and applies bounded resource limits.
-The sandbox is required for shell execution on macOS and other Unix platforms
-without Linux's process-group restriction. An uncontained host shell is rejected
-before execution on those platforms.
+Without a configured sandbox, approved commands run on the host as the daemon's user.
 The tools plugin creates each container before starting its command and records the
 ID in the host's private tracking directory. The host force-removes tracked containers
 after stopping the plugin, before completing restart or acknowledging cancellation.
@@ -98,8 +96,10 @@ an explicit delivery retry does not rerun model or tool work. Unix plugins run i
 private process sessions; host cancellation and restart cleanup terminate shell
 commands in those sessions even when they use separate process groups.
 Linux host shells inherit a syscall filter that rejects `setsid` and `setpgid`,
-so descendants cannot detach from cleanup. Other Unix platforms use the tracked
-container sandbox for shell containment.
+so descendants cannot detach from cleanup. macOS and other non-Linux Unix host shells
+start in their own process group without that filter: a descendant that starts its own
+session or process group survives cancellation, and setuid programs keep their
+privileges. The container sandbox is the stronger choice there.
 Windows tool commands start suspended and enter a kill-on-close Job Object before
 execution. Completion, failure, cancellation, and plugin termination stop their
 descendants, including background commands whose parent has already exited.

@@ -1,5 +1,3 @@
-#![cfg(any(target_os = "linux", windows))]
-
 use std::time::Duration;
 
 use krabb_core::{plugin::Process, types::Request};

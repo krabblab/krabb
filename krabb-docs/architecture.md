@@ -466,10 +466,11 @@ members during cleanup, including separate shell process groups. Process-tree ow
 begins immediately after spawn, so cancellation during the hello handshake terminates
 the starting process tree and leaves the direct child to Tokio's reaper, including during restart.
 Linux host shells install the shared process-group restriction before executing workspace
-code, preventing descendants from leaving their group or session. On other Unix hosts,
-tool shell execution requires the tracked Docker/Podman sandbox; unsupported host execution
-fails before spawning workspace code. Typed TUI shell commands run directly on Linux and
-Windows and reject execution on other hosts before spawning workspace code.
+code, preventing descendants from leaving their group or session. On macOS and other Unix
+hosts, tool shell commands start in their own process group without that restriction.
+A configured Docker/Podman sandbox takes precedence over the host shell on every platform.
+Typed TUI shell commands run directly on the host, in their own process group on Unix and
+in a Job Object on Windows.
 Tool discovery acquires the plugin connection before starting its response timeout, so an
 active tool call does not make a healthy plugin appear unresponsive.
 Turn cancellation restarts only model and tool provider processes with interrupted requests.

@@ -47,7 +47,7 @@ impl Place {
         let value = |name| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned());
         let runtime = value("KRABB_SANDBOX_RUNTIME");
         let image = value("KRABB_SANDBOX_IMAGE");
-        let host = cfg!(any(target_os = "linux", windows));
+        let host = cfg!(any(unix, windows));
 
         Self::of(runtime.as_deref(), image.as_deref(), host, root())
     }

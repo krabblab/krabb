@@ -92,7 +92,7 @@ pub fn worker() {
         rustix::process::setpgid(None, None) == Err(rustix::io::Errno::PERM),
     );
 
-    #[cfg(windows)]
+    #[cfg(not(target_os = "linux"))]
     let ready = "ready";
 
     fs::write("ready", ready).unwrap();
