@@ -300,7 +300,7 @@ class Recovery(unittest.TestCase):
 
                 return Mock(returncode=int(guidance.read_text() == 'stale path'))
 
-            events.append('make verify')
+            events.append('make gate')
 
             return Mock(returncode=0)
 
@@ -318,7 +318,7 @@ class Recovery(unittest.TestCase):
                     with patch.object(MODULE.subprocess, 'run', side_effect=verify):
                         self.assertEqual(self.loop.verify(), 'snapshot')
 
-        self.assertEqual(events, ['guidance', 'repair', 'guidance', 'make verify'])
+        self.assertEqual(events, ['guidance', 'repair', 'guidance', 'make gate'])
 
     def test_external_head_changes_remain_blockers(self):
         loop = self.execute()

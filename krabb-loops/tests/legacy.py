@@ -70,7 +70,7 @@ if name in ('codex', 'claude'):
     else:
         print('agent transcript marker')
     sys.exit(int(os.environ.get('AGENT_STATUS', '0')))
-if name == 'make' and args and args[0] in ('verify', 'test'):
+if name == 'make' and args and args[0] in ('gate', 'test'):
     limit = int(os.environ.get('TIMEOUT_' + args[0].upper(), '0'))
     counter = root / ('timeout-count-' + args[0])
     count = int(counter.read_text()) if counter.exists() else 0
@@ -80,7 +80,7 @@ if name == 'make' and args and args[0] in ('verify', 'test'):
         import signal
         while True:
             signal.pause()
-if name == 'make' and args == ['verify']:
+if name == 'make' and args == ['gate']:
     counter = root / 'verify-count'
     count = int(counter.read_text()) if counter.exists() else 0
     counter.write_text(str(count + 1))
@@ -89,15 +89,15 @@ if name == 'make' and args == ['verify']:
         sys.exit(1)
     marker = root / 'verified-once'
     if not marker.exists() and (os.environ.get('FAIL_VERIFY_ONCE') or
-                                os.environ.get('TIMEOUT_VERIFY_ONCE')):
+                                os.environ.get('TIMEOUT_GATE_ONCE')):
         marker.write_text('attempted')
         print('first verification attempt failed', flush=True)
-        if os.environ.get('TIMEOUT_VERIFY_ONCE'):
+        if os.environ.get('TIMEOUT_GATE_ONCE'):
             import signal
             while True:
                 signal.pause()
         sys.exit(1)
-if name == 'make' and args in (['test'], ['verify']) and os.environ.get('FAIL_TEST'):
+if name == 'make' and args in (['test'], ['gate']) and os.environ.get('FAIL_TEST'):
     print('test result: FAILED')
     sys.exit(1)
 '''
@@ -204,7 +204,7 @@ class LegacyContract(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('non-blocking', result.stdout)
         self.assertTrue(all('workspace-write' not in args for args in self.calls('codex')))
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
     def test_invalid_reports_rejected(self):
         for report in ('unexpected content', FINDING.replace('Evidence:', 'Unknown:'),
@@ -265,7 +265,7 @@ class LegacyContract(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Maximum cycles: unlimited.', result.stdout)
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
     def test_explicit_unlimited_cycles(self):
         self.env['KRABB_REVLOOP_MAX_CYCLES'] = '0'
@@ -340,11 +340,11 @@ class LegacyContract(unittest.TestCase):
 
     def test_clean_start_requires_final_verification(self):
         self.assertEqual(self.run_loop().returncode, 0)
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
     def test_worker_requires_final_verification_before_success(self):
         self.assertEqual(self.run_loop([FINDING, CLEAR]).returncode, 0)
-        self.assertIn(['verify'], self.calls('make'))
+        self.assertIn(['gate'], self.calls('make'))
 
     def test_failed_focused_verification_cannot_converge(self):
         self.env['FAIL_TEST'] = '1'
@@ -468,7 +468,7 @@ class LegacyContract(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum('workspace-write' in args for args in self.calls('codex')), 2)
-        self.assertEqual(self.calls('make').count(['verify']), 3)
+        self.assertEqual(self.calls('make').count(['gate']), 3)
 
     def test_final_product_failure_recovery(self):
         self.env['FAIL_VERIFY_ONCE'] = '1'
@@ -476,15 +476,15 @@ class LegacyContract(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum('workspace-write' in args for args in self.calls('codex')), 1)
-        self.assertEqual(self.calls('make').count(['verify']), 2)
+        self.assertEqual(self.calls('make').count(['gate']), 2)
 
     def test_verification_timeout_retry_preserves_diagnostics(self):
-        self.env.update(TIMEOUT_VERIFY_ONCE='1', KRABB_REVLOOP_VERIFICATION_TIMEOUT='1s')
+        self.env.update(TIMEOUT_GATE_ONCE='1', KRABB_REVLOOP_VERIFICATION_TIMEOUT='1s')
 
         result = self.run_loop()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls('make').count(['verify']), 2)
+        self.assertEqual(self.calls('make').count(['gate']), 2)
         self.assertTrue(all('workspace-write' not in args for args in self.calls('codex')))
 
         attempts = list((self.root / '.krabb/loops/rev').glob('*/*.attempt-*'))
@@ -615,7 +615,7 @@ print('native sandbox read and write-denial checks passed')
         self.assertFalse((state / 'latest-run.txt').is_symlink())
 
     def test_multiple_recovery_workers_keep_distinct_diagnostics(self):
-        self.env.update(TIMEOUT_VERIFY='2', TIMEOUT_TEST='2',
+        self.env.update(TIMEOUT_GATE='2', TIMEOUT_TEST='2',
                         KRABB_REVLOOP_VERIFICATION_TIMEOUT='1s')
 
         result = self.run_loop()

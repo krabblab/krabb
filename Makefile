@@ -1,10 +1,11 @@
 CARGO ?= cargo
 JOBS ?= 2
 COVERAGE_PROFILE ?= full
+BASE ?= origin/main
 comma := ,
 .DEFAULT_GOAL := all
-.PHONY: all help install hooks fmt spacing clippy check test coverage build release bump metrics \
-        ci revloop secloop testloop contribloop loops verify
+.PHONY: all help install hooks precommit fmt spacing clippy check test coverage build release \
+        bump metrics ci revloop secloop testloop contribloop loops gate
 
 all: build
 	$(MAKE) install
@@ -14,6 +15,7 @@ help:
 	@printf '%s\n' '  all       Build the workspace, then install the CLI and daemon (default)'
 	@printf '%s\n' '  install   Install the krabb and krabb-daemon binaries only'
 	@printf '%s\n' '  hooks     Install Lefthook git hooks'
+	@printf '%s\n' '  precommit Fast gate on changes since BASE: format, spacing, Clippy, tests'
 	@printf '%s\n' '  fmt       Check Rust, JavaScript, and Python formatting and spacing'
 	@printf '%s\n' '  spacing   Apply code block spacing'
 	@printf '%s\n' '  clippy    Run Clippy with warnings denied'
@@ -30,7 +32,7 @@ help:
 	@printf '%s\n' '  testloop  Protect behavioral contracts and repair confirmed flaky tests'
 	@printf '%s\n' '  contribloop  Commit, open a PR, and repair until CI is green'
 	@printf '%s\n' '  loops     Check loop scripts and run deterministic loop fixtures'
-	@printf '%s\n' '  verify    Run the complete local quality workflow'
+	@printf '%s\n' '  gate      Run the complete local quality gate: every check, test, and coverage gate'
 
 install:
 	$(CARGO) install --path krabb --locked --force
@@ -90,4 +92,7 @@ loops:
 	bash krabb-loops/lib/syntax.sh "$(CURDIR)"
 	python3 -B -m unittest discover -s krabb-loops/tests -p '*.py' -v
 
-verify: fmt loops clippy check test coverage build metrics
+precommit:
+	CARGO_BUILD_JOBS=$(JOBS) bash krabb-scripts/precommit.sh $(BASE)
+
+gate: fmt loops clippy check test coverage build metrics
