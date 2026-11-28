@@ -44,6 +44,15 @@ impl Fixture {
         args: Value,
         approval: ApprovalMode,
     ) -> (Result<ToolResult, PluginError>, tokio::sync::mpsc::Receiver<StreamNotice>) {
+        self.call(routing::NAME, args, approval).await
+    }
+
+    async fn call(
+        &self,
+        name: &str,
+        args: Value,
+        approval: ApprovalMode,
+    ) -> (Result<ToolResult, PluginError>, tokio::sync::mpsc::Receiver<StreamNotice>) {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
 
         let result = execute_tool_with_registry(
@@ -51,7 +60,7 @@ impl Fixture {
             &self.registry,
             "turn",
             1,
-            routing::NAME,
+            name,
             args,
             "fixture",
             "model",
@@ -142,6 +151,77 @@ async fn thoughtful_messages_are_generated_once_without_tool_permissions() {
     result.unwrap();
 
     assert_eq!(*fixture.registry.route.kind.borrow(), crate::routing::Kind::Thoughtful);
+}
+
+#[tokio::test(start_paused = true)]
+async fn milestones_follow_the_routing_message_at_a_paced_interval() {
+    let fixture = Fixture::new();
+    let found = json!({"message":"Trovate tre fonti, ora confronto i prezzi.", "language":"it"});
+
+    let (result, _) = fixture.call(progress::NAME, found.clone(), ApprovalMode::Off).await;
+
+    assert_eq!(
+        tool_result_text(&result.unwrap()),
+        "Updates are unavailable here; continue the work."
+    );
+
+    let args = json!({"kind":"thoughtful", "message":"Cerco le fonti.", "language":"it"});
+    let (result, mut notices) = fixture.classify(args, ApprovalMode::Off).await;
+
+    result.unwrap();
+
+    assert!(matches!(notices.recv().await, Some(StreamNotice::Progress(text))
+        if text == "Cerco le fonti."));
+
+    let (result, mut notices) =
+        fixture.call(progress::NAME, found.clone(), ApprovalMode::Off).await;
+
+    assert!(tool_result_text(&result.unwrap()).starts_with("The update was skipped"));
+    assert!(notices.recv().await.is_none());
+
+    tokio::time::advance(Duration::from_secs(30)).await;
+
+    let (result, mut notices) = fixture.call(progress::NAME, found, ApprovalMode::Off).await;
+
+    assert_eq!(tool_result_text(&result.unwrap()), "The update was sent; continue the work.");
+
+    assert!(matches!(notices.recv().await, Some(StreamNotice::Progress(text))
+        if text == "Trovate tre fonti, ora confronto i prezzi."));
+
+    let saved = fixture.sessions.lock().unwrap().sessions["telegram-7"]
+        .messages
+        .iter()
+        .filter(|message| message.id.starts_with("progress-at-"))
+        .count();
+
+    assert_eq!(saved, 2);
+
+    let (result, _) =
+        fixture.call(progress::NAME, json!({"message":"Two\nlines"}), ApprovalMode::Off).await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn updates_off_skips_the_routing_message() {
+    let fixture = Fixture::new();
+
+    fixture.registry.route.pace.send_replace(progress::Pace::new(progress::Updates::Off));
+
+    let args = json!({"kind":"thoughtful", "message":"I'll compare the release notes."});
+    let (result, mut notices) = fixture.classify(args, ApprovalMode::Off).await;
+
+    result.unwrap();
+
+    assert!(notices.recv().await.is_none());
+
+    let (result, _) =
+        fixture.call(progress::NAME, json!({"message":"Found it."}), ApprovalMode::Off).await;
+
+    assert_eq!(
+        tool_result_text(&result.unwrap()),
+        "Updates are unavailable here; continue the work."
+    );
 }
 
 #[tokio::test]

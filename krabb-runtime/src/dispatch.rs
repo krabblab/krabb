@@ -672,6 +672,34 @@ pub(crate) async fn execute_tool_with_registry(
         ));
     }
 
+    if name == progress::NAME {
+        if !progress::offered(&registry.route.pace.borrow(), *registry.route.kind.borrow()) {
+            return Ok(ToolResult::text("Updates are unavailable here; continue the work."));
+        }
+
+        let milestone = progress::Milestone::parse(args)?;
+
+        if !progress::milestone(&registry.route, &milestone) {
+            return Ok(ToolResult::text("The update was skipped to keep pace; continue the work."));
+        }
+
+        let saved = sessions
+            .lock()
+            .map_err(|_| state::POISONED)?
+            .append_progress(session, &milestone.message);
+
+        if let Err(error) = saved {
+            warn!(session, error = %error, "The update could not be saved.");
+        }
+
+        notices
+            .send(StreamNotice::Progress(milestone.message))
+            .await
+            .map_err(|_| "The progress receiver is unavailable.")?;
+
+        return Ok(ToolResult::text("The update was sent; continue the work."));
+    }
+
     let _mutation = if (mutating(name, &args) && name != routing::NAME) || name == tasks::CHECKPOINT
     {
         Some(registry.route.gate.lock().await)
@@ -739,7 +767,9 @@ pub(crate) async fn execute_tool_with_registry(
             routing::Kind::Thoughtful => {
                 registry.route.kind.send_replace(routing::Kind::Thoughtful);
 
-                if !registry.route.announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if !registry.route.announced.swap(true, std::sync::atomic::Ordering::Relaxed)
+                    && progress::open(&registry.route, route.language.as_deref())
+                {
                     let saved = sessions
                         .lock()
                         .map_err(|_| state::POISONED)?
@@ -1089,6 +1119,8 @@ pub(crate) async fn execute_tool_with_registry(
                         return Err(error.into());
                     }
                 }
+
+                let _waiting = progress::Waiting::new(&registry.route.pace);
 
                 let delivered = notices
                     .send(StreamNotice::Approval {
@@ -1909,7 +1941,10 @@ pub(crate) async fn host_tool_with_registry(
     )
     .await
     {
-        Ok(Ok(output)) => output,
+        Ok(Ok(output)) => {
+            progress::Pace::record(&registry.route.pace, name);
+            output
+        }
 
         Ok(Err(error)) => {
             if let Some(run) = &registry.run {

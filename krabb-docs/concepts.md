@@ -119,6 +119,21 @@ send one short progress message tailored to the request and the user's language.
 The conversation keeps that message from the agent ahead of its final answer.
 Provider latency alone does not trigger a message.
 
+While long work runs, Krabb sends short updates. The model can report a real
+milestone with the `progress` tool, one line of at most 200 bytes that never
+needs approval; it is offered only on thoughtful turns and task steps. After a
+silence, the host sends a factual line from tool activity, such as "Still
+working: 4 pages read, 2 commands run", in the conversation's language when the
+model named it, otherwise in English. Thoughtful turns update first after about
+20 seconds, then about every 45 seconds; the routing progress message counts as
+the first update. Background task steps update after a few minutes, then about
+a tenth of the expected duration, never more often than every 2 minutes, and
+the gap grows as work runs past its estimate. Task updates reuse the task's
+notice delivery. Updates pause while an approval waits and while the answer
+streams, never follow the final answer, are not saved as the answer, and stop
+after 5 per turn or step. The `updates` setting chooses `quiet`, `frequent`, or
+`off`; see [Configuration](configuration.md#channel-policy).
+
 Providers advertising execution deadlines receive an allowance estimated from
 bounded deployment/model observations and conservative fallback priors. A healthy
 slow local model can exceed one minute without changing a request's semantic

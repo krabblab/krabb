@@ -1549,7 +1549,7 @@ where
         super::StreamNotice::Tool(name) => json!({"event": "tool", "name": name}),
         super::StreamNotice::System(text) => json!({"event": "system", "text": text}),
 
-        super::StreamNotice::Progress(text) => {
+        super::StreamNotice::Progress(text) | super::StreamNotice::Status(text) => {
             json!({"event": "system", "text": text, "progress": true})
         }
 

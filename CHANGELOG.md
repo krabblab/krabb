@@ -8,6 +8,7 @@ Semantic Versioning.
 ### Added
 
 - Give your Krabb a name, personality, and writing style with `krabb hatch` or `/hatch`.
+- Get short progress updates while long replies and tasks run, set with `updates`.
 - Keep Krabb honest and careful with a built-in charter that personalization cannot remove.
 - Ask Krabb why a capability is off and get the exact command that turns it on.
 - Let Krabb read the GIFs, stickers, PDFs, and audio files you send in chat.

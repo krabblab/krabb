@@ -81,6 +81,7 @@ fn queued_admission_rejects_a_different_request_context_before_persisting_any_wo
             kind: routing::Kind::Fast,
             message: String::new(),
             instruction: "Prepare the report.".into(),
+            language: None,
         },
         &context,
     )

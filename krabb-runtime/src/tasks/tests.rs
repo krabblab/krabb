@@ -564,6 +564,30 @@ fn checkpoints_are_bounded_and_optional_updates_are_deduplicated() {
     );
 }
 
+#[test]
+fn step_updates_reuse_the_task_notice_path() {
+    let fixture = Fixture::new(Principal::Channel("telegram".into()));
+    let mut store = fixture.context.sessions.lock().unwrap();
+
+    store.post_task_update(&fixture.id, "Still working: 2 pages read.", false).unwrap();
+
+    assert!(store.outbox.is_empty());
+
+    store.claim_task(&fixture.id, unix_seconds()).unwrap();
+    store.post_task_update(&fixture.id, "Still working: 2 pages read.", false).unwrap();
+    store.post_task_update(&fixture.id, "Found three sources.", true).unwrap();
+
+    assert!(store.tasks[&fixture.id].notice.is_none());
+    assert_eq!(store.outbox.len(), 2);
+    assert_eq!(store.outbox[1].text, "Found three sources.");
+    assert_eq!(store.tasks[&fixture.id].status, TaskStatus::Running);
+
+    let last = store.sessions[&fixture.origin].messages.last().unwrap();
+
+    assert_eq!(last.sender.as_deref(), Some("task"));
+    assert!(store.post_task_update("absent", "Still working.", false).is_err());
+}
+
 #[tokio::test]
 async fn client_delivery_is_typed_and_supports_clients_other_than_tui() {
     for client in [client::TUI, "desktop"] {

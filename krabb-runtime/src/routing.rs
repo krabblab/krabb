@@ -33,6 +33,8 @@ pub(super) struct Route {
     pub message: String,
     #[serde(default)]
     pub instruction: String,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl Route {
@@ -65,6 +67,7 @@ pub(super) struct State {
     pub gate: AsyncMutex<()>,
     pub announced: std::sync::atomic::AtomicBool,
     pub background: std::sync::atomic::AtomicBool,
+    pub pace: watch::Sender<progress::Pace>,
 }
 
 impl Default for State {
@@ -75,6 +78,7 @@ impl Default for State {
             gate: AsyncMutex::new(()),
             announced: std::sync::atomic::AtomicBool::new(false),
             background: std::sync::atomic::AtomicBool::new(false),
+            pace: watch::channel(progress::Pace::default()).0,
         }
     }
 }
@@ -94,7 +98,8 @@ pub(super) fn tool(background: bool) -> ToolSpec {
                 a self-contained goal before side effects. The host saves a durable task, \
                 continues it in checkpointed steps without an overall lifetime deadline, and \
                 delivers important updates and completion automatically. No scheduler plugin is \
-                needed. Do not promise a handoff until this tool succeeds. Background execution \
+                needed. Do not promise a handoff until this tool succeeds. Optionally name the \
+                conversation's language as a tag such as en or it. Background execution \
                 is {}. Do not use this tool inside a background or scheduled task.",
             if background {
                 "available under the configured approval policy"
@@ -109,7 +114,8 @@ pub(super) fn tool(background: bool) -> ToolSpec {
                     vec!["fast", "thoughtful", "background"]
                 } else { vec!["fast", "thoughtful"] }},
                 "message": {"type": "string"},
-                "instruction": {"type": "string"}
+                "instruction": {"type": "string"},
+                "language": {"type": "string"}
             },
             "required": ["kind"],
             "additionalProperties": false

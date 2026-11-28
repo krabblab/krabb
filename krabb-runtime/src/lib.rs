@@ -87,6 +87,7 @@ mod pdf;
 mod permissions;
 mod plugins;
 mod process;
+mod progress;
 mod recovery;
 mod releases;
 mod requirement;
@@ -222,8 +223,9 @@ const SCHEDULE_CALL_RANGE: u64 = 1 << 20;
 type WorkspaceLocks = Arc<AsyncMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>;
 const COMMAND_OUTPUT: usize = 2 * 1024 * 1024;
 /// Tools the host owns; plugins may not register these names.
-const HOST_TOOLS: [&str; 12] = [
+const HOST_TOOLS: [&str; 13] = [
     routing::NAME,
+    progress::NAME,
     tasks::CONTROLS[0],
     tasks::CONTROLS[1],
     tasks::CONTROLS[2],
@@ -1099,6 +1101,7 @@ pub(crate) struct Config {
     shell: bool,
     approval: String,
     tools: bool,
+    updates: progress::Updates,
     #[serde(default)]
     scheduler: SchedulerConfig,
     inference: inference::Config,
@@ -1122,6 +1125,7 @@ impl Default for Config {
             shell: false,
             approval: "prompt".into(),
             tools: false,
+            updates: progress::Updates::default(),
             scheduler: SchedulerConfig::default(),
             inference: inference::Config::default(),
             operations: operations::Config::default(),
@@ -1167,6 +1171,8 @@ struct ClientConfig {
     visibility: Option<Vec<sharing::Rule>>,
     #[serde(default)]
     approval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updates: Option<progress::Updates>,
 }
 
 impl Default for ClientConfig {
@@ -1180,6 +1186,7 @@ impl Default for ClientConfig {
             worktree: false,
             visibility: None,
             approval: None,
+            updates: None,
         }
     }
 }
@@ -1302,6 +1309,8 @@ struct ChannelConfig {
     visibility: Option<Vec<sharing::Rule>>,
     #[serde(default)]
     approval: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updates: Option<progress::Updates>,
     #[serde(default)]
     tools: bool,
     #[serde(default)]

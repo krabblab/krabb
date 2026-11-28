@@ -217,6 +217,7 @@ mod tests {
             kind: crate::routing::Kind::Fast,
             message: String::new(),
             instruction: "Prepare a verified report.".into(),
+            language: None,
         };
 
         let task = crate::tasks::record(&route, &context).unwrap();

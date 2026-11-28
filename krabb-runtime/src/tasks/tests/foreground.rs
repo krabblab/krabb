@@ -105,6 +105,7 @@ async fn queued_questions_wait_for_the_active_turn_and_use_its_completed_context
             kind: routing::Kind::Fast,
             message: String::new(),
             instruction: "Explain the second dataset.".into(),
+            language: None,
         };
 
         let task = record(&route, &context).unwrap();
@@ -383,6 +384,7 @@ fn interrupting_the_current_turn_preserves_independent_queued_requests() {
         kind: routing::Kind::Fast,
         message: String::new(),
         instruction: "Another question".into(),
+        language: None,
     };
 
     let input = Message {

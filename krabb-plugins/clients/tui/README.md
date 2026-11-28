@@ -65,6 +65,9 @@ Approval prompts close when you answer them or after five minutes, when the daem
 expires them.
 Notices Krabb writes itself, such as retries, failures, and approval results, appear
 as System rather than as your Krabb.
+While a long reply or task runs, short updates such as "Still working: 4 pages
+read" appear as progress lines before the answer. Set `updates = "frequent"` or
+`"off"` under `[clients.tui]` to change how often they appear.
 
 Attach images, PDFs, text or code files, and audio with `/attach <path>` or by
 pasting or dragging their absolute paths into the prompt, or attach a clipboard

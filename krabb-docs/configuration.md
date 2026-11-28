@@ -480,6 +480,22 @@ enabled and the sender is authorized. Use `approval = "prompt"` or
 `approval = "auto"` to enable channel tools. Scheduled tasks capture these
 effective permissions when created and use them for their later runs.
 
+`updates` sets how often long work reports progress: `quiet` (the default, at
+most 5 updates per turn or task step), `frequent` (half the quiet intervals,
+tasks still at most every 2 minutes), or `off`. Set it at top level, under a
+channel, or under a client; a channel or client value overrides the top-level
+one. Scheduled runs send no updates.
+
+```toml
+updates = "quiet"
+
+[channels.telegram]
+updates = "frequent"
+
+[clients.tui]
+updates = "off"
+```
+
 ## Visibility
 
 `visibility` is a list of outgoing grants, configurable globally or per channel/client:

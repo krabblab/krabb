@@ -7,6 +7,8 @@ pub(crate) enum StreamNotice {
     Tool(String),
     System(String),
     Progress(String),
+    /// A host line about the work so far, sent after a silence.
+    Status(String),
     Approval {
         chat: String,
         thread: Option<String>,
@@ -23,7 +25,7 @@ pub(crate) enum StreamNotice {
 pub(crate) struct StreamOutput {
     pub(crate) dirty: bool,
     pub(crate) disabled: bool,
-    pub(crate) sent: bool,
+    pub(crate) sent: u32,
     pub(crate) updated: tokio::time::Instant,
     pub(crate) message: Option<String>,
 }
@@ -33,16 +35,14 @@ impl StreamOutput {
         Self {
             dirty: false,
             disabled: false,
-            sent: false,
+            sent: 0,
             updated: tokio::time::Instant::now(),
             message: None,
         }
     }
 
     pub(crate) fn apply(&mut self, notice: StreamNotice) {
-        if let StreamNotice::Progress(message) = notice
-            && !self.sent
-        {
+        if let StreamNotice::Progress(message) | StreamNotice::Status(message) = notice {
             self.message = Some(message);
             self.dirty = true;
         }
@@ -65,11 +65,14 @@ pub(crate) async fn flush_stream(
     thread: Option<&str>,
     call: &mut u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if !output.dirty || output.disabled || output.sent {
+    if !output.dirty || output.disabled {
         return Ok(());
     }
 
-    let progress_id = format!("{delivery_id}{}", state::PROGRESS);
+    let progress_id = match output.sent {
+        0 => format!("{delivery_id}{}", state::PROGRESS),
+        sent => format!("{delivery_id}-{sent}{}", state::PROGRESS),
+    };
 
     let Some(text) = output.message.as_deref() else {
         return Ok(());
@@ -93,7 +96,7 @@ pub(crate) async fn flush_stream(
     };
 
     *call = call.saturating_add(1);
-    output.sent = true;
+    output.sent = output.sent.saturating_add(1);
     output.dirty = false;
 
     let result = channel.call(request).await;
@@ -198,7 +201,7 @@ pub(crate) async fn answer(
     let restart = Arc::clone(&registry.restart);
     let route = Arc::clone(&registry.route);
 
-    let mut result = answer_with_registry(
+    let work = answer_with_registry(
         provider,
         plugins,
         model,
@@ -225,8 +228,9 @@ pub(crate) async fn answer(
         scheduled_destination,
         schedule_run_id,
         registry,
-    )
-    .await;
+    );
+
+    let mut result = progress::pace(work, &route, &notices).await;
 
     let finished: Result<bool, PluginError> = async {
         cleanup.finish().await?;
@@ -363,6 +367,14 @@ pub(crate) async fn answer_with_registry(
             })
             .or_else(|| Some(sharing::principal(channel)));
     }
+
+    registry.route.pace.send_replace(progress::Pace::new(
+        if registry.execution == state::SessionKind::Schedule {
+            progress::Updates::Off
+        } else {
+            progress::setting(&plugins.config, channel)
+        },
+    ));
 
     if let Some(run) = &registry.run {
         sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
@@ -676,6 +688,13 @@ pub(crate) async fn answer_with_registry(
             > 16 * 1024;
 
     for step in 0..=TOOL_STEPS {
+        if progress::offered(&registry.route.pace.borrow(), *kind.borrow())
+            && !specs.iter().any(|spec| spec.name == progress::NAME)
+        {
+            registry.specs.push(progress::tool());
+            specs.push(progress::tool());
+        }
+
         let mut request = if provider.supports(Capability::Context) {
             context_request(*call, model, &messages, &specs, workspace)?
         } else {
@@ -768,6 +787,13 @@ pub(crate) async fn answer_with_registry(
 
         let adaptive = limits.is_some();
 
+        if let Some(limits) = limits {
+            let expected = generation_started.duration_since(started)
+                + Duration::from_millis(limits.total_millis);
+
+            registry.route.pace.send_if_modified(|pace| pace.expect(expected));
+        }
+
         let generation_deadline = limits.map_or(deadline, |limits| {
             deadline.min(generation_started + Duration::from_millis(limits.total_millis))
         });
@@ -826,6 +852,9 @@ pub(crate) async fn answer_with_registry(
 
         let mut notes = Vec::new();
         let mut delivered = String::new();
+
+        progress::Pace::stream(&registry.route.pace, &delivered);
+
         let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
         let host_plugins = plugins.clone();
         let host_sessions = Arc::clone(sessions);
@@ -967,6 +996,7 @@ pub(crate) async fn answer_with_registry(
                     match note {
                         Some(note) => {
                             forward_stream(&note, &mut delivered, &notices).await?;
+                            progress::Pace::stream(&registry.route.pace, &delivered);
                             notes.push(note);
                         }
 
@@ -1010,6 +1040,8 @@ pub(crate) async fn answer_with_registry(
             forward_stream(&note, &mut delivered, &notices).await?;
             notes.push(note);
         }
+
+        progress::Pace::stream(&registry.route.pace, &delivered);
 
         *call += 1;
 
@@ -1106,6 +1138,8 @@ pub(crate) async fn answer_with_registry(
             parsed.text = clip(parsed.text, TEXT_LIMIT - notice.len());
             parsed.text.push_str(notice);
         }
+
+        progress::Pace::stream(&registry.route.pace, &parsed.text);
 
         streaming |= !delivered.is_empty();
 
@@ -1302,6 +1336,8 @@ pub(crate) async fn answer_with_registry(
             };
 
             *call += 1;
+
+            progress::Pace::record(&registry.route.pace, name);
 
             if let Some(text) = registry.route.handoff.borrow().clone() {
                 return Ok(routing::reply(text));
@@ -1588,7 +1624,7 @@ pub(crate) fn merge_stream(reply: &mut ModelReply, notes: Vec<Request>) {
 
 pub(crate) fn mutating(name: &str, args: &serde_json::Value) -> bool {
     match name {
-        tasks::CHECKPOINT | tasks::input::NAME => false,
+        tasks::CHECKPOINT | tasks::input::NAME | progress::NAME => false,
         name if tasks::action(name).is_some() => tasks::action(name) != Some("list"),
         routing::NAME => matches!(args["kind"].as_str(), Some("background")),
         "file_write"

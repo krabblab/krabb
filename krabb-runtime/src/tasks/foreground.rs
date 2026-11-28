@@ -26,8 +26,13 @@ impl Foreground {
             });
 
         let instruction = goal(instruction);
-        let route =
-            routing::Route { kind: routing::Kind::Fast, message: String::new(), instruction };
+        let route = routing::Route {
+            kind: routing::Kind::Fast,
+            message: String::new(),
+            instruction,
+            language: None,
+        };
+
         let task = record(&route, context)?;
         let id = task.id.clone();
         let cancel = Arc::new(cancel.clone());

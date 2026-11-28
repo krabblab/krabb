@@ -529,7 +529,27 @@ async fn execute(
     }
 
     let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
-    let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    let updates = Arc::clone(&context.sessions);
+    let update_id = task.id.clone();
+
+    let drain = tokio::spawn(async move {
+        while let Some(notice) = receiver.recv().await {
+            let (text, model) = match notice {
+                StreamNotice::Progress(text) => (text, true),
+                StreamNotice::Status(text) => (text, false),
+                _ => continue,
+            };
+
+            let posted = updates
+                .lock()
+                .map_err(|_| std::io::Error::other(crate::state::POISONED))
+                .and_then(|mut store| store.post_task_update(&update_id, &text, model));
+
+            if let Err(error) = posted {
+                debug!(task = %update_id, %error, "A task update was not delivered.");
+            }
+        }
+    });
 
     let mut call = task.step.saturating_mul(1_000).saturating_add(1);
     let mut failed = None;
@@ -595,6 +615,7 @@ mod tests {
             kind: routing::Kind::Background,
             message: "Working on it.".into(),
             instruction: "Write the report.".into(),
+            language: None,
         };
 
         record(

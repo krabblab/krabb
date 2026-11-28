@@ -691,6 +691,28 @@ impl Store {
         Ok(ids)
     }
 
+    /// Delivers a short update from a running step through the task's notice path, unless
+    /// another notice is still pending.
+    pub fn post_task_update(&mut self, id: &str, text: &str, model: bool) -> std::io::Result<()> {
+        let task = self.task(id)?;
+
+        if task.notice.is_some() || task.status != TaskStatus::Running {
+            return Ok(());
+        }
+
+        let stamp =
+            SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_nanos());
+        let notice = Notice { id: format!("{id}-update-{stamp}"), text: text.into(), model };
+
+        self.change(|store| {
+            if let Some(task) = store.tasks.get_mut(id) {
+                task.notice = Some(notice);
+            }
+        })?;
+
+        self.publish_task_notice(id)
+    }
+
     pub fn publish_task_notice(&mut self, id: &str) -> std::io::Result<()> {
         let task = self.task(id)?;
         let Some(notice) = task.notice.clone() else { return Ok(()) };

@@ -201,6 +201,7 @@ fn enqueue_in(request: Submission, state: &State, store: &mut Store) -> io::Resu
         kind: routing::Kind::Fast,
         message: String::new(),
         instruction: tasks::goal(request.text),
+        language: None,
     };
 
     let run = store.atomic(|store| {
