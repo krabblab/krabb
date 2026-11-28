@@ -318,11 +318,14 @@ fn git(args: &Value) -> String {
             || word.starts_with("--exec-path=")
     });
 
+    let warning = "sets its own configuration, which can run any program";
+
     match configured {
-        true => fact.replace(
-            "may run repository-configured programs",
-            "sets its own configuration, which can run any program",
-        ),
+        true if fact.contains("may run repository-configured programs") => {
+            fact.replace("may run repository-configured programs", warning)
+        }
+
+        true => format!("{fact} It {warning}."),
         false => fact,
     }
 }
