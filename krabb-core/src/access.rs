@@ -135,7 +135,7 @@ impl Preset {
     pub const fn decide(self, action: Action) -> Verdict {
         match (self, action) {
             (Self::Chat, _) => Verdict::Deny,
-            (_, Action::Install | Action::Elevate) => Verdict::Ask,
+            (_, Action::Install | Action::Elevate | Action::Settings) => Verdict::Ask,
             (Self::Loose, _) => Verdict::Run,
             (_, Action::Read | Action::Fetch) => Verdict::Run,
             (Self::Standard, Action::Write | Action::Inspect) => Verdict::Run,
@@ -241,7 +241,7 @@ mod tests {
             (Shell, [Deny, Ask, Ask, Run]),
             (Install, [Deny, Ask, Ask, Ask]),
             (Elevate, [Deny, Ask, Ask, Ask]),
-            (Settings, [Deny, Ask, Ask, Run]),
+            (Settings, [Deny, Ask, Ask, Ask]),
             (Message, [Deny, Ask, Ask, Run]),
             (Schedule, [Deny, Ask, Ask, Run]),
         ];

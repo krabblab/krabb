@@ -2139,8 +2139,8 @@ fn config_deserializes_with_defaults() {
     assert_eq!(config.update, "prompt");
     assert_eq!(config.approval, "prompt");
     assert_eq!(config.channels["telegram"].allow, vec!["123"]);
-    assert!(!config.channels["telegram"].tools);
-    assert!(!config.channels["telegram"].shell);
+    assert!(config.channels["telegram"].tools.is_none());
+    assert!(config.channels["telegram"].shell.is_none());
     assert!(!config.channels["telegram"].worktree);
     assert!(!super::ChannelConfig::default().worktree);
 
@@ -2156,8 +2156,8 @@ fn config_deserializes_with_defaults() {
         toml::from_str("approval = \"prompt\"\n[channels.telegram]\ntools = true\nshell = true\n")
             .unwrap();
 
-    assert!(channel_shell.channels["telegram"].tools);
-    assert!(channel_shell.channels["telegram"].shell);
+    assert_eq!(channel_shell.channels["telegram"].tools, Some(true));
+    assert_eq!(channel_shell.channels["telegram"].shell, Some(true));
 
     let schedule: Config =
         toml::from_str("[scheduler]\ntimezone = \"Europe/Rome\"\nmissed = \"coalesce\"\n").unwrap();
@@ -4465,7 +4465,11 @@ fn validates_manifests_and_environment() {
 
     config.channels.insert(
         "telegram".into(),
-        super::ChannelConfig { tools: true, shell: true, ..super::ChannelConfig::default() },
+        super::ChannelConfig {
+            tools: Some(true),
+            shell: Some(true),
+            ..super::ChannelConfig::default()
+        },
     );
 
     let values = env_for(
@@ -9140,7 +9144,7 @@ fn prepares_channel_replies() {
         "7"
     ));
 
-    let mut policy = super::ChannelConfig { tools: true, ..Default::default() };
+    let mut policy = super::ChannelConfig { tools: Some(true), ..Default::default() };
 
     assert!(!super::tools_allowed(
         &policy,
@@ -9155,7 +9159,7 @@ fn prepares_channel_replies() {
         "7"
     ));
 
-    policy.shell = true;
+    policy.shell = Some(true);
 
     assert!(!super::channel_shell_allowed(
         &policy,
@@ -12042,7 +12046,11 @@ async fn runs_a_tool_turn_before_replying() {
         Arc::new(Mutex::new(BTreeMap::new())),
         BTreeMap::from([(
             "telegram".into(),
-            super::ChannelConfig { allow: vec!["7".into()], tools: true, ..Default::default() },
+            super::ChannelConfig {
+                allow: vec!["7".into()],
+                tools: Some(true),
+                ..Default::default()
+            },
         )]),
         super::ApprovalMode::Auto,
     )
@@ -12407,7 +12415,7 @@ async fn prompts_for_signed_approval_before_mutating_tools() {
                 super::ChannelConfig {
                     allow: vec!["7".into()],
                     owner: Some("8".into()),
-                    tools: true,
+                    tools: Some(true),
                     ..Default::default()
                 },
             )]),
@@ -12679,7 +12687,7 @@ done
     let approvals = Arc::new(super::AsyncMutex::new(super::approval::Gate::new().unwrap()));
 
     let policy =
-        super::ChannelConfig { allow: vec!["7".into()], tools: true, ..Default::default() };
+        super::ChannelConfig { allow: vec!["7".into()], tools: Some(true), ..Default::default() };
 
     let mut offset = 0;
     let mut call = 10;

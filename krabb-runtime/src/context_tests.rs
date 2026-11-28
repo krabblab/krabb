@@ -57,7 +57,7 @@ fn typed_scopes_validate_sources_and_preserve_defaults() {
     config.validate().unwrap();
 
     assert!(config.tools);
-    assert!(!config.channels["telegram"].tools);
+    assert!(config.channels["telegram"].tools != Some(true));
     assert!(config.clients["tui"].visibility.is_some());
     assert!(!config.clients["tui"].worktree);
 

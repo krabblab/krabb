@@ -328,6 +328,7 @@ pub(crate) async fn channel(
         return Ok(Command::Pass);
     }
 
+    let policy = &access::effective(&host.plugins.config, integration, policy, event);
     let intake = Intake::read(host, integration, event, policy, mode)?;
     let caller = intake.caller(integration);
     let key = intake.key("slash");

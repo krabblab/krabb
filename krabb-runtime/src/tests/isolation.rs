@@ -300,7 +300,7 @@ async fn approved_channel_resumes_while_another_approval_is_pending() {
                 channel.into(),
                 ChannelConfig {
                     provider: Some(provider.into()),
-                    tools: true,
+                    tools: Some(true),
                     owner: Some("8".into()),
                     ..Default::default()
                 },

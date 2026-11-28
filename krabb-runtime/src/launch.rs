@@ -677,9 +677,13 @@ pub(crate) fn env_for(
 
     if manifest.id == "tools" {
         ensure_root(&mut values, root);
-        let shell_enabled = config.tui_shell()
+        let shell_enabled = !access::legacy(config)
+            || config.tui_shell()
             || (config.tools && config.shell)
-            || config.channels.values().any(|channel| channel.tools && channel.shell);
+            || config
+                .channels
+                .values()
+                .any(|channel| channel.tools == Some(true) && channel.shell == Some(true));
         values.push(("KRABB_SHELL".into(), if shell_enabled { "on" } else { "off" }.into()));
 
         for name in ["KRABB_SANDBOX_RUNTIME", "KRABB_SANDBOX_IMAGE"] {

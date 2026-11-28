@@ -318,7 +318,7 @@ pub(crate) async fn bridge_with_media(
                     &channel,
                     channel_id,
                     &event,
-                    &channel_policy,
+                    &access::effective(&plugins.config, channel_id, &channel_policy, &event),
                     approval_mode,
                     &approvals,
                     &sessions,
@@ -1024,7 +1024,8 @@ pub(crate) async fn bridge_with_media(
             }
 
             let delivery_id = format!("{channel_id}-{event_id}");
-            let effective_policy = channel_policy.clone();
+            let effective_policy =
+                access::effective(&plugins.config, channel_id, &channel_policy, &event);
 
             let turn_approval =
                 sharing::approval(&plugins.config, &sharing::principal(channel_id), approval_mode);

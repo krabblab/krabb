@@ -645,10 +645,34 @@ pub(crate) async fn execute_tool_with_registry(
         sessions.lock().map_err(|_| state::POISONED)?.check_task_step(&run.id, run.generation)?;
     }
 
-    if registry.execution == state::SessionKind::Foreground
-        && approval_mode == ApprovalMode::Prompt
+    let gate = {
+        let store = sessions.lock().map_err(|_| state::POISONED)?;
+        let source = registry.source.clone().unwrap_or_else(|| sharing::principal(channel));
+        let grant = access::turn(&plugins.config, source, channel, store.sessions.get(session));
+
+        access::gate(&plugins.config, &grant, name, &args, approval_mode)
+            .map(|verdict| (verdict, grant.preset))
+    };
+
+    let asks = match gate {
+        Some((access::Verdict::Deny, preset)) => {
+            return Ok(ToolResult::text(format!(
+                "The {preset} preset does not allow `{name}` here, so nothing ran. The owner can \
+                 change this conversation's preset with `krabb config set`."
+            )));
+        }
+
+        Some((verdict, _)) => verdict == access::Verdict::Ask,
+        None => approval_mode == ApprovalMode::Prompt && mutating(name, &args),
+    };
+
+    if let Some((access::Verdict::Run, preset)) = gate
         && mutating(name, &args)
     {
+        info!(tool = name, %preset, "ran a tool without asking under the preset");
+    }
+
+    if registry.execution == state::SessionKind::Foreground && asks {
         let text = approval_text(name, &args);
 
         if text.len() > APPROVAL_TEXT_LIMIT {
@@ -973,11 +997,15 @@ pub(crate) async fn execute_tool_with_registry(
         }
     }
 
-    let changes = mutating(name, &args);
+    let changes = match gate {
+        Some((verdict, _)) => verdict == access::Verdict::Ask,
+        None => mutating(name, &args),
+    };
 
-    let approval_mode = match approval_mode {
-        ApprovalMode::Auto if name == settings::TOOL => ApprovalMode::Prompt,
-        mode => mode,
+    let approval_mode = match (gate, approval_mode) {
+        (Some(_), _) => ApprovalMode::Prompt,
+        (None, ApprovalMode::Auto) if name == settings::TOOL => ApprovalMode::Prompt,
+        (None, mode) => mode,
     };
 
     let approve = match (changes, approval_mode) {

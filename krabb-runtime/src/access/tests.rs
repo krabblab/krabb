@@ -396,7 +396,7 @@ mod before {
         chat: &str,
         approvals: bool,
     ) -> bool {
-        if !approvals || !policy.tools || !allowed(policy, event, chat) {
+        if !approvals || policy.tools != Some(true) || !allowed(policy, event, chat) {
             return false;
         }
 
@@ -406,7 +406,7 @@ mod before {
     }
 
     pub fn schedule_allowed(policy: &ChannelConfig, event: &serde_json::Value, chat: &str) -> bool {
-        if !policy.tools || !allowed(policy, event, chat) {
+        if policy.tools != Some(true) || !allowed(policy, event, chat) {
             return false;
         }
 
@@ -487,7 +487,7 @@ fn shared_role_matching_keeps_every_channel_decision() {
                     assert_eq!(tools_allowed(&policy, event, chat, approvals), tools, "{event}");
 
                     for enabled in [false, true] {
-                        let shell = enabled || (policy.shell && tools);
+                        let shell = enabled || (policy.shell == Some(true) && tools);
 
                         assert_eq!(
                             channel_shell_allowed(&policy, event, chat, approvals, enabled),
@@ -534,4 +534,89 @@ fn today_decisions_for_each_role_and_chat_kind() {
         assert!(!tools_allowed(&policy, &event, "42", false), "{event}");
         assert!(!allowed(&policy, &event, "43") || private, "{event}");
     }
+}
+
+#[test]
+fn presets_classify_tool_calls_and_shell_commands() {
+    let shell = |command: &str| action("shell_run", &json!({"command": command}));
+
+    assert_eq!(action("file_read", &json!({"path": "a"})), Action::Read);
+    assert_eq!(action("web_fetch", &json!({"url": "https://example.com"})), Action::Fetch);
+    assert_eq!(action("file_write", &json!({"path": "a", "content": "b"})), Action::Write);
+    assert_eq!(action("message_send", &json!({})), Action::Message);
+    assert_eq!(action(settings::TOOL, &json!({})), Action::Settings);
+    assert_eq!(action("schedule_propose", &json!({})), Action::Schedule);
+    assert_eq!(action("mcp_unknown_tool", &json!({})), Action::Shell);
+    assert_eq!(shell("ls -la"), Action::Inspect);
+    assert_eq!(shell("rm -rf build"), Action::Delete);
+    assert_eq!(shell("apt install htop"), Action::Install);
+    assert_eq!(shell("sudo ls"), Action::Elevate);
+    assert_eq!(shell("touch a"), Action::Shell);
+    assert_eq!(shell("git status"), Action::Shell);
+}
+
+#[test]
+fn the_gate_follows_the_preset_and_an_approval_mode_of_off_narrows_it() {
+    let legacy = config("");
+    let presets = config("preset = 'standard'");
+    let owner = resolve(&presets, &remote(krabb_core::client::TUI));
+    let write = json!({"path": "a", "content": "b"});
+
+    assert_eq!(gate(&legacy, &owner, "file_write", &write, ApprovalMode::Prompt), None);
+    assert_eq!(owner.preset, Preset::Standard);
+
+    let run = gate(&presets, &owner, "file_write", &write, ApprovalMode::Prompt);
+    let ask = gate(&presets, &owner, "shell_run", &json!({"command": "rm x"}), ApprovalMode::Auto);
+    let off = gate(&presets, &owner, "file_write", &write, ApprovalMode::Off);
+    let read = gate(&presets, &owner, "file_read", &json!({"path": "a"}), ApprovalMode::Off);
+    let settings = gate(&presets, &owner, settings::TOOL, &json!({}), ApprovalMode::Auto);
+
+    assert_eq!(run, Some(Verdict::Run));
+    assert_eq!(ask, Some(Verdict::Ask));
+    assert_eq!(off, Some(Verdict::Deny));
+    assert_eq!(read, Some(Verdict::Run));
+    assert_eq!(settings, Some(Verdict::Ask));
+
+    let guest = Grant { preset: Preset::Chat, ..owner };
+
+    assert_eq!(
+        gate(&presets, &guest, "file_read", &json!({}), ApprovalMode::Auto),
+        Some(Verdict::Deny)
+    );
+}
+
+#[test]
+fn a_preset_turns_tools_on_for_capable_roles_and_false_still_narrows() {
+    let text = format!("preset = 'standard'\n{GROUP}");
+    let presets = config(&text);
+    let policy = &presets.channels["discord"];
+    let event = |sender: &str| json!({"sender": sender, "chat": "42", "private": false});
+
+    let owner = effective(&presets, "discord", policy, &event("ada"));
+    let stranger = effective(&presets, "discord", policy, &event("eve"));
+
+    assert_eq!((owner.tools, owner.shell), (Some(true), Some(true)));
+    assert_eq!((stranger.tools, stranger.shell), (Some(false), Some(false)));
+
+    let narrowed = config(&format!("{text}tools = true\nshell = false\n"));
+    let narrowed = effective(&narrowed, "discord", &narrowed.channels["discord"], &event("ada"));
+
+    assert_eq!((narrowed.tools, narrowed.shell), (Some(true), Some(false)));
+
+    let legacy = config(GROUP);
+    let unchanged = effective(&legacy, "discord", &legacy.channels["discord"], &event("ada"));
+
+    assert_eq!((unchanged.tools, unchanged.shell), (None, None));
+}
+
+#[test]
+fn clients_follow_the_preset_unless_set() {
+    let presets = config("preset = 'standard'");
+    let legacy = config("");
+
+    assert!(client(&presets, None, false));
+    assert!(!client(&presets, Some(false), true));
+    assert!(!client(&legacy, None, false));
+    assert!(client(&legacy, None, true));
+    assert!(client(&legacy, Some(true), false));
 }

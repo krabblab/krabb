@@ -39,7 +39,6 @@ use tokio::{
 
 use tracing::{debug, error, info, warn};
 
-#[cfg_attr(not(test), allow(dead_code))]
 mod access;
 mod accounting;
 mod agent;
@@ -1208,11 +1207,15 @@ impl Config {
     }
 
     fn client_tools(&self, id: &str) -> bool {
-        self.clients.get(id).and_then(|client| client.tools).unwrap_or(id == client::TUI)
+        access::client(
+            self,
+            self.clients.get(id).and_then(|client| client.tools),
+            id == client::TUI,
+        )
     }
 
     fn client_shell(&self, id: &str) -> bool {
-        self.clients.get(id).and_then(|client| client.shell).unwrap_or(self.shell)
+        access::client(self, self.clients.get(id).and_then(|client| client.shell), self.shell)
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -1316,10 +1319,10 @@ struct ChannelConfig {
     visibility: Option<Vec<sharing::Rule>>,
     #[serde(default)]
     approval: Option<String>,
-    #[serde(default)]
-    tools: bool,
-    #[serde(default)]
-    shell: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shell: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preset: Option<access::Preset>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2800,7 +2803,7 @@ fn tools_allowed(
 }
 
 fn schedule_allowed(policy: &ChannelConfig, event: &serde_json::Value, chat: &str) -> bool {
-    if !policy.tools || !allowed(policy, event, chat) {
+    if policy.tools != Some(true) || !allowed(policy, event, chat) {
         return false;
     }
 
@@ -2816,7 +2819,7 @@ fn channel_shell_allowed(
     approvals: bool,
     shell_enabled: bool,
 ) -> bool {
-    shell_enabled || (policy.shell && tools_allowed(policy, event, chat, approvals))
+    shell_enabled || (policy.shell == Some(true) && tools_allowed(policy, event, chat, approvals))
 }
 
 fn mentions(text: &str, marker: &str) -> bool {

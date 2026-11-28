@@ -268,7 +268,7 @@ fn permissions(
             let (tools, shell, approval) = match &source {
                 sharing::Principal::Channel(id) => {
                     let policy = config.channels.get(id)?;
-                    (policy.tools, policy.shell, policy.approval.as_deref())
+                    (policy.tools == Some(true), policy.shell == Some(true), policy.approval.as_deref())
                 }
 
                 sharing::Principal::Client(id) => {

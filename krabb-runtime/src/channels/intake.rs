@@ -396,7 +396,11 @@ done
             channel: Arc::clone(&channel),
             id: "telegram".into(),
             model: "test".into(),
-            policy: ChannelConfig { allow: vec!["7".into()], tools: true, ..Default::default() },
+            policy: ChannelConfig {
+                allow: vec!["7".into()],
+                tools: Some(true),
+                ..Default::default()
+            },
             mode: ApprovalMode::Prompt,
             sessions: Arc::new(Mutex::new(store)),
             approvals,

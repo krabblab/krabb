@@ -1695,9 +1695,10 @@ fn grants(
     match source {
         sharing::Principal::Channel(id) => {
             let section = config.channels.get(id).cloned().unwrap_or_default();
-            let sender = tools_enabled || schedule_enabled || !section.tools;
+            let tools = section.tools == Some(true);
+            let sender = tools_enabled || schedule_enabled || !tools;
 
-            context::Grants { tools: section.tools, shell: section.shell, sender }
+            context::Grants { tools, shell: section.shell == Some(true), sender }
         }
 
         sharing::Principal::Client(id) => {
@@ -1718,9 +1719,10 @@ mod tests {
     fn reads_the_setting_that_turned_tools_off_for_a_source() {
         let mut config = Config::default();
 
-        config
-            .channels
-            .insert("telegram".into(), ChannelConfig { tools: true, ..ChannelConfig::default() });
+        config.channels.insert(
+            "telegram".into(),
+            ChannelConfig { tools: Some(true), ..ChannelConfig::default() },
+        );
 
         let telegram = sharing::Principal::Channel("telegram".into());
         let stranger = grants(&config, &telegram, false, false);

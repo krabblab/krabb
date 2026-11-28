@@ -91,7 +91,9 @@ pub fn policy(config: &Config, context: &Value, workspace: &Path) -> Result<(), 
             );
         }
 
-        (local.tools, local.shell)
+        let local = access::effective(config, id, &local, &event);
+
+        (local.tools == Some(true), local.shell == Some(true))
     };
 
     if !sharing::approval(config, &owner, config.approval_mode()).enabled() {
@@ -199,7 +201,7 @@ mod tests {
         let workspace = Path::new("workspace");
 
         policy(&config, &context, workspace).unwrap();
-        config.channels.get_mut("telegram").unwrap().tools = false;
+        config.channels.get_mut("telegram").unwrap().tools = Some(false);
 
         assert!(policy(&config, &context, workspace).is_err());
         config.visibility = vec![sharing::Rule {
@@ -209,7 +211,7 @@ mod tests {
         config.tools = true;
 
         assert!(policy(&config, &context, workspace).is_err());
-        config.channels.get_mut("telegram").unwrap().tools = true;
+        config.channels.get_mut("telegram").unwrap().tools = Some(true);
 
         policy(&config, &context, workspace).unwrap();
         config.channels.get_mut("telegram").unwrap().worktree = true;
