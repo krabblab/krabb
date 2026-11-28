@@ -70,8 +70,13 @@ $releases = "https://github.com/krabblab/krabb/releases"
 $script = "https://raw.githubusercontent.com/krabblab/krabb/main/install.ps1"
 $target = "$arch-pc-windows-msvc"
 $invalid = "is not valid. Use a version such as 0.1.0 or 0.1.0-rc.1."
-if ($env:KRABB_VERSION) {
-    $version = $env:KRABB_VERSION -replace '^v', ''
+
+# A copy attached to a release names that release here, so it installs the release it came from.
+$stamp = ""
+$requested = if ($env:KRABB_VERSION) { $env:KRABB_VERSION } else { $stamp }
+
+if ($requested) {
+    $version = $requested -replace '^v', ''
     if ($version -notmatch $pattern) { Stop-Install "Version '$version' $invalid" }
     $base = "$releases/download/v$version"
     $missing = "Cannot reach Krabb $version; check the version and the connection."

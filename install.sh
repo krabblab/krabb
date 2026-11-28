@@ -127,8 +127,12 @@ name=krabb
 releases=https://github.com/krabblab/krabb/releases
 script=https://raw.githubusercontent.com/krabblab/krabb/main/install.sh
 
-if [ -n "${KRABB_VERSION:-}" ]; then
-    version=${KRABB_VERSION#v}
+# A copy attached to a release names that release here, so it installs the release it came from.
+stamp=''
+requested=${KRABB_VERSION:-$stamp}
+
+if [ -n "$requested" ]; then
+    version=${requested#v}
     valid_version "$version"
     base=${KRABB_RELEASE_BASE:-"$releases/download/v$version"}
     missing="Cannot reach Krabb $version; check the version and the connection."

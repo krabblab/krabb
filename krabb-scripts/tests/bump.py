@@ -31,6 +31,9 @@ CHANGELOG = '''# Changelog
 README = (
     "curl -fsSL https://example.invalid/install.sh | KRABB_VERSION=0.1.0-rc.1 sh\n"
     "$env:KRABB_VERSION = '0.1.0-rc.1'; irm https://example.invalid/install.ps1 | iex\n"
+    "curl -fsSL https://example.invalid/releases/download/v0.1.0-rc.1/install.sh | sh\n"
+    "irm https://example.invalid/releases/download/v0.1.0-rc.1/install.ps1 | iex\n"
+    "curl -fsSL https://example.invalid/releases/latest/download/install.sh | sh\n"
 )
 
 

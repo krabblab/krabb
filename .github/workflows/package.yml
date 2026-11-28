@@ -70,6 +70,37 @@ jobs:
         name: Read The Targets
         run: echo "targets=$(jq -c . krabb-scripts/targets.json)" >> "$GITHUB_OUTPUT"
 
+  # The installers a release attaches, stamped with its version, and their SHA256SUMS lines.
+  installers:
+    name: Installers
+    if: contains(format(' {0} ', inputs.names), ' core ')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+        with:
+          persist-credentials: false
+
+      - name: Write The Installers
+        env:
+          KRABB_VERSION: ${{ inputs.version }}
+
+        run: |
+          set -euo pipefail
+          version=${KRABB_VERSION:-$(bash krabb-scripts/version.sh)}
+          python3 krabb-scripts/installers.py "$version" "$RUNNER_TEMP/installers"
+          (cd "$RUNNER_TEMP/installers" && sha256sum --check --strict SHA256SUMS)
+
+      - name: Upload Installers
+        uses: actions/upload-artifact@v7
+
+        with:
+          name: ${{ inputs.artifact }}-installers
+          path: ${{ runner.temp }}/installers
+          if-no-files-found: error
+
   archive:
     name: Archive (${{ matrix.name }})
     needs: targets

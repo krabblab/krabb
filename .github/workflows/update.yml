@@ -3,12 +3,13 @@ name: Update
 # Proves `krabb update` and `krabb update --rollback` on real archives on every target. It
 # installs a previous build, which is the candidate's own source packaged at version
 # 0.0.0-previous, sets up official plugins and the service, then updates from local release
-# directories laid out as `KRABB_RELEASE_BASE` expects. A copy of the candidate whose daemon
-# exits at once must fail activation and restore the previous build; the real candidate must
-# update; and the recovery point's binary must roll back while the new daemon cannot start.
-# Release runs it on the archives it is about to publish, so a release that cannot update or
-# roll back is never published. Plugin archives in the candidate's release directory are
-# installed from a local index. The steps live in krabb-scripts/drills.
+# directories laid out as `KRABB_RELEASE_BASE` expects. The previous build is installed with
+# the installer packaged for it. A copy of the candidate whose daemon exits at once must fail
+# activation and restore the previous build; the real candidate must update; and the recovery
+# point's binary must roll back while the new daemon cannot start. Release runs it on the
+# archives it is about to publish, so a release that cannot update or roll back is never
+# published. Plugin archives in the candidate's release directory are installed from a local
+# index. The steps live in krabb-scripts/drills.
 
 on:
   workflow_dispatch:
@@ -99,6 +100,13 @@ jobs:
         with:
           name: ${{ inputs.previous || 'krabb-update-previous' }}-${{ matrix.target }}
           path: ${{ runner.temp }}/previous
+
+      - name: Download Previous Installers
+        uses: actions/download-artifact@v8
+
+        with:
+          name: ${{ inputs.previous || 'krabb-update-previous' }}-installers
+          path: ${{ runner.temp }}/installers
 
       - name: Download Candidate Release
         uses: actions/download-artifact@v8

@@ -1,12 +1,12 @@
 name: Install
 
-# Builds Krabb from the commit this run is on, installs it the way the README does, and walks
-# the first-run flow on every target. Choose the branch or tag under "Use workflow from" to
-# test another commit. Plugins are installed but not set up, because setup needs third-party
-# accounts; they come from the published index, or from a local index when the release
-# directory also holds plugin archives. Release runs it on the archives it is about to
-# publish, so a release whose installation does not work is never published. The steps live
-# in krabb-scripts/drills.
+# Builds Krabb from the commit this run is on, installs it the way the README does, with the
+# installers this run packaged for the release, and walks the first-run flow on every target.
+# Choose the branch or tag under "Use workflow from" to test another commit. Plugins are
+# installed but not set up, because setup needs third-party accounts; they come from the
+# published index, or from a local index when the release directory also holds plugin
+# archives. Release runs it on the archives it is about to publish, so a release whose
+# installation does not work is never published. The steps live in krabb-scripts/drills.
 
 on:
   workflow_dispatch:
@@ -77,6 +77,13 @@ jobs:
         with:
           name: ${{ inputs.artifact || 'krabb-install' }}-${{ matrix.target }}
           path: ${{ runner.temp }}/release
+
+      - name: Download Installers
+        uses: actions/download-artifact@v8
+
+        with:
+          name: ${{ inputs.artifact || 'krabb-install' }}-installers
+          path: ${{ runner.temp }}/installers
 
       - name: Serve The Release And Its Plugins
         shell: bash
