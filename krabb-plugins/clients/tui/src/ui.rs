@@ -4952,7 +4952,7 @@ mod tests {
     use super::{
         App, GENERATION_MESSAGES, INPUT_HISTORY_LIMIT, STATUSLINE_SCROLL_INTERVAL, ScrollState,
         StatuslineOptions, TuiPreferences, draw, generation_status_line, handle_event, input_view,
-        interrupt_generation, marquee_statusline, render_statusline, save_preferences,
+        interrupt_generation, labelled, marquee_statusline, render_statusline, save_preferences,
     };
 
     #[test]
