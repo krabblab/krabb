@@ -528,6 +528,24 @@ above the level does not run; Krabb replies with the exact command for the owner
 When Krabb itself runs as root, package and service commands need their level without
 `sudo` too.
 
+Under a preset, approval prompts also offer **Always allow** (`/always <id>` in the TUI).
+It approves the request and saves a rule in `config.toml` for that tool and the exact
+command, or the exact file path, in the conversation where it was given:
+
+```toml
+[[rules]]
+id = "3f9c2a1b"
+scope = "telegram:42"
+tool = "shell_run"
+command = "cargo test"
+saved_by = "owner"
+```
+
+A `path` ending in `/**` covers every file below that folder. A rule for an admin command
+needs the owner, or a role whose `elevation` covers the command, and stops counting if
+that role loses the level. `krabb approval rules` lists the rules and
+`krabb approval forget <id>` removes one; Krabb keeps at most 256.
+
 ## Visibility
 
 `visibility` is a list of outgoing grants, configurable globally or per channel/client:

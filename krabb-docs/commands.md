@@ -8,6 +8,8 @@ krabb --version
 krabb init [home] [provider] [preset] [hatch] [channel] [service] [--provider <id>]
            [--preset <preset>] [--channel <id>|none]
 krabb init --force [-y|--yes] [--json]
+krabb approval rules [--json]
+krabb approval forget <id> [--json]
 krabb hatch [<what to change>...] [--name <text>] [--call <text>] [--personality <text>] [--voice <text>] [--writing <text>] [--work <text>] [--language <text>] [--notes <text>] [-y|--yes] [--json]
 krabb hatch --undo [-y|--yes] [--json]
 krabb doctor [--fix] [--json]
