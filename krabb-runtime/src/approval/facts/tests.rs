@@ -141,7 +141,8 @@ fn shell_facts_read_windows_and_macos_commands() {
         (
             CMD,
             "msiexec /i C:\\Downloads\\tool.msi /qn",
-            "Install packages with msiexec: C:\\Downloads\\tool.msi. It needs admin rights.",
+            "Install packages with msiexec: C:\\Downloads\\tool.msi. It reaches C:\\Downloads\\tool.msi \
+                outside the workspace and needs admin rights.",
         ),
         (
             CMD,
@@ -177,7 +178,8 @@ fn shell_facts_read_windows_and_macos_commands() {
         (
             CMD,
             "dir C:\\Users\\me > C:\\Users\\me\\list.txt",
-            "Run a shell command. It writes C:\\Users\\me\\list.txt.",
+            "Run a shell command. It writes C:\\Users\\me\\list.txt and reaches C:\\Users\\me outside \
+                the workspace.",
         ),
         (
             CMD,
@@ -215,9 +217,13 @@ fn shell_facts_read_windows_and_macos_commands() {
         (
             CMD,
             "C:\\Windows\\System32\\shutdown.exe /r",
-            "Run a shell command. It needs admin rights.",
+            "Run a shell command. It needs admin rights and runs code Krabb cannot read.",
         ),
-        (POWERSHELL, "Get-ChildItem C:\\Users\\me", "Run a shell command."),
+        (
+            POWERSHELL,
+            "Get-ChildItem C:\\Users\\me",
+            "Run a shell command. It reaches C:\\Users\\me outside the workspace.",
+        ),
         (
             MACOS,
             "brew install --cask iterm2",
