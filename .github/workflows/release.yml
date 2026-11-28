@@ -1,4 +1,8 @@
 name: Release
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && !inputs.publish
+  && format('chore(release): dry run from {0}', github.ref_name)
+  || format('chore(release): publish from {0}', github.event.workflow_run.head_branch || github.ref_name) }}
 
 # Publishes what the head of main declares once CI passes for it: Krabb at its workspace
 # version, and each plugin at the version in its manifest. Versions that are already
@@ -124,7 +128,7 @@ jobs:
       artifact: krabb-release
 
   previous:
-    name: Build Previous
+    name: Previous
     needs: plan
     if: needs.plan.outputs.build == 'true'
     uses: ./.github/workflows/package.yml
@@ -157,7 +161,7 @@ jobs:
 
   # The index is rebuilt after each publication, and on its own when Plan found it stale.
   plugins:
-    name: Publish Plugins
+    name: Plugins
     needs: [plan, install, update]
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success' &&
@@ -208,7 +212,7 @@ jobs:
             "ghcr.io/${GITHUB_REPOSITORY,,}/plugins" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
 
   krabb:
-    name: Publish Krabb
+    name: Publish
     needs: [plan, build, install, update, plugins]
     if: >-
       ${{ !cancelled() && needs.plan.outputs.publish == 'true' &&

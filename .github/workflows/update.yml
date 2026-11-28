@@ -1,4 +1,6 @@
 name: Update
+run-name: >-
+  ${{ format('test(update): drill updates on {0}', github.ref_name) }}
 
 # Proves `krabb update` and `krabb update --rollback` on real archives on every target. It
 # installs a previous build, which is the candidate's own source packaged at version
@@ -42,7 +44,7 @@ env:
 
 jobs:
   candidate:
-    name: Package Candidate
+    name: Candidate
     if: inputs.artifact == ''
     uses: ./.github/workflows/package.yml
 
@@ -52,7 +54,7 @@ jobs:
       installers: false
 
   previous:
-    name: Package Previous
+    name: Previous
     if: inputs.previous == ''
     uses: ./.github/workflows/package.yml
 

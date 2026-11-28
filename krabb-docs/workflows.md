@@ -143,7 +143,7 @@ in Rust and Python; it also checks JavaScript block spacing. It preserves embedd
 and fixtures and is idempotent. Keep the inserted blank lines when editing.
 
 Make targets, Git hooks, and engineering loops build with two parallel jobs to bound
-memory; raise it on larger machines with `make verify JOBS=4` or `CARGO_BUILD_JOBS`.
+memory; raise it on larger machines with `make gate JOBS=4` or `CARGO_BUILD_JOBS`.
 Dev builds keep only line tables for debugging, which keeps backtrace file and line
 numbers while cutting link memory and test binary size.
 
@@ -185,7 +185,7 @@ Use `make ci` for new or changed GitHub Actions workflows and for debugging
 workflow behavior that depends on action ordering, inputs, runners, or
 artifacts. It runs `krabb-ci/ci.sh`, which performs the local preflight and
 then exercises the important Actions flow through `act`. For ordinary source
-changes, use `make verify`, `make test`, and `make build` without the container
+changes, use `make precommit`, `make test`, and `make build` without the container
 workflow.
 
 ## Background Service

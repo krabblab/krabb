@@ -54,7 +54,7 @@ non-success. They never count as clean convergence. Review loops do not commit, 
 ## Contribution Loop
 
 `make contribloop` handles the contribution after implementation: empty `PLAN.md` and
-`IMPLEMENTATION.md`, run `make verify`, repair failures, create a branch, commit with a
+`IMPLEMENTATION.md`, run `make gate`, repair failures, create a branch, commit with a
 lowercase conventional title without a scope, push to `origin`, and create a draft PR.
 It reads recent merged PRs for writing
 style and fills the repository template while preserving its guidance comments. The PR
@@ -141,7 +141,7 @@ explicitly.
   disabled. Reviewers require Landlock ABI 3+; verification runs in the host.
 
 Final gates require the repository toolchain, including cargo-llvm-cov, cargo-deny,
-cargo-audit, Agentskill, and Rust 1.96. They run `make verify`, documentation and shell
+cargo-audit, Agentskill, and Rust 1.96. They run `make gate`, documentation and shell
 checks, all-target/MSRV builds, release smoke tests, and dependency audits. Agent calls
 use your configured provider; automated product tests must not call paid provider APIs.
 
@@ -200,7 +200,7 @@ Cleanup stops descendant processes. Review and redact diagnostics before sharing
 ## Validation Evidence
 
 Run `make loops` for deterministic orchestration tests without provider calls, and
-`make verify` for repository checks. To test installed Codex sandbox reads and denied
+`make gate` for repository checks. To test installed Codex sandbox reads and denied
 writes without a model call, run `KRABB_TEST_CODEX="$(command -v codex)" make loops`.
 
 The [loop tests](../krabb-loops/tests/) cover scope, backend controls, report validation,

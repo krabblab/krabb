@@ -1,4 +1,6 @@
 name: Withdraw
+run-name: >-
+  ${{ format('chore(release): withdraw {0} {1}', inputs.plugin, inputs.version) }}
 
 # Marks a published plugin version as withdrawn. Krabb then skips it when choosing a version,
 # while installs that name it keep working.
