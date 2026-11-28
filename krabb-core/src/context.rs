@@ -87,6 +87,9 @@ pub struct CompactReply {
     pub text: String,
 }
 
+/// The message ID of the host's permission summary, which providers may use to detect it.
+pub const PERMISSIONS: &str = "krabb-context-permissions";
+
 /// Estimated framing cost of one message, tool, or tool call.
 pub const OVERHEAD: u64 = 16;
 
