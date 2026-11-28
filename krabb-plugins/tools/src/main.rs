@@ -603,9 +603,7 @@ async fn shell_with(
 
     #[cfg(windows)]
     {
-        let mut process = Command::new("cmd");
-        process.args(["/C", command]).current_dir(root);
-        Box::pin(contained(process, None)).await
+        Box::pin(contained(windows_shell(command, root), None)).await
     }
 
     #[cfg(target_os = "linux")]
@@ -621,6 +619,30 @@ async fn shell_with(
         ErrorKind::Unsupported,
         "Shell containment requires KRABB_SANDBOX_RUNTIME and KRABB_SANDBOX_IMAGE on this platform.",
     ))
+}
+
+#[cfg(any(windows, test))]
+fn windows_shell(command: &str, root: &Path) -> Command {
+    let mut process = Command::new("cmd");
+
+    process.args(["/C", command]).current_dir(root);
+    process.env("NoDefaultCurrentDirectoryInExePath", "1");
+    process
+}
+
+#[cfg(test)]
+mod windows_shell_environment {
+    #[test]
+    fn cmd_never_runs_programs_from_the_workspace_directory() {
+        let process = super::windows_shell("findstr x", std::path::Path::new("."));
+
+        let found = process.as_std().get_envs().any(|(name, value)| {
+            name == "NoDefaultCurrentDirectoryInExePath" && value == Some("1".as_ref())
+        });
+
+        assert!(found);
+        assert_eq!(process.as_std().get_program(), "cmd");
+    }
 }
 
 async fn sandbox_shell(

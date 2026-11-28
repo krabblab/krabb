@@ -1,0 +1,81 @@
+mod git;
+mod lex;
+mod option;
+mod package;
+mod parse;
+mod path;
+mod reason;
+mod rules;
+mod wrapper;
+
+#[cfg(test)]
+mod tests;
+
+use std::cmp::Reverse;
+
+pub use package::{Action, Packages};
+pub use parse::{Parse, Segment, parse};
+pub use path::{Os, device, host, share_host, system, url_host};
+pub use reason::{Effect, Hazard, Reason};
+
+const REASONS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dialect {
+    Sh,
+    Cmd,
+    PowerShell,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    ReadOnly,
+    Unknown,
+    Writes,
+    Deletes,
+    Services,
+    Installs,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Verdict {
+    pub kind: Kind,
+    pub elevated: bool,
+    pub reasons: Vec<Reason>,
+    pub packages: Option<Packages>,
+}
+
+impl Verdict {
+    pub fn is_read_only(&self) -> bool {
+        self.kind == Kind::ReadOnly && !self.elevated
+    }
+}
+
+pub fn classify(command: &str, dialect: Dialect) -> Verdict {
+    parse(command, dialect).verdict()
+}
+
+impl Parse {
+    pub fn verdict(&self) -> Verdict {
+        let mut found = rules::Findings::default();
+
+        for hazard in &self.hazards {
+            found.push(Reason::Hazard(*hazard));
+        }
+
+        for segment in &self.segments {
+            rules::evaluate(segment, &mut found);
+        }
+
+        let mut reasons = found.reasons;
+        let kind = reasons.iter().filter_map(Reason::kind).max().unwrap_or(Kind::Unknown);
+
+        let elevated = self.segments.iter().any(|segment| segment.elevated)
+            || reasons.iter().any(|reason| matches!(reason, Reason::Elevated(_)));
+
+        reasons.sort_by_key(|reason| (reason.kind().is_some(), Reverse(reason.kind())));
+        reasons.truncate(REASONS);
+
+        Verdict { kind, elevated, reasons, packages: found.packages }
+    }
+}
