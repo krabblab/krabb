@@ -21,18 +21,23 @@ cd krabb
 rustup toolchain install 1.96.0
 lefthook install
 cargo build --workspace --locked
-make verify
+make precommit
 ```
 
 The minimum Rust version is a stable release at least 6 months old. Raise it
 in one change across `Cargo.toml`, CI, and these guides.
 
-Lefthook runs fast checks before commits. `make verify` runs formatting,
-Clippy, locked compilation, all tests, coverage, builds, and metrics. Provider
-tests use local fixtures and never call paid APIs. Every implementation
-handoff must finish with the configured coverage gates passing; run `make verify`
-at the end of each work turn and resolve coverage failures without lowering
-thresholds.
+`make precommit` is the local gate, and Lefthook runs it before each commit. It
+checks formatting and the spacing of files changed since `origin/main` (set
+`BASE=` for another base), then runs Clippy and unit tests for the packages those
+changes affect. It takes seconds for documentation and minutes for most code.
+
+CI is the full gate: pull requests run formatting, Clippy, documentation, the
+Windows GNU check, every test, coverage, builds, and integration on all six
+targets, limited to the packages a change affects; `main` runs everything.
+`make gate` runs the same checks locally on one machine, for a deep check before
+a release or when CI is unavailable. Provider tests use local fixtures and never
+call paid APIs. Resolve coverage failures without lowering thresholds.
 
 ### Interpreting Coverage Results
 
@@ -107,7 +112,7 @@ the important Actions flow through `krabb-ci/ci.sh` and `act`. For ordinary
 Rust or plugin changes, the local commands are sufficient:
 
 ```sh
-make verify
+make precommit
 make test
 make build
 ```

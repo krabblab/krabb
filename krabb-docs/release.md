@@ -136,7 +136,7 @@ explicitly, and shows the reason.
 ## Release Checklist
 
 1. Run `make bump` and review the planned versions and changelog notes.
-2. Run `make verify` and confirm Linux coverage remains at or above 80% for
+2. Run `make gate` and confirm Linux coverage remains at or above 80% for
    every package. Review the native core coverage checks on macOS and Windows
    x86_64, which require 60% per package and 40% for the runtime host.
 3. Inspect archive contents and checksums with `krabb-scripts/check.sh`.
