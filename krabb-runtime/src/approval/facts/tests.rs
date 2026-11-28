@@ -39,7 +39,8 @@ fn shell_facts_name_the_action_targets_and_flags() {
         ("find . -name '*.tmp' -delete", "Delete files and folders: .."),
         (
             "git clean -fdx",
-            "Delete files and folders: untracked files. It may run repository-configured programs.",
+            "Delete the files and folders Git does not track. It may run repository-configured \
+             programs.",
         ),
         ("ls -la", "Run a shell command."),
         ("cargo test 2>&1 | tail -n 20", "Run a shell command."),
@@ -184,7 +185,8 @@ fn shell_facts_read_windows_and_macos_commands() {
         (
             CMD,
             "copy report.txt \"C:\\Program Files\\App\\report.txt\"",
-            "Run a shell command. It writes C:\\Program Files\\App\\report.txt and needs admin rights.",
+            "Run a shell command. It writes “C:\\Program Files\\App\\report.txt” and needs admin \
+                rights.",
         ),
         (CMD, "robocopy src dst /MIR", "Run a shell command. It writes dst."),
         (
@@ -283,8 +285,8 @@ fn tool_facts_describe_writes_patches_settings_and_messages() {
 
     assert_eq!(
         fact("git_run", &json!({"args": ["clean", "-fd"]})),
-        "Run the Git command clean. It deletes untracked files and may run \
-            repository-configured programs."
+        "Delete the files and folders Git does not track. It may run repository-configured \
+            programs."
     );
 
     assert_eq!(
@@ -376,7 +378,7 @@ fn facts_never_understate_what_runs() {
 fn git_and_patch_facts_name_their_deletes_network_and_configuration() {
     let git = |args: serde_json::Value| fact("git_run", &json!({"args": args}));
 
-    assert!(git(json!(["rm", "-r", "src"])).contains("deletes src"));
+    assert!(git(json!(["rm", "-r", "src"])).starts_with("Delete files and folders: src."));
     assert!(git(json!(["remote", "update"])).contains("uses the network"));
     assert!(git(json!(["-c", "alias.x=!rm -rf ~", "x"])).contains("can run any program"));
 

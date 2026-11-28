@@ -51,6 +51,8 @@ pub struct Targets {
     pub recursive: bool,
     pub unnamed_writes: bool,
     pub unnamed_deletes: bool,
+    /// Whether the command removes the files Git does not track, such as `git clean`.
+    pub untracked: bool,
 }
 
 /// What SEGMENT writes and deletes: its output redirections and the operands its program
@@ -178,7 +180,7 @@ fn git(segment: &Segment, targets: &mut Targets) {
     match operands.first().copied() {
         Some("clean") => {
             targets.recursive = true;
-            targets.delete("untracked files");
+            targets.untracked = true;
         }
 
         Some("rm") => {

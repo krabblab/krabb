@@ -8602,7 +8602,7 @@ fn prepares_approval_text_and_channel_requests() {
 
     assert!(
         text("task_steer", serde_json::json!({"id":"task-1", "instruction":"Use v2."}))
-            .starts_with("Steer the task task-1 with the instruction: Use v2.\n")
+            .starts_with("Steer the task task-1 with the instruction: “Use v2.”\n")
     );
 
     assert!(

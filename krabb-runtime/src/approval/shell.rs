@@ -14,6 +14,7 @@ struct Reading {
     deletes: Vec<String>,
     unnamed_deletes: bool,
     recursive: bool,
+    untracked: bool,
     writes: Vec<String>,
     unnamed_writes: bool,
     changes: Vec<String>,
@@ -71,6 +72,7 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
         reading.recursive |= targets.recursive;
         reading.unnamed_writes |= targets.unnamed_writes;
         reading.unnamed_deletes |= targets.unnamed_deletes;
+        reading.untracked |= targets.untracked;
 
         for target in targets.writes {
             reading.admin |= command::system(&target, os);
@@ -137,6 +139,10 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
             };
 
             format!("{verb} packages with {manager}{names}")
+        }
+
+        None if reading.untracked && reading.deletes.is_empty() => {
+            "Delete the files and folders Git does not track".into()
         }
 
         None if !reading.deletes.is_empty() || reading.unnamed_deletes => {
