@@ -24,6 +24,7 @@ jobs:
     outputs:
       code: ${{ steps.changes.outputs.code }}
       packages: ${{ steps.changes.outputs.packages }}
+      cargo: ${{ steps.changes.outputs.cargo }}
 
     steps:
       - name: Checkout
@@ -42,6 +43,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/check.yml
+
+    with:
+      cargo: ${{ needs.changes.outputs.cargo }}
+      base: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
 
   agentskill:
     name: Agentskill

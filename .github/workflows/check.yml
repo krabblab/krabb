@@ -22,6 +22,18 @@ on:
         type: string
         default: ""
 
+      cargo:
+        description: "Cargo package selection: -p flags, or --workspace"
+        required: false
+        type: string
+        default: "--workspace"
+
+      base:
+        description: "Revision to compare with, so formatting checks only changed files"
+        required: false
+        type: string
+        default: ""
+
       local:
         required: false
         type: string
@@ -63,11 +75,13 @@ jobs:
       - name: Install Rust Components
         run: rustup component add clippy
 
+      # The container's toolchain is the minimum supported Rust version, so Clippy also
+      # proves that the selected packages build with it.
       - name: Run Clippy
-        run: CARGO_BUILD_JOBS=4 cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: CARGO_BUILD_JOBS=4 cargo clippy ${{ inputs.cargo || '--workspace' }} --all-targets --locked -- -D warnings
 
       - name: Check Documentation
-        run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+        run: RUSTDOCFLAGS='-D warnings' cargo doc ${{ inputs.cargo || '--workspace' }} --no-deps --locked
 
       - name: Report Metrics
         run: bash krabb-scripts/metrics.sh
@@ -86,6 +100,9 @@ jobs:
         if: inputs.local != 'true'
         uses: actions/checkout@v7
 
+        with:
+          fetch-depth: 2
+
       - name: Install Spacing Tools
         if: inputs.local != 'true'
         run: |
@@ -96,9 +113,12 @@ jobs:
         run: rustup component add rustfmt
 
       - name: Check Formatting
+        env:
+          BASE: ${{ inputs.base }}
+
         run: |
           cargo fmt --all --check
-          bash krabb-scripts/spacing.sh --check
+          bash krabb-scripts/spacing.sh --check ${BASE:+--changed "$BASE"}
 
   loops:
     name: Loops
@@ -122,29 +142,6 @@ jobs:
 
       - name: Check Shell Scripts and Engineering Loops
         run: make loops
-
-  msrv:
-    name: Minimum Rust Version
-    runs-on: ubuntu-latest
-    container: ${{ inputs.container_image || 'rust:1.96-trixie' }}
-
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Checkout
-        if: inputs.local != 'true'
-        uses: actions/checkout@v7
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-        with:
-          save-if: ${{ github.event_name != 'pull_request' }}
-
-      - name: Check Workspace
-        run: CARGO_BUILD_JOBS=4 cargo check --workspace --all-targets --locked
 
   windows_gnu:
     name: Windows GNU
@@ -181,7 +178,7 @@ jobs:
 
         run: |
           rustup target add x86_64-pc-windows-gnu
-          cargo check --workspace --all-targets --target x86_64-pc-windows-gnu --locked
+          cargo check ${{ inputs.cargo || '--workspace' }} --all-targets --target x86_64-pc-windows-gnu --locked
 
         env:
           CARGO_BUILD_JOBS: 4
