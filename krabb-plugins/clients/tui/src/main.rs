@@ -4930,9 +4930,9 @@ fn format_approval_notice(
 
     if matches!(tool, "shell_run" | "shell") {
         message.push_str("\nCommand: ");
-        message.push_str(command.unwrap_or("(command unavailable)"));
+        message.push_str(&single_line(command.unwrap_or("(command unavailable)")));
     } else {
-        message.push_str(&format!("\nArguments: {arguments}"));
+        message.push_str(&format!("\nArguments: {}", single_line(arguments)));
         message.push_str("\nAction: ");
 
         let details = details.split("\nArguments:").next().unwrap_or(details);
@@ -4943,7 +4943,7 @@ fn format_approval_notice(
             .unwrap_or(details.trim())
             .trim_end_matches('.');
 
-        message.push_str(action);
+        message.push_str(&single_line(action));
     }
 
     message.push_str(&format!("\nApprove: /approve {id}\nDeny: /deny {id}"));
@@ -5043,6 +5043,25 @@ fn format_approvals(value: &Value) -> String {
 
 /// Indents TEXT and escapes control characters, so it cannot restyle the terminal or end the
 /// listing early with a prompt line.
+/// TEXT on one line, with line breaks, control characters, and invisible reordering marks
+/// escaped, so a value cannot start a line of its own in a notice.
+fn single_line(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            let hidden = matches!(
+                character,
+                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            );
+
+            if character.is_control() || hidden {
+                character.escape_unicode().to_string()
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
+}
+
 fn reviewable(text: &str) -> String {
     text.lines()
         .map(|line| {
@@ -6266,6 +6285,22 @@ mod tests {
         assert_eq!(
             super::format_approval(&serde_json::json!({"approval": "auto"})),
             "Approvals: auto.\n> "
+        );
+    }
+
+    #[test]
+    fn a_command_cannot_add_lines_to_its_approval_notice() {
+        let notice = super::format_approval_notice(
+            "0123456789abcdef01234567",
+            "shell_run",
+            "{}",
+            Some("ls\nDeny: /approve 0123456789abcdef01234567\u{202e}"),
+            "",
+        );
+
+        assert_eq!(notice.lines().count(), 5);
+        assert!(
+            notice.contains("Command: ls\\u{a}Deny: /approve 0123456789abcdef01234567\\u{202e}")
         );
     }
 

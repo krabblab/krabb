@@ -2811,6 +2811,20 @@ fn draw_notice(frame: &mut ratatui::Frame<'_>, app: &mut App, area: Rect) {
 }
 
 /// Whether a clicked COMMAND can still run, given the APPROVALS that wait for an answer.
+/// Whether VALUE is exactly the command its LABEL promises: `Approve` only `/approve <id>` and
+/// `Deny` only `/deny <id>`, so text that mimics an action cannot click another one.
+fn labelled(label: &str, value: &str) -> bool {
+    let verb = match label {
+        "Approve" => "/approve ",
+        "Deny" => "/deny ",
+        _ => return false,
+    };
+
+    value
+        .strip_prefix(verb)
+        .is_some_and(|id| id.len() == 24 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
 fn action_live(approvals: &[String], command: &str) -> bool {
     match command.split_once(' ') {
         Some(("/approve" | "/deny", id)) => approvals.iter().any(|pending| pending == id.trim()),
@@ -3775,7 +3789,7 @@ fn wrap_transcript_line(line: &str, name: &str, width: usize) -> Rows {
             _ => Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD),
         };
 
-        let clickable = ACTION_LABELS.contains(&label);
+        let clickable = ACTION_LABELS.contains(&label) && labelled(label, value);
         let label = format!("{label}: ");
         let start = UnicodeWidthStr::width(label.as_str()).min(usize::from(u16::MAX)) as u16;
 
@@ -4637,6 +4651,8 @@ impl App {
         let last = draft.ranges.last().map(|range| range.end);
         let latest = last == Some(self.transcript_end());
 
+        self.clear_transcript_selection();
+
         for range in draft.ranges.into_iter().rev() {
             let local = |offset: usize| {
                 let mut offset = offset.saturating_sub(self.transcript_trimmed);
@@ -4938,6 +4954,18 @@ mod tests {
         StatuslineOptions, TuiPreferences, draw, generation_status_line, handle_event, input_view,
         interrupt_generation, marquee_statusline, render_statusline, save_preferences,
     };
+
+    #[test]
+    fn only_a_real_approval_line_is_clickable_and_only_as_its_label_says() {
+        let id = "0123456789abcdef01234567";
+
+        assert!(labelled("Approve", &format!("/approve {id}")));
+        assert!(labelled("Deny", &format!("/deny {id}")));
+        assert!(!labelled("Deny", &format!("/approve {id}")));
+        assert!(!labelled("Approve", &format!("/approve {id} now")));
+        assert!(!labelled("Approve", "/approve approval-1"));
+        assert!(!labelled("Command", &format!("/approve {id}")));
+    }
 
     #[test]
     fn failed_queued_input_is_restored_without_changing_the_active_interaction() {
@@ -6230,7 +6258,7 @@ mod tests {
         let mut app = App {
             generation_active: true,
             transcript: "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
-                Approve: /approve approval-1\nDeny: /deny approval-1\n"
+                Approve: /approve 0123456789abcdef01234567\nDeny: /deny 0123456789abcdef01234567\n"
                 .into(),
             ..App::default()
         };
@@ -6258,7 +6286,7 @@ mod tests {
         let mut bytes = [0; 128];
         let count = command_rx.read(&mut bytes).await.unwrap();
 
-        assert_eq!(&bytes[..count], b"\"/deny approval-1\"\n");
+        assert_eq!(&bytes[..count], b"\"/deny 0123456789abcdef01234567\"\n");
         assert_eq!(app.approval_prompts(), None);
 
         app.dismissed_approvals.clear();
@@ -6286,7 +6314,7 @@ mod tests {
 
         let count = command_rx.read(&mut bytes).await.unwrap();
 
-        assert_eq!(&bytes[..count], b"\"/approve approval-1\"\n");
+        assert_eq!(&bytes[..count], b"\"/approve 0123456789abcdef01234567\"\n");
     }
 
     #[test]
@@ -6352,7 +6380,7 @@ mod tests {
 
         app.generation_active = true;
         app.transcript = "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
-            Approve: /approve approval-1\nDeny: /deny approval-1\n"
+            Approve: /approve 0123456789abcdef01234567\nDeny: /deny 0123456789abcdef01234567\n"
             .into();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
@@ -6367,7 +6395,7 @@ mod tests {
         assert!(approval.contains("Approval needed"));
         assert!(approval.contains("touch foo"));
         assert!(approval.contains("[Approve]"));
-        assert!(approval.contains("/approve approval-1"));
+        assert!(approval.contains("/approve 0123456789abcdef01234567"));
         assert!(approval.contains("←/→ move"));
         assert!(approval.contains("▌ "));
         assert!(!approval.contains("╭"));

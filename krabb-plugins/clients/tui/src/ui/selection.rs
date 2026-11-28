@@ -170,12 +170,23 @@ pub(super) fn extract(lines: &[Line<'_>], marks: &[Mark], first: Point, last: Po
             let width = UnicodeWidthStr::width(grapheme).max(1).min(usize::from(u16::MAX)) as u16;
 
             if column < columns.end && column.saturating_add(width) > columns.start {
-                text.push_str(grapheme);
+                text.extend(grapheme.chars().map(pasteable));
             }
         }
     }
 
     text
+}
+
+/// CHARACTER as it may reach a clipboard: control and invisible reordering marks become a
+/// visible replacement, so pasted text cannot drive a terminal or hide what it says.
+fn pasteable(character: char) -> char {
+    let hidden = matches!(
+        character,
+        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    );
+
+    if (character.is_control() && character != '\t') || hidden { '\u{fffd}' } else { character }
 }
 
 /// Reverses the selected cells of the rows drawn in AREA from transcript row OFFSET.
@@ -316,6 +327,17 @@ mod tests {
         }
 
         rows
+    }
+
+    #[test]
+    fn copied_text_cannot_carry_control_sequences_or_reordering_marks() {
+        let mut rows = Rows::default();
+
+        rows.text(Line::raw("red \u{1b}]52;c;ZXZpbA==\u{7} \u{202e}txt\tok"), Joint::Break);
+
+        let text = extract(&rows.lines, &rows.marks, point(0, 0), point(0, u16::MAX));
+
+        assert_eq!(text, "red \u{fffd}]52;c;ZXZpbA==\u{fffd} \u{fffd}txt\tok");
     }
 
     #[test]

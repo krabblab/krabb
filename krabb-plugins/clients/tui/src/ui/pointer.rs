@@ -458,7 +458,7 @@ mod tests {
             input: "draft".chars().collect(),
             cursor: 2,
             transcript: "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
-                Approve: /approve approval-1\nDeny: /deny approval-1\n"
+                Approve: /approve 0123456789abcdef01234567\nDeny: /deny 0123456789abcdef01234567\n"
                 .into(),
             ..App::default()
         }
@@ -602,7 +602,12 @@ mod tests {
 
         assert_eq!(
             commands,
-            ["/approve approval-1", "/deny approval-1", "/approve approval-1", "/deny approval-1"]
+            [
+                "/approve 0123456789abcdef01234567",
+                "/deny 0123456789abcdef01234567",
+                "/approve 0123456789abcdef01234567",
+                "/deny 0123456789abcdef01234567"
+            ]
         );
 
         let deny = app.pointer.hits[1].area;
@@ -642,10 +647,10 @@ mod tests {
         let mut bytes = [0; 128];
         let count = command_rx.read(&mut bytes).await.unwrap();
 
-        assert_eq!(&bytes[..count], b"\"/deny approval-1\"\n");
+        assert_eq!(&bytes[..count], b"\"/deny 0123456789abcdef01234567\"\n");
         assert_eq!(app.input.iter().collect::<String>(), "draft");
         assert_eq!(app.cursor, 2);
-        assert!(app.dismissed_approvals.contains("approval-1"));
+        assert!(app.dismissed_approvals.contains("0123456789abcdef01234567"));
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
