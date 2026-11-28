@@ -177,6 +177,7 @@ fn program(segment: &Segment, targets: &mut Targets) {
 fn git(segment: &Segment, targets: &mut Targets) {
     let start = super::git::subcommand(&segment.args);
     let words = segment.args.get(start..).unwrap_or_default();
+
     let operands: Vec<&str> =
         words.iter().map(String::as_str).filter(|word| !word.starts_with('-')).collect();
 

@@ -26,6 +26,7 @@ pub(super) fn subcommand<S: AsRef<str>>(args: &[S]) -> usize {
 }
 
 const RUNS: &[&str] = &["-c", "--config-env", "--exec-path"];
+
 const DIFFS: &[&str] = &["log", "show", "diff", "whatchanged"];
 const DELETES: &[&str] = &["clean", "rm"];
 const NETWORK: &[&str] = &["clone", "fetch", "pull", "push", "ls-remote", "submodule", "remote"];
