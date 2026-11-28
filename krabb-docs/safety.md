@@ -8,8 +8,6 @@ workspace configuration.
 
 - [Trust Boundaries](#trust-boundaries)
 - [Tools](#tools)
-- [Recovery](#recovery)
-- [Limits](#limits)
 
 ## Trust Boundaries
 
@@ -89,24 +87,6 @@ submodule checkout, automatic maintenance, and lazy object fetching. Repositorie
 checkout filters or partial-clone configuration require an explicitly approved shell
 operation to prepare the worktree before it can be used automatically.
 
-## Recovery
-
-Accepted events, leases, transcripts, and outbox entries are durable. A crash
-can retry only a lease proven safe; a mutating phase is never replayed. A
-canceled turn is discarded. Ambiguous deliveries are not retried automatically;
-an explicit delivery retry does not rerun model or tool work. Unix plugins run in
-private process sessions; host cancellation and restart cleanup terminate shell
-commands in those sessions even when they use separate process groups.
-Linux host shells inherit a syscall filter that rejects `setsid` and `setpgid`,
-so descendants cannot detach from cleanup. Other Unix platforms use the tracked
-container sandbox for shell containment.
-Windows tool commands start suspended and enter a kill-on-close Job Object before
-execution. Completion, failure, cancellation, and plugin termination stop their
-descendants, including background commands whose parent has already exited.
-
-## Limits
-
-Protocol frames, model context, session history, queues, archive extraction,
-search work, plugin metadata, provider bodies, and persisted values are bounded.
-When a limit is reached, Krabb reports an error or dead-letters the item
-instead of silently expanding resource use.
+See [Recovery](../krabb-handbook/runtime.md#recovery) and
+[Limits](../krabb-handbook/runtime.md#limits) for crash recovery, process cleanup,
+and resource bounds.

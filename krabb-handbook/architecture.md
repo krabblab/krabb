@@ -4,6 +4,7 @@ This guide explains Krabb’s process boundaries, runtime, and plugin protocol.
 
 ## Table Of Contents
 
+- [Plugin Onboarding And Credentials](#plugin-onboarding-and-credentials)
 - [Architecture Style](#architecture-style)
 - [Turn Flow](#turn-flow)
 - [Persistence](#persistence)
@@ -11,6 +12,8 @@ This guide explains Krabb’s process boundaries, runtime, and plugin protocol.
 - [Extension Rules](#extension-rules)
 - [Security](#security)
 - [Test Organization](#test-organization)
+
+## Plugin Onboarding And Credentials
 
 Plugin onboarding is host-owned. `krabb plugin setup <id>` and the
 `krabb <id> setup` shortcuts read installed secret and setting declarations without
@@ -39,6 +42,8 @@ path. Existing envelopes pin their key backend. Environment values override
 storage; decryption errors prevent plugin launch rather than becoming missing
 process environment. Nonempty environment values override stored settings;
 manifest defaults fill missing settings. The core JSON-RPC protocol is unchanged.
+
+## Architecture Style
 
 Krabb uses a layered, hexagonal host/plugin architecture with a
 microkernel-style core, isolated JSON-RPC plugins, and a client–daemon runtime.
@@ -537,7 +542,7 @@ The scheduler's `receipt` RPC reconciles a crash after report acknowledgement.
 
 Unchanged immutable records are verified and reused during catalog saves. Plain workspace file ownership is stored under `data/workspaces/files.json`.
 Private conversation state stays under `data/workspaces/conversations/<conversation>`. See
-[Storage](storage.md) for directory ownership, retention, and migration boundaries.
+[Storage](../krabb-docs/storage.md) for directory ownership, retention, and migration boundaries.
 
 Reply context uses normalized, bounded message snapshots rather than provider wire
 objects. Supplied quotes are preserved; ID-only quotes resolve within the originating

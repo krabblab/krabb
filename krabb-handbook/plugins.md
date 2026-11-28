@@ -1,4 +1,4 @@
-# Plugins
+# Plugin Development
 
 Official plugins are small Rust binaries under `krabb-plugins/`. Each folder
 contains a manifest and a one-line installation example. Community plugins may
@@ -210,7 +210,7 @@ Other subcommands remain yours. Plugins without either get no generated setup
 shortcut; use `krabb plugin setup <id>` when an ID conflicts with another command.
 Document which route users should choose, any non-secret settings they need,
 and whether activation starts network activity. See
-[Plugin Setup](authentication.md#plugin-setup) for the user-facing behavior.
+[Plugin Setup](../krabb-docs/authentication.md#plugin-setup) for the user-facing behavior.
 
 ## Requests
 
@@ -388,7 +388,7 @@ A plugin advertising the `tool` capability can expose its model-callable tools
 through `tools/list`. Return an object with a `tools` array; every entry uses
 the normalized `ToolSpec` fields `name`, optional `description`, and JSON
 Schema `schema`. Name each tool `radix_action`, such as `browser_open`, and see
-[Tools](tools.md) for the names Krabb already uses. Keep names unique across all
+[Tools](../krabb-docs/tools.md) for the names Krabb already uses. Keep names unique across all
 active tool plugins. The runtime rejects duplicate names rather than routing a
 call to an arbitrary provider.
 The legacy `tools` plugin keeps its built-in schemas as a fallback for older
@@ -679,7 +679,7 @@ The host honors dedicated environment variables first, then decrypts stored
 credentials using the keyring or the configured key file. Plugins receive only
 their declared secret values in their process environment; they do not need to
 implement encryption or access the master key. Keep credential and key files
-outside version control. See [credential storage](authentication.md#provider-credentials).
+outside version control. See [credential storage](../krabb-docs/authentication.md#provider-credentials).
 
 The MCP plugin exposes bounded `stdio` and Streamable HTTP bridges. Stdio
 requests require an explicit `approved: true` flag because they start an
@@ -708,7 +708,7 @@ content is cut off after 64 KiB, and files over 4 MiB are not read. Videos are
 not downloaded. Files that cannot be read reach the model as a short note naming
 the file and the reason, never as silent omissions. Clients upload attachments
 with `session.attach`, which reads them before the message is saved. See
-[Media](media.md) for the per-channel matrix.
+[Media](../krabb-docs/media.md) for the per-channel matrix.
 
 The SQLite plugin uses WAL mode and idempotent schema migrations. When it is
 installed and agent tools are enabled, Krabb adds a `data_query` tool to model
@@ -807,7 +807,7 @@ Ordinary file operations use the tools plugin's `visible` wrapper with `method`,
 `data/workspaces/files.json`. Reads, lists, and searches filter by owner; writes
 cannot overwrite foreign ownership. Unknown files require an operator assignment.
 Old direct calls remain available for trusted standalone callers. See
-[Visibility And Worktrees](sharing.md) for configuration and capability boundaries.
+[Visibility And Worktrees](../krabb-docs/sharing.md) for configuration and capability boundaries.
 
 Channel events may include an additive `reply` object with `id`, optional `sender`,
 and optional `text`. IDs and senders are bounded to 256 bytes; quoted text is bounded

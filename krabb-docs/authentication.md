@@ -65,7 +65,7 @@ for an interactive account sign-in:
 | Sign in to a personal Codex account | `krabb codex login` | The plugin runs its account sign-in flow. |
 the plugin's declared secrets and settings; neither invokes custom login flows.
 Plugins without declared secrets or settings do not gain a setup shortcut. See
-[the plugin author guide](plugins.md#credentials-and-sign-in) when creating a plugin.
+[the plugin author guide](../krabb-handbook/plugins.md#credentials-and-sign-in) when creating a plugin.
 
 Setup works before the plugin is active. It prompts for every declared secret,
 including optional ones, followed by declared settings. Each prompt shows the

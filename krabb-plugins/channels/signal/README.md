@@ -193,7 +193,7 @@ supports that command. Indicator failures do not prevent the reply.
 
 Text, images, stickers (signal-cli 0.13 or newer), voice, and files are normalized through the
 channel boundary; files are read as
-described in the [plugin guide](../../../krabb-docs/plugins.md). Attachments are resolved
+described in the [plugin guide](../../../krabb-handbook/plugins.md). Attachments are resolved
 through `signal-cli` and cached in `KRABB_MEDIA` (or `KRABB_HOME/data/media`);
 polled events are retained in a crash-safe inbox under `KRABB_HOME` until
 the host acknowledges them. Cached attachments expire after 24 hours and are

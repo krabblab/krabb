@@ -4,16 +4,16 @@ Krabb separates the agent loop from the capabilities that make it useful.
 The background runtime receives normalized events, the core executes a bounded turn, and
 plugins provide models, channels, storage, memory, schedules, tools, or clients.
 
+The [runtime guide](../krabb-handbook/runtime.md) covers events, inference admission,
+delivery, leases, recovery, and limits.
+
 ## Table Of Contents
 
 - [Runtime And Service Terms](#runtime-and-service-terms)
-- [Events](#events)
 - [Sessions](#sessions)
 - [Tasks](#tasks)
 - [Agent Instructions And Conversation Context](#agent-instructions-and-conversation-context)
 - [Turns](#turns)
-- [Delivery](#delivery)
-- [Leases](#leases)
 
 ## Runtime And Service Terms
 
@@ -24,13 +24,6 @@ registration and supervision mechanism for that process: systemd on Linux,
 launchd on macOS, or the Windows Service Control Manager. The TUI is a
 foreground client and local session work does not require the background
 runtime; features that rely on shared state or host capabilities may require it.
-
-## Events
-
-Channel plugins convert provider payloads into stable events before the host
-sees them. An event carries an ID, channel, chat, sender, privacy scope, text,
-attachments, and optional topic or thread metadata. The host uses the event ID
-for deduplication and advances the channel cursor only after durable admission.
 
 ## Sessions
 
@@ -119,34 +112,12 @@ send one short progress message tailored to the request and the user's language.
 The conversation keeps that message from the agent ahead of its final answer.
 Provider latency alone does not trigger a message.
 
-Providers advertising execution deadlines receive an allowance estimated from
-bounded deployment/model observations and conservative fallback priors. A healthy
-slow local model can exceed one minute without changing a request's semantic
-class. Context preparation and generation share the admitted deadline. Legacy
-providers retain one-minute fast and five-minute thoughtful allowances.
-
-The `[inference]` configuration bounds active request and queue allowances.
-Prediction is advisory admission policy. Saved host tasks retain cumulative inference
-allowance accounts across retries and restart; `inference.task_seconds` optionally
-sets a ceiling. Conversations take a provider's next free slot ahead of background
-and scheduled work; a waiting background request runs after at most three
-consecutive conversation turns. A busy single-slot provider still answers one
-request at a time. Task token limits are supported; currency cost limits are not.
+See [Inference And Background Work](../krabb-handbook/runtime.md#inference-and-background-work)
+for deadlines, admission, and background execution.
 
 Background requests can become durable background tasks under the conversation's
 approval policy, without enabling the scheduler. Each task saves checkpoints and
-continues automatically in bounded steps. Negotiated inference uses the adaptive
-allowance; legacy inference and ordinary tool calls retain their ten-minute
-background limit. Durable external operations can outlive a step. A task can span days;
-there is no overall lifetime deadline. Waiting tasks do not call the intelligence
-provider until their next step is due.
-
-Minimal background execution uses ordinary agent turns without another executor.
-Extended execution uses optional runner operations with durable handles. Both
-modes use the same saved task state and automatic delivery. Runner handles
-specialized execution; the scheduler supplies timed and recurring triggers.
-A missing runner preserves saved state and generic controls; unsupported extended
-work needs an available capability before it can start.
+continues automatically in bounded steps.
 
 Krabb confirms the handoff only after saving the goal. It posts important milestones, decisions,
 blockers, and completion to the originating client session or channel conversation. Routine waiting
@@ -160,19 +131,3 @@ outcomes stay blocked for review. A pause or cancellation of a running task firs
 stopping was requested; a paused state is reached only after the active step settles. Manual pauses
 preserve the saved goal and survive restart. Changing a paused task preserves the pause; changing a
 running task stops its current step and queues continuation with the updated instruction.
-
-## Delivery
-
-Replies are persisted with the transcript and placed in a durable outbox.
-Channel acknowledgement is separate from reply generation. The host marks a
-send before dispatch and quarantines any non-success response as uncertain;
-operators decide whether a retry is safe. Deduplication prevents a provider
-retry from creating a second session message.
-
-## Leases
-
-An active turn holds a durable lease. Safe leases can be restored after a
-daemon restart; leases that may have reached a mutating tool are recorded as
-interrupted instead of replayed. Cancellation clears the lease and does not
-retry the canceled message. The cancel command reports success only after the
-active turn has stopped and acknowledged the request.

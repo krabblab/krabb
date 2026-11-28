@@ -39,6 +39,8 @@ the packages and files a change affects; builds and `main` run everything.
 `make gate` runs the same checks locally on one machine, for a deep check before
 a release or when CI is unavailable. Provider tests use local fixtures and never
 call paid APIs. Resolve coverage failures without lowering thresholds.
+See [Development](krabb-handbook/development.md) for formatting, coverage, CI, and
+repository scripts.
 
 ### Interpreting Coverage Results
 
@@ -104,7 +106,7 @@ The command runs Check, Agentskill, Security, the native Linux tests, the
 sandbox integration, and the native Linux release build. Release, package, checksum, install,
 update, and publish workflows are intentionally excluded; the Install and Update
 workflows check installation, update, and rollback on every target before a
-release (see the [release guide](krabb-docs/release.md)). Native macOS, Windows, and
+release (see the [release guide](krabb-handbook/release.md)). Native macOS, Windows, and
 cross-architecture jobs still run only on their GitHub-hosted runners.
 
 Use `make ci` when adding or changing GitHub Actions workflows, or when the
@@ -156,7 +158,7 @@ supports Bash, Fish, PowerShell, and Zsh through `clap_complete`.
 - A version bump is a release: merging it publishes the new version. Change
   versions only with `make bump`, only when a maintainer asks for the release,
   and only after a person confirms the planned versions. Never bump a version
-  as part of another change. See the [release guide](krabb-docs/release.md).
+  as part of another change. See the [release guide](krabb-handbook/release.md).
 - Keep the core capability-free and provider-neutral.
 - Add provider or channel behavior only in its plugin.
 - Keep plugin stdout as protocol-only JSONL and logs on stderr.
@@ -228,7 +230,7 @@ milestone closes, update the roadmap and changelog.
 ## Pull Requests
 
 If you work with a coding agent (Claude or Codex CLI), the
-[engineering loops](krabb-docs/loops.md) help you meet these standards before opening a PR.
+[engineering loops](krabb-handbook/loops.md) help you meet these standards before opening a PR.
 They are optional: CI and review apply the same rules either way. `make revloop` reviews
 and repairs your change for correctness, `make secloop` for security, and `make testloop`
 for test coverage and flaky tests.
@@ -242,7 +244,7 @@ authenticated GitHub user and adds the relevant existing label. The PR remains a
 CI runs; failed checks trigger repairs, verification, another commit and push.
 Success means the current PR commit has green CI and is ready for review. It ends with a
 summary of every commit it made and every recovery; review those before asking for review.
-See [Contribution Loop](krabb-docs/loops.md#contribution-loop) for prerequisites,
+See [Contribution Loop](krabb-handbook/loops.md#contribution-loop) for prerequisites,
 resuming, limits, and publication authorization.
 
 Keep one logical change per pull request, and close or reference its issue in

@@ -51,7 +51,7 @@ Indicator failures do not prevent the reply.
 
 Inbound text, images, stickers, voice messages, videos, and documents are
 normalized; documents are read as described in the
-[plugin guide](../../../krabb-docs/plugins.md). The plugin
+[plugin guide](../../../krabb-handbook/plugins.md). The plugin
 can send all four content types, while the current daemon response path sends
 generated replies as text. Verified webhook events are stored under
 Media storage reserves space before writing: 64 MiB, 256 files, and a 24-hour

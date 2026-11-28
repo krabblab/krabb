@@ -154,7 +154,8 @@ sizing figures and what they include.
 
 ## Documentation
 
-Use the [documentation home](krabb-docs/home.md) for the full guide index.
+Use the [documentation home](krabb-docs/README.md) for product guides and the
+[technical handbook](krabb-handbook/README.md) for how Krabb is built.
 Common starting points:
 
 - [First Run](krabb-docs/workflows.md)
@@ -162,7 +163,7 @@ Common starting points:
 - [Configuration](krabb-docs/configuration.md)
 - [Visibility And Worktrees](krabb-docs/sharing.md)
 - [Storage](krabb-docs/storage.md)
-- [Plugin Development](krabb-docs/plugins.md)
+- [Plugin Development](krabb-handbook/plugins.md)
 - [Tools](krabb-docs/tools.md)
 
 ## Development
@@ -175,8 +176,9 @@ lefthook install
 make precommit
 ```
 
-See [contributing](CONTRIBUTING.md) for repository conventions. Tests use local
-fixtures and do not call paid provider APIs.
+See [contributing](CONTRIBUTING.md) for repository conventions and
+[development](krabb-handbook/development.md) for formatting, coverage, and CI. Tests use
+local fixtures and do not call paid provider APIs.
 
 ## Support And License
 
