@@ -9,8 +9,8 @@
 ## Mission And Repository Map
 
 Provide `model`, `vision`, and `context` capabilities for any OpenAI-compatible inference
-server, such as vLLM, llama.cpp, or LM Studio, through the shared Chat Completions
-transport in `krabb-libs/openai`.
+server, such as vLLM, llama.cpp, or LM Studio, through the Chat Completions transport the
+shared `krabb-openai` crate provides.
 
 ## Non-Negotiables
 
@@ -29,5 +29,24 @@ cargo build --locked -p krabb-plugin-local
 
 ## Implementation Conventions
 
-Keep server discovery and model metadata in `server.rs`; keep wire formats in the shared
-transport so the OpenAI plugin and this one stay in step.
+Keep server discovery, validation, and model metadata in `src/server.rs`; keep wire
+formats in the shared transport so this plugin and the OpenAI plugin stay in step.
+
+## Testing And Validation
+
+Use local HTTP fixtures for discovery, keys, streaming, tool refusals, missing models,
+and unreachable or stopped servers.
+
+## Free Region
+
+Keep server-specific behavior behind the OpenAI-compatible API and document new
+configuration variables in its README.
+
+## Further Context
+
+See the parent plugin guidance and [README.md](README.md).
+
+---
+
+> Generated and maintained by [Agentskill](https://github.com/airscripts/agentskill).
+> Do not touch this file. It is automatically managed by Agentskill.

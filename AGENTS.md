@@ -37,7 +37,7 @@ protocol.
 
 ```bash
 lefthook install
-make verify
+make precommit
 krabb init
 krabb doctor
 ```
@@ -74,7 +74,8 @@ files. Public protocol changes require compatibility tests.
 
 ## Testing And Validation
 
-Run `make verify` for code changes. For documentation-only changes, check
+Run `make precommit` for code changes; CI is the full gate, and `make gate` runs it
+locally. For documentation-only changes, check
 links, whitespace, and applicable guidance validation without the full build.
 Automated tests must not call paid provider APIs. Test protocol framing, malformed
 plugins, path policy, approvals, crashes, retries, and update rollback.
@@ -111,9 +112,9 @@ around control flow, complex match arms, and distinct setup or assertion groups.
 Apply this spacing consistently across every crate and preserve it when
 formatting code.
 
-For Rust code edits, run `make verify` and resolve coverage-gate failures in
-changed packages before handoff; do not lower coverage thresholds to mask
-missing coverage.
+For Rust code edits, run `make precommit` before pushing and fix CI until it is
+green, coverage gates included; do not lower coverage thresholds to mask missing
+coverage.
 
 ## Further Context
 

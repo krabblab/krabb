@@ -4,9 +4,9 @@
 
 - Agentskill Version: `2.1.0`.
 - Evidence Schema Version: `4`.
-- Repository Revision: `e0db408f112573f60614e7b02c47f1929822a2a7`.
+- Repository Revision: `fc6876e6acfc9a145e177146fa6812fd193aeba4`.
 - Configuration: default signature enabled.
-- Maintainer-Confirmed Decisions: capability-free core; process plugins over JSONL; Apache-2.0; one-word naming where clear; Lefthook pre-commit gates; Gitfleet-style releases; the implementation ledger is authoritative.
+- Maintainer-Confirmed Decisions: capability-free core; process plugins over JSONL; Apache-2.0; one-word naming where clear; Lefthook pre-commit gates; `make precommit` is the local gate and CI the full gate, with `make gate` as an optional deep local check (2026-11-28); Gitfleet-style releases; the implementation ledger is authoritative.
 - Unresolved Uncertainty: vendor OAuth terms remain provider-specific. Roadmap capabilities require
   implementation evidence; full host upgrades, migrations, and rollback must not be inferred from
   existing plugin update safeguards.
@@ -17,7 +17,8 @@ The maintainer confirmed simplicity, consistent CLI/TUI output, low resource use
 shared implementations, safe upgrades, credential cleanup on uninstall, and
 verified recovery as development requirements. ROADMAP.md records future scope;
 it does not establish that these features already ship. Documentation-only work
-uses targeted checks; Rust edits retain full verification and coverage gates.
+uses targeted checks; Rust edits run `make precommit` locally, and CI enforces full verification
+and coverage gates.
 
 This update used Agentskill 2.1.0 scope discovery and evidence (schema 4), with
 signature auto and deep workflow scope for existing managed root, runtime, CLI,
@@ -44,9 +45,11 @@ release, metrics, verification, and review helpers.
 
 ## Development Workflow
 
-Lefthook runs format, locked workspace check, and library/binary tests before a
-commit. `make verify` runs formatting, Clippy, locked check, tests, coverage,
-build, and metrics. Coverage uses cargo-llvm-cov without source exclusions.
+Lefthook runs `make precommit` before a commit: formatting, spacing of files changed
+since the main branch, then Clippy and tests of the affected packages. CI runs the full
+checks, limited to affected packages and changed files on pull requests. `make gate`
+runs formatting, Clippy, locked check, tests, coverage, build, and metrics locally.
+Coverage uses cargo-llvm-cov without source exclusions.
 
 ## Testing Topology
 
