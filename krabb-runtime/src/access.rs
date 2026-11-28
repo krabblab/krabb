@@ -150,6 +150,14 @@ pub(crate) fn resolve(config: &Config, origin: &Origin) -> Grant {
         Principal::Agent(_) => (Role::Member, None),
     };
 
+    layered(config, role, scope)
+}
+
+/// A channel's or client's own `preset` and `roles`, layered over the global ones.
+pub(crate) type Scope<'a> = Option<(Option<Preset>, &'a BTreeMap<Role, RoleSetting>)>;
+
+/// The grant ROLE gets in SCOPE, or with the global settings alone when SCOPE is none.
+pub(crate) fn layered(config: &Config, role: Role, scope: Scope<'_>) -> Grant {
     let global = config.roles.get(&role).copied().unwrap_or_default();
     let local = scope.and_then(|(_, roles)| roles.get(&role).copied()).unwrap_or_default();
     let named = global.preset.unwrap_or(role.preset());
@@ -395,6 +403,7 @@ pub(crate) fn legacy(config: &Config) -> bool {
         && config.clients.values().all(|client| client.preset.is_none() && client.roles.is_empty())
 }
 
+pub(crate) mod command;
 pub(crate) mod rules;
 
 #[cfg(test)]

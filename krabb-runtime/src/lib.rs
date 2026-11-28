@@ -1879,6 +1879,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Hatch(_) => "hatch",
         Command::Doctor(_) => "doctor",
         Command::Config(_) => "config",
+        Command::Access { .. } => "access",
         Command::Approval { .. } => "approval",
         Command::Worktree { .. } => "worktree",
         Command::Workspace { .. } => "workspace",
@@ -1936,6 +1937,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Hatch(args) => hatch::run(args, &home(), json).await?,
         Command::Doctor(args) => doctor(args.fix, json)?,
         Command::Config(args) => config_command(args.command, &home(), json).await?,
+        Command::Access { command } => access::command::run(command, &home(), json)?,
         Command::Approval { command } => access::rules::run(command, &home(), json)?,
         Command::Worktree { command } => worktree::run(command, &home(), json).await?,
 

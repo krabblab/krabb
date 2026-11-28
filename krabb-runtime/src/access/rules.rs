@@ -141,14 +141,7 @@ pub(crate) fn may_save(config: &Config, role: Role, tool: &str, args: &serde_jso
 }
 
 fn elevation(config: &Config, role: Role) -> Elevation {
-    config.roles.get(&role).and_then(|setting| setting.elevation).unwrap_or_else(|| {
-        config
-            .roles
-            .get(&role)
-            .and_then(|setting| setting.preset)
-            .unwrap_or(role.preset())
-            .elevation()
-    })
+    super::layered(config, role, None).elevation
 }
 
 /// Appends RULE to `config.toml` in ROOT, keeping one copy of an identical rule.

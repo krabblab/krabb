@@ -51,6 +51,11 @@ pub(crate) enum Command {
     Doctor(DoctorArgs),
     #[command(about = "Read or update Krabb configuration.")]
     Config(ConfigArgs),
+    #[command(about = "Show or change what each role may do, globally or in one place.")]
+    Access {
+        #[command(subcommand)]
+        command: crate::access::command::Command,
+    },
     #[command(about = "List or forget the actions Krabb may always run without asking.")]
     Approval {
         #[command(subcommand)]
