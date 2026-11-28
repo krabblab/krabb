@@ -133,10 +133,79 @@ pub(super) fn remote_hosts<'a>(program: &str, args: &[&'a str]) -> Vec<&'a str> 
 }
 
 pub fn device(word: &str) -> bool {
-    let unix = word.starts_with("/dev/") && !HARMLESS_DEVICES.contains(&word);
-    let windows = word.starts_with("\\\\.\\") || word.starts_with("//./");
+    let windows = word.starts_with("\\\\.\\") || word.starts_with("//./") || namespace(word);
+    let parts = components(word);
+    let unix = word.starts_with('/') && parts.len() > 1 && parts[0] == "dev";
 
-    unix || windows
+    windows || unix && !harmless(word)
+}
+
+/// Whether WORD's last component is a name Windows reserves for a device in every folder.
+pub fn reserved(word: &str) -> bool {
+    let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(':').to_ascii_lowercase();
+
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|digit| {
+            matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+    };
+
+    matches!(stem.as_str(), "con" | "prn" | "aux" | "conin$" | "conout$" | "clock$")
+        || numbered("com")
+        || numbered("lpt")
+}
+
+pub fn outside(word: &str, windows: bool) -> bool {
+    let separators: &[char] = if windows { &['/', '\\'] } else { &['/'] };
+
+    let parent = word.split(separators).any(|part| part == "..");
+    let rooted = word.starts_with(separators) && !harmless(word);
+    let bytes = word.as_bytes();
+    let drive = windows && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+
+    word.starts_with('~') || parent || rooted || drive
+}
+
+fn harmless(word: &str) -> bool {
+    let parts = components(word);
+
+    word.starts_with('/') && HARMLESS_DEVICES.iter().any(|device| components(device) == parts)
+}
+
+fn components(word: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+
+    for part in word.split('/') {
+        match part {
+            "" | "." => {}
+
+            ".." => {
+                parts.pop();
+            }
+
+            part => parts.push(part),
+        }
+    }
+
+    parts
+}
+
+fn namespace(word: &str) -> bool {
+    let lowered = word.to_ascii_lowercase().replace('/', "\\");
+
+    if lowered.starts_with("\\??\\") {
+        return true;
+    }
+
+    let Some(rest) = lowered.strip_prefix("\\\\?\\") else {
+        return false;
+    };
+
+    let bytes = rest.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+
+    !(drive && matches!(bytes.get(2), None | Some(b'\\')) || rest.starts_with("unc\\"))
 }
 
 pub fn system(path: &str, os: Os) -> bool {

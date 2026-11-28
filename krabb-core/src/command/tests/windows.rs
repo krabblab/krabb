@@ -3,13 +3,16 @@ use crate::command::Dialect::{Cmd, PowerShell};
 use crate::command::Kind::{Deletes, Installs, ReadOnly, Services, Unknown, Writes};
 use crate::command::classify;
 
+const HOST: &str = "the command reaches the network location `host`";
+const WAIT: &str = "`get-content -wait` keeps running until it is stopped";
+
 #[test]
 fn cmd_commands_are_classified() {
     check(
         Cmd,
         &[
             ("dir", ReadOnly, "`dir` only reads"),
-            ("dir /s /b C:\\src", ReadOnly, "`dir` only reads"),
+            ("dir /s /b src", ReadOnly, "`dir` only reads"),
             ("DIR", ReadOnly, "`dir` only reads"),
             ("type README.md", ReadOnly, "`type` only reads"),
             ("findstr /n main src\\main.rs", ReadOnly, "`findstr` only reads"),
@@ -64,7 +67,11 @@ fn cmd_commands_are_classified() {
                 Unknown,
                 "the command opens the device `\\\\.\\PhysicalDrive0`",
             ),
-            ("type \\\\?\\C:\\x", ReadOnly, "`type` only reads"),
+            (
+                "type \\\\?\\C:\\x",
+                Unknown,
+                "the command reaches `\\\\?\\C:\\x` outside the workspace",
+            ),
             ("start x", Unknown, "`start` is not on the read-only list"),
         ],
     );
@@ -80,11 +87,11 @@ fn powershell_commands_are_classified() {
             ("Get-ChildItem", ReadOnly, "`get-childitem` only reads"),
             ("get-childitem -Recurse -Filter *.rs", ReadOnly, "`get-childitem` only reads"),
             ("ls", ReadOnly, "`get-childitem` only reads"),
-            ("dir C:\\src", ReadOnly, "`get-childitem` only reads"),
+            ("dir src", ReadOnly, "`get-childitem` only reads"),
             ("Get-Content README.md -TotalCount 10", ReadOnly, "`get-content` only reads"),
             ("cat a.txt", ReadOnly, "`get-content` only reads"),
             ("Select-String -Path *.rs -Pattern main", ReadOnly, "`select-string` only reads"),
-            ("Test-Path 'C:\\Program Files'", ReadOnly, "`test-path` only reads"),
+            ("Test-Path 'Program Files'", ReadOnly, "`test-path` only reads"),
             ("Get-ChildItem -Include *.rs", ReadOnly, "`get-childitem` only reads"),
             (
                 "Get-Content a.txt | Select-String x | Sort-Object",
@@ -159,4 +166,96 @@ fn powershell_commands_are_classified() {
     assert!(verdict.elevated);
     assert_eq!(verdict.reasons[0].to_string(), "`start-process` runs with admin rights");
     assert!(classify("sudo ls", PowerShell).elevated);
+}
+
+#[test]
+fn windows_lists_switch_values_and_namespaces_are_checked() {
+    check(
+        Cmd,
+        &[
+            ("findstr /G:\\\\host\\s\\f x", Unknown, HOST),
+            ("findstr /F:C:\\x y", Unknown, "the command reaches `C:\\x` outside the workspace"),
+            ("findstr /D:..\\x y", Unknown, "the command reaches `..\\x` outside the workspace"),
+            ("findstr /G:list.txt x", ReadOnly, "`findstr` only reads"),
+            ("dir x,\\\\host\\s", Unknown, HOST),
+            ("dir x;\\\\host\\s", Unknown, HOST),
+            (
+                "type C:\\Users\\me\\x",
+                Unknown,
+                "the command reaches `C:\\Users\\me\\x` outside the workspace",
+            ),
+            ("type D:x", Unknown, "the command reaches `D:x` outside the workspace"),
+            (
+                "type \\Windows\\x",
+                Unknown,
+                "the command reaches `\\Windows\\x` outside the workspace",
+            ),
+            ("type %USERPROFILE%\\x", Unknown, "the command expands an environment variable"),
+            (
+                "type \\\\?\\GLOBALROOT\\Device\\x",
+                Unknown,
+                "the command opens the device `\\\\?\\GLOBALROOT\\Device\\x`",
+            ),
+            (
+                "type \\??\\UNC\\host\\s",
+                Unknown,
+                "the command opens the device `\\??\\UNC\\host\\s`",
+            ),
+        ],
+    );
+
+    check(
+        PowerShell,
+        &[
+            ("gc a,\\\\host\\s\\f", Unknown, HOST),
+            ("gci .,env:", Unknown, "the command reaches the `env` drive"),
+            ("gc ~\\x", Unknown, "the command reaches `~\\x` outside the workspace"),
+            ("gc -Path:C:\\x", Unknown, "the command reaches `C:\\x` outside the workspace"),
+            ("Get-Content a -Wait", Unknown, WAIT),
+            ("gc a -wai", Unknown, WAIT),
+            ("gc a -Wait:$true", Unknown, WAIT),
+            ("ls *> $null", ReadOnly, "`get-childitem` only reads"),
+            ("ls 12> $null", Unknown, "the command has an unusual redirection"),
+        ],
+    );
+}
+
+#[test]
+fn hidden_paths_providers_and_devices_ask() {
+    const SPACING: &str = "the command has an unusual space character";
+
+    check(
+        PowerShell,
+        &[
+            ("gc x,\u{a0}C:\\secret", Unknown, SPACING),
+            ("sls pattern\u{2003}C:\\secret", Unknown, SPACING),
+            (
+                "gc FileSystem::C:\\Windows\\win.ini",
+                Unknown,
+                "the command reaches `C:\\Windows\\win.ini` outside the workspace",
+            ),
+            (
+                "gc Microsoft.PowerShell.Core\\FileSystem::C:\\x",
+                Unknown,
+                "the command reaches `C:\\x` outside the workspace",
+            ),
+            ("gc FileSystem::..\\x", Unknown, "the command reaches `..\\x` outside the workspace"),
+            ("gci Temp:", Unknown, "the command reaches the `temp` drive"),
+            ("gc temp:\\x", Unknown, "the command reaches the `temp` drive"),
+            ("sort --output=x y", Unknown, "`sort` is not on the read-only list"),
+            ("gc con", Unknown, "the command opens the device `con`"),
+        ],
+    );
+
+    check(
+        Cmd,
+        &[
+            ("where $USERPROFILE:*", Unknown, "`where` reads files named in its input or a list"),
+            ("findstr /f:list x", Unknown, "`findstr` reads files named in its input or a list"),
+            ("type com1", Unknown, "the command opens the device `com1`"),
+            ("type con", Unknown, "the command opens the device `con`"),
+            ("type sub\\aux.txt", Unknown, "the command opens the device `sub\\aux.txt`"),
+            ("type console.txt", ReadOnly, "`type` only reads"),
+        ],
+    );
 }

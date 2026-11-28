@@ -18,7 +18,7 @@ use std::cmp::Reverse;
 pub use admin::administers;
 pub use package::{Action, Packages};
 pub use parse::{Parse, Segment, parse};
-pub use path::{Os, device, host, remote, share_host, system, url_host};
+pub use path::{Os, device, host, outside, remote, share_host, system, url_host};
 pub use reason::{Effect, Hazard, Reason};
 pub use target::{Targets, targets};
 

@@ -13,10 +13,8 @@ const ALIASES: &[(&str, &str)] = &[
     ("gl", "get-location"),
     ("gi", "get-item"),
     ("echo", "write-output"),
-    ("write", "write-output"),
     ("measure", "measure-object"),
     ("select", "select-object"),
-    ("sort", "sort-object"),
     ("rm", "remove-item"),
     ("del", "remove-item"),
     ("erase", "remove-item"),
@@ -81,6 +79,11 @@ pub(super) fn evaluate(name: &str, args: &[&str], found: &mut Findings) -> bool 
             return true;
         }
 
+        if name == "get-content" && args.iter().any(|arg| waits(arg)) {
+            found.acts("get-content -wait", Effect::Waits);
+            return true;
+        }
+
         Effect::Reads
     } else if name == "start-process" {
         let elevated = args.windows(2).any(|pair| {
@@ -121,4 +124,14 @@ fn sets_variable(arg: &str) -> bool {
     !parameter.is_empty()
         && (SHORT_VARIABLES.contains(&parameter.as_str())
             || VARIABLES.iter().any(|long| long.starts_with(&parameter)))
+}
+
+fn waits(arg: &str) -> bool {
+    let Some(parameter) = arg.strip_prefix('-') else {
+        return false;
+    };
+
+    let parameter = parameter.split_once(':').map_or(parameter, |(name, _)| name);
+
+    parameter.len() >= 3 && "wait".starts_with(&parameter.to_ascii_lowercase())
 }

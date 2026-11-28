@@ -1,6 +1,7 @@
 use super::lex::{self, Word};
-use super::reason::{Hazard, Reason};
-use super::{Dialect, rules, wrapper};
+use super::reason::{Effect, Hazard, Reason};
+use super::wrapper::{self, Outcome};
+use super::{Dialect, rules};
 
 const LIMIT: usize = 8 * 1024;
 const DEPTH: usize = 3;
@@ -47,6 +48,8 @@ pub fn parse(command: &str, dialect: Dialect) -> Parse {
         parse.hazard(Hazard::Long);
     } else if command.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
         parse.hazard(Hazard::Control);
+    } else if command.chars().any(|c| c.is_whitespace() && !matches!(c, ' ' | '\t' | '\n')) {
+        parse.hazard(Hazard::Spacing);
     } else {
         parse.read(command, dialect, 0, false);
     }
@@ -155,8 +158,15 @@ impl Segment {
             let rest: Vec<&str> =
                 words[index + 1..].iter().map(|word| word.text.as_str()).collect();
 
-            let Some(unwrap) = wrapper::unwrap(dialect, &name, &rest) else {
-                break;
+            let unwrap = match wrapper::unwrap(dialect, &name, &rest) {
+                Some(Outcome::Runs(unwrap)) => unwrap,
+
+                Some(Outcome::Unrecognized { option, elevates }) => {
+                    segment.unrecognized(&name, &option, elevates, &words[index + 1..]);
+                    break;
+                }
+
+                None => break,
             };
 
             if word.quoted {
@@ -193,6 +203,24 @@ impl Segment {
         segment
     }
 
+    fn unrecognized(&mut self, name: &str, option: &str, elevates: bool, rest: &[Word]) {
+        self.notes.push(Reason::Acts(format!("{name} {option}"), Effect::Unlisted));
+
+        if elevates {
+            self.notes.push(Reason::Elevated(name.to_owned()));
+        }
+
+        for word in rest {
+            let (program, _) = self.dialect.name(&word.text);
+
+            if let Some(reason) = rules::dangerous(&program) {
+                self.notes.push(reason);
+            }
+        }
+
+        self.elevated |= self.notes.iter().any(|note| matches!(note, Reason::Elevated(_)));
+    }
+
     pub fn operands(&self) -> Vec<&str> {
         let windows = self.dialect != Dialect::Sh;
         let mut operands = Vec::new();
@@ -210,7 +238,7 @@ impl Segment {
     }
 }
 
-fn switch(arg: &str, windows: bool) -> bool {
+pub(super) fn switch(arg: &str, windows: bool) -> bool {
     let Some(rest) = arg.strip_prefix('/') else {
         return false;
     };

@@ -46,12 +46,21 @@ impl Lexed {
         }
     }
 
-    pub fn word(&mut self, word: Word, end: Option<&char>) {
-        let number = !word.quoted && word.text.chars().all(|c| c.is_ascii_digit());
-        let stream = number || word.text == "*" && !word.glob;
-
-        if !word.quoted && word.text.is_empty() || stream && matches!(end, Some('<' | '>')) {
+    pub fn word(&mut self, word: Word, end: Option<&char>, star: bool) {
+        if !word.quoted && word.text.is_empty() {
             return;
+        }
+
+        if !word.quoted && matches!(end, Some('<' | '>')) {
+            let digits = word.text.chars().all(|c| c.is_ascii_digit());
+
+            if digits && word.text.len() == 1 || star && word.text == "*" {
+                return;
+            }
+
+            if digits {
+                self.hazard(Hazard::Redirection);
+            }
         }
 
         self.tokens.push(Token::Word(word));
