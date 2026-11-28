@@ -7,6 +7,8 @@ use krabb_core::command::{self, Action, Dialect, Effect, Os, Parse, Reason};
 
 use super::facts::{list, sentence, visible};
 
+const LOCAL: &[&str] = &["msiexec", "dpkg"];
+
 #[derive(Default)]
 struct Reading {
     deletes: Vec<String>,
@@ -85,7 +87,7 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
                 }
 
                 Reason::Acts(_, Effect::UsesNetwork) => reading.network = true,
-                Reason::Acts(_, Effect::RunsCode) => reading.opaque |= !read,
+                Reason::Acts(_, Effect::RunsCode) => reading.opaque |= !read && !scripted(segment),
                 Reason::Acts(_, Effect::DeletesFiles) => reading.unnamed_deletes = true,
                 Reason::Acts(_, effect) => changed(&mut reading, effect),
                 _ => {}
@@ -99,7 +101,8 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
 
     let kind = match &packages {
         Some(packages) => {
-            reading.network |= packages.action != Action::Remove;
+            reading.network |=
+                packages.action != Action::Remove && !LOCAL.contains(&&*packages.manager);
             reading.admin |= packages.system;
 
             let verb = match packages.action {
@@ -113,7 +116,12 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
                 false => format!(": {}", list(&packages.names)),
             };
 
-            format!("{verb} packages with {}{names}", visible(&packages.manager))
+            let manager = match packages.manager.as_str() {
+                "powershell" => "PowerShell".into(),
+                manager => visible(manager),
+            };
+
+            format!("{verb} packages with {manager}{names}")
         }
 
         None if !reading.deletes.is_empty() || reading.unnamed_deletes => {
@@ -129,6 +137,12 @@ pub(crate) fn describe(command: &str, dialect: Dialect, os: Os) -> String {
     };
 
     sentence(&kind, &flags(&reading, packages.is_some()))
+}
+
+/// Whether SEGMENT is a stream editor whose whole script is in the command shown below.
+fn scripted(segment: &command::Segment) -> bool {
+    matches!(segment.program.as_str(), "sed" | "awk" | "gawk")
+        && !segment.args.iter().any(|arg| arg == "-f" || arg.starts_with("--file"))
 }
 
 fn changed(reading: &mut Reading, effect: Effect) {

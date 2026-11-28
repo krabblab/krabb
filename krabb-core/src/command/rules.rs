@@ -47,6 +47,8 @@ const CODE: &[&str] = &[
     "icm",
 ];
 
+const CONTAINER_NETWORK: &[&str] = &["pull", "push", "login", "search"];
+
 const NETWORK: &[&str] = &[
     "curl",
     "wget",
@@ -247,6 +249,10 @@ fn portable(name: &str, args: &[&str], found: &mut Findings) -> bool {
         };
 
         found.acts(name, effect);
+    } else if matches!(name, "docker" | "podman")
+        && args.first().is_some_and(|action| CONTAINER_NETWORK.contains(action))
+    {
+        found.acts(format!("{name} {}", args[0]), Effect::UsesNetwork);
     } else if CODE.contains(&name) {
         found.acts(name, Effect::RunsCode);
     } else if NETWORK.contains(&name) {

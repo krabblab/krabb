@@ -3,13 +3,38 @@
 use super::parse::Segment;
 
 const DELETES: &[&str] = &[
-    "rm", "rmdir", "rd", "del", "erase", "unlink", "shred", "srm", "trash", "trash-put",
-    "remove-item", "ri",
+    "rm",
+    "rmdir",
+    "rd",
+    "del",
+    "erase",
+    "unlink",
+    "shred",
+    "srm",
+    "trash",
+    "trash-put",
+    "remove-item",
+    "ri",
 ];
 
 const WRITES_LAST: &[&str] = &[
-    "cp", "mv", "ln", "install", "copy", "move", "xcopy", "copy-item", "cpi", "move-item", "mi",
-    "ren", "rename", "rename-item", "rni", "scp", "rsync",
+    "cp",
+    "mv",
+    "ln",
+    "install",
+    "copy",
+    "move",
+    "xcopy",
+    "copy-item",
+    "cpi",
+    "move-item",
+    "mi",
+    "ren",
+    "rename",
+    "rename-item",
+    "rni",
+    "scp",
+    "rsync",
 ];
 
 const WRITES_FIRST: &[&str] =
@@ -43,7 +68,8 @@ pub fn targets(segment: &Segment) -> Targets {
     }
 
     if DELETES.contains(&name) {
-        targets.recursive |= matches!(name, "rmdir" | "rd") || args.iter().any(|arg| recursive(arg));
+        targets.recursive |=
+            matches!(name, "rmdir" | "rd") || args.iter().any(|arg| recursive(arg));
         targets.unnamed_deletes |= operands.is_empty();
 
         for operand in operands {
@@ -100,7 +126,8 @@ fn program(segment: &Segment, targets: &mut Targets) {
 
         "curl" => {
             values(args, &["-o", "--output"], false, targets);
-            targets.unnamed_writes |= args.iter().any(|arg| matches!(arg.as_str(), "-O" | "--remote-name"));
+            targets.unnamed_writes |=
+                args.iter().any(|arg| matches!(arg.as_str(), "-O" | "--remote-name"));
         }
 
         "wget" => {
