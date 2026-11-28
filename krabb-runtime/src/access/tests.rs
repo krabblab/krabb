@@ -664,11 +664,9 @@ fn admin_commands_need_their_level_and_always_ask_within_it() {
         Some(Verdict::Deny)
     );
 
-    let refusal = refusal(&owner, "shell_run", &install);
+    let text = refusal(&owner, "shell_run", &install);
 
-    assert!(
-        refusal.contains("`packages` admin level") && refusal.ends_with("`sudo apt install htop`")
-    );
+    assert!(text.contains("`packages` admin level") && text.ends_with("`sudo apt install htop`"));
 
     let packages = Grant { elevation: Elevation::Packages, ..owner };
     let loose = Grant { preset: Preset::Loose, elevation: Elevation::Full, ..owner };

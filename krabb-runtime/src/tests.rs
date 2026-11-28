@@ -2041,6 +2041,7 @@ fn covers_runtime_helpers() {
         super::command_label(&Command::Init(InitArgs {
             steps: Vec::new(),
             provider: None,
+            preset: None,
             channel: None,
             force: false,
             yes: false,
