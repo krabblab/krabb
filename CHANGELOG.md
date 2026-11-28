@@ -10,6 +10,7 @@ Semantic Versioning.
 - Give your Krabb a name, personality, and writing style with `krabb hatch` or `/hatch`.
 - Keep Krabb honest and careful with a built-in charter that personalization cannot remove.
 - Ask Krabb why a capability is off and get the exact command that turns it on.
+- Choose a security preset for each role, channel, or client: chat, hardened, standard, or loose.
 - Let Krabb read the GIFs, stickers, PDFs, and audio files you send in chat.
 - Attach files and clipboard images in the TUI by pasting a path or pressing Ctrl+V.
 - Let Krabb turn its own tools, shell, or approval on or off when you ask and approve.

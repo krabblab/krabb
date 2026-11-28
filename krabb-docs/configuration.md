@@ -498,9 +498,27 @@ member = "standard"
 admin = { preset = "loose", visibility = "integration" }
 ```
 
-Unknown roles, values, and keys fail validation before the daemon starts. These keys
-do not change permissions yet; the channel policy, `tools`, `shell`, and `approval`
-still decide what runs.
+Unknown roles, values, and keys fail validation before the daemon starts.
+
+Without any `preset` or `roles` key, Krabb keeps its behavior from before presets: the
+channel policy, `tools`, `shell`, and `approval` decide what runs. Once one is set, the
+role of the person who started the turn decides. Local clients such as the TUI are the
+owner; channel senders take the highest of `owner`, `admin`, and `member` that names
+them, and everyone else is a guest; ACP, AG-UI, and A2A callers are members. Defaults:
+owner and admin `standard`, member `hardened`, guest `chat`.
+
+| Action | `chat` | `hardened` | `standard` | `loose` |
+| --- | --- | --- | --- | --- |
+| Read files, search memory, fetch web pages | No tools | Runs | Runs | Runs |
+| Write files, read-only shell commands | No tools | Asks | Runs | Runs |
+| Delete, other shell commands, messages, schedules | No tools | Asks | Asks | Runs |
+| Install packages, admin rights, settings | No tools | Asks | Asks | Asks |
+
+Shell commands are read-only only when Krabb's classifier recognizes them as such; any
+command it cannot read, every `git` command, and tools Krabb does not know ask as other
+shell commands. Under a preset, `tools = false` or `shell = false` in a channel or client
+still turns that capability off, and `approval = "off"` still blocks every change. Actions
+that run without asking are logged.
 
 ## Visibility
 
