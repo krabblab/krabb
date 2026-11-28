@@ -42,7 +42,7 @@ class Contributions(unittest.TestCase):
         self.assertIn('- [x] **Feature**', body)
         self.assertIn('No linked issue yet; link one before review.', body)
         self.assertIn('<!-- Describe the solution', body)
-        self.assertIn('`make verify` passed.', body)
+        self.assertIn('`make gate` passed.', body)
 
         for invalid in ('feat(core): scoped', 'Feat: upper', 'feat: ' + 'a' * 50, 'feat: x\ny'):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):

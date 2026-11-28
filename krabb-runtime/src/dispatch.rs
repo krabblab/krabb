@@ -1399,7 +1399,11 @@ fn host_arguments(
 /// declare `approvals`, except `telegram` and `discord`, which showed approvals before the key
 /// existed. A turn from a client prompts through the host, but a channel without its plugin
 /// cannot.
-async fn prompts(plugins: &Plugins, channel: &str, source: Option<&sharing::Principal>) -> bool {
+pub(crate) async fn prompts(
+    plugins: &Plugins,
+    channel: &str,
+    source: Option<&sharing::Principal>,
+) -> bool {
     match plugins.get(channel).await {
         Some(plugin) => {
             !plugin.supports(Capability::Channel)

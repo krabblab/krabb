@@ -92,7 +92,7 @@ def metadata(raw, template):
 
     body = body.replace(description, description + '\n'
                         + '\n'.join('- ' + line for line in solution)
-                        + '\n- Validation: `make verify` passed.\n')
+                        + '\n- Validation: `make gate` passed.\n')
 
     return title, body, label
 
@@ -298,7 +298,7 @@ class Contribution:
             before = fingerprint()
             log = self.state / f'verify-{self.sequence}-{self.attempt}.log'
 
-            commands = [['make', 'verify']]
+            commands = [['make', 'gate']]
 
             if (ROOT / 'AGENTS.md').is_file() and shutil.which('agentskill'):
                 commands.insert(0, ['agentskill', 'validate', '.', '--signature', 'auto'])
