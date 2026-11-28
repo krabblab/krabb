@@ -234,9 +234,18 @@ async fn call_as(
             json!({"edited": edited, "sent": results})
         }
 
-        Operation::Approval { chat, text, approve, deny, thread } => {
-            let (url, body) =
+        Operation::Approval { chat, text, approve, deny, always, thread } => {
+            let (url, mut body) =
                 approval_request(base, chat, &text, &approve, &deny, thread.as_deref())?;
+
+            if let Some(always) = always {
+                let button = json!({"text": "Always allow", "callback_data": always});
+
+                if let Some(row) = body["reply_markup"]["inline_keyboard"][0].as_array_mut() {
+                    row.insert(1, button);
+                }
+            }
+
             send(client, &url, body).await?
         }
 
@@ -267,12 +276,37 @@ async fn call_as(
 enum Operation {
     Info,
     Check,
-    Poll { offset: i64, wait_seconds: u64 },
-    Typing { chat: i64, thread: Option<i64> },
-    Send { chat: i64, text: String, thread: Option<String> },
-    Edit { chat: i64, message: i64, text: String, thread: Option<String> },
-    Approval { chat: i64, text: String, approve: String, deny: String, thread: Option<String> },
-    Callback { id: String, text: Option<String> },
+    Poll {
+        offset: i64,
+        wait_seconds: u64,
+    },
+    Typing {
+        chat: i64,
+        thread: Option<i64>,
+    },
+    Send {
+        chat: i64,
+        text: String,
+        thread: Option<String>,
+    },
+    Edit {
+        chat: i64,
+        message: i64,
+        text: String,
+        thread: Option<String>,
+    },
+    Approval {
+        chat: i64,
+        text: String,
+        approve: String,
+        deny: String,
+        always: Option<String>,
+        thread: Option<String>,
+    },
+    Callback {
+        id: String,
+        text: Option<String>,
+    },
     Media(String),
 }
 
@@ -471,6 +505,15 @@ fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Opt
                     .filter(|value| callback_data(value))
                     .ok_or_else(|| krabb_core::Error::Denied("approval.deny is invalid.".into()))?
                     .into(),
+                always: match params["always"].as_str() {
+                    Some(value) if callback_data(value) => Some(value.into()),
+                    Some(_) => {
+                        return Err(krabb_core::Error::Denied(
+                            "approval.always is invalid.".into(),
+                        ));
+                    }
+                    None => None,
+                },
                 thread: params["thread"].as_str().map(str::to_owned),
             }))
         }
@@ -1374,10 +1417,23 @@ mod tests {
                 &json!({"chat": 8, "text": "Approve write?", "approve": "allow", "deny": "deny"})
             )
             .unwrap(),
-            Some(Operation::Approval { chat: 8, text, approve, deny, thread: None })
+            Some(Operation::Approval { chat: 8, text, approve, deny, always: None, thread: None })
 
                 if text == "Approve write?" && approve == "allow" && deny == "deny"
         ));
+
+        let lasting =
+            json!({"chat": 8, "text": "Run?", "approve": "a", "deny": "d", "always": "l"});
+
+        assert!(matches!(
+            operation("approval", &lasting).unwrap(),
+            Some(Operation::Approval { always: Some(always), .. }) if always == "l"
+        ));
+
+        let long = json!({"chat": 8, "text": "Run?", "approve": "a", "deny": "d",
+            "always": "x".repeat(65)});
+
+        assert!(operation("approval", &long).is_err());
 
         assert!(matches!(
             operation("callback", &json!({"id": "callback-1", "text": "Denied."})).unwrap(),

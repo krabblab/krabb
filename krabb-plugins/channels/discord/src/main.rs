@@ -416,8 +416,18 @@ async fn call_with_state(
             }
         }
 
-        Operation::Approval { channel, text, approve, deny } => {
-            let body = approval_request(&text, &approve, &deny)?;
+        Operation::Approval { channel, text, approve, deny, always } => {
+            let mut body = approval_request(&text, &approve, &deny)?;
+
+            if let Some(always) = always {
+                let button =
+                    json!({"type": 2, "style": 2, "label": "Always allow", "custom_id": always});
+
+                if let Some(row) = body["components"][0]["components"].as_array_mut() {
+                    row.insert(1, button);
+                }
+            }
+
             message(
                 client,
                 reqwest::Method::POST,
@@ -523,10 +533,27 @@ where
 enum Operation {
     Check,
     Typing(String),
-    Send { channel: String, text: String, content: Vec<Content> },
-    Edit { channel: String, message_id: String, text: String },
-    Approval { channel: String, text: String, approve: String, deny: String },
-    Callback { id: String, text: String },
+    Send {
+        channel: String,
+        text: String,
+        content: Vec<Content>,
+    },
+    Edit {
+        channel: String,
+        message_id: String,
+        text: String,
+    },
+    Approval {
+        channel: String,
+        text: String,
+        approve: String,
+        deny: String,
+        always: Option<String>,
+    },
+    Callback {
+        id: String,
+        text: String,
+    },
     Poll(u64),
     Ack(u64),
     Media(String),
@@ -609,6 +636,13 @@ fn operation(method: &str, params: &serde_json::Value) -> krabb_core::Result<Opt
                 .filter(|value| custom_id(value))
                 .ok_or_else(|| krabb_core::Error::Denied("approval.deny is invalid.".into()))?
                 .into(),
+            always: match params["always"].as_str() {
+                Some(value) if custom_id(value) => Some(value.into()),
+                Some(_) => {
+                    return Err(krabb_core::Error::Denied("approval.always is invalid.".into()));
+                }
+                None => None,
+            },
         })),
 
         "callback" => Ok(Some(Operation::Callback {
@@ -2350,10 +2384,23 @@ mod tests {
                 &json!({"channel": "1", "text": "Approve write?", "approve": "allow", "deny": "deny"})
             )
             .unwrap(),
-            Some(Operation::Approval { channel, text, approve, deny })
+            Some(Operation::Approval { channel, text, approve, deny, always: None })
 
                 if channel == "1" && text == "Approve write?" && approve == "allow" && deny == "deny"
         ));
+
+        let lasting =
+            json!({"channel": "1", "text": "Run?", "approve": "a", "deny": "d", "always": "l"});
+
+        assert!(matches!(
+            operation("approval", &lasting).unwrap(),
+            Some(Operation::Approval { always: Some(always), .. }) if always == "l"
+        ));
+
+        let spaced =
+            json!({"channel": "1", "text": "Run?", "approve": "a", "deny": "d", "always": "a b"});
+
+        assert!(operation("approval", &spaced).is_err());
 
         assert!(matches!(
             operation("callback", &json!({"id": "1", "text": "Denied."})).unwrap(),
