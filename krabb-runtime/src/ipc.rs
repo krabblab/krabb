@@ -4264,7 +4264,8 @@ done"##;
                 "text": "Krabb requests approval to run this shell command: rm foo.",
                 "tool": "shell_run",
                 "arguments": "{\"command\":\"rm foo\"}",
-                "command": "rm foo"
+                "command": "rm foo",
+                "always": false
             })
         );
     }
