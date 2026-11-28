@@ -6407,6 +6407,7 @@ mod tests {
         app.transcript = "System | now\nApproval needed.\nTool: shell\nCommand: touch foo\n\
             Approve: /approve 0123456789abcdef01234567\nDeny: /deny 0123456789abcdef01234567\n"
             .into();
+        app.issued.insert("0123456789abcdef01234567".into(), "touch foo".into());
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let approval = terminal
