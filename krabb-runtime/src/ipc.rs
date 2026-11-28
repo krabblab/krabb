@@ -6380,6 +6380,7 @@ for line in sys.stdin:
                 session: "telegram-7".into(),
                 tool: "file_write".into(),
                 args: json!({"path": "note.txt", "text": "approved"}),
+                requester: None,
             })
             .unwrap();
 

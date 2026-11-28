@@ -620,3 +620,12 @@ fn clients_follow_the_preset_unless_set() {
     assert!(client(&legacy, None, true));
     assert!(client(&legacy, Some(true), false));
 }
+
+#[test]
+fn only_the_requesters_role_or_a_higher_one_approves() {
+    assert!(approves(Role::Owner, Some(Role::Admin)));
+    assert!(approves(Role::Admin, Some(Role::Admin)));
+    assert!(!approves(Role::Member, Some(Role::Admin)));
+    assert!(!approves(Role::Guest, Some(Role::Member)));
+    assert!(approves(Role::Guest, None));
+}

@@ -25,6 +25,10 @@ pub(crate) struct Target {
     pub session: String,
     pub tool: String,
     pub args: Value,
+    /// The role of the person whose turn asked, under a preset; only that role or a higher one
+    /// may approve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester: Option<crate::access::Role>,
 }
 
 pub(crate) struct Challenge {
@@ -315,6 +319,7 @@ mod tests {
             session: "telegram-8-thread-4".into(),
             tool: "write".into(),
             args: json!({"path": "note.txt", "text": "hello"}),
+            requester: None,
         }
     }
 

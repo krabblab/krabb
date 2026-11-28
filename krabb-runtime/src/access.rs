@@ -259,6 +259,13 @@ pub(crate) fn gate(
     }
 }
 
+/// Whether APPROVER may answer a request from REQUESTER: only that role or a higher one may,
+/// so a member cannot approve what an admin asked for. Requests from before presets carry no
+/// role and keep the channel's own approvers.
+pub(crate) fn approves(approver: Role, requester: Option<Role>) -> bool {
+    requester.is_none_or(|requester| approver >= requester)
+}
+
 /// What the preset does with a tool call: run it, ask first, or refuse it.
 pub(crate) fn verdict(grant: &Grant, name: &str, args: &serde_json::Value) -> Verdict {
     grant.preset.decide(action(name, args))

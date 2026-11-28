@@ -387,6 +387,7 @@ done
             session: "telegram-7".into(),
             tool: "write".into(),
             args: serde_json::json!({}),
+            requester: None,
         };
 
         let challenge = approvals.lock().await.issue(target).unwrap();

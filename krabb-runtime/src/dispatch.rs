@@ -651,22 +651,22 @@ pub(crate) async fn execute_tool_with_registry(
         let grant = access::turn(&plugins.config, source, channel, store.sessions.get(session));
 
         access::gate(&plugins.config, &grant, name, &args, approval_mode)
-            .map(|verdict| (verdict, grant.preset))
+            .map(|verdict| (verdict, grant.preset, grant.role))
     };
 
     let asks = match gate {
-        Some((access::Verdict::Deny, preset)) => {
+        Some((access::Verdict::Deny, preset, _)) => {
             return Ok(ToolResult::text(format!(
                 "The {preset} preset does not allow `{name}` here, so nothing ran. The owner can \
                  change this conversation's preset with `krabb config set`."
             )));
         }
 
-        Some((verdict, _)) => verdict == access::Verdict::Ask,
+        Some((verdict, ..)) => verdict == access::Verdict::Ask,
         None => approval_mode == ApprovalMode::Prompt && mutating(name, &args),
     };
 
-    if let Some((access::Verdict::Run, preset)) = gate
+    if let Some((access::Verdict::Run, preset, _)) = gate
         && mutating(name, &args)
     {
         info!(tool = name, %preset, "ran a tool without asking under the preset");
@@ -998,7 +998,7 @@ pub(crate) async fn execute_tool_with_registry(
     }
 
     let changes = match gate {
-        Some((verdict, _)) => verdict == access::Verdict::Ask,
+        Some((verdict, ..)) => verdict == access::Verdict::Ask,
         None => mutating(name, &args),
     };
 
@@ -1069,6 +1069,7 @@ pub(crate) async fn execute_tool_with_registry(
                 session: session.into(),
                 tool: name.into(),
                 args: args.clone(),
+                requester: gate.map(|(_, _, role)| role),
             };
 
             let permission_scope = sharing::approvals(&plugins.config, &target.source);

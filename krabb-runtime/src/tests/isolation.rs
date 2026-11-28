@@ -212,6 +212,7 @@ async fn local_resolution_wakes_a_pending_approval() {
         session: "telegram-7".into(),
         tool: "write".into(),
         args: serde_json::json!({}),
+        requester: None,
     };
 
     let challenge = approvals.lock().await.issue(target.clone()).unwrap();

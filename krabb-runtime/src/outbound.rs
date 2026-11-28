@@ -410,10 +410,15 @@ pub(crate) async fn handle_callback(
     let authorized = tools_allowed(policy, &authority, &chat, mode.enabled());
     let sender = event_id(&event["sender"]);
     let owner = policy.owner.is_some() && policy.owner == sender;
+    let approver = access::sender(policy, event).unwrap_or(access::Role::Guest);
 
     let decision =
         approvals.lock().await.resolve_for(token, channel_id, &chat, thread.as_deref(), |target| {
-            if target.tool == settings::TOOL { owner } else { authorized }
+            if target.tool == settings::TOOL {
+                owner
+            } else {
+                authorized && access::approves(approver, target.requester)
+            }
         });
 
     let message = match decision {
