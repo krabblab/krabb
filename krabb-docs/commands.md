@@ -5,7 +5,8 @@ Use this reference to find CLI, daemon, plugin, and terminal commands.
 ```text
 krabb help
 krabb --version
-krabb init [home] [provider] [hatch] [channel] [service] [--provider <id>] [--channel <id>|none]
+krabb init [home] [provider] [preset] [hatch] [channel] [service] [--provider <id>]
+           [--preset <preset>] [--channel <id>|none]
 krabb init --force [-y|--yes] [--json]
 krabb hatch [<what to change>...] [--name <text>] [--call <text>] [--personality <text>] [--voice <text>] [--writing <text>] [--work <text>] [--language <text>] [--notes <text>] [-y|--yes] [--json]
 krabb hatch --undo [-y|--yes] [--json]
@@ -662,9 +663,10 @@ krabb init
 krabb status
 ```
 
-In a terminal, `krabb init` guides you through five steps, always in this order: `home`
+In a terminal, `krabb init` guides you through six steps, always in this order: `home`
 creates the home directory, starter configuration, and workspace instructions;
-`provider` installs, sets up, and selects an intelligence provider; `hatch` gives your
+`provider` installs, sets up, and selects an intelligence provider; `preset` asks how
+much Krabb may do without asking, with `standard` preselected; `hatch` gives your
 Krabb a personality; `channel` installs the terminal client or a chat channel and sets
 it up, and choosing the terminal also installs the `tools` plugin when it is missing, so
 your Krabb can read and save workspace files after you approve each change; and
@@ -673,8 +675,16 @@ as offline, the guide notes `krabb plugin install tools` and goes on. Choices us
 moved with the arrow keys, and Esc stops the guide, so `krabb init` continues later.
 Name steps to run only those, such as `krabb init home provider`. A finished step is
 skipped when you run every step, and offers a change when you name it. Without a
-terminal, `krabb init` creates only the home, and `--provider` and `--channel` answer
-their steps, as in `krabb init --provider ollama --channel none service`.
+terminal, `krabb init` creates only the home, and `--provider`, `--preset`, and
+`--channel` answer their steps, as in `krabb init --provider ollama --channel none service`.
+
+The `preset` step saves `preset` in `config.toml`: `standard` lets reads, web pages,
+workspace writes, and read-only shell commands run and asks for the rest; `hardened`
+asks for every change; `loose` asks only for installs, admin rights, and settings; and
+`chat` turns tools off. Without a terminal, the named step saves `standard` unless
+`--preset` names another. "Not now" keeps a home made before presets as it is, and
+`krabb doctor` then suggests choosing one. A home that has a preset keeps it unless you
+name the step. [Roles and presets](configuration.md#roles-and-presets) covers roles.
 
 When the terminal is a place to talk but a home made before 0.1.0-rc.5 saved
 `approval = "off"`, which refuses every change the terminal's tools try, the `channel`

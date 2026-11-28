@@ -91,12 +91,14 @@ pub(crate) fn doctor_at(
     let krab_instructions_present = regular_file_present(&krab_path);
     let klaw_instructions_present = regular_file_present(&klaw_path);
     let mut config_valid = None;
+    let mut preset = None;
 
     if config_present {
         let config: Config = load_config_at(root)?;
 
         config.validate().map_err(|error| format!("Config is invalid: {error}"))?;
         config_valid = Some(true);
+        preset = Some(config.preset.map(|preset| preset.to_string()));
     }
 
     let lock = load_lock_at(root)?;
@@ -148,6 +150,7 @@ pub(crate) fn doctor_at(
         } else {
             let value = serde_json::json!({
                 "config": {"present": config_present, "valid": config_valid},
+                "access": {"preset": preset.clone().flatten()},
                 "health": health,
                 "home": root,
                 "plugin_integrity": "valid",
@@ -197,6 +200,7 @@ pub(crate) fn doctor_at(
             workspace: workspace_directory_present,
             krab: krab_instructions_present,
             klaw: klaw_instructions_present,
+            preset,
             missing,
         };
 
@@ -213,6 +217,9 @@ struct Checks {
     workspace: bool,
     krab: bool,
     klaw: bool,
+    /// The configured security preset: none without a configuration, and an inner none when
+    /// the home keeps its behavior from before presets.
+    preset: Option<Option<String>>,
     /// The install help of a program each plugin needs that is not on this shell's PATH.
     missing: BTreeMap<String, String>,
 }
@@ -249,9 +256,18 @@ fn doctor_text(root: &Path, checks: &Checks, installed: usize, healthy: bool) ->
 
     parts.push(format!("Plugin programs: {programs}"));
 
+    match &checks.preset {
+        Some(Some(preset)) => parts.push(format!("Security preset: {preset}")),
+        Some(None) => {
+            parts.push("Security preset: none, so tools follow the older settings".into())
+        }
+        None => {}
+    }
+
     let next = match checks.missing.values().next() {
         _ if !healthy => "Restore the missing local state with `krabb doctor --fix`.",
         Some(help) => help.as_str(),
+        None if checks.preset == Some(None) => "Choose a security preset with `krabb init preset`.",
         None => "Check that the runtime and plugins are running with `krabb status`.",
     };
 
@@ -270,6 +286,7 @@ mod tests {
             workspace: true,
             krab: true,
             klaw: true,
+            preset: Some(Some("standard".into())),
             missing: BTreeMap::new(),
         };
 
@@ -286,7 +303,8 @@ mod tests {
              ├─ KRAB.md instructions: present\n\
              ├─ KLAW.md instructions: present\n\
              ├─ Plugins: 2 installed, integrity checks passed, protocol {protocol}\n\
-             └─ Plugin programs: found\n\
+             ├─ Plugin programs: found\n\
+             └─ Security preset: standard\n\
              \n\
              Check that the runtime and plugins are running with `krabb status`."
             )
@@ -299,10 +317,16 @@ mod tests {
 
         let text = doctor_text(Path::new("/home/owner/.krabb"), &lacking, 1, true);
 
-        assert!(text.contains("└─ Plugin programs: missing for signal\n"), "{text}");
+        assert!(text.contains("├─ Plugin programs: missing for signal\n"), "{text}");
         assert!(text.ends_with(&format!("\n\n{help}")), "{text}");
 
-        let broken = Checks { workspace: false, ..lacking };
+        let older = Checks { preset: Some(None), missing: BTreeMap::new(), ..lacking };
+        let text = doctor_text(Path::new("/home/owner/.krabb"), &older, 1, true);
+
+        assert!(text.contains("└─ Security preset: none, so tools follow the older settings\n"));
+        assert!(text.ends_with("\n\nChoose a security preset with `krabb init preset`."), "{text}");
+
+        let broken = Checks { workspace: false, ..older };
         let text = doctor_text(Path::new("/home/owner/.krabb"), &broken, 0, false);
 
         assert!(text.starts_with("The local installation needs repair\n"), "{text}");

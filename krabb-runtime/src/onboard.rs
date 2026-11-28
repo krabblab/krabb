@@ -15,12 +15,28 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) enum Step {
     Home,
     Provider,
+    Preset,
     Hatch,
     Channel,
     Service,
 }
 
-const ALL: [Step; 5] = [Step::Home, Step::Provider, Step::Hatch, Step::Channel, Step::Service];
+const ALL: [Step; 6] =
+    [Step::Home, Step::Provider, Step::Preset, Step::Hatch, Step::Channel, Step::Service];
+
+/// The presets init offers, standard first so Enter picks it, each with its one-line promise.
+const PRESETS: [(crate::access::Preset, &str); 4] = [
+    (
+        crate::access::Preset::Standard,
+        "Standard: reads, web pages, workspace writes, and read-only commands run; the rest asks",
+    ),
+    (crate::access::Preset::Hardened, "Hardened: only reads and web pages run; every change asks"),
+    (
+        crate::access::Preset::Loose,
+        "Loose: everything runs except installs, admin rights, and settings changes",
+    ),
+    (crate::access::Preset::Chat, "Chat: no tools; Krabb only talks"),
+];
 
 /// An official plugin a step offers, with the label people choose it by and the key a flag
 /// names it with.
@@ -88,7 +104,10 @@ const LISTING: std::time::Duration = std::time::Duration::from_secs(30);
 /// Runs `krabb init`: the reset or plain home creation as before, or the guided steps.
 pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
     let interactive = !json && crate::agent::interactive();
-    let guided = !args.steps.is_empty() || args.provider.is_some() || args.channel.is_some();
+    let guided = !args.steps.is_empty()
+        || args.provider.is_some()
+        || args.preset.is_some()
+        || args.channel.is_some();
 
     if args.force || (!guided && !interactive) {
         return crate::home::init(args.force, args.yes, json);
@@ -119,6 +138,7 @@ pub(crate) async fn run(args: InitArgs, json: bool) -> Result<(), Error> {
         let flow = match step {
             Step::Home => guide.home()?,
             Step::Provider => guide.provider(args.provider.as_deref()).await?,
+            Step::Preset => guide.preset(args.preset.as_deref())?,
             Step::Hatch => guide.hatch().await?,
             Step::Channel => guide.channel(args.channel.as_deref()).await?,
             Step::Service => guide.service()?,
@@ -152,6 +172,10 @@ fn plan(args: &InitArgs, interactive: bool) -> Result<Vec<Step>, String> {
         steps.push(Step::Provider);
     }
 
+    if args.preset.is_some() {
+        steps.push(Step::Preset);
+    }
+
     if args.channel.is_some() {
         steps.push(Step::Channel);
     }
@@ -169,6 +193,10 @@ fn plan(args: &InitArgs, interactive: bool) -> Result<Vec<Step>, String> {
 
     if let Some(id) = &args.provider {
         find(&PROVIDERS, id)?;
+    }
+
+    if let Some(name) = &args.preset {
+        preset(name)?;
     }
 
     if let Some(id) = args.channel.as_deref().filter(|id| *id != "none") {
@@ -192,6 +220,19 @@ fn plan(args: &InitArgs, interactive: bool) -> Result<Vec<Step>, String> {
     }
 
     Ok(steps)
+}
+
+/// The preset NAME names.
+fn preset(name: &str) -> Result<crate::access::Preset, String> {
+    use serde::Deserialize;
+    use serde::de::IntoDeserializer;
+
+    let parsed: Result<_, serde::de::value::Error> =
+        crate::access::Preset::deserialize(name.into_deserializer());
+
+    parsed.map_err(|_| {
+        format!("Unknown preset {name}, so use one of standard, hardened, loose, or chat.")
+    })
 }
 
 fn find<'a>(offers: &'a [Offer], key: &str) -> Result<&'a Offer, String> {
@@ -355,6 +396,47 @@ impl Guide {
             crate::home::init_at(&self.root)?;
             self.done(&format!("Created home at {}.", self.root.display()));
         }
+
+        Ok(Flow::Next)
+    }
+
+    /// Saves the security preset FLAG names, or asks for one with standard first. A home that
+    /// already has a preset keeps it unless the step was named.
+    fn preset(&mut self, flag: Option<&str>) -> Result<Flow, Error> {
+        self.require_home()?;
+        self.section("Security");
+
+        let current = crate::load_config_at(&self.root)?.preset;
+
+        if let Some(current) = current.filter(|_| flag.is_none() && !self.named(Step::Preset)) {
+            self.done(&format!("Security preset: {current}."));
+            return Ok(Flow::Next);
+        }
+
+        let chosen = match flag {
+            Some(name) => preset(name)?,
+            None if !self.interactive => crate::access::Preset::Standard,
+
+            None => {
+                let mut options = PRESETS.map(|(_, line)| line).to_vec();
+
+                options.push("Not now: keep the current settings");
+
+                match self.ask("How much may Krabb do without asking?", &options)? {
+                    None => return Ok(Flow::Stop),
+
+                    Some(index) if index == PRESETS.len() => {
+                        self.note("Choose a preset later with `krabb init preset`.");
+                        return Ok(Flow::Next);
+                    }
+
+                    Some(index) => PRESETS[index].0,
+                }
+            }
+        };
+
+        crate::save_setting(&self.root, "preset", chosen.name().into())?;
+        self.done(&format!("Security preset: {chosen}."));
 
         Ok(Flow::Next)
     }

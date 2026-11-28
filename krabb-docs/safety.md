@@ -34,6 +34,12 @@ Service state must not contain symbolic links.
 
 ## Tools
 
+A security preset decides which tool calls run without asking: `chat`, `hardened`,
+`standard`, or `loose`, chosen during `krabb init` and per role, channel, or client in
+`config.toml`. Every preset asks before installs, admin rights, and settings changes, and
+the shell runs a command unasked only when the host's classifier recognizes it as
+read-only inside the workspace. See [Roles and presets](configuration.md#roles-and-presets).
+
 File operations stay below the active session workspace after canonicalization,
 or below `KRABB_ROOT` when a session has not selected a workspace. Symlinked
 instructions, traversal, dangling write links, and worktree paths outside the

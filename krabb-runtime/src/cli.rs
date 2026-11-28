@@ -422,17 +422,24 @@ pub(crate) struct InitArgs {
     #[arg(
         value_enum,
         value_name = "STEP",
-        help = "Steps to run, always in this order: home, provider, hatch, channel, service. \
+        help = "Steps to run, always in this order: home, provider, preset, hatch, channel, \
+                service. \
                 Without steps, a terminal guides you through all of them."
     )]
     pub(crate) steps: Vec<crate::onboard::Step>,
     #[arg(long, value_name = "ID", help = "Intelligence provider to install and select.")]
     pub(crate) provider: Option<String>,
+    #[arg(
+        long,
+        value_name = "PRESET",
+        help = "Security preset to save: standard, hardened, loose, or chat."
+    )]
+    pub(crate) preset: Option<String>,
     #[arg(long, value_name = "ID", help = "Channel or client to talk through, or none.")]
     pub(crate) channel: Option<String>,
     #[arg(
         long,
-        conflicts_with_all = ["steps", "provider", "channel"],
+        conflicts_with_all = ["steps", "provider", "preset", "channel"],
         help = "Reset all Krabb home data and recreate its defaults."
     )]
     pub(crate) force: bool,
