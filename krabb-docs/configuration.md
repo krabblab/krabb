@@ -528,6 +528,12 @@ above the level does not run; Krabb replies with the exact command for the owner
 When Krabb itself runs as root, package and service commands need their level without
 `sudo` too.
 
+`krabb access list` shows each role's effective preset, admin level, and visibility,
+globally and for every configured channel and client. `krabb access set telegram admin
+loose` saves one; `--elevation services` adds an admin level. Giving a role more than its
+default states the risk in one line and asks once; `--yes` skips the question. Restart the
+service to apply a change.
+
 Under a preset, approval prompts also offer **Always allow** (`/always <id>` in the TUI).
 It approves the request and saves a rule in `config.toml` for that tool and the exact
 command, or the exact file path, in the conversation where it was given:
