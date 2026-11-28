@@ -14,7 +14,13 @@ pub(super) fn deletes(name: &str) -> bool {
 }
 
 pub(super) fn evaluate(name: &str, args: &[&str], found: &mut Findings) -> bool {
-    let effect = if READS.contains(&name) {
+    let lowered: Vec<String> = args.iter().map(|arg| arg.to_ascii_lowercase()).collect();
+
+    let effect = if name == "findstr" && lowered.iter().any(|arg| arg.starts_with("/f:")) {
+        Effect::ReadsNamed
+    } else if name == "where" && args.iter().any(|arg| arg.starts_with('$') && arg.contains(':')) {
+        Effect::ReadsNamed
+    } else if READS.contains(&name) {
         Effect::Reads
     } else if DELETES.contains(&name) {
         Effect::DeletesFiles

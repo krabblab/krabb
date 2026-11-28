@@ -219,3 +219,43 @@ fn windows_lists_switch_values_and_namespaces_are_checked() {
         ],
     );
 }
+
+#[test]
+fn hidden_paths_providers_and_devices_ask() {
+    const SPACING: &str = "the command has an unusual space character";
+
+    check(
+        PowerShell,
+        &[
+            ("gc x,\u{a0}C:\\secret", Unknown, SPACING),
+            ("sls pattern\u{2003}C:\\secret", Unknown, SPACING),
+            (
+                "gc FileSystem::C:\\Windows\\win.ini",
+                Unknown,
+                "the command reaches `C:\\Windows\\win.ini` outside the workspace",
+            ),
+            (
+                "gc Microsoft.PowerShell.Core\\FileSystem::C:\\x",
+                Unknown,
+                "the command reaches `C:\\x` outside the workspace",
+            ),
+            ("gc FileSystem::..\\x", Unknown, "the command reaches `..\\x` outside the workspace"),
+            ("gci Temp:", Unknown, "the command reaches the `temp` drive"),
+            ("gc temp:\\x", Unknown, "the command reaches the `temp` drive"),
+            ("sort --output=x y", Unknown, "`sort` is not on the read-only list"),
+            ("gc con", Unknown, "the command opens the device `con`"),
+        ],
+    );
+
+    check(
+        Cmd,
+        &[
+            ("where $USERPROFILE:*", Unknown, "`where` reads files named in its input or a list"),
+            ("findstr /f:list x", Unknown, "`findstr` reads files named in its input or a list"),
+            ("type com1", Unknown, "the command opens the device `com1`"),
+            ("type con", Unknown, "the command opens the device `con`"),
+            ("type sub\\aux.txt", Unknown, "the command opens the device `sub\\aux.txt`"),
+            ("type console.txt", ReadOnly, "`type` only reads"),
+        ],
+    );
+}

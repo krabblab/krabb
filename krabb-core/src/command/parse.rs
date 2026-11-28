@@ -48,6 +48,8 @@ pub fn parse(command: &str, dialect: Dialect) -> Parse {
         parse.hazard(Hazard::Long);
     } else if command.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
         parse.hazard(Hazard::Control);
+    } else if command.chars().any(|c| c.is_whitespace() && !matches!(c, ' ' | '\t' | '\n')) {
+        parse.hazard(Hazard::Spacing);
     } else {
         parse.read(command, dialect, 0, false);
     }

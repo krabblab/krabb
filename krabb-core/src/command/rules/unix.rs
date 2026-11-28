@@ -38,6 +38,8 @@ const INERT: &[&str] = &[
     "false",
 ];
 
+const NAMELESS: &[&str] = &["echo", "basename", "dirname", "true", "false", "pwd", "uname"];
+
 const DELETES: &[&str] = &["rm", "rmdir", "unlink", "shred", "srm", "trash", "trash-put"];
 
 const WRITES: &[&str] = &[
@@ -98,6 +100,10 @@ pub(super) fn inert(name: &str) -> bool {
 }
 
 pub(super) fn evaluate(name: &str, args: &[&str], found: &mut Findings) -> bool {
+    if named(name, args) {
+        return flagged(found, &format!("{name} list"), Effect::ReadsNamed);
+    }
+
     let effect = match name {
         _ if inert(name) => Effect::Reads,
         _ if DELETES.contains(&name) => Effect::DeletesFiles,
@@ -110,6 +116,10 @@ pub(super) fn evaluate(name: &str, args: &[&str], found: &mut Findings) -> bool 
             }) =>
         {
             return flagged(found, "file -C", Effect::WritesFile);
+        }
+
+        "file" if args.iter().any(|arg| uncompresses(arg)) => {
+            return flagged(found, "file -z", Effect::RunsPrograms);
         }
 
         "file" => Effect::Reads,
@@ -357,11 +367,31 @@ fn xargs(args: &[&str], found: &mut Findings) -> bool {
 
     match args.get(start) {
         None => found.acts("xargs", Effect::Reads),
-        Some(inner) if inert(inner) => found.acts("xargs", Effect::Reads),
+        Some(inner) if NAMELESS.contains(inner) => found.acts("xargs", Effect::Reads),
+        Some(inner) if inert(inner) => found.acts(format!("xargs {inner}"), Effect::ReadsNamed),
         Some(inner) => found.acts(format!("xargs {inner}"), Effect::ReceivesOptions),
     }
 
     true
+}
+
+/// Whether NAME reads files whose names come from a list file or its input.
+fn named(name: &str, args: &[&str]) -> bool {
+    let checksum = name.ends_with("sum") && name != "sum";
+
+    args.iter().any(|arg| {
+        long(arg, "files0-from")
+            || name == "find" && *arg == "-files0-from"
+            || checksum && (long(arg, "check") || cluster(arg).is_some_and(|f| f.contains('c')))
+            || name == "file"
+                && (long(arg, "files-from") || cluster(arg).is_some_and(|f| f.contains('f')))
+    })
+}
+
+fn uncompresses(arg: &str) -> bool {
+    long(arg, "uncompress")
+        || long(arg, "uncompress-noreport")
+        || cluster(arg).is_some_and(|flags| flags.contains(['z', 'Z']))
 }
 
 fn follows(args: &[&str]) -> bool {

@@ -89,12 +89,24 @@ fn pipes_and_lists_of_read_only_commands_stay_read_only() {
             ("ls <&0", ReadOnly, "`ls` only reads"),
             ("cat /dev/stdin", ReadOnly, "`cat` only reads"),
             ("head -c 4 /dev/zero", ReadOnly, "`head` only reads"),
-            ("find . -name '*.rs' | xargs grep -n main", ReadOnly, "`xargs` only reads"),
-            ("find . -print0 | xargs -0 -n 1 wc -l", ReadOnly, "`wc` only reads"),
+            (
+                "find . -name '*.rs' | xargs grep -n main",
+                Unknown,
+                "`xargs grep` reads files named in its input or a list",
+            ),
+            (
+                "find . -print0 | xargs -0 -n 1 wc -l",
+                Unknown,
+                "`xargs wc` reads files named in its input or a list",
+            ),
             ("ls | xargs", ReadOnly, "`xargs` only reads"),
             ("ls | xargs -I{} echo {}", ReadOnly, "`echo` only reads"),
-            ("ls | xargs --max-args=2 cat", ReadOnly, "`cat` only reads"),
-            ("ls | xargs -- cat", ReadOnly, "`cat` only reads"),
+            (
+                "ls | xargs --max-args=2 cat",
+                Unknown,
+                "`xargs cat` reads files named in its input or a list",
+            ),
+            ("ls | xargs -- cat", Unknown, "`xargs cat` reads files named in its input or a list"),
         ],
     );
 }
@@ -585,6 +597,53 @@ fn devices_are_found_by_component_and_followers_never_finish() {
             ("tail --follow=name log", Unknown, "`tail -f` keeps running until it is stopped"),
             ("tail -n f log", ReadOnly, "`tail` only reads"),
             ("tail *", Unknown, "a wildcard could pass options to `tail`"),
+        ],
+    );
+}
+
+#[test]
+fn patterns_and_name_lists_that_reach_other_files_ask() {
+    const LIST: &str = "reads files named in its input or a list";
+
+    check(
+        Sh,
+        &[
+            (
+                "cat {/,}etc/passwd",
+                Unknown,
+                "the pattern `{/,}etc/passwd` could reach outside the workspace",
+            ),
+            (
+                "cat {~,x}/.ssh/id_rsa",
+                Unknown,
+                "the pattern `{~,x}/.ssh/id_rsa` could reach outside the workspace",
+            ),
+            (
+                "cat .{.,}/secret",
+                Unknown,
+                "the pattern `.{.,}/secret` could reach outside the workspace",
+            ),
+            (
+                "cat .?/.?/etc/passwd",
+                Unknown,
+                "the pattern `.?/.?/etc/passwd` could reach outside the workspace",
+            ),
+            ("grep -r root .*", Unknown, "the pattern `.*` could reach outside the workspace"),
+            ("du -sh .*", Unknown, "the pattern `.*` could reach outside the workspace"),
+            ("cat src/*.rs", ReadOnly, "`cat` only reads"),
+            ("printf '\\057etc' | xargs cat", Unknown, &format!("`xargs cat` {LIST}")),
+            ("xargs -a list cat", Unknown, &format!("`xargs cat` {LIST}")),
+            ("wc --files0-from=-", Unknown, &format!("`wc list` {LIST}")),
+            ("wc --files0=-", Unknown, &format!("`wc list` {LIST}")),
+            ("du --files0-from=list", Unknown, &format!("`du list` {LIST}")),
+            ("sort --files0-from=list", Unknown, &format!("`sort list` {LIST}")),
+            ("find -files0-from list -name x", Unknown, &format!("`find list` {LIST}")),
+            ("sha256sum -c sums", Unknown, &format!("`sha256sum list` {LIST}")),
+            ("md5sum --check sums", Unknown, &format!("`md5sum list` {LIST}")),
+            ("file -f names", Unknown, &format!("`file list` {LIST}")),
+            ("file -z x.gz", Unknown, "`file -z` runs other programs"),
+            ("sha256sum a.txt", ReadOnly, "`sha256sum` only reads"),
+            ("cat a\u{a0}b", Unknown, "the command has an unusual space character"),
         ],
     );
 }

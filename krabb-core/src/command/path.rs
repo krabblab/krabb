@@ -92,6 +92,22 @@ pub fn device(word: &str) -> bool {
     windows || unix && !harmless(word)
 }
 
+/// Whether WORD's last component is a name Windows reserves for a device in every folder.
+pub fn reserved(word: &str) -> bool {
+    let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(':').to_ascii_lowercase();
+
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|digit| {
+            matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+    };
+
+    matches!(stem.as_str(), "con" | "prn" | "aux" | "conin$" | "conout$" | "clock$")
+        || numbered("com")
+        || numbered("lpt")
+}
+
 pub fn outside(word: &str, windows: bool) -> bool {
     let separators: &[char] = if windows { &['/', '\\'] } else { &['/'] };
 

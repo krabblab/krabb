@@ -34,6 +34,7 @@ pub enum Hazard {
     StopParsing,
     Typographic,
     Interpolation,
+    Spacing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,7 @@ pub enum Effect {
     ReceivesOptions,
     ShowsEnvironment,
     Waits,
+    ReadsNamed,
     Unlisted,
 }
 
@@ -81,6 +83,7 @@ pub enum Reason {
     Device(String),
     Drive(String),
     Outside(String),
+    Pattern(String),
 }
 
 impl Effect {
@@ -148,6 +151,7 @@ impl fmt::Display for Hazard {
             Self::StopParsing => "the command uses `--%`",
             Self::Typographic => "the command has a typographic quote or dash",
             Self::Interpolation => "a double-quoted string expands variables",
+            Self::Spacing => "the command has an unusual space character",
         })
     }
 }
@@ -180,6 +184,7 @@ impl fmt::Display for Effect {
             Self::ReceivesOptions => "could receive options from its input",
             Self::ShowsEnvironment => "can show secrets from the environment",
             Self::Waits => "keeps running until it is stopped",
+            Self::ReadsNamed => "reads files named in its input or a list",
             Self::Unlisted => "is not on the read-only list",
         })
     }
@@ -217,6 +222,10 @@ impl fmt::Display for Reason {
 
             Self::Outside(path) => {
                 write!(formatter, "the command reaches `{path}` outside the workspace")
+            }
+
+            Self::Pattern(word) => {
+                write!(formatter, "the pattern `{word}` could reach outside the workspace")
             }
         }
     }

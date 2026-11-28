@@ -105,7 +105,7 @@ const SERVICE_QUERIES: &[&str] = &[
 ];
 
 const DRIVES: &[&str] =
-    &["env:", "hklm:", "hkcu:", "cert:", "variable:", "function:", "alias:", "wsman:"];
+    &["env:", "hklm:", "hkcu:", "cert:", "variable:", "function:", "alias:", "wsman:", "temp:"];
 
 const PROVIDERS: &[&str] = &[
     "registry::",
@@ -213,8 +213,12 @@ fn program(segment: &Segment, head: &Word, found: &mut Findings) {
 
     let inert = segment.dialect == Dialect::Sh && unix::inert(name);
 
-    if !inert && segment.words.iter().any(|word| word.glob) {
-        found.push(Reason::Wildcard(name.to_owned()));
+    for word in segment.words.iter().filter(|word| word.glob) {
+        if !inert {
+            found.push(Reason::Wildcard(name.to_owned()));
+        } else if reaching(&word.text) {
+            found.push(Reason::Pattern(word.text.clone()));
+        }
     }
 }
 
@@ -259,6 +263,28 @@ fn portable(name: &str, args: &[&str], found: &mut Findings) -> bool {
     true
 }
 
+/// Whether a shell pattern can expand to a parent, home, or root path: a brace alternative
+/// with a separator, dot, or tilde, text around braces that leaves the workspace, or a wildcard
+/// in a component that starts with a dot, which some shells match against `..`.
+fn reaching(text: &str) -> bool {
+    let mut depth = 0;
+    let mut outer = String::new();
+    let mut inner = false;
+
+    for character in text.chars() {
+        match character {
+            '{' => depth += 1,
+            '}' if depth > 0 => depth -= 1,
+            _ if depth > 0 => inner |= matches!(character, '/' | '.' | '~'),
+            _ => outer.push(character),
+        }
+    }
+
+    let dotted = |part: &str| part.starts_with('.') && part.contains(['*', '?', '[']);
+
+    inner || path::outside(&outer, false) || text.split('/').any(dotted)
+}
+
 pub(super) fn dangerous(name: &str) -> Option<Reason> {
     if ELEVATORS.contains(&name) {
         Some(Reason::Elevated(name.to_owned()))
@@ -294,6 +320,10 @@ fn candidates(dialect: Dialect, text: &str) -> Vec<&str> {
         found.push(&text[at..]);
     }
 
+    if windows && let Some((_, path)) = text.rsplit_once("::") {
+        found.push(path);
+    }
+
     if windows {
         let parts: Vec<&str> = found.iter().flat_map(|word| word.split([',', ';'])).collect();
 
@@ -315,7 +345,7 @@ fn location(dialect: Dialect, text: &str, found: &mut Findings) {
             found.push(Reason::Host(candidate.to_owned()));
         }
 
-        if path::device(candidate) {
+        if path::device(candidate) || dialect != Dialect::Sh && path::reserved(candidate) {
             found.push(Reason::Device(candidate.to_owned()));
         }
 
