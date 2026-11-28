@@ -30,11 +30,11 @@ pub(crate) fn fact(name: &str, args: &Value) -> String {
         routing::NAME => format!(
             "Start a background goal that continues on its own and sends updates to {} / {}. \
                 Unattended workspace tools: {}, shell: {}, workspace: {}.",
-            args["context"]["origin"]["channel"],
-            args["context"]["origin"]["chat"],
+            text(&args["context"]["origin"]["channel"]),
+            text(&args["context"]["origin"]["chat"]),
             args["context"]["tools"] == true,
             args["context"]["shell"] == true,
-            args["context"]["workspace"],
+            text(&args["context"]["workspace"]),
         ),
 
         "schedule_propose" => schedule(args),
@@ -171,8 +171,12 @@ pub(crate) fn clipped(text: &str, limit: usize) -> String {
     clipped
 }
 
+/// TEXT as one item in a fact line: clipped, and quoted when it has spaces, so a name the
+/// model chose cannot read as a sentence the host wrote.
 fn word(text: &str) -> String {
-    clipped(text, WORD_LIMIT)
+    let shown = clipped(text, WORD_LIMIT);
+
+    if shown.contains(char::is_whitespace) { format!("“{shown}”") } else { shown }
 }
 
 fn text(value: &Value) -> String {
@@ -215,7 +219,7 @@ fn schedule(args: &Value) -> String {
             workspace: {}.",
         args["context"]["tools"] == true,
         args["context"]["shell"] == true,
-        args["context"]["workspace"],
+        text(&args["context"]["workspace"]),
     )
 }
 
@@ -286,52 +290,32 @@ fn patch_path(path: &str) -> Option<String> {
     Some(path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).unwrap_or(path).into())
 }
 
+/// The fact line for a `git_run` call, read by the same classifier as the shell, so every
+/// option and subcommand the shell would flag is flagged here too.
 fn git(args: &Value) -> String {
-    let words = args["args"]
-        .as_array()
-        .map(|words| words.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-        .unwrap_or_default();
+    let words: Vec<&str> =
+        args["args"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
 
-    let mut index = 0;
-    let mut configured = false;
+    let command = std::iter::once("git".to_owned())
+        .chain(words.iter().map(|word| quoted(word)))
+        .collect::<Vec<_>>()
+        .join(" ");
 
-    while let Some(word) = words.get(index).filter(|word| word.starts_with('-')) {
-        configured |= *word == "-c" || word.starts_with("--config");
-        index += 1 + usize::from(matches!(*word, "-C" | "-c"));
+    let fact = super::shell::describe(
+        &command,
+        krabb_core::command::Dialect::Sh,
+        krabb_core::command::Os::Linux,
+    );
+
+    match fact.strip_prefix("Run a shell command") {
+        Some(rest) => format!("Run a Git command{rest}"),
+        None => fact,
     }
+}
 
-    let Some(command) = words.get(index) else {
-        return sentence("Run a Git command", &["may run repository-configured programs".into()]);
-    };
-
-    let operands: Vec<&str> =
-        words[index + 1..].iter().copied().filter(|word| !word.starts_with('-')).collect();
-
-    let mut flags = Vec::new();
-
-    if *command == "rm" && !operands.is_empty() {
-        flags.push(format!(
-            "deletes {}",
-            list(&operands.iter().map(|path| (*path).to_owned()).collect::<Vec<_>>())
-        ));
-    }
-
-    if matches!(*command, "clone" | "fetch" | "pull" | "push" | "ls-remote" | "submodule")
-        || *command == "remote" && operands.first().is_some_and(|action| *action == "update")
-    {
-        flags.push("uses the network".into());
-    }
-
-    if *command == "clean" {
-        flags.push("deletes untracked files".into());
-    }
-
-    if configured {
-        flags.push("sets its own configuration, which can run any program".into());
-    }
-
-    flags.push("may run repository-configured programs".into());
-    sentence(&format!("Run the Git command {}", word(command)), &flags)
+/// WORD quoted for `sh`, so the classifier reads it as one argument.
+fn quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

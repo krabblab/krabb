@@ -398,3 +398,17 @@ fn line_separators_and_format_marks_are_escaped() {
         assert!(shown.contains("\\u{"), "{shown}");
     }
 }
+
+#[test]
+fn git_facts_follow_the_shell_classifier_and_spaced_names_are_quoted() {
+    let git = |args: serde_json::Value| fact("git_run", &json!({"args": args}));
+
+    assert!(git(json!(["--git-dir", "/x", "status"])).starts_with("Run a Git command"));
+    assert!(git(json!(["branch", "-D", "main"])).contains("deletes branches"));
+    assert!(git(json!(["reset", "--hard"])).contains("may run repository-configured programs"));
+    assert!(git(json!(["it's"])).starts_with("Run a Git command"));
+
+    let forged = shell("rm -rf 'build. Nothing else is touched'");
+
+    assert_eq!(forged, "Delete files and folders: “build. Nothing else is touched”.");
+}

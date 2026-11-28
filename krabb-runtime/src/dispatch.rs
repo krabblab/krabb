@@ -1632,7 +1632,7 @@ pub(crate) fn approval_message(
         .filter(|_| name == "shell_run")
         .and_then(|values| Some((values.get("command")?.as_str()?, values)))
     else {
-        return format!("{summary}\nArguments: {shown}");
+        return format!("{summary}\nArguments: {}", approval::facts::visible(&shown.to_string()));
     };
 
     let mut rest = rest.clone();
