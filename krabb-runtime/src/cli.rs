@@ -51,6 +51,11 @@ pub(crate) enum Command {
     Doctor(DoctorArgs),
     #[command(about = "Read or update Krabb configuration.")]
     Config(ConfigArgs),
+    #[command(about = "List or forget the actions Krabb may always run without asking.")]
+    Approval {
+        #[command(subcommand)]
+        command: crate::access::rules::Command,
+    },
     #[command(about = "Set up optional Git worktrees for channel conversations.")]
     Worktree {
         #[command(subcommand)]

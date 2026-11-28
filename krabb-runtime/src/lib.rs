@@ -1104,6 +1104,8 @@ pub(crate) struct Config {
     preset: Option<access::Preset>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     roles: BTreeMap<access::Role, access::RoleSetting>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rules: Vec<access::rules::Rule>,
     #[serde(default)]
     scheduler: SchedulerConfig,
     inference: inference::Config,
@@ -1129,6 +1131,7 @@ impl Default for Config {
             tools: false,
             preset: None,
             roles: BTreeMap::new(),
+            rules: Vec::new(),
             scheduler: SchedulerConfig::default(),
             inference: inference::Config::default(),
             operations: operations::Config::default(),
@@ -1219,6 +1222,10 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), String> {
+        if self.rules.len() > access::rules::LIMIT {
+            return Err(format!("Keep at most {} rules.", access::rules::LIMIT));
+        }
+
         context::validate(self)?;
         self.inference.validate()?;
         self.operations.validate()?;
@@ -1872,6 +1879,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Hatch(_) => "hatch",
         Command::Doctor(_) => "doctor",
         Command::Config(_) => "config",
+        Command::Approval { .. } => "approval",
         Command::Worktree { .. } => "worktree",
         Command::Workspace { .. } => "workspace",
         Command::Status(_) => "status",
@@ -1928,6 +1936,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Hatch(args) => hatch::run(args, &home(), json).await?,
         Command::Doctor(args) => doctor(args.fix, json)?,
         Command::Config(args) => config_command(args.command, &home(), json).await?,
+        Command::Approval { command } => access::rules::run(command, &home(), json)?,
         Command::Worktree { command } => worktree::run(command, &home(), json).await?,
 
         Command::Workspace { path, owner } => {

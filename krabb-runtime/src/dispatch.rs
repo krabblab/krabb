@@ -652,7 +652,9 @@ pub(crate) async fn execute_tool_with_registry(
         access::turn(&plugins.config, source, channel, store.sessions.get(session))
     };
 
-    let gate = access::gate(&plugins.config, &grant, name, &args, approval_mode)
+    let source = registry.source.clone().unwrap_or_else(|| sharing::principal(channel));
+    let scope = access::rules::scope(&source, chat);
+    let gate = access::gate(&plugins.config, &grant, &scope, name, &args, approval_mode)
         .map(|verdict| (verdict, grant.preset, grant.role));
 
     let asks = match gate {

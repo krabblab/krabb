@@ -244,6 +244,7 @@ pub(crate) fn turn(
 pub(crate) fn gate(
     config: &Config,
     grant: &Grant,
+    scope: &str,
     name: &str,
     args: &serde_json::Value,
     mode: ApprovalMode,
@@ -260,6 +261,7 @@ pub(crate) fn gate(
         Verdict::Deny => Some(Verdict::Deny),
         _ if above => Some(Verdict::Deny),
         _ if mode == ApprovalMode::Off && answer::mutating(name, args) => Some(Verdict::Deny),
+        Verdict::Ask if rules::allowed(config, scope, name, args) => Some(Verdict::Run),
         verdict => Some(verdict),
     }
 }
@@ -391,6 +393,8 @@ pub(crate) fn legacy(config: &Config) -> bool {
             .all(|channel| channel.preset.is_none() && channel.roles.is_empty())
         && config.clients.values().all(|client| client.preset.is_none() && client.roles.is_empty())
 }
+
+pub(crate) mod rules;
 
 #[cfg(test)]
 mod tests;
